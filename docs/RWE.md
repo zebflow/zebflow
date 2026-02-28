@@ -88,10 +88,9 @@ Theme and base styles are compile-scoped assets owned by the template tree.
 
 RWE discovers stylesheet entries from the current `template_root`.
 
-Deterministic default probes:
+Deterministic default probe:
 
-1. `styles/base.css`
-2. `styles/main.css`
+1. `styles/main.css`
 
 This keeps the theme contract:
 
@@ -117,11 +116,10 @@ templates/
     ui/
       button.tsx
   styles/
-    base.css
     main.css
 ```
 
-Example `styles/base.css`:
+Example `styles/main.css`:
 
 ```css
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
@@ -132,21 +130,13 @@ Example `styles/base.css`:
   --zebflow-font-sans: var(--zf-font-sans);
 }
 
-body {
-  accent-color: var(--zf-color-accent);
-}
-```
-
-Example `styles/main.css`:
-
-```css
 [data-theme="docs"] {
   --zf-color-accent: #0f766e;
 }
 ```
 
 RWE injects discovered stylesheet entries into the rendered document before the
-generated Tailwind-like utility block. This makes theme tokens and base CSS
+generated Tailwind-like utility block. This makes theme tokens and project CSS
 available to the rest of the page compile.
 
 For fonts, the current contract is:
@@ -303,8 +293,8 @@ Current behavior:
 1. compile static utility classes into CSS
 2. support `tw-variants` dynamic contract hints
 3. warn when dynamic class placeholders do not declare their dynamic contract
-4. inject compile-scoped base/theme CSS from `template_root/styles/base.css`
-5. inject compile-scoped app CSS from `template_root/styles/main.css`
+4. inject compile-scoped project CSS from `template_root/styles/main.css`
+5. inject generated Tailwind-like utility CSS
 
 The key rule is:
 

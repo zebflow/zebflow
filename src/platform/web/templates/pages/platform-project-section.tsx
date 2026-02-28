@@ -1,4 +1,4 @@
-import AdminWrapper from "@/components/layout/admin-wrapper";
+import ProjectStudioShell from "@/components/layout/project-studio-shell";
 
 export const page = {
   head: {
@@ -9,7 +9,7 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-zinc-50 text-gray-900 font-sans",
+    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
   },
   navigation: "history",
 };
@@ -19,23 +19,37 @@ export const app = {};
 export default function Page(input) {
   return (
 <Page>
-    <AdminWrapper
-      backHref="/home"
-      backLabel="{input.title}"
-      title="{input.page_title}"
-      meta="{input.project}"
-      actionClass="hidden"
-      chatClass=""
+    <ProjectStudioShell
+      projectHref="{input.project_href}"
+      projectLabel="{input.title}"
+      currentMenu="{input.current_menu}"
     >
-      <div className="text-xs text-slate-500">{input.page_subtitle}</div>
-
-      <section className="grid lg:grid-cols-2 gap-2">
-        <article jFor="item in input.cards" className="bg-white border border-slate-200 rounded-md p-3 hover:border-slate-400 transition-all">
-          <h3 className="text-sm font-semibold tracking-tight text-slate-900">{item.title}</h3>
-          <p className="text-sm text-slate-600 mt-2">{item.description}</p>
-        </article>
-      </section>
-    </AdminWrapper>
+      <div className="project-workspace">
+        <div className="project-tab-strip"></div>
+        <section className="project-workspace-body">
+          <div className="project-content-wrap">
+            <section className="project-content-section">
+              <div className="project-content-head">
+                <div>
+                  <p className="project-content-title">{input.page_title}</p>
+                  <p className="project-content-copy">{input.page_subtitle}</p>
+                </div>
+              </div>
+            </section>
+            <section className="project-content-section">
+              <div className="project-content-body">
+                <div className="project-card-grid cols-2">
+                  <article jFor="item in input.cards" className="project-card">
+                    <h3 className="project-card-title">{item.title}</h3>
+                    <p className="project-card-copy">{item.description}</p>
+                  </article>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </ProjectStudioShell>
 </Page>
   );
 }

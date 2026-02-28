@@ -2,7 +2,7 @@ export const app = {};
 
 export default function PlatformSidebar(input) {
   return (
-<aside className="platform-sidebar-shell fixed left-0 top-0 bottom-0 z-50" tw-variants="bg-[#005B9A] text-white font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors text-[#005B9A] bg-sky-50 text-slate-500 hover:text-slate-900 hover:bg-slate-100">
+<aside className="platform-sidebar-shell fixed left-0 top-0 bottom-0 z-50">
   <input id="platform-sidebar-toggle" type="checkbox" className="platform-sidebar-toggle-input" />
 
   <div className="platform-sidebar-panel">
@@ -10,8 +10,8 @@ export default function PlatformSidebar(input) {
       <a href="/home" className="platform-sidebar-brand">
         <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="w-9 h-9 shrink-0" />
         <span className="platform-sidebar-label">
-          <span className="block text-base font-black tracking-tight text-slate-900">ZEBFLOW</span>
-          <span className="block text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500">Project</span>
+          <span className="platform-sidebar-brand-title block text-base font-black tracking-tight">ZEBFLOW</span>
+          <span className="platform-sidebar-brand-subtitle block text-[10px] font-mono uppercase tracking-[0.18em]">Project</span>
         </span>
       </a>
 
@@ -60,14 +60,14 @@ export default function PlatformSidebar(input) {
         </div>
       </details>
 
-      <details name="platform-sidebar-groups" data-group="studio" className="platform-sidebar-group">
-        <summary className="platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm {input.nav.classes.studio}">
+      <details name="platform-sidebar-groups" data-group="build" className="platform-sidebar-group">
+        <summary className="platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm {input.nav.classes.build}">
           <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
             <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
-              <path d="M6 7h7v7H6zM11 10h7v7h-7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              <path d="M5 6h6v6H5zM13 6h6v6h-6zM5 14h6v4H5zM13 14h6v4h-6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
             </svg>
           </span>
-          <span className="platform-sidebar-label">Studio</span>
+          <span className="platform-sidebar-label">Build</span>
           <span className="platform-sidebar-group-chevron">
             <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
               <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -75,15 +75,15 @@ export default function PlatformSidebar(input) {
           </span>
         </summary>
         <div className="platform-sidebar-submenu">
-          <a href="{input.nav.links.studio_templates}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.studio_templates}">
+          <a href="{input.nav.links.build_templates}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.build_templates}">
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M6 5h8l4 4v10H6zM14 5v4h4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
             <span className="platform-sidebar-label">Templates</span>
           </a>
-          <a href="{input.nav.links.studio_assets}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.studio_assets}">
+          <a href="{input.nav.links.build_assets}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.build_assets}">
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M5 7h14v10H5zM8 13l2-2 2 2 3-3 2 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             <span className="platform-sidebar-label">Assets</span>
           </a>
-          <a href="{input.nav.links.studio_schema}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.studio_schema}">
+          <a href="{input.nav.links.build_schema}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.build_schema}">
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M7 6h10M7 12h10M7 18h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
             <span className="platform-sidebar-label">Schema</span>
           </a>

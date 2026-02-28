@@ -2,7 +2,7 @@
 //!
 //! Features included in this engine:
 //!
-//! - legacy SFC block extraction (`<template>`, `<style>`, `<script lang="js">`)
+//! - inline `<style>` extraction from TSX/page markup
 //! - optional component expansion from PascalCase tags (`<Button />`)
 //! - SSR placeholder interpolation (`{{input.*}}`, `{{ctx.*}}`)
 //! - reactive binding scan (`@click`, `j-text`, `j-model`, etc.)
@@ -212,6 +212,83 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
     if (raw === "ctx") return (R.bootstrap && R.bootstrap.metadata) || {};
     if (raw.startsWith("ctx.")) return readPathFrom((R.bootstrap && R.bootstrap.metadata) || {}, raw.slice("ctx.".length));
     return readPathFrom(R.state, raw);
+  }
+  function truthy(v){
+    if (v == null) return false;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0 && !Number.isNaN(v);
+    if (typeof v === "string") return v.length > 0;
+    return true;
+  }
+  function exprTokens(src){
+    const out = [];
+    const s = String(src || "");
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      if (/\s/.test(ch)) { i++; continue; }
+      if (ch === "&" && s[i + 1] === "&") { out.push("&&"); i += 2; continue; }
+      if (ch === "|" && s[i + 1] === "|") { out.push("||"); i += 2; continue; }
+      if (ch === "!") { out.push("!"); i += 1; continue; }
+      if (ch === "(" || ch === ")") { out.push(ch); i += 1; continue; }
+      let j = i;
+      while (j < s.length) {
+        const cj = s[j];
+        if (/\s/.test(cj)) break;
+        if (cj === "(" || cj === ")" || cj === "!") break;
+        if ((cj === "&" && s[j + 1] === "&") || (cj === "|" && s[j + 1] === "|")) break;
+        j++;
+      }
+      out.push(s.slice(i, j));
+      i = j;
+    }
+    return out;
+  }
+  function evalBindingExpr(expr){
+    const tokens = exprTokens(expr);
+    if (!tokens.length) return undefined;
+    let idx = 0;
+    function parseOr(){
+      let left = parseAnd();
+      while (tokens[idx] === "||") {
+        idx++;
+        left = truthy(left) || truthy(parseAnd());
+      }
+      return left;
+    }
+    function parseAnd(){
+      let left = parseUnary();
+      while (tokens[idx] === "&&") {
+        idx++;
+        left = truthy(left) && truthy(parseUnary());
+      }
+      return left;
+    }
+    function parseUnary(){
+      if (tokens[idx] === "!") {
+        idx++;
+        return !truthy(parseUnary());
+      }
+      return parsePrimary();
+    }
+    function parsePrimary(){
+      const token = tokens[idx++];
+      if (token == null) return undefined;
+      if (token === "(") {
+        const value = parseOr();
+        if (tokens[idx] === ")") idx++;
+        return value;
+      }
+      if (token === "true") return true;
+      if (token === "false") return false;
+      if (token === "null" || token === "undefined") return undefined;
+      return readPath(token);
+    }
+    const value = parseOr();
+    return idx === tokens.length ? value : undefined;
+  }
+  function evalBindingTruthy(expr){
+    return truthy(evalBindingExpr(expr));
   }
   function writePath(path, value){
     const s = segs(path);
@@ -508,7 +585,7 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
     for (const el of showNodes) {
       if (!isNodeHydrated(el)) continue;
       const p = el.getAttribute("j-show");
-      const v = readPath(p || "");
+      const v = evalBindingTruthy(p || "");
       if (v) {
         el.removeAttribute("hidden");
       } else {
@@ -519,7 +596,7 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
     for (const el of hideNodes) {
       if (!isNodeHydrated(el)) continue;
       const p = el.getAttribute("j-hide");
-      const v = readPath(p || "");
+      const v = evalBindingTruthy(p || "");
       if (v) {
         el.setAttribute("hidden", "");
       } else {
@@ -856,7 +933,15 @@ impl ReactiveWebEngine for NoopReactiveWebEngine {
             ));
         }
 
-        let ssr_result = apply_ssr_placeholders(&for_result.html, &ssr_scope);
+        let visibility_result = apply_ssr_visibility(&for_result.html, &ssr_scope);
+        if visibility_result.replacements > 0 {
+            trace.push(format!(
+                "ssr_visibility_updates={}",
+                visibility_result.replacements
+            ));
+        }
+
+        let ssr_result = apply_ssr_placeholders(&visibility_result.html, &ssr_scope);
         if ssr_result.replacements > 0 {
             trace.push(format!("ssr_replacements={}", ssr_result.replacements));
         }
@@ -1001,9 +1086,7 @@ fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult>
     }
 
     let close_tag = format!("</{tag_name}>");
-    let close_start_rel = html[open_end + 1..].find(&close_tag)?;
-    let close_start = open_end + 1 + close_start_rel;
-    let close_end = close_start + close_tag.len();
+    let (close_start, close_end) = find_matching_close_tag(html, open_end + 1, tag_name)?;
     let inner = &html[open_end + 1..close_start];
 
     let for_expr = attr_value(open_tag, "j-for")?;
@@ -1032,9 +1115,11 @@ fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult>
                 // Resolve loop placeholders in opening tag attributes (for example href/src).
                 row_open = replace_loop_placeholders(&row_open, item_var, item, idx);
                 let row_inner = replace_loop_placeholders(inner, item_var, item, idx);
-                rendered.push_str(&row_open);
-                rendered.push_str(&row_inner);
-                rendered.push_str(&close_tag);
+                let row_markup = format!("{row_open}{row_inner}{close_tag}");
+                let local_scope = build_loop_scope(scope, item_var, item, idx);
+                let row_markup = apply_ssr_visibility(&row_markup, &local_scope).html;
+                let row_markup = strip_visibility_attrs(&row_markup);
+                rendered.push_str(&row_markup);
             }
             (rendered, items.len())
         })
@@ -1050,6 +1135,98 @@ fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult>
         loop_count: 1,
         seeded_items: rows.1,
     })
+}
+
+fn build_loop_scope(scope: &Value, item_var: &str, item: &Value, idx: usize) -> Value {
+    let mut map = serde_json::Map::new();
+    if let Some(input) = scope.get("input") {
+        map.insert("input".to_string(), input.clone());
+    }
+    if let Some(ctx) = scope.get("ctx") {
+        map.insert("ctx".to_string(), ctx.clone());
+    }
+    map.insert(item_var.to_string(), item.clone());
+    map.insert("$index".to_string(), Value::from(idx));
+    Value::Object(map)
+}
+
+fn strip_visibility_attrs(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = html[cursor..].find('<') {
+        let start = cursor + start_rel;
+        out.push_str(&html[cursor..start]);
+        let Some(end_rel) = html[start..].find('>') else {
+            out.push_str(&html[start..]);
+            return out;
+        };
+        let end = start + end_rel + 1;
+        let tag = &html[start..end];
+        let next = tag.as_bytes().get(1).copied().unwrap_or_default();
+        if matches!(next, b'/' | b'!' | b'?') {
+            out.push_str(tag);
+        } else {
+            let mut next_tag = remove_attr_from_open_tag(tag, "j-show");
+            next_tag = remove_attr_from_open_tag(&next_tag, "j-hide");
+            out.push_str(&next_tag);
+        }
+        cursor = end;
+    }
+
+    out.push_str(&html[cursor..]);
+    out
+}
+
+fn find_matching_close_tag(html: &str, search_start: usize, tag_name: &str) -> Option<(usize, usize)> {
+    let open_prefix = format!("<{tag_name}");
+    let close_tag = format!("</{tag_name}>");
+    let mut cursor = search_start;
+    let mut depth = 1usize;
+
+    while cursor < html.len() {
+        let next_open = html[cursor..].find(&open_prefix).map(|rel| cursor + rel);
+        let next_close = html[cursor..].find(&close_tag).map(|rel| cursor + rel);
+
+        match (next_open, next_close) {
+            (None, None) => return None,
+            (Some(open_idx), None) => {
+                let open_end = html[open_idx..].find('>')? + open_idx;
+                let open_tag = &html[open_idx..=open_end];
+                if !open_tag.trim_end().ends_with("/>") {
+                    depth += 1;
+                }
+                cursor = open_end + 1;
+            }
+            (None, Some(close_idx)) => {
+                depth = depth.saturating_sub(1);
+                let close_end = close_idx + close_tag.len();
+                if depth == 0 {
+                    return Some((close_idx, close_end));
+                }
+                cursor = close_end;
+            }
+            (Some(open_idx), Some(close_idx)) => {
+                if close_idx < open_idx {
+                    depth = depth.saturating_sub(1);
+                    let close_end = close_idx + close_tag.len();
+                    if depth == 0 {
+                        return Some((close_idx, close_end));
+                    }
+                    cursor = close_end;
+                } else {
+                    let open_end = html[open_idx..].find('>')? + open_idx;
+                    let open_tag = &html[open_idx..=open_end];
+                    if !open_tag.trim_end().ends_with("/>") {
+                        depth += 1;
+                    }
+                    cursor = open_end + 1;
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn apply_ssr_placeholders(html: &str, scope: &Value) -> SsrRenderResult {
@@ -1083,6 +1260,66 @@ fn apply_ssr_placeholders(html: &str, scope: &Value) -> SsrRenderResult {
     }
     out.push_str(&html[cursor..]);
 
+    SsrRenderResult {
+        html: out,
+        replacements,
+    }
+}
+
+fn apply_ssr_visibility(html: &str, scope: &Value) -> SsrRenderResult {
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    let mut replacements = 0usize;
+
+    while let Some(start_rel) = html[cursor..].find('<') {
+        let start = cursor + start_rel;
+        out.push_str(&html[cursor..start]);
+        let Some(end_rel) = html[start..].find('>') else {
+            out.push_str(&html[start..]);
+            return SsrRenderResult {
+                html: out,
+                replacements,
+            };
+        };
+        let end = start + end_rel + 1;
+        let tag = &html[start..end];
+        let next = tag.as_bytes().get(1).copied().unwrap_or_default();
+        if matches!(next, b'/' | b'!' | b'?') {
+            out.push_str(tag);
+            cursor = end;
+            continue;
+        }
+
+        let show_expr = attr_value(tag, "j-show");
+        let hide_expr = attr_value(tag, "j-hide");
+        if show_expr.is_none() && hide_expr.is_none() {
+            out.push_str(tag);
+            cursor = end;
+            continue;
+        }
+
+        let mut next_tag = tag.to_string();
+        let should_show = show_expr
+            .map(|expr| eval_boolean_binding_expr(scope, expr))
+            .unwrap_or(true);
+        let should_hide = hide_expr
+            .map(|expr| eval_boolean_binding_expr(scope, expr))
+            .unwrap_or(false);
+        let hidden = !should_show || should_hide;
+
+        next_tag = remove_bool_attr_from_open_tag(&next_tag, "hidden");
+        if hidden {
+            next_tag = add_bool_attr_to_open_tag(&next_tag, "hidden");
+        }
+
+        if next_tag != tag {
+            replacements += 1;
+        }
+        out.push_str(&next_tag);
+        cursor = end;
+    }
+
+    out.push_str(&html[cursor..]);
     SsrRenderResult {
         html: out,
         replacements,
@@ -1167,6 +1404,167 @@ fn parse_path_segments(path: &str) -> Vec<String> {
     }
 
     segments
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum BindingExprToken {
+    And,
+    Or,
+    Not,
+    LParen,
+    RParen,
+    Atom(String),
+}
+
+fn eval_boolean_binding_expr(scope: &Value, expr: &str) -> bool {
+    let tokens = tokenize_binding_expr(expr);
+    if tokens.is_empty() {
+        return false;
+    }
+    let mut idx = 0usize;
+    let value = parse_binding_expr_or(scope, &tokens, &mut idx);
+    if idx != tokens.len() {
+        return false;
+    }
+    value
+}
+
+fn tokenize_binding_expr(expr: &str) -> Vec<BindingExprToken> {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut tokens = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch.is_whitespace() {
+            i += 1;
+            continue;
+        }
+        if ch == '&' && chars.get(i + 1) == Some(&'&') {
+            tokens.push(BindingExprToken::And);
+            i += 2;
+            continue;
+        }
+        if ch == '|' && chars.get(i + 1) == Some(&'|') {
+            tokens.push(BindingExprToken::Or);
+            i += 2;
+            continue;
+        }
+        if ch == '!' {
+            tokens.push(BindingExprToken::Not);
+            i += 1;
+            continue;
+        }
+        if ch == '(' {
+            tokens.push(BindingExprToken::LParen);
+            i += 1;
+            continue;
+        }
+        if ch == ')' {
+            tokens.push(BindingExprToken::RParen);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() {
+            let current = chars[i];
+            if current.is_whitespace() || matches!(current, '(' | ')' | '!') {
+                break;
+            }
+            if current == '&' && chars.get(i + 1) == Some(&'&') {
+                break;
+            }
+            if current == '|' && chars.get(i + 1) == Some(&'|') {
+                break;
+            }
+            i += 1;
+        }
+        let atom: String = chars[start..i].iter().collect();
+        if !atom.is_empty() {
+            tokens.push(BindingExprToken::Atom(atom));
+        }
+    }
+    tokens
+}
+
+fn parse_binding_expr_or(scope: &Value, tokens: &[BindingExprToken], idx: &mut usize) -> bool {
+    let mut left = parse_binding_expr_and(scope, tokens, idx);
+    while matches!(tokens.get(*idx), Some(BindingExprToken::Or)) {
+        *idx += 1;
+        let right = parse_binding_expr_and(scope, tokens, idx);
+        left = left || right;
+    }
+    left
+}
+
+fn parse_binding_expr_and(scope: &Value, tokens: &[BindingExprToken], idx: &mut usize) -> bool {
+    let mut left = parse_binding_expr_unary(scope, tokens, idx);
+    while matches!(tokens.get(*idx), Some(BindingExprToken::And)) {
+        *idx += 1;
+        let right = parse_binding_expr_unary(scope, tokens, idx);
+        left = left && right;
+    }
+    left
+}
+
+fn parse_binding_expr_unary(scope: &Value, tokens: &[BindingExprToken], idx: &mut usize) -> bool {
+    if matches!(tokens.get(*idx), Some(BindingExprToken::Not)) {
+        *idx += 1;
+        return !parse_binding_expr_unary(scope, tokens, idx);
+    }
+    parse_binding_expr_primary(scope, tokens, idx)
+}
+
+fn parse_binding_expr_primary(
+    scope: &Value,
+    tokens: &[BindingExprToken],
+    idx: &mut usize,
+) -> bool {
+    match tokens.get(*idx) {
+        Some(BindingExprToken::LParen) => {
+            *idx += 1;
+            let value = parse_binding_expr_or(scope, tokens, idx);
+            if matches!(tokens.get(*idx), Some(BindingExprToken::RParen)) {
+                *idx += 1;
+                value
+            } else {
+                false
+            }
+        }
+        Some(BindingExprToken::Atom(atom)) => {
+            *idx += 1;
+            binding_expr_atom_truthy(scope, atom)
+        }
+        _ => false,
+    }
+}
+
+fn binding_expr_atom_truthy(scope: &Value, atom: &str) -> bool {
+    match atom {
+        "true" => true,
+        "false" => false,
+        "null" | "undefined" => false,
+        _ => resolve_value_path(scope, atom)
+            .map(binding_value_truthy)
+            .unwrap_or(false),
+    }
+}
+
+fn binding_value_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(v) => *v,
+        Value::Number(v) => {
+            if let Some(n) = v.as_i64() {
+                n != 0
+            } else if let Some(n) = v.as_u64() {
+                n != 0
+            } else {
+                v.as_f64().map(|n| n != 0.0 && !n.is_nan()).unwrap_or(false)
+            }
+        }
+        Value::String(v) => !v.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
 }
 
 fn parse_for_expr(expr: &str) -> Option<(&str, &str)> {
@@ -1281,6 +1679,18 @@ fn add_bool_attr_to_open_tag(open_tag: &str, attr: &str) -> String {
         out.push(' ');
         out.push_str(attr);
         out.push_str(&open_tag[idx..]);
+        out
+    } else {
+        open_tag.to_string()
+    }
+}
+
+fn remove_bool_attr_from_open_tag(open_tag: &str, attr: &str) -> String {
+    let pattern = format!(" {attr}");
+    if let Some(start) = open_tag.find(&pattern) {
+        let mut out = String::with_capacity(open_tag.len());
+        out.push_str(&open_tag[..start]);
+        out.push_str(&open_tag[start + pattern.len()..]);
         out
     } else {
         open_tag.to_string()
@@ -1968,7 +2378,7 @@ fn load_template_style_sources(
     let entry_paths: Vec<String> = if explicit_entries {
         options.style_entries.clone()
     } else {
-        vec!["styles/base.css".to_string(), "styles/main.css".to_string()]
+        vec!["styles/main.css".to_string()]
     };
 
     let mut styles = Vec::new();

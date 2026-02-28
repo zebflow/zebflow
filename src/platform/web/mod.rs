@@ -59,11 +59,13 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/projects/{owner}/{project}/pipelines/{tab}",
             get(project_pipelines_page),
         )
-        .route("/projects/{owner}/{project}/studio", get(project_studio_root_page))
+        .route("/projects/{owner}/{project}/build", get(project_build_root_page))
         .route(
-            "/projects/{owner}/{project}/studio/{tab}",
-            get(project_studio_page),
+            "/projects/{owner}/{project}/build/{tab}",
+            get(project_build_page),
         )
+        .route("/projects/{owner}/{project}/studio", get(project_studio_redirect_page))
+        .route("/projects/{owner}/{project}/studio/{tab}", get(project_studio_tab_redirect_page))
         .route(
             "/projects/{owner}/{project}/design",
             get(project_design_page),
@@ -107,7 +109,7 @@ fn build_frontend() -> Result<PlatformFrontend, PlatformError> {
     let options = ReactiveWebOptions {
         templates: TemplateOptions {
             template_root: Some(template_root.clone()),
-            style_entries: Vec::new(),
+        style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
         ..Default::default()
@@ -448,7 +450,7 @@ async fn project_pipelines_page(
     Query(query): Query<PipelineRegistryQuery>,
 ) -> Response {
     if tab == "editor" {
-        return Redirect::to(&format!("/projects/{owner}/{project}/studio/templates")).into_response();
+        return Redirect::to(&format!("/projects/{owner}/{project}/build/templates")).into_response();
     }
 
     render_project_pipelines_with_tab(
@@ -462,20 +464,32 @@ async fn project_pipelines_page(
     .await
 }
 
-async fn project_studio_root_page(
+async fn project_build_root_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    render_project_studio_with_tab(state, headers, owner, project, "templates").await
+    render_project_build_with_tab(state, headers, owner, project, "templates").await
 }
 
-async fn project_studio_page(
+async fn project_build_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, tab)): Path<(String, String, String)>,
 ) -> Response {
-    render_project_studio_with_tab(state, headers, owner, project, &tab).await
+    render_project_build_with_tab(state, headers, owner, project, &tab).await
+}
+
+async fn project_studio_redirect_page(
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    Redirect::to(&format!("/projects/{owner}/{project}/build/templates")).into_response()
+}
+
+async fn project_studio_tab_redirect_page(
+    Path((owner, project, tab)): Path<(String, String, String)>,
+) -> Response {
+    Redirect::to(&format!("/projects/{owner}/{project}/build/{tab}")).into_response()
 }
 
 async fn render_project_pipelines_with_tab(
@@ -498,7 +512,7 @@ async fn render_project_pipelines_with_tab(
         Some((
             "registry",
             "Pipeline Registry",
-            "Browse pipelines by virtual path.",
+            "Browse pipelines by project path.",
             Vec::new(),
         ))
     } else {
@@ -549,6 +563,8 @@ async fn render_project_pipelines_with_tab(
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": format!("Pipelines / {tab_title}"),
                 "page_title": tab_title,
                 "page_subtitle": tab_desc,
                 "pipeline_items": items,
@@ -568,7 +584,7 @@ async fn render_project_pipelines_with_tab(
     }
 }
 
-async fn render_project_studio_with_tab(
+async fn render_project_build_with_tab(
     state: PlatformAppState,
     headers: HeaderMap,
     owner: String,
@@ -582,18 +598,18 @@ async fn render_project_studio_with_tab(
         return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
     }
 
-    let Some((tab_key, tab_title, tab_desc, action_label, items)) = studio_tab_payload(tab) else {
+    let Some((tab_key, tab_title, tab_desc, action_label, items)) = build_tab_payload(tab) else {
         return (
             StatusCode::NOT_FOUND,
-            Html("studio tab not found".to_string()),
+            Html("build tab not found".to_string()),
         )
             .into_response();
     };
 
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
-            let nav = nav_classes(&owner, &project, "studio", Some(tab_key));
-            let route = format!("/projects/{owner}/{project}/studio/{tab_key}");
+            let nav = nav_classes(&owner, &project, "build", Some(tab_key));
+            let route = format!("/projects/{owner}/{project}/build/{tab_key}");
             let input = json!({
                 "seo": {
                     "title": format!("{} - {}", info.title, tab_title),
@@ -602,6 +618,8 @@ async fn render_project_studio_with_tab(
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": format!("Build / {tab_title}"),
                 "page_title": tab_title,
                 "page_subtitle": tab_desc,
                 "items": items,
@@ -624,7 +642,7 @@ async fn render_project_studio_with_tab(
 async fn project_design_page(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/studio/templates")).into_response()
+    Redirect::to(&format!("/projects/{owner}/{project}/build/templates")).into_response()
 }
 
 async fn project_dashboard_page(
@@ -693,6 +711,7 @@ async fn project_tables_connections_page(
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
                 "connections": [
                     {
                         "id": "main_pg",
@@ -743,6 +762,7 @@ async fn project_table_connection_page(
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
                 "connection": connection,
                 "tables": [
                     {"name":"users","rows": 1240, "updated":"2026-02-26"},
@@ -854,6 +874,8 @@ async fn render_section_page(
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": section_title,
                 "page_title": section_title,
                 "page_subtitle": section_desc,
                 "cards": cards,
@@ -904,7 +926,7 @@ fn pipeline_tab_payload(
     }
 }
 
-fn studio_tab_payload(
+fn build_tab_payload(
     tab: &str,
 ) -> Option<(&'static str, &'static str, &'static str, &'static str, Vec<Value>)> {
     match tab {
@@ -916,7 +938,7 @@ fn studio_tab_payload(
             vec![
                 json!({"title":"Page Routes","description":"Server-rendered TSX page entrypoints mapped by the project web layer."}),
                 json!({"title":"Shared Components","description":"Reusable TSX modules imported from the template root."}),
-                json!({"title":"Theme Styles","description":"base.css and main.css define project typography, theme tokens, and global surfaces."}),
+                json!({"title":"Theme Styles","description":"main.css defines project typography, theme tokens, and global surfaces."}),
             ],
         )),
         "assets" => Some((
@@ -946,11 +968,6 @@ fn studio_tab_payload(
 }
 
 fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str>) -> Value {
-    let main_active = "bg-[#005B9A] text-white font-medium";
-    let main_idle = "bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors";
-    let sub_active = "text-[#005B9A] bg-sky-50";
-    let sub_idle = "text-slate-500 hover:text-slate-900 hover:bg-slate-100";
-
     let pipelines_base = format!("/projects/{owner}/{project}/pipelines");
 
     json!({
@@ -960,9 +977,9 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipelines_webhooks": format!("{pipelines_base}/webhooks"),
             "pipelines_schedules": format!("{pipelines_base}/schedules"),
             "pipelines_functions": format!("{pipelines_base}/functions"),
-            "studio_templates": format!("/projects/{owner}/{project}/studio/templates"),
-            "studio_assets": format!("/projects/{owner}/{project}/studio/assets"),
-            "studio_schema": format!("/projects/{owner}/{project}/studio/schema"),
+            "build_templates": format!("/projects/{owner}/{project}/build/templates"),
+            "build_assets": format!("/projects/{owner}/{project}/build/assets"),
+            "build_schema": format!("/projects/{owner}/{project}/build/schema"),
             "dashboard": format!("/projects/{owner}/{project}/dashboard"),
             "credentials": format!("/projects/{owner}/{project}/credentials"),
             "tables_connections": format!("/projects/{owner}/{project}/tables/connections"),
@@ -971,22 +988,22 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "settings": format!("/projects/{owner}/{project}/settings"),
         },
         "classes": {
-            "pipelines": if main == "pipelines" { main_active } else { main_idle },
-            "studio": if main == "studio" { main_active } else { main_idle },
-            "dashboard": if main == "dashboard" { main_active } else { main_idle },
-            "credentials": if main == "credentials" { main_active } else { main_idle },
-            "tables": if main == "tables" { main_active } else { main_idle },
-            "files": if main == "files" { main_active } else { main_idle },
-            "todo": if main == "todo" { main_active } else { main_idle },
-            "settings": if main == "settings" { main_active } else { main_idle },
-            "pipeline_registry": if pipeline_sub == Some("registry") { sub_active } else { sub_idle },
-            "pipeline_webhooks": if pipeline_sub == Some("webhooks") { sub_active } else { sub_idle },
-            "pipeline_schedules": if pipeline_sub == Some("schedules") { sub_active } else { sub_idle },
-            "pipeline_functions": if pipeline_sub == Some("functions") { sub_active } else { sub_idle },
-            "studio_templates": if main == "studio" && pipeline_sub == Some("templates") { sub_active } else { sub_idle },
-            "studio_assets": if main == "studio" && pipeline_sub == Some("assets") { sub_active } else { sub_idle },
-            "studio_schema": if main == "studio" && pipeline_sub == Some("schema") { sub_active } else { sub_idle },
-            "table_connections": if main == "tables" { sub_active } else { sub_idle },
+            "pipelines": if main == "pipelines" { "is-active" } else { "" },
+            "build": if main == "build" { "is-active" } else { "" },
+            "dashboard": if main == "dashboard" { "is-active" } else { "" },
+            "credentials": if main == "credentials" { "is-active" } else { "" },
+            "tables": if main == "tables" { "is-active" } else { "" },
+            "files": if main == "files" { "is-active" } else { "" },
+            "todo": if main == "todo" { "is-active" } else { "" },
+            "settings": if main == "settings" { "is-active" } else { "" },
+            "pipeline_registry": if pipeline_sub == Some("registry") { "is-active" } else { "" },
+            "pipeline_webhooks": if pipeline_sub == Some("webhooks") { "is-active" } else { "" },
+            "pipeline_schedules": if pipeline_sub == Some("schedules") { "is-active" } else { "" },
+            "pipeline_functions": if pipeline_sub == Some("functions") { "is-active" } else { "" },
+            "build_templates": if main == "build" && pipeline_sub == Some("templates") { "is-active" } else { "" },
+            "build_assets": if main == "build" && pipeline_sub == Some("assets") { "is-active" } else { "" },
+            "build_schema": if main == "build" && pipeline_sub == Some("schema") { "is-active" } else { "" },
+            "table_connections": if main == "tables" { "is-active" } else { "" },
         }
     })
 }

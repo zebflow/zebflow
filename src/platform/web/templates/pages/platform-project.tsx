@@ -1,4 +1,4 @@
-import AdminWrapper from "@/components/layout/admin-wrapper";
+import ProjectStudioShell from "@/components/layout/project-studio-shell";
 
 export const page = {
   head: {
@@ -9,7 +9,7 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-zinc-50 text-gray-900 font-sans",
+    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
   },
   navigation: "history",
 };
@@ -19,34 +19,41 @@ export const app = {};
 export default function Page(input) {
   return (
 <Page>
-    <AdminWrapper
-      backHref="/home"
-      backLabel="Back to Home"
-      title="{input.title}"
-      meta="owner: {input.owner} | project: {input.project}"
-      actionClass="hidden"
-      chatClass=""
+    <ProjectStudioShell
+      projectHref="{input.project_href}"
+      projectLabel="{input.title}"
+      currentMenu="Pipelines / Registry"
     >
-      <section className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
-        <h1 className="text-4xl font-black tracking-tight text-slate-900">{input.title}</h1>
-        <p className="mt-3 text-sm text-slate-500">owner: {input.owner} | project: {input.project}</p>
-
-        <div className="mt-8 grid lg:grid-cols-2 gap-5">
-          <article className="border border-slate-200 rounded-xl p-5 bg-slate-50">
-            <h2 className="text-lg font-bold uppercase tracking-tight">Project Shell Active</h2>
-            <p className="text-sm text-slate-600 mt-2">
-              This page is rendered through RWE and uses the same visual direction as Zebflow showcase.
-            </p>
-          </article>
-          <article className="border border-slate-200 rounded-xl p-5 bg-slate-50">
-            <h2 className="text-lg font-bold uppercase tracking-tight">Studio Ready</h2>
-            <p className="text-sm text-slate-600 mt-2">
-              Project authoring now groups templates, assets, and schema under one studio workspace.
-            </p>
-          </article>
-        </div>
-      </section>
-    </AdminWrapper>
+      <div className="project-workspace">
+        <nav className="project-tab-strip"></nav>
+        <section className="project-workspace-body">
+          <div className="project-content-wrap">
+            <section className="project-content-section">
+              <div className="project-content-head">
+                <div>
+                  <p className="project-content-title">Project Shell</p>
+                  <p className="project-content-copy">The project workspace now behaves like a studio shell, not a landing page.</p>
+                </div>
+              </div>
+            </section>
+            <section className="project-content-section">
+              <div className="project-content-body">
+                <div className="project-card-grid cols-2">
+                  <article className="project-card">
+                    <h3 className="project-card-title">Owner</h3>
+                    <p className="project-card-copy">{input.owner}</p>
+                  </article>
+                  <article className="project-card">
+                    <h3 className="project-card-title">Project</h3>
+                    <p className="project-card-copy">{input.project}</p>
+                  </article>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </ProjectStudioShell>
 </Page>
   );
 }

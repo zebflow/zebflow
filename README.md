@@ -24,7 +24,7 @@ Zebflow is an observable automation + fullstack runtime with one core design:
 1. pipeline orchestration is Rust-first (`*.zf.json`)
 2. scripting is sandboxed and portable (`language` engines)
 3. web rendering is SSR-first and reactive (`*.tsx`)
-4. theme and base CSS are compile-scoped from the template tree (`styles/base.css`, `styles/main.css`)
+4. global project CSS is compile-scoped from the template tree (`styles/main.css`)
 
 In practice:
 

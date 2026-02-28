@@ -1,4 +1,4 @@
-import AdminWrapper from "@/components/layout/admin-wrapper";
+import ProjectStudioShell from "@/components/layout/project-studio-shell";
 
 export const page = {
   head: {
@@ -9,7 +9,7 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-zinc-50 text-gray-900 font-sans",
+    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
   },
   navigation: "history",
 };
@@ -19,30 +19,42 @@ export const app = {};
 export default function Page(input) {
   return (
 <Page>
-    <AdminWrapper
-      backHref="/home"
-      backLabel="{input.title}"
-      title="Connections"
-      meta="{input.project}"
-      actionClass="hidden"
-      chatClass=""
+    <ProjectStudioShell
+      projectHref="{input.project_href}"
+      projectLabel="{input.title}"
+      currentMenu="Tables / Connections"
     >
-      <div className="text-xs text-slate-500">Select a connection, then inspect tables like a lightweight DBeaver browser.</div>
-
-      <section className="grid md:grid-cols-2 gap-2">
-        <a
-          jFor="item in input.connections"
-          href="{item.path}"
-          className="block bg-white border border-slate-200 rounded-md p-3 hover:border-slate-400 transition-all"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="text-sm font-semibold tracking-tight text-slate-900">{item.name}</h3>
-            <p className="text-[10px] font-mono uppercase tracking-[0.14em] text-slate-500">{item.driver}</p>
+      <div className="project-workspace">
+        <nav className="project-tab-strip">
+          <a href="{input.nav.links.tables_connections}" className="project-tab-link is-active">Connections</a>
+        </nav>
+        <section className="project-workspace-body">
+          <div className="project-content-wrap">
+            <section className="project-content-section">
+              <div className="project-content-head">
+                <div>
+                  <p className="project-content-title">Connections</p>
+                  <p className="project-content-copy">Select a connection, then inspect tables like a lightweight database browser.</p>
+                </div>
+              </div>
+            </section>
+            <section className="project-content-section">
+              <div className="project-content-body">
+                <div className="project-card-grid cols-2">
+                  <a jFor="item in input.connections" href="{item.path}" className="project-card">
+                    <div className="flex items-start justify-between gap-3">
+                      <h3 className="project-card-title">{item.name}</h3>
+                      <span className="project-inline-chip">{item.driver}</span>
+                    </div>
+                    <p className="project-card-copy">Open table browser for this connection.</p>
+                  </a>
+                </div>
+              </div>
+            </section>
           </div>
-          <p className="text-sm text-slate-600 mt-2">Open table browser for this connection.</p>
-        </a>
-      </section>
-    </AdminWrapper>
+        </section>
+      </div>
+    </ProjectStudioShell>
 </Page>
   );
 }

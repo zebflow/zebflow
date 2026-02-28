@@ -222,6 +222,7 @@ impl ProjectService {
         let mut breadcrumbs = vec![PipelineBreadcrumb {
             name: "root".to_string(),
             path: format!("{base_route}?path=/"),
+            show_divider: false,
         }];
         if current_path != "/" {
             let mut accum = String::new();
@@ -234,6 +235,7 @@ impl ProjectService {
                 breadcrumbs.push(PipelineBreadcrumb {
                     name: seg.to_string(),
                     path: format!("{base_route}?path={accum}"),
+                    show_divider: true,
                 });
             }
         }

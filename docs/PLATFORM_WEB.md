@@ -10,7 +10,7 @@ use.
 That is why the platform now depends on:
 
 1. compile-scoped `template_root`
-2. compile-scoped theme/base styles under `templates/styles/`
+2. compile-scoped project styles under `templates/styles/`
 3. explicit TSX imports
 4. `export const page = { ... }`
 5. intrinsic `<Page>...</Page>` roots
@@ -44,7 +44,6 @@ templates.
 5. `templates/styles/`
    - compile-scoped theme and base CSS
    - default entries:
-     - `styles/base.css`
      - `styles/main.css`
 
 Only files under `templates/pages/` should be selected as render roots by the
@@ -74,7 +73,7 @@ SPA navigation inside the project surface.
 The project shell is now organized around:
 
 1. `Pipelines`
-2. `Studio`
+2. `Build`
    - `Templates`
    - `Assets`
    - `Schema`
@@ -85,7 +84,7 @@ The project shell is now organized around:
 7. `Todo`
 8. `Settings`
 
-`Studio` is the authoring area. It replaces the old overloaded design slot and
+`Build` is the authoring area. It replaces the old overloaded design slot and
 keeps template work, asset management, and structured design artifacts under
 one project-facing workspace.
 

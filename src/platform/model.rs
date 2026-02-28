@@ -136,6 +136,8 @@ pub struct PipelineBreadcrumb {
     pub name: String,
     /// Link to this level.
     pub path: String,
+    /// Whether a slash separator should appear before this segment.
+    pub show_divider: bool,
 }
 
 /// One child folder shown in pipeline registry.

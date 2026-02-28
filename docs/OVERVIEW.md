@@ -62,8 +62,7 @@ Theme and base CSS are owned by the template tree under `template_root`.
 
 Deterministic default entries:
 
-1. `styles/base.css`
-2. `styles/main.css`
+1. `styles/main.css`
 
 This keeps theme definition:
 

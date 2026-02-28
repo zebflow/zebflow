@@ -82,7 +82,6 @@ pub struct TemplateOptions {
     ///
     /// When empty, RWE probes deterministic defaults:
     ///
-    /// - `styles/base.css`
     /// - `styles/main.css`
     #[serde(default)]
     pub style_entries: Vec<String>,

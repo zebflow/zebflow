@@ -749,7 +749,7 @@ fn render_attr_map(attrs: &BTreeMap<String, String>) -> String {
 }
 
 fn jsx_to_rwe_html(jsx: &str) -> String {
-    let converted = jsx
+    let converted = strip_jsx_comments(jsx)
         .replace("className=\"", "class=\"")
         .replace("onClick=\"", "@click=\"")
         .replace("onInput=\"", "@input=\"")
@@ -763,6 +763,42 @@ fn jsx_to_rwe_html(jsx: &str) -> String {
         .replace("jModel=\"", "j-model=\"")
         .replace("jAttrClass=\"", "j-attr:class=\"");
     restore_placeholders(&converted)
+}
+
+fn strip_jsx_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'{' && i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'*'
+        {
+            let mut j = i + 3;
+            let mut end = None;
+            while j + 1 < bytes.len() {
+                if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    let mut k = j + 2;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if k < bytes.len() && bytes[k] == b'}' {
+                        end = Some(k + 1);
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            if let Some(next) = end {
+                i = next;
+                continue;
+            }
+        }
+
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    out
 }
 
 fn restore_placeholders(input: &str) -> String {

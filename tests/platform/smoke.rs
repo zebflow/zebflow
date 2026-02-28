@@ -97,7 +97,7 @@ async fn platform_bootstrap_and_login_flow_works() {
     assert!(html.contains("Schedules"));
     assert!(html.contains("Functions"));
     assert!(html.contains("Templates"));
-    assert!(html.contains("Studio"));
+    assert!(html.contains("Build"));
     assert!(html.contains("Assets"));
     assert!(html.contains("Schema"));
     assert!(html.contains("Credentials"));
@@ -135,7 +135,7 @@ async fn platform_sidebar_active_classes_have_tailwind_utilities_on_section_page
     let studio = app
         .oneshot(
             Request::builder()
-                .uri("/projects/superadmin/default/studio/templates")
+                .uri("/projects/superadmin/default/build/templates")
                 .method("GET")
                 .header(header::COOKIE, "zebflow_session=superadmin")
                 .body(Body::empty())

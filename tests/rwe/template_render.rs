@@ -328,6 +328,215 @@ fn template_render_supports_ssr_blog_templates() {
 }
 
 #[test]
+fn template_render_supports_boolean_jshow_and_jhide_expressions() {
+    let engine = NoopReactiveWebEngine;
+    let language = EchoLanguageEngine;
+    let template = TemplateSource {
+        id: "page.boolean_visibility".to_string(),
+        source_path: None,
+        markup: r#"
+export const page = {
+  head: { title: "Visibility" },
+  html: { lang: "en" },
+  body: { className: "bg-slate-950" },
+  navigation: "history",
+};
+
+export default function Page(input) {
+  return (
+    <Page>
+      <section id="shown" jShow="input.flags.show && !input.flags.hide">Shown</section>
+      <section id="hidden" jHide="input.flags.show || input.flags.hide">Hidden</section>
+    </Page>
+  );
+}
+"#
+        .to_string(),
+    };
+
+    let compiled = engine
+        .compile_template(&template, &language, &ReactiveWebOptions::default())
+        .expect("compile boolean visibility template");
+
+    let rendered = engine
+        .render(
+            &compiled,
+            json!({
+                "flags": {
+                    "show": true,
+                    "hide": false
+                }
+            }),
+            &language,
+            &RenderContext {
+                route: "/visibility".to_string(),
+                request_id: "req-visibility".to_string(),
+                metadata: json!({}),
+            },
+        )
+        .expect("render boolean visibility template");
+
+    assert!(rendered.html.contains("<section id=\"shown\" j-show=\"input.flags.show && !input.flags.hide\">Shown</section>"));
+    assert!(rendered.html.contains("<section id=\"hidden\" j-hide=\"input.flags.show || input.flags.hide\" hidden>Hidden</section>"));
+}
+
+#[test]
+fn template_compile_strips_jsx_comments_from_markup() {
+    let engine = NoopReactiveWebEngine;
+    let language = EchoLanguageEngine;
+    let template = TemplateSource {
+        id: "page.jsx_comments".to_string(),
+        source_path: None,
+        markup: r##"
+export const page = {
+  head: { title: "Comments" },
+  html: { lang: "en" },
+  body: { className: "bg-slate-950" },
+  navigation: "history",
+};
+
+export default function Page(input) {
+  return (
+    <Page>
+      <div>Before</div>
+      {/* <span className="should-not-render">ghost</span> */}
+      <div>After</div>
+    </Page>
+  );
+}
+"##
+        .to_string(),
+    };
+
+    let compiled = engine
+        .compile_template(&template, &language, &ReactiveWebOptions::default())
+        .expect("compile jsx comment template");
+
+    assert!(compiled.html_ir.contains("<div>Before</div>"));
+    assert!(compiled.html_ir.contains("<div>After</div>"));
+    assert!(!compiled.html_ir.contains("should-not-render"));
+    assert!(!compiled.html_ir.contains("ghost"));
+}
+
+#[test]
+fn template_compile_supports_ts_line_and_block_comments_around_structure() {
+    let engine = NoopReactiveWebEngine;
+    let language = EchoLanguageEngine;
+    let template = TemplateSource {
+        id: "page.comment_variants".to_string(),
+        source_path: None,
+        markup: r#"
+// top-level line comment
+export const page = {
+  /* object comment */
+  head: { title: "Comment Variants" },
+  html: { lang: "en" },
+  body: { className: "bg-slate-950" },
+  navigation: "history",
+};
+
+export const app = {
+  // app comment
+  state: {
+    count: 1,
+  },
+  actions: {
+    /* block comment inside object */
+  },
+};
+
+export default function Page(input) {
+  return (
+    <Page>
+      {/* jsx comment */}
+      <div>{input.label}</div>
+    </Page>
+  );
+}
+"#
+        .to_string(),
+    };
+
+    let compiled = engine
+        .compile_template(&template, &language, &ReactiveWebOptions::default())
+        .expect("compile comment variants template");
+
+    assert!(compiled.html_ir.contains("{{input.label}}"));
+    assert!(!compiled.html_ir.contains("jsx comment"));
+    assert!(
+        compiled
+            .control_script_source
+            .as_deref()
+            .unwrap_or("")
+            .contains("count")
+    );
+}
+
+#[test]
+fn template_render_ssr_for_loop_handles_nested_same_tag_descendants() {
+    let engine = NoopReactiveWebEngine;
+    let language = EchoLanguageEngine;
+    let template = TemplateSource {
+        id: "page.for_nested_same_tag".to_string(),
+        source_path: None,
+        markup: r#"
+export const page = {
+  head: { title: "Nested Loop" },
+  html: { lang: "en" },
+  body: { className: "bg-slate-950" },
+  navigation: "history",
+};
+
+export default function Page(input) {
+  return (
+    <Page>
+      <div className="path">
+        <span jFor="crumb in input.breadcrumbs" className="crumb">
+          <span jShow="crumb.show_divider" className="divider">/</span>
+          <a href="{crumb.path}" className="label">{crumb.name}</a>
+        </span>
+      </div>
+    </Page>
+  );
+}
+"#
+        .to_string(),
+    };
+
+    let compiled = engine
+        .compile_template(&template, &language, &ReactiveWebOptions::default())
+        .expect("compile nested same-tag loop template");
+
+    let rendered = engine
+        .render(
+            &compiled,
+            json!({
+                "breadcrumbs": [
+                    { "name": "root", "path": "/", "show_divider": false },
+                    { "name": "automation", "path": "/automation", "show_divider": true },
+                    { "name": "email", "path": "/automation/email", "show_divider": true }
+                ]
+            }),
+            &language,
+            &RenderContext {
+                route: "/pipelines".to_string(),
+                request_id: "req-loop-nested".to_string(),
+                metadata: json!({}),
+            },
+        )
+        .expect("render nested same-tag loop template");
+
+    assert!(rendered.html.contains(">root</a>"));
+    assert!(rendered.html.contains(">automation</a>"));
+    assert!(rendered.html.contains(">email</a>"));
+    assert!(rendered.html.contains("class=\"divider\""));
+    assert!(rendered.html.contains(">/</span>"));
+    assert!(rendered.html.contains("href=\"/\""));
+    assert!(rendered.html.contains("href=\"/automation\""));
+    assert!(rendered.html.contains("href=\"/automation/email\""));
+}
+
+#[test]
 fn template_compile_supports_component_registry_in_compile_stage() {
     let engine = NoopReactiveWebEngine;
     let language = EchoLanguageEngine;
@@ -512,13 +721,8 @@ fn template_compile_auto_discovers_template_root_style_entries() {
     fs::create_dir_all(&styles_dir).expect("create styles dir");
     fs::create_dir_all(&pages_dir).expect("create pages dir");
     fs::write(
-        styles_dir.join("base.css"),
-        ":root { --zf-theme-accent: #dc2626; }\n",
-    )
-    .expect("write base css");
-    fs::write(
         styles_dir.join("main.css"),
-        "[data-theme=\"marketing\"] { --zf-theme-accent: #0f766e; }\n",
+        ":root { --zf-theme-accent: #dc2626; }\n[data-theme=\"marketing\"] { --zf-theme-accent: #0f766e; }\n",
     )
     .expect("write main css");
     let source_path = pages_dir.join("landing.tsx");
@@ -559,11 +763,6 @@ export default function Page(input) {
         )
         .expect("compile template with discovered styles");
 
-    assert!(
-        compiled
-            .html_ir
-            .contains("data-rwe-template-style=\"styles/base.css\"")
-    );
     assert!(compiled.html_ir.contains("--zf-theme-accent: #dc2626"));
     assert!(
         compiled
@@ -577,7 +776,7 @@ export default function Page(input) {
             .diagnostics
             .iter()
             .any(|d| d.code == "RWE_TEMPLATE_STYLE_INCLUDED"
-                && d.message.contains("styles/base.css"))
+                && d.message.contains("styles/main.css"))
     );
 }
 
