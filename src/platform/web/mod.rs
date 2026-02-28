@@ -18,9 +18,10 @@ use serde_json::{Value, json};
 use crate::language::{LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, CreateUserRequest, LoginRequest, ProjectAccessSubject,
-    ProjectCapability, TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest,
-    TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
+    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest, LoginRequest,
+    ProjectAccessSubject, ProjectCapability, SimpleTableQueryRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest, UpsertProjectCredentialRequest, UpsertSimpleTableRowRequest,
 };
 use crate::platform::services::PlatformService;
 use crate::rwe::{
@@ -139,6 +140,32 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/templates/diagnostics",
             post(api_template_diagnostics),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/credentials",
+            get(api_list_credentials).post(api_upsert_credential),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/credentials/{credential_id}",
+            get(api_get_credential)
+                .put(api_upsert_credential_by_path)
+                .delete(api_delete_credential),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables",
+            get(api_list_simple_tables).post(api_create_simple_table),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/{table}",
+            get(api_get_simple_table).delete(api_delete_simple_table),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/rows",
+            post(api_upsert_simple_table_row),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/query",
+            post(api_query_simple_table_rows),
         )
         .with_state(PlatformAppState { platform, frontend })
 }
@@ -1608,6 +1635,238 @@ async fn api_template_diagnostics(
 
     let response = compile_template_buffer(&state, &layout.app_templates_dir, &req);
     Json(response).into_response()
+}
+
+async fn api_list_credentials(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsRead,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .credentials
+        .list_project_credentials(&owner, &project)
+    {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_credential(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsRead,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .credentials
+        .get_project_credential(&owner, &project, &credential_id)
+    {
+        Ok(Some(credential)) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": {"code":"PLATFORM_CREDENTIAL_MISSING","message":"credential not found"}}))).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_credential(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<UpsertProjectCredentialRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .credentials
+        .upsert_project_credential(&owner, &project, &req)
+    {
+        Ok(credential) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_credential_by_path(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+    Json(mut req): Json<UpsertProjectCredentialRequest>,
+) -> Response {
+    req.credential_id = credential_id;
+    api_upsert_credential(State(state), headers, Path((owner, project)), Json(req)).await
+}
+
+async fn api_delete_credential(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .credentials
+        .delete_project_credential(&owner, &project, &credential_id)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_simple_tables(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.list_tables(&owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<CreateSimpleTableRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.create_table(&owner, &project, &req) {
+        Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, table)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.get_table(&owner, &project, &table) {
+        Ok(Some(table)) => Json(json!({"ok": true, "table": table})).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": {"code":"PLATFORM_SIMPLE_TABLE_MISSING","message":"simple table not found"}}))).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, table)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.delete_table(&owner, &project, &table) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_simple_table_row(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<UpsertSimpleTableRowRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.upsert_row(&owner, &project, &req) {
+        Ok(row) => Json(json!({"ok": true, "row": row})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_query_simple_table_rows(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<SimpleTableQueryRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    match state.platform.simple_tables.query_rows(&owner, &project, &req) {
+        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 fn session_owner(headers: &HeaderMap) -> Option<String> {

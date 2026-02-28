@@ -8,3 +8,8 @@
         -> mcp, rest api, internal llm
 - discovery-first under platform
     - SEO related based on webhook that is seoable
+- pipeline runtime registry
+    - current working tree = draft
+    - activated snapshot = production
+    - hot reload by atomic compiled registry replacement
+    - scheduler derived from active registry, not from mutable files

@@ -154,6 +154,7 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             "Viewer",
             vec![
                 ProjectCapability::ProjectRead,
+                ProjectCapability::CredentialsRead,
                 ProjectCapability::TemplatesRead,
                 ProjectCapability::PipelinesRead,
                 ProjectCapability::FilesRead,
@@ -170,6 +171,8 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             "Editor",
             vec![
                 ProjectCapability::ProjectRead,
+                ProjectCapability::CredentialsRead,
+                ProjectCapability::CredentialsWrite,
                 ProjectCapability::TemplatesRead,
                 ProjectCapability::TemplatesWrite,
                 ProjectCapability::TemplatesCreate,
@@ -196,6 +199,8 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             "Maintainer",
             vec![
                 ProjectCapability::ProjectRead,
+                ProjectCapability::CredentialsRead,
+                ProjectCapability::CredentialsWrite,
                 ProjectCapability::TemplatesRead,
                 ProjectCapability::TemplatesWrite,
                 ProjectCapability::TemplatesCreate,
@@ -230,6 +235,7 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             "Agent Templates",
             vec![
                 ProjectCapability::ProjectRead,
+                ProjectCapability::CredentialsRead,
                 ProjectCapability::TemplatesRead,
                 ProjectCapability::TemplatesWrite,
                 ProjectCapability::TemplatesCreate,
@@ -248,6 +254,8 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             "Agent Project",
             vec![
                 ProjectCapability::ProjectRead,
+                ProjectCapability::CredentialsRead,
+                ProjectCapability::CredentialsWrite,
                 ProjectCapability::TemplatesRead,
                 ProjectCapability::TemplatesWrite,
                 ProjectCapability::TemplatesCreate,
@@ -293,6 +301,8 @@ fn policy(
 fn all_project_capabilities() -> Vec<ProjectCapability> {
     vec![
         ProjectCapability::ProjectRead,
+        ProjectCapability::CredentialsRead,
+        ProjectCapability::CredentialsWrite,
         ProjectCapability::TemplatesRead,
         ProjectCapability::TemplatesWrite,
         ProjectCapability::TemplatesCreate,
@@ -319,4 +329,3 @@ fn all_project_capabilities() -> Vec<ProjectCapability> {
         ProjectCapability::McpSessionRevoke,
     ]
 }
-

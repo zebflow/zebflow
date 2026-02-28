@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy, ProjectPolicyBinding, StoredUser,
-    normalize_virtual_path, slug_segment,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser, normalize_virtual_path, slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -36,6 +36,15 @@ impl SekejapDataAdapter {
 
     fn project_slug(owner: &str, project: &str) -> String {
         format!("project/{}/{}", slug_segment(owner), slug_segment(project))
+    }
+
+    fn project_credential_slug(owner: &str, project: &str, credential_id: &str) -> String {
+        format!(
+            "project_credential/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(credential_id)
+        )
     }
 
     fn pipeline_slug(owner: &str, project: &str, virtual_path: &str, name: &str) -> String {
@@ -245,6 +254,141 @@ impl DataAdapter for SekejapDataAdapter {
         Ok(projects)
     }
 
+    fn get_project_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+    ) -> Result<Option<ProjectCredential>, PlatformError> {
+        let slug = Self::project_credential_slug(owner, project, credential_id);
+        let Some(raw) = self.db.nodes().get(&slug) else {
+            return Ok(None);
+        };
+        let v: Value = serde_json::from_str(&raw)?;
+        Ok(Some(ProjectCredential {
+            owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+            project: Self::pick_non_empty(v.get("project").and_then(Value::as_str), project),
+            credential_id: Self::pick_non_empty(
+                v.get("credential_id").and_then(Value::as_str),
+                credential_id,
+            ),
+            title: v
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(credential_id)
+                .to_string(),
+            kind: v
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("generic")
+                .to_string(),
+            secret: v.get("secret").cloned().unwrap_or(Value::Null),
+            notes: v
+                .get("notes")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+            updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+        }))
+    }
+
+    fn put_project_credential(
+        &self,
+        credential: &ProjectCredential,
+    ) -> Result<(), PlatformError> {
+        let data = json!({
+            "_id": Self::project_credential_slug(
+                &credential.owner,
+                &credential.project,
+                &credential.credential_id,
+            ),
+            "_collection": "project_credential",
+            "owner": credential.owner,
+            "project": credential.project,
+            "credential_id": credential.credential_id,
+            "title": credential.title,
+            "kind": credential.kind,
+            "secret": credential.secret,
+            "notes": credential.notes,
+            "created_at": credential.created_at,
+            "updated_at": credential.updated_at,
+        });
+        let op = json!({"mutation":"put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_project_credentials(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectCredential>, PlatformError> {
+        let rows = self.query_payloads(vec![
+            json!({"op":"collection","name":"project_credential"}),
+            json!({"op":"where_eq","field":"owner","value":owner}),
+            json!({"op":"where_eq","field":"project","value":project}),
+            json!({"op":"take","n":QUERY_LIMIT}),
+        ])?;
+        let mut credentials = rows
+            .into_iter()
+            .filter_map(|v| {
+                let credential_id = v
+                    .get("credential_id")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_string();
+                if credential_id.is_empty() {
+                    return None;
+                }
+                Some(ProjectCredential {
+                    owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+                    project: Self::pick_non_empty(
+                        v.get("project").and_then(Value::as_str),
+                        project,
+                    ),
+                    credential_id: credential_id.clone(),
+                    title: v
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&credential_id)
+                        .to_string(),
+                    kind: v
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("generic")
+                        .to_string(),
+                    secret: v.get("secret").cloned().unwrap_or(Value::Null),
+                    notes: v
+                        .get("notes")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+                    updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+                })
+            })
+            .collect::<Vec<_>>();
+        credentials.sort_by(|a, b| a.credential_id.cmp(&b.credential_id));
+        Ok(credentials)
+    }
+
+    fn delete_project_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+    ) -> Result<(), PlatformError> {
+        let slug = Self::project_credential_slug(owner, project, credential_id);
+        self.db
+            .nodes()
+            .remove(&slug)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError> {
         let data = json!({
             "_id": Self::pipeline_slug(&meta.owner, &meta.project, &meta.virtual_path, &meta.name),
@@ -258,6 +402,8 @@ impl DataAdapter for SekejapDataAdapter {
             "description": meta.description,
             "trigger_kind": meta.trigger_kind,
             "hash": meta.hash,
+            "active_hash": meta.active_hash,
+            "activated_at": meta.activated_at,
             "created_at": meta.created_at,
             "updated_at": meta.updated_at,
         });
@@ -322,6 +468,11 @@ impl DataAdapter for SekejapDataAdapter {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    active_hash: v
+                        .get("active_hash")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    activated_at: v.get("activated_at").and_then(Value::as_i64),
                     created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
                     updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
                 })

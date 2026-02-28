@@ -31,7 +31,11 @@ pub struct Config {
     pub template_id: String,
     /// Route passed to render context.
     pub route: String,
+    /// Inline TSX/template markup used when executing directly from a graph node.
+    #[serde(default)]
+    pub markup: Option<String>,
     /// RWE compile/render options.
+    #[serde(default)]
     pub options: ReactiveWebOptions,
 }
 
@@ -40,6 +44,7 @@ impl Default for Config {
         Self {
             template_id: "home".to_string(),
             route: "/".to_string(),
+            markup: None,
             options: ReactiveWebOptions::default(),
         }
     }
@@ -180,4 +185,34 @@ pub fn render_with_engines(
         }),
         trace,
     })
+}
+
+/// Compiles and renders directly from inline node config markup.
+pub fn render_from_config(
+    node_id: &str,
+    config: &Config,
+    state: Value,
+    metadata: Value,
+    rwe: &dyn ReactiveWebEngine,
+    language: &dyn LanguageEngine,
+    request_id: &str,
+) -> Result<NodeExecutionOutput, FrameworkError> {
+    let markup = config.markup.clone().ok_or_else(|| {
+        FrameworkError::new(
+            "FW_NODE_WEB_RENDER_CONFIG",
+            format!("node '{}' requires config.markup for inline execution", node_id),
+        )
+    })?;
+    let compiled = Node::compile(
+        node_id,
+        config,
+        &TemplateSource {
+            id: config.template_id.clone(),
+            source_path: None,
+            markup,
+        },
+        rwe,
+        language,
+    )?;
+    render_with_engines(&compiled, state, metadata, rwe, language, request_id)
 }

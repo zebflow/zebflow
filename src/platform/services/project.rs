@@ -164,11 +164,171 @@ impl ProjectService {
                 trigger_kind.trim().to_string()
             },
             hash: stable_hash_hex(source),
+            active_hash: existing.as_ref().and_then(|m| m.active_hash.clone()),
+            activated_at: existing.as_ref().and_then(|m| m.activated_at),
             created_at,
             updated_at: now,
         };
         self.data.put_pipeline_meta(&meta)?;
         Ok(meta)
+    }
+
+    /// Returns one pipeline metadata row by project path and name.
+    pub fn get_pipeline_meta(
+        &self,
+        owner: &str,
+        project: &str,
+        virtual_path: &str,
+        name: &str,
+    ) -> Result<Option<PipelineMeta>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let virtual_path = normalize_virtual_path(virtual_path);
+        let name = slug_segment(name);
+        let meta = self
+            .data
+            .list_pipeline_meta(&owner, &project)?
+            .into_iter()
+            .find(|m| normalize_virtual_path(&m.virtual_path) == virtual_path && m.name == name);
+        Ok(meta)
+    }
+
+    /// Reads current working-tree source for one pipeline file.
+    pub fn read_pipeline_source(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let abs = layout.app_dir.join(file_rel_path);
+        if !abs.starts_with(&layout.app_dir) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_PATH",
+                "resolved pipeline path escaped app root",
+            ));
+        }
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_MISSING",
+                format!("pipeline file '{}' not found", file_rel_path),
+            ));
+        }
+        Ok(fs::read_to_string(abs)?)
+    }
+
+    /// Promotes the current working-tree pipeline source to the production runtime snapshot.
+    pub fn activate_pipeline_definition(
+        &self,
+        owner: &str,
+        project: &str,
+        virtual_path: &str,
+        name: &str,
+    ) -> Result<PipelineMeta, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let Some(mut meta) = self.get_pipeline_meta(&owner, &project, virtual_path, name)? else {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_MISSING",
+                format!(
+                    "pipeline '{}/{}{}{}' not found",
+                    owner,
+                    project,
+                    if normalize_virtual_path(virtual_path) == "/" { "/" } else { "" },
+                    slug_segment(name)
+                ),
+            ));
+        };
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
+        let current_hash = stable_hash_hex(&source);
+        let snapshot_path =
+            self.runtime_pipeline_snapshot_path(&layout, &meta.virtual_path, &meta.name, &current_hash)?;
+        if let Some(parent) = snapshot_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&snapshot_path, source)?;
+
+        meta.hash = current_hash.clone();
+        meta.active_hash = Some(current_hash);
+        meta.activated_at = Some(now_ts());
+        meta.updated_at = now_ts();
+        self.data.put_pipeline_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Removes one pipeline from the production runtime set while leaving the working tree intact.
+    pub fn deactivate_pipeline_definition(
+        &self,
+        owner: &str,
+        project: &str,
+        virtual_path: &str,
+        name: &str,
+    ) -> Result<PipelineMeta, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let Some(mut meta) = self.get_pipeline_meta(&owner, &project, virtual_path, name)? else {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_MISSING",
+                "pipeline not found",
+            ));
+        };
+        meta.active_hash = None;
+        meta.activated_at = None;
+        meta.updated_at = now_ts();
+        self.data.put_pipeline_meta(&meta)?;
+        Ok(meta)
+    }
+
+    /// Lists active production pipeline metadata for one project.
+    pub fn list_active_pipeline_meta(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<PipelineMeta>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let mut rows = self
+            .data
+            .list_pipeline_meta(&owner, &project)?
+            .into_iter()
+            .filter(|m| m.active_hash.as_deref().is_some())
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| {
+            a.virtual_path
+                .cmp(&b.virtual_path)
+                .then(a.name.cmp(&b.name))
+        });
+        Ok(rows)
+    }
+
+    /// Reads the active runtime snapshot source for one active pipeline.
+    pub fn read_active_pipeline_source(
+        &self,
+        owner: &str,
+        project: &str,
+        meta: &PipelineMeta,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let active_hash = meta.active_hash.as_deref().ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_PIPELINE_NOT_ACTIVE",
+                format!("pipeline '{}' is not active", meta.name),
+            )
+        })?;
+        let snapshot_path =
+            self.runtime_pipeline_snapshot_path(&layout, &meta.virtual_path, &meta.name, active_hash)?;
+        if !snapshot_path.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING",
+                format!("active snapshot missing for '{}'", meta.name),
+            ));
+        }
+        Ok(fs::read_to_string(snapshot_path)?)
     }
 
     /// Returns registry hierarchy at one virtual path.
@@ -720,6 +880,30 @@ export default function Page(input) {
             ));
         }
         Ok((rel, abs))
+    }
+
+    fn runtime_pipeline_snapshot_path(
+        &self,
+        layout: &ProjectFileLayout,
+        virtual_path: &str,
+        name: &str,
+        hash: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let vpath = normalize_virtual_path(virtual_path);
+        let filename = format!("{}.{}.zf.json", slug_segment(name), slug_segment(hash));
+        let rel = if vpath == "/" {
+            filename
+        } else {
+            format!("{}/{}", vpath.trim_start_matches('/'), filename)
+        };
+        let abs = layout.data_runtime_pipelines_dir.join(rel);
+        if !abs.starts_with(&layout.data_runtime_pipelines_dir) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_PATH",
+                "resolved runtime pipeline snapshot escaped runtime root",
+            ));
+        }
+        Ok(abs)
     }
 }
 

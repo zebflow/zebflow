@@ -99,6 +99,48 @@ pub struct PlatformProject {
     pub updated_at: i64,
 }
 
+/// Stored project credential record used by runtime nodes and management APIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectCredential {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Stable credential id.
+    pub credential_id: String,
+    /// Display title.
+    pub title: String,
+    /// Driver/kind (`postgres`, `openai`, ...).
+    pub kind: String,
+    /// Secret payload owned by the project.
+    pub secret: serde_json::Value,
+    /// Optional freeform notes.
+    pub notes: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One project credential summary row safe to return in list responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectCredentialListItem {
+    /// Stable credential id.
+    pub credential_id: String,
+    /// Display title.
+    pub title: String,
+    /// Driver/kind (`postgres`, `openai`, ...).
+    pub kind: String,
+    /// Whether the credential currently stores a secret payload.
+    pub has_secret: bool,
+    /// Optional freeform notes.
+    pub notes: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
 /// Atomic project-scoped permission used by REST, MCP, and internal assistants.
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
@@ -106,6 +148,8 @@ pub struct PlatformProject {
 #[serde(rename_all = "snake_case")]
 pub enum ProjectCapability {
     ProjectRead,
+    CredentialsRead,
+    CredentialsWrite,
     TemplatesRead,
     TemplatesWrite,
     TemplatesCreate,
@@ -137,6 +181,8 @@ impl ProjectCapability {
     pub fn key(self) -> &'static str {
         match self {
             Self::ProjectRead => "project.read",
+            Self::CredentialsRead => "credentials.read",
+            Self::CredentialsWrite => "credentials.write",
             Self::TemplatesRead => "templates.read",
             Self::TemplatesWrite => "templates.write",
             Self::TemplatesCreate => "templates.create",
@@ -269,6 +315,11 @@ pub struct PipelineMeta {
     pub trigger_kind: String,
     /// Stable content hash for change tracking.
     pub hash: String,
+    /// Activated production hash. When this differs from `hash`, the working
+    /// tree has draft changes that are not promoted to runtime yet.
+    pub active_hash: Option<String>,
+    /// Unix timestamp seconds when the current active hash was promoted.
+    pub activated_at: Option<i64>,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -451,6 +502,98 @@ pub struct TemplateCompileResponse {
     pub diagnostics: Vec<TemplateDiagnostic>,
 }
 
+/// One managed Simple Table definition stored inside the project runtime DB.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SimpleTableDefinition {
+    /// Stable table slug.
+    pub table: String,
+    /// Display title.
+    pub title: String,
+    /// Backing Sekejap collection name.
+    pub collection: String,
+    /// Hash indexed payload fields.
+    pub hash_indexed_fields: Vec<String>,
+    /// Range indexed payload fields.
+    pub range_indexed_fields: Vec<String>,
+    /// Live row count.
+    pub row_count: usize,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Create payload for one project credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpsertProjectCredentialRequest {
+    /// Stable credential id.
+    pub credential_id: String,
+    /// Display title.
+    pub title: String,
+    /// Driver/kind (`postgres`, `openai`, ...).
+    pub kind: String,
+    /// Secret payload.
+    #[serde(default)]
+    pub secret: serde_json::Value,
+    /// Optional freeform notes.
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// Create payload for one Simple Table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateSimpleTableRequest {
+    /// Stable table slug.
+    pub table: String,
+    /// Optional display title.
+    pub title: Option<String>,
+    /// Hash indexed payload fields.
+    #[serde(default)]
+    pub hash_indexed_fields: Vec<String>,
+    /// Range indexed payload fields.
+    #[serde(default)]
+    pub range_indexed_fields: Vec<String>,
+}
+
+/// Upsert payload for one Simple Table row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpsertSimpleTableRowRequest {
+    /// Target table slug.
+    pub table: String,
+    /// Stable row id within the table.
+    pub row_id: String,
+    /// Row payload.
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+/// Query payload for one Simple Table read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SimpleTableQueryRequest {
+    /// Target table slug.
+    pub table: String,
+    /// Optional equality field name.
+    pub where_field: Option<String>,
+    /// Equality field value.
+    pub where_value: Option<serde_json::Value>,
+    /// Maximum rows to return.
+    #[serde(default = "default_simple_table_limit")]
+    pub limit: usize,
+}
+
+fn default_simple_table_limit() -> usize {
+    100
+}
+
+/// Query result returned by project Simple Table management and nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SimpleTableQueryResult {
+    /// Table definition.
+    pub table: SimpleTableDefinition,
+    /// Returned rows.
+    pub rows: Vec<serde_json::Value>,
+}
+
 /// File-system tree returned for one project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFileLayout {
@@ -458,6 +601,10 @@ pub struct ProjectFileLayout {
     pub root: PathBuf,
     /// `.../data`
     pub data_dir: PathBuf,
+    /// `.../data/runtime`
+    pub data_runtime_dir: PathBuf,
+    /// `.../data/runtime/pipelines`
+    pub data_runtime_pipelines_dir: PathBuf,
     /// `.../data/sekejap` (project runtime db for SimpleTable node).
     pub data_sekejap_dir: PathBuf,
     /// `.../data/sqlite/project.db` (project sqlite runtime db).

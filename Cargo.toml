@@ -14,6 +14,8 @@ sekejap = { path = "../juice-lang/sekejap" }
 swc_common = "19.0.0"
 swc_ecma_ast = "21.0.0"
 swc_ecma_parser = "35.0.0"
+postgres = "0.19"
+arc-swap = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

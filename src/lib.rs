@@ -16,7 +16,7 @@ pub mod rwe;
 
 use std::sync::Arc;
 
-use framework::{FrameworkEngine, FrameworkEngineRegistry, NoopFrameworkEngine};
+use framework::{BasicFrameworkEngine, FrameworkEngine, FrameworkEngineRegistry, NoopFrameworkEngine};
 use language::{DenoSandboxEngine, LanguageEngine, LanguageEngineRegistry, NoopLanguageEngine};
 use rwe::{NoopReactiveWebEngine, ReactiveWebEngine, ReactiveWebEngineRegistry};
 
@@ -37,12 +37,14 @@ pub struct ZebflowEngineKit {
 impl ZebflowEngineKit {
     /// Builds a kit with default engines registered:
     ///
+    /// - `framework.basic`
     /// - `framework.noop`
     /// - `language.deno_sandbox`
     /// - `language.noop`
     /// - `rwe.noop`
     pub fn with_defaults() -> Self {
         let mut framework = FrameworkEngineRegistry::new();
+        framework.register(Arc::new(BasicFrameworkEngine::default()));
         framework.register(Arc::new(NoopFrameworkEngine::default()));
 
         let mut language = LanguageEngineRegistry::new();

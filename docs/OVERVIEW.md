@@ -84,6 +84,64 @@ At project level, the intended git-synced app surface is:
 At runtime, a manager such as Zebflow platform supplies the per-project
 `template_root` to RWE for each compile call.
 
+## Pipeline Runtime Direction
+
+Pipelines should not use duplicated source trees for draft and production.
+
+There is one canonical source surface:
+
+1. `app/pipelines/`
+
+From that one source surface, Zebflow derives two runtime states:
+
+1. draft
+   - current working-tree file content
+   - used for save-time validation, preview, and editor feedback
+2. production
+   - activated runtime snapshot
+   - used by webhook and schedule execution
+
+The distinction is tracked by revision state, not by cloning the whole project.
+
+Current design direction:
+
+1. `hash`
+   - current working-tree content hash
+2. `active_hash`
+   - activated production hash
+3. if `hash != active_hash`
+   - the pipeline is draft-diverged from production
+
+To keep runtime stable while the working tree changes, production uses an
+activated snapshot, not the mutable working-tree file directly.
+
+## Pipeline Hot Reload Direction
+
+Pipeline hot reload should follow one shared lifecycle:
+
+1. source file changes
+   - update draft hash
+   - draft compile/validation only
+   - production runtime unchanged
+2. activate/publish
+   - materialize one activated pipeline snapshot
+   - update `active_hash`
+   - rebuild compiled runtime registry entry
+   - refresh derived trigger projections such as schedules
+3. deactivate
+   - remove compiled runtime registry entry
+   - remove derived trigger projections
+
+The runtime registry is the execution truth for production.
+The working tree is the authoring truth for draft.
+
+This separation is intentional so the platform can support:
+
+1. safe on-the-fly editing
+2. production stability
+3. hot reload by atomic registry replacement
+4. future schedule re-registration without restart
+
 ## Why Centralized Docs Exist
 
 The goal of `docs/` is to keep the active contract in one place so the

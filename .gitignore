@@ -27,3 +27,6 @@ test_runtime
 
 # local website scratch
 integrations/website/index.html
+
+# local codex memory
+.codex-local/

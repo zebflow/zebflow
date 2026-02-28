@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
+    ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -36,6 +36,29 @@ pub trait DataAdapter: Send + Sync {
     fn put_project(&self, project: &PlatformProject) -> Result<(), PlatformError>;
     /// List projects by owner.
     fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError>;
+    /// Load one project credential.
+    fn get_project_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+    ) -> Result<Option<ProjectCredential>, PlatformError>;
+    /// Upsert one project credential.
+    fn put_project_credential(&self, credential: &ProjectCredential)
+        -> Result<(), PlatformError>;
+    /// List project credentials.
+    fn list_project_credentials(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectCredential>, PlatformError>;
+    /// Delete one project credential.
+    fn delete_project_credential(
+        &self,
+        owner: &str,
+        project: &str,
+        credential_id: &str,
+    ) -> Result<(), PlatformError>;
     /// Upsert one pipeline metadata row.
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
     /// List pipeline metadata rows by owner/project.

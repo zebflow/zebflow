@@ -3,7 +3,8 @@
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 /// Stub adapter for future Firebase support.
@@ -55,6 +56,51 @@ impl DataAdapter for FirebaseDataAdapter {
     }
 
     fn list_projects(&self, _owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn get_project_credential(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _credential_id: &str,
+    ) -> Result<Option<ProjectCredential>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn put_project_credential(
+        &self,
+        _credential: &ProjectCredential,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn list_project_credentials(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectCredential>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn delete_project_credential(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _credential_id: &str,
+    ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
             "firebase adapter is not implemented yet",

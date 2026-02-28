@@ -7,7 +7,10 @@ use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
-use crate::platform::services::{AuthService, AuthorizationService, ProjectService, UserService};
+use crate::platform::services::{
+    AuthService, AuthorizationService, CredentialService, PipelineRuntimeService, ProjectService,
+    SimpleTableService, UserService,
+};
 
 /// Main platform service graph, created once per process.
 #[derive(Clone)]
@@ -26,8 +29,14 @@ pub struct PlatformService {
     pub auth: Arc<AuthService>,
     /// Project-level authorization service shared by REST/MCP/assistant.
     pub authz: Arc<AuthorizationService>,
+    /// Project credential management service.
+    pub credentials: Arc<CredentialService>,
     /// Project domain service.
     pub projects: Arc<ProjectService>,
+    /// Active production pipeline registry compiled from activated snapshots.
+    pub pipeline_runtime: Arc<PipelineRuntimeService>,
+    /// Project Simple Table management service.
+    pub simple_tables: Arc<SimpleTableService>,
 }
 
 impl PlatformService {
@@ -47,6 +56,12 @@ impl PlatformService {
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
+        let credentials = Arc::new(CredentialService::new(data.clone()));
+        let simple_tables = Arc::new(SimpleTableService::new(
+            file.clone(),
+            project_data.clone(),
+        ));
+        let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
 
         let svc = Self {
             config,
@@ -56,9 +71,15 @@ impl PlatformService {
             users,
             auth,
             authz,
+            credentials,
             projects,
+            pipeline_runtime,
+            simple_tables,
         };
         svc.bootstrap_defaults()?;
+        let _ = svc
+            .pipeline_runtime
+            .refresh_project(&svc.config.default_owner, &svc.config.default_project);
         Ok(svc)
     }
 

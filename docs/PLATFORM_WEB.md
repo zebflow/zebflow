@@ -106,6 +106,73 @@ The web layer should call project-capability checks through the shared
 authorization service rather than implementing custom owner comparison logic in
 each route.
 
+## Pipeline Draft vs Production Boundary
+
+Project pipeline files live under one git-synced source surface:
+
+`app/pipelines/`
+
+Platform should not duplicate the whole project into separate draft and
+production trees.
+
+Instead, it tracks two states derived from the same source:
+
+1. draft
+   - current working-tree content
+   - current content hash
+2. production
+   - activated runtime snapshot
+   - active hash
+
+If the current hash and active hash differ, the pipeline has draft changes that
+have not been promoted to runtime.
+
+This is the foundation for:
+
+1. editor save-time validation
+2. production-safe webhook execution
+3. production-safe schedule execution
+4. future contributor review/promotion flow
+
+## Pipeline Runtime Registry Direction
+
+Platform should maintain a compiled runtime registry for active pipelines.
+
+That registry is:
+
+1. separate from the mutable working tree
+2. built only from activated pipeline snapshots
+3. safe to hot-reload by atomic replacement
+
+The runtime registry should be the only production execution source used by:
+
+1. webhook execution
+2. schedule execution
+3. future internal assistant execution on behalf of the live project
+
+## Pipeline Hot Reload Strategy
+
+The intended hot reload flow is:
+
+1. save pipeline file
+   - update draft hash
+   - run draft validation
+   - do not mutate production runtime
+2. activate pipeline
+   - snapshot current source into the platform runtime store
+   - set `active_hash`
+   - rebuild runtime registry entry
+   - refresh schedule projections for that pipeline
+3. deactivate pipeline
+   - remove runtime registry entry
+   - unregister schedule projections
+
+This keeps hot reload explicit and safe:
+
+1. authoring stays fast
+2. production stays deterministic
+3. registry updates are the runtime boundary
+
 ## Platform Template Root
 
 Current platform template root:

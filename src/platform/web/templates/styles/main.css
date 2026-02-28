@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Pathway+Extreme:ital,opsz,wght@0,8..144,100..900;1,8..144,100..900&family=Roboto:wght@400;500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap");
 
 :root {
   --zf-color-brand-blue: #005b9a;
@@ -7,6 +7,8 @@
   --zf-color-brand-orange-ink: #db4f00;
   --zf-color-accent: var(--zf-color-brand-blue);
   --zf-color-accent-ink: var(--zf-color-brand-blue-ink);
+  --zf-font-display:
+    "Pathway Extreme", "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --zf-font-sans:
     "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --zf-font-mono:
@@ -142,6 +144,9 @@ select {
 }
 
 .platform-sidebar-brand-title {
+  font-family: var(--zf-font-display);
+  font-variation-settings: "wdth" 100;
+  letter-spacing: 0.02em;
   color: var(--studio-text);
 }
 
@@ -337,6 +342,13 @@ select {
   color: var(--studio-text-soft);
 }
 
+.project-shell-breadcrumb-link,
+.project-shell-breadcrumb-current {
+  font-family: var(--zf-font-display);
+  font-variation-settings: "wdth" 100;
+  letter-spacing: 0.01em;
+}
+
 .project-shell-breadcrumb-home:hover,
 .project-shell-breadcrumb-link:hover {
   color: var(--studio-text);
@@ -423,7 +435,9 @@ select {
 
 .project-shell-chat-title {
   font-size: 0.85rem;
+  font-family: var(--zf-font-display);
   font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--studio-text);
 }
 
@@ -553,9 +567,9 @@ select {
 
 .project-content-title {
   font-size: 0.68rem;
-  font-family: var(--zebflow-font-mono, monospace);
+  font-family: var(--zf-font-display);
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   color: var(--studio-text-soft);
 }
 
@@ -610,9 +624,9 @@ select {
   border-bottom: 1px solid var(--studio-border-soft);
   background: color-mix(in srgb, var(--studio-panel) 76%, transparent);
   font-size: 0.68rem;
-  font-family: var(--zebflow-font-mono, monospace);
+  font-family: var(--zf-font-display);
   text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.08em;
   color: var(--studio-text-soft);
 }
 
@@ -635,7 +649,9 @@ select {
 
 .project-list-title {
   font-size: 0.82rem;
+  font-family: var(--zf-font-display);
   font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--studio-text);
 }
 
@@ -698,7 +714,9 @@ select {
 
 .project-card-title {
   font-size: 0.83rem;
+  font-family: var(--zf-font-display);
   font-weight: 700;
+  letter-spacing: 0.01em;
   color: var(--studio-text);
 }
 

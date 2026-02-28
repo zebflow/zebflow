@@ -14,7 +14,7 @@ pub mod model;
 pub mod nodes;
 pub mod registry;
 
-pub use engines::NoopFrameworkEngine;
+pub use engines::{BasicFrameworkEngine, NoopFrameworkEngine};
 pub use interface::FrameworkEngine;
 pub use model::{
     FrameworkContext, FrameworkError, FrameworkOutput, PipelineEdge, PipelineGraph, PipelineNode,

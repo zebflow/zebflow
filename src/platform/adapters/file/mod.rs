@@ -75,6 +75,8 @@ impl FileAdapter for FilesystemFileAdapter {
     ) -> Result<ProjectFileLayout, PlatformError> {
         let root = self.project_root(owner, project);
         let data_dir = root.join("data");
+        let data_runtime_dir = data_dir.join("runtime");
+        let data_runtime_pipelines_dir = data_runtime_dir.join("pipelines");
         let data_sekejap_dir = data_dir.join("sekejap");
         let data_sqlite_dir = data_dir.join("sqlite");
         let data_sqlite_file = data_sqlite_dir.join("project.db");
@@ -88,6 +90,8 @@ impl FileAdapter for FilesystemFileAdapter {
         for dir in [
             &root,
             &data_dir,
+            &data_runtime_dir,
+            &data_runtime_pipelines_dir,
             &data_sekejap_dir,
             &data_sqlite_dir,
             &files_dir,
@@ -112,6 +116,8 @@ impl FileAdapter for FilesystemFileAdapter {
         Ok(ProjectFileLayout {
             root,
             data_dir,
+            data_runtime_dir,
+            data_runtime_pipelines_dir,
             data_sekejap_dir,
             data_sqlite_file,
             files_dir,

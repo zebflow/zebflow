@@ -22,6 +22,7 @@ pub struct TemplateSource {
 
 /// Compile/render options for RWE engines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReactiveWebOptions {
     /// Enables HTML minification hints.
     pub minify_html: bool,
