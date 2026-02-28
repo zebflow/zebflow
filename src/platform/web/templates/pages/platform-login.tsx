@@ -91,7 +91,6 @@ export default function Page(input) {
                   <input
                     type="password"
                     name="password"
-                    value={input.default_password}
                     required
                     autoComplete="current-password"
                     className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:border-[#005B9A]"

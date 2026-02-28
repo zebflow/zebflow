@@ -63,7 +63,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.home",
-            include_str!("../../conventions/templates/pages/home.tsx"),
+            include_str!("../../docs/conventions/templates/pages/home.tsx"),
             options.clone(),
         )?,
     );
@@ -73,7 +73,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.recycling-nature",
-            include_str!("../../conventions/templates/pages/recycling-nature.tsx"),
+            include_str!("../../docs/conventions/templates/pages/recycling-nature.tsx"),
             options.clone(),
         )?,
     );
@@ -83,7 +83,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.zebflow-showcase",
-            include_str!("../../conventions/templates/pages/zebflow-showcase.tsx"),
+            include_str!("../../docs/conventions/templates/pages/zebflow-showcase.tsx"),
             options.clone(),
         )?,
     );
@@ -93,7 +93,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.todo",
-            include_str!("../../conventions/templates/pages/todo.tsx"),
+            include_str!("../../docs/conventions/templates/pages/todo.tsx"),
             options.clone(),
         )?,
     );
@@ -103,7 +103,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.list-hydration",
-            include_str!("../../conventions/templates/pages/list-hydration.tsx"),
+            include_str!("../../docs/conventions/templates/pages/list-hydration.tsx"),
             options.clone(),
         )?,
     );
@@ -113,7 +113,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.state-sharing",
-            include_str!("../../conventions/templates/pages/state-sharing-composed.tsx"),
+            include_str!("../../docs/conventions/templates/pages/state-sharing-composed.tsx"),
             options.clone(),
         )?,
     );
@@ -123,7 +123,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.blog-home",
-            include_str!("../../conventions/templates/pages/blog-home.tsx"),
+            include_str!("../../docs/conventions/templates/pages/blog-home.tsx"),
             options.clone(),
         )?,
     );
@@ -133,7 +133,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.blog-post",
-            include_str!("../../conventions/templates/pages/blog-post.tsx"),
+            include_str!("../../docs/conventions/templates/pages/blog-post.tsx"),
             options.clone(),
         )?,
     );
@@ -143,7 +143,7 @@ fn build_demo_state() -> Result<DemoAppState, String> {
             rwe.as_ref(),
             language.as_ref(),
             "page.blog-composed",
-            include_str!("../../conventions/templates/pages/blog-home-composed.tsx"),
+            include_str!("../../docs/conventions/templates/pages/blog-home-composed.tsx"),
             options,
         )?,
     );
@@ -159,31 +159,31 @@ fn options_with_components() -> ReactiveWebOptions {
     let mut registry = BTreeMap::new();
     registry.insert(
         "BlogHeader".to_string(),
-        include_str!("../../conventions/templates/components/blog-header.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/blog-header.tsx").to_string(),
     );
     registry.insert(
         "BlogHero".to_string(),
-        include_str!("../../conventions/templates/components/blog-hero.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/blog-hero.tsx").to_string(),
     );
     registry.insert(
         "TreeA".to_string(),
-        include_str!("../../conventions/templates/components/tree-a.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/tree-a.tsx").to_string(),
     );
     registry.insert(
         "TreeB".to_string(),
-        include_str!("../../conventions/templates/components/tree-b.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/tree-b.tsx").to_string(),
     );
     registry.insert(
         "TreeC".to_string(),
-        include_str!("../../conventions/templates/components/tree-c.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/tree-c.tsx").to_string(),
     );
     registry.insert(
         "TreeD".to_string(),
-        include_str!("../../conventions/templates/components/tree-d.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/tree-d.tsx").to_string(),
     );
     registry.insert(
         "TreeF".to_string(),
-        include_str!("../../conventions/templates/components/tree-f.tsx").to_string(),
+        include_str!("../../docs/conventions/templates/components/tree-f.tsx").to_string(),
     );
 
     ReactiveWebOptions {

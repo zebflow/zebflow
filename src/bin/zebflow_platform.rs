@@ -17,9 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(owner) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_OWNER") {
         config.default_owner = owner;
     }
-    if let Ok(pass) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD") {
-        config.default_password = pass;
-    }
+    config.default_password = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD").map_err(|_| {
+        std::io::Error::other(
+            "missing ZEBFLOW_PLATFORM_DEFAULT_PASSWORD for initial superadmin bootstrap",
+        )
+    })?;
     if let Ok(project) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PROJECT") {
         config.default_project = project;
     }

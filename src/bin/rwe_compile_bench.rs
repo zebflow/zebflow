@@ -59,7 +59,7 @@ fn main() {
 }
 
 fn fixture_tsx() -> String {
-    include_str!("../../bench-fixtures/rwe/compile_compare.tsx").to_string()
+    include_str!("../../tests/bench-fixtures/rwe/compile_compare.tsx").to_string()
 }
 
 fn generated_tsx(page_id: &str, cards: usize) -> String {

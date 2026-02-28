@@ -39,7 +39,11 @@ pub struct PlatformConfig {
     pub file_adapter: FileAdapterKind,
     /// Default superadmin username created on first bootstrap.
     pub default_owner: String,
-    /// Default superadmin password created on first bootstrap.
+    /// Initial superadmin password created on first bootstrap.
+    ///
+    /// This should be supplied explicitly by the host (for example from
+    /// `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD`) rather than relying on a baked-in
+    /// repository default.
     pub default_password: String,
     /// Default project slug created on first bootstrap.
     pub default_project: String,
@@ -52,7 +56,7 @@ impl Default for PlatformConfig {
             data_adapter: DataAdapterKind::Sekejap,
             file_adapter: FileAdapterKind::Filesystem,
             default_owner: "superadmin".to_string(),
-            default_password: "default".to_string(),
+            default_password: String::new(),
             default_project: "default".to_string(),
         }
     }

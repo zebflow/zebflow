@@ -1,0 +1,64 @@
+{
+  "kind": "zebflow.pipeline",
+  "version": "0.1",
+  "id": "common-backend-webhook-script-db",
+  "entry_nodes": ["webhook_in"],
+  "nodes": [
+    {
+      "id": "webhook_in",
+      "kind": "x.n.trigger.webhook",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "path": "/api/items"
+      }
+    },
+    {
+      "id": "script_normalize",
+      "kind": "x.n.script",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "language": "js"
+      }
+    },
+    {
+      "id": "db_insert",
+      "kind": "x.n.pg.query",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "query": "insert into items(value) values ($1) returning id"
+      }
+    },
+    {
+      "id": "http_response",
+      "kind": "x.n.http.response.json",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "status": 200
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_node": "webhook_in",
+      "from_pin": "out",
+      "to_node": "script_normalize",
+      "to_pin": "in"
+    },
+    {
+      "from_node": "script_normalize",
+      "from_pin": "out",
+      "to_node": "db_insert",
+      "to_pin": "in"
+    },
+    {
+      "from_node": "db_insert",
+      "from_pin": "out",
+      "to_node": "http_response",
+      "to_pin": "in"
+    }
+  ]
+}

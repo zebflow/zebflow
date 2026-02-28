@@ -22,8 +22,8 @@ use crate::rwe::{
     TemplateOptions, TemplateSource,
 };
 
-const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../conventions/assets/branding/logo.svg");
-const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../conventions/assets/branding/logo.png");
+const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
+const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
 
 /// Shared frontend render bundle (compiled templates + engines).
 #[derive(Clone)]
@@ -316,7 +316,6 @@ fn render_login_page(
             },
             "error": error.unwrap_or(""),
             "default_identifier": state.platform.config.default_owner,
-            "default_password": state.platform.config.default_password,
         }),
     )?;
     Ok((status, Html(html)).into_response())

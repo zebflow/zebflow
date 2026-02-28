@@ -20,9 +20,9 @@
     }
   },
   "include": [
-    "conventions/templates/**/*.tsx",
+    "docs/conventions/templates/**/*.tsx",
     "src/platform/web/templates/**/*.tsx",
-    "bench-fixtures/**/*.tsx",
+    "tests/bench-fixtures/**/*.tsx",
     "tests/rwe/fixtures/**/*.tsx",
     "runtime/tsx/**/*.d.ts"
   ],

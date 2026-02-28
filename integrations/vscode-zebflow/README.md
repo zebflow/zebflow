@@ -11,7 +11,7 @@ Lightweight VS Code extension for:
 - Basic syntax highlighting (template/script/style aware for TSX)
 - Snippets for common TSX and ZF JSON structure
 - `Zebflow: Preview TSX` command
-  - Opens static webview preview from the current file content
+  - Opens static webview preview from the current `<Page>...</Page>` body
   - Auto refresh on save
 
 ## Install (Local Development)
@@ -25,5 +25,5 @@ Lightweight VS Code extension for:
 
 ## Notes
 
-- Preview currently renders template markup only (static render).
+- Preview currently renders the `<Page>...</Page>` body only (static render).
 - Runtime control logic (`export const app`) is not executed in preview.

@@ -6,9 +6,9 @@ function extractBlock(source, tagName) {
   return m ? m[1].trim() : "";
 }
 
-function extractTemplateMarkup(source) {
-  const tpl = extractBlock(source, "template");
-  return tpl || source;
+function extractPageMarkup(source) {
+  const page = extractBlock(source, "Page");
+  return page || source;
 }
 
 function htmlEnvelope(body) {
@@ -71,7 +71,7 @@ function htmlEnvelope(body) {
 
 function createOrUpdatePreview(panel, document) {
   const source = document.getText();
-  const markup = extractTemplateMarkup(source);
+  const markup = extractPageMarkup(source);
   panel.webview.html = htmlEnvelope(markup);
 }
 

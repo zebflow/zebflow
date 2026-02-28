@@ -87,13 +87,13 @@ It is the execution control plane above `language` and `rwe`.
 `Cargo.toml`
 Crate package and dependency boundary.
 
-`conventions/`
+`docs/conventions/`
 Canonical examples and file conventions used by Zebflow contracts.
 
-`conventions/pipelines/`
+`docs/conventions/pipelines/`
 Example pipeline contracts (`*.zf.json`), pin-based (`from_pin` -> `to_pin`).
 
-`conventions/templates/`
+`docs/conventions/templates/`
 Example template sources (`*.tsx`) used by RWE.
 
 `runtime/`
@@ -363,23 +363,23 @@ Rules:
 4. `tailwind` injects a Tailwind-compatible preflight/reset base plus utility rules
 
 Example templates:
-- `conventions/templates/pages/blog-home.tsx`
-- `conventions/templates/pages/blog-post.tsx`
-- `conventions/templates/pages/blog-home-composed.tsx`
-- `conventions/templates/pages/state-sharing-composed.tsx`
-- `conventions/templates/pages/list-hydration.tsx`
-- `conventions/templates/components/blog-header.tsx`
-- `conventions/templates/components/blog-hero.tsx`
-- `conventions/templates/components/tree-a.tsx`
-- `conventions/templates/components/tree-b.tsx`
-- `conventions/templates/components/tree-c.tsx`
-- `conventions/templates/components/tree-d.tsx`
-- `conventions/templates/components/tree-f.tsx`
+- `docs/conventions/templates/pages/blog-home.tsx`
+- `docs/conventions/templates/pages/blog-post.tsx`
+- `docs/conventions/templates/pages/blog-home-composed.tsx`
+- `docs/conventions/templates/pages/state-sharing-composed.tsx`
+- `docs/conventions/templates/pages/list-hydration.tsx`
+- `docs/conventions/templates/components/blog-header.tsx`
+- `docs/conventions/templates/components/blog-hero.tsx`
+- `docs/conventions/templates/components/tree-a.tsx`
+- `docs/conventions/templates/components/tree-b.tsx`
+- `docs/conventions/templates/components/tree-c.tsx`
+- `docs/conventions/templates/components/tree-d.tsx`
+- `docs/conventions/templates/components/tree-f.tsx`
 
 ## Current Status
 
 1. Framework, language, and RWE are scaffolded with interface-first boundaries.
-2. Pin-based pipeline sample exists at `conventions/pipelines/common_backend.zf.json`.
+2. Pin-based pipeline sample exists at `docs/conventions/pipelines/common_backend.zf.json`.
 3. Deno sandbox language engine is wired and reusable.
 4. Axum demo bootstrap is available via `axum_rwe_demo` binary.
 

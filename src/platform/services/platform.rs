@@ -60,6 +60,13 @@ impl PlatformService {
 
     /// Creates default superadmin + default project if missing.
     pub fn bootstrap_defaults(&self) -> Result<(), PlatformError> {
+        if self.config.default_password.trim().is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_BOOTSTRAP_PASSWORD_MISSING",
+                "default superadmin password is missing; set ZEBFLOW_PLATFORM_DEFAULT_PASSWORD or provide PlatformConfig.default_password",
+            ));
+        }
+
         self.users.create_or_update_user(&CreateUserRequest {
             owner: self.config.default_owner.clone(),
             password: self.config.default_password.clone(),
