@@ -1,0 +1,15 @@
+{
+  "name": "zeb/interact",
+  "version": "0.1",
+  "trust": "official",
+  "surface": "web",
+  "runtime": {
+    "entry": "runtime/interact.bundle.mjs",
+    "format": "esm"
+  },
+  "exports": {
+    "raw": "interact",
+    "wrappers": []
+  },
+  "description": "Pointer and interaction primitives for studio-like shells."
+}

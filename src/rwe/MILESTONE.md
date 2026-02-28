@@ -44,7 +44,7 @@ RWE should support:
 ## Current Baseline (Done)
 
 1. `.tsx` extraction (`template`, `style`, `script`)
-2. reactive bindings (`@click`, `j-text`, `j-model`, `j-attr:class`, `j-show`, `j-hide`)
+2. reactive bindings (`@click`, `z-text`, `z-model`, `z-attr:class`, `z-show`, `z-hide`)
 3. SSR placeholders (`{{input.*}}`, `{{ctx.*}}`)
 4. compile-time component registry (PascalCase component tags, e.g. `<PlatformSidebar />`)
 5. runtime bundle inject + control script mount
@@ -176,9 +176,9 @@ Goal: lean server list rendering without heavy VDOM.
 
 Add template directives:
 
-1. `j-for="item in input.posts"`
-2. `j-if="input.posts.0"`
-3. `j-else`
+1. `z-for="item in input.posts"`
+2. `zIf="input.posts.0"`
+3. `zElse`
 
 Compile strategy:
 
@@ -250,7 +250,7 @@ Rules:
 1. implement file import resolver with cycle detection
 2. add component dependency graph cache
 3. implement `server/client` script contract
-4. add `j-for` SSR compile for server lists
+4. add `z-for` SSR compile for server lists
 5. add fixture set:
    - `sidebar.tsx` + nested `searchbar.tsx`
    - SSR blog list from server data

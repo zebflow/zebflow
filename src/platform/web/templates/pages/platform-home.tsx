@@ -64,7 +64,7 @@ export default function Page(input) {
 
         <section className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
           <a
-            jFor="item in input.projects"
+            zFor="item in input.projects"
             href="{item.path}"
             className="block bg-white border border-slate-200 rounded-xl p-5 hover:border-slate-400 hover:shadow-lg transition-all"
           >

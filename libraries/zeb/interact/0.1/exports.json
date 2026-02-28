@@ -1,0 +1,15 @@
+{
+  "package": "zeb/interact",
+  "version": "0.1",
+  "raw": [
+    {
+      "name": "interact",
+      "runtime": "runtime/interact.bundle.mjs"
+    },
+    {
+      "name": "createSplitPane",
+      "runtime": "runtime/interact.bundle.mjs"
+    }
+  ],
+  "wrappers": []
+}

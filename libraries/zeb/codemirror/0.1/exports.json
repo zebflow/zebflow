@@ -1,0 +1,16 @@
+{
+  "package": "zeb/codemirror",
+  "version": "0.1",
+  "raw": {
+    "codemirror": {
+      "entry": "runtime/codemirror.bundle.mjs",
+      "description": "Bundled CodeMirror 6 module surface for platform/editor integration."
+    }
+  },
+  "wrappers": {
+    "CodeEditor": {
+      "entry": "wrappers/CodeEditor.tsx",
+      "description": "Zebflow wrapper component for the platform templates workspace."
+    }
+  }
+}

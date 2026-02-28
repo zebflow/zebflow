@@ -23,11 +23,13 @@ Zebflow is built from four layers:
    - compiles and renders TSX templates
    - auto-wraps page documents from the page contract
    - supports selective client hydration
+   - stays generic about local modules/assets
 
 4. `platform`
    - Zebflow’s own web application
    - login, home, project shell
    - built using the same RWE contract
+   - owns product policy such as Zeb Libraries
 
 ## Canonical Web Delivery Policy
 

@@ -17,6 +17,61 @@ That is why the platform now depends on:
 
 The platform should not rely on a hidden or product-only template mechanism.
 
+## Zeb Libraries Boundary
+
+Zeb Libraries are managed by platform, not by RWE directly.
+
+Platform responsibilities:
+
+1. official library catalog
+2. version pinning
+3. install/update/remove flows
+4. project vendoring under `app/libraries/`
+5. project lock file management (`app/libraries.lock.json`)
+6. root catalog source under `libraries/`
+
+RWE responsibilities:
+
+1. compile templates
+2. resolve local modules/assets through generic hooks
+3. inject trusted local runtime/script/style bundles
+
+This keeps library policy in the product layer and rendering policy in the
+engine layer.
+
+The current repository-level source catalog should live under:
+
+`libraries/`
+
+That root is for maintainers and discovery. Project-owned installed state still
+belongs under:
+
+`app/libraries/`
+
+## Manager Direction
+
+Platform should expose Zeb Libraries through a dedicated management surface
+under `Settings`.
+
+The intended split is:
+
+1. `Node Manager`
+   - pipeline/runtime extension packages
+   - separate trust and execution concerns
+2. `Web Library Manager`
+   - template/runtime libraries for web rendering
+   - owns `zeb/*` installation and vendoring
+
+For Zeb Libraries specifically, the platform-side flow should be:
+
+1. install library
+2. generate project-owned metadata and vendored runtime files
+3. notify the editor/autocomplete surface
+4. let save-time compile reuse the prepared metadata
+
+The editor should consume metadata such as `keywords.json` and `exports.json`,
+not raw upstream package source on every keystroke.
+
 ## Platform Template Root
 
 Current platform template root:

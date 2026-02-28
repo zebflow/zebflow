@@ -1,0 +1,15 @@
+{
+  "name": "zeb/stateutil",
+  "version": "0.1",
+  "trust": "official",
+  "surface": "web",
+  "runtime": {
+    "entry": "runtime/stateutil.bundle.mjs",
+    "format": "esm"
+  },
+  "exports": {
+    "raw": "stateutil",
+    "wrappers": []
+  },
+  "description": "Tiny state-oriented utilities for editor and RWE-adjacent web flows."
+}

@@ -1,0 +1,15 @@
+{
+  "package": "zeb/stateutil",
+  "version": "0.1",
+  "raw": [
+    {
+      "name": "stateutil",
+      "runtime": "runtime/stateutil.bundle.mjs"
+    },
+    {
+      "name": "debounce",
+      "runtime": "runtime/stateutil.bundle.mjs"
+    }
+  ],
+  "wrappers": []
+}

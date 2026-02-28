@@ -1,0 +1,16 @@
+{
+  "package": "zeb/interact",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "interact",
+      "kind": "raw",
+      "doc": "Official Zeb interaction package root."
+    },
+    {
+      "name": "createSplitPane",
+      "kind": "raw",
+      "doc": "Resizable two-pane studio layout primitive."
+    }
+  ]
+}

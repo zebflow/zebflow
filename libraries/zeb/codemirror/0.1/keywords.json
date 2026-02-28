@@ -1,0 +1,8 @@
+{
+  "package": "zeb/codemirror",
+  "version": "0.1",
+  "symbols": [
+    {"name": "codemirror", "kind": "raw", "import": "zeb/codemirror"},
+    {"name": "CodeEditor", "kind": "wrapper", "import": "zeb/codemirror"}
+  ]
+}

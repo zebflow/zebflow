@@ -2,6 +2,22 @@
 
 This document describes the shipped Reactive Web Engine contract.
 
+## Boundary
+
+RWE is a compile/render engine.
+
+It should remain generic about:
+
+1. local module resolution
+2. trusted local script/style injection
+3. runtime bundle mounting
+
+It should not directly own a product library catalog.
+
+That means `zeb/*` library policy, versioning, vendoring, and install UX belong
+to the `platform` layer. RWE only needs the generic machinery required to
+consume locally provided modules and assets.
+
 ## Authoring Contract
 
 RWE is TSX-first.
@@ -217,6 +233,21 @@ This allows one RWE engine instance to safely compile:
 3. future external consumers
 
 without hidden global filesystem state.
+
+## Zeb Libraries Boundary
+
+When project code imports `zeb/*`, the product policy should be:
+
+1. platform resolves the import against project/vendor state
+2. project pins exact versions in `app/libraries.lock.json`
+3. vendored copies live in `app/libraries/`
+4. RWE consumes the resolved local module/assets through generic hooks
+
+RWE should not become the owner of:
+
+1. library catalog policy
+2. install/update/remove flows
+3. remote registry synchronization
 
 ## Component Contract
 

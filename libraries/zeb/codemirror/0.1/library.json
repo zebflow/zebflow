@@ -1,0 +1,24 @@
+{
+  "name": "zeb/codemirror",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "esm.sh",
+    "package": "codemirror",
+    "package_version": "6.0.1",
+    "entry": "https://esm.sh/codemirror@6.0.1/es2022/codemirror.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["codemirror"],
+    "wrappers": ["CodeEditor"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/codemirror.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

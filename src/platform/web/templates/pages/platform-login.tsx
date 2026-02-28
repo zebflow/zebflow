@@ -63,10 +63,10 @@ export default function Page(input) {
 
               <div className="px-7 pt-5">
                 <div
-                  jShow="input.error"
+                  zShow="input.error"
                   className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
                 >
-                  <span jText="input.error">{input.error}</span>
+                  <span zText="input.error">{input.error}</span>
                 </div>
               </div>
 

@@ -65,7 +65,7 @@ export default function Page(input) {
           <h2 className="text-xl font-semibold tracking-tight">Recycling Playbook</h2>
           <p className="mt-2 text-sm text-zinc-400">Simple habits with measurable impact.</p>
           <ul className="mt-4 space-y-3">
-            <li className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-3" jFor="tip in input.recycleTips" jKey="tip.id">
+            <li className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-3" zFor="tip in input.recycleTips" zKey="tip.id">
               <p className="font-semibold text-zinc-100">{tip.title}</p>
               <p className="mt-1 text-sm text-zinc-400">{tip.detail}</p>
             </li>
@@ -80,7 +80,7 @@ export default function Page(input) {
           </button>
           <p className="text-sm">
             Live pledges:
-            <span className="font-semibold text-emerald-300" jText="ui.pledges">0</span>
+            <span className="font-semibold text-emerald-300" zText="ui.pledges">0</span>
           </p>
           <p className="text-sm text-zinc-400">
             Thank you for helping keep waterways and neighborhoods cleaner.

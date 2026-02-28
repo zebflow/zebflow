@@ -755,13 +755,13 @@ fn jsx_to_rwe_html(jsx: &str) -> String {
         .replace("onInput=\"", "@input=\"")
         .replace("onChange=\"", "@change=\"")
         .replace("onSubmit=\"", "@submit=\"")
-        .replace("jFor=\"", "j-for=\"")
-        .replace("jKey=\"", "j-key=\"")
-        .replace("jShow=\"", "j-show=\"")
-        .replace("jHide=\"", "j-hide=\"")
-        .replace("jText=\"", "j-text=\"")
-        .replace("jModel=\"", "j-model=\"")
-        .replace("jAttrClass=\"", "j-attr:class=\"");
+        .replace("zFor=\"", "z-for=\"")
+        .replace("zKey=\"", "z-key=\"")
+        .replace("zShow=\"", "z-show=\"")
+        .replace("zHide=\"", "z-hide=\"")
+        .replace("zText=\"", "z-text=\"")
+        .replace("zModel=\"", "z-model=\"")
+        .replace("zAttrClass=\"", "z-attr:class=\"");
     restore_placeholders(&converted)
 }
 

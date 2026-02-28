@@ -39,10 +39,15 @@ export default function Page(input) {
             <section className="project-content-section">
               <div className="project-content-body">
                 <div className="project-card-grid cols-2">
-                  <article jFor="item in input.cards" className="project-card">
-                    <h3 className="project-card-title">{item.title}</h3>
-                    <p className="project-card-copy">{item.description}</p>
-                  </article>
+                  <a zFor="item in input.cards" href="{item.href}" className="project-card block">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="project-card-title">{item.title}</h3>
+                        <p className="project-card-copy">{item.description}</p>
+                      </div>
+                      <span zShow="item.tag" className="project-inline-chip">{item.tag}</span>
+                    </div>
+                  </a>
                 </div>
               </div>
             </section>

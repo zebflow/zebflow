@@ -27,10 +27,10 @@ return {
 export default function Page(input) {
   return (
 <Page>
-    <h1 jText="home.title">Zebflow</h1>
-    <p jText="home.description">Composable automation runtime.</p>
+    <h1 zText="home.title">Zebflow</h1>
+    <p zText="home.description">Composable automation runtime.</p>
     <button onClick="home.bump">Ping</button>
-    <p>Visits: <span jText="home.visits">0</span></p>
+    <p>Visits: <span zText="home.visits">0</span></p>
 </Page>
   );
 }

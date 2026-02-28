@@ -27,12 +27,12 @@ export default function Page(input) {
   return (
 <Page>
     <main>
-      <h1 jText="panel.title">Visibility Demo</h1>
+      <h1 zText="panel.title">Visibility Demo</h1>
       <button onClick="panel.toggle">Toggle Panel</button>
-      <section jShow="panel.open">
+      <section zShow="panel.open">
         <p>This panel is visible.</p>
       </section>
-      <section jHide="panel.open">
+      <section zHide="panel.open">
         <p>This panel is hidden.</p>
       </section>
     </main>

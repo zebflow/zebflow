@@ -1,10 +1,43 @@
-# Integrating blessed 3rd-party libraries (Three.js, D3) as RWE wrappers
+# Zeb Libraries
 
 ## Goal
 
-Allow RWE templates to use **Three.js** and **D3** as thin wrappers: author places a component (e.g. `<ThreeScene />`, `<D3Chart />`), RWE compiles to a known container shape, and a small client-side contract initializes the library on that container. No React; script-only usage.
+Define how Zebflow ships and manages official project libraries without coupling
+the RWE core to a product-specific library catalog.
 
-**Offline-first:** Blessed lib scripts are **downloaded and bundled with the engine** (or cached locally at build/setup), so Zebflow runs fully **offline** on the client PC—no CDN at runtime.
+The initial scope is:
+
+1. `zeb/codemirror`
+2. `zeb/threejs`
+3. `zeb/threejs-vrm`
+4. `zeb/deckgl`
+5. `zeb/d3`
+
+Offline-first remains mandatory: Zeb Libraries are bundled with Zebflow or
+shipped as local static assets and never fetched from a CDN at runtime.
+
+## Boundary
+
+Zeb Libraries are a **platform concern**, not an RWE-owned product subsystem.
+
+The ownership split is:
+
+1. `platform`
+   - owns the Zeb Libraries catalog
+   - owns version pinning
+   - owns install/update/remove UX
+   - owns project vendoring (`app/libraries/`, `app/libraries.lock.json`)
+   - owns remote registry/cache policy
+
+2. `rwe`
+   - stays generic
+   - consumes local modules/assets/runtime bundles
+   - does not hardcode a product library list
+   - does not become a package manager
+
+This distinction matters. If RWE directly owns `zeb/codemirror`,
+`zeb/threejs`, and future catalog policy, the engine becomes coupled to product
+catalog decisions and slows down.
 
 ## Current RWE mechanics (relevant parts)
 
@@ -12,99 +45,221 @@ Allow RWE templates to use **Three.js** and **D3** as thin wrappers: author plac
    PascalCase tags (e.g. `<ThreeScene />`) are resolved from the compile-time import graph under `ReactiveWebOptions.templates.template_root`. Imported `.tsx` components are lowered to HTML. Props are substituted as `{{props.key}}`; optional `hydrate="visible"|"idle"|"immediate"|"interaction"` wraps the expansion in a hydration island.
 
 2. **Script allow-list**  
-   `<script src="...">` in template markup is **stripped** unless the URL is allowed (via `load_scripts` and optionally `allow_list.scripts`). For **blessed libs we do not rely on CDN**: scripts are bundled locally and injected by the engine (see below).
+   `<script src="...">` in template markup is stripped unless the URL is
+   allowed. RWE can inject trusted local assets and runtime bundles, but it
+   should not own a product-specific library catalog.
 
 3. **Runtime**  
-   After HTML is delivered, the RWE runtime (`rwe-runtime.js`) mounts the control script, binds `@click` / `j-text` / `j-model` etc., and discovers `[hydrate]` islands. There is no built-in “library init” hook; the only extension point is the page’s control script (state/actions/memo/effect).
+   After HTML is delivered, the RWE runtime (`rwe-runtime.js`) mounts the control script, binds `@click` / `z-text` / `z-model` etc., and discovers `[hydrate]` islands. There is no built-in “library init” hook; the only extension point is the page’s control script (state/actions/memo/effect).
 
 4. **Runtime bundle precedent**  
-   The RWE runtime is injected as **inline script** via `RuntimeBundle { name, source }` at render time. Blessed libs can follow the same idea: ship script **content** with the engine so no network is needed.
+   The RWE runtime is injected as inline script via `RuntimeBundle { name,
+   source }` at render time. Platform-managed Zeb Libraries can use the same
+   generic hook without teaching RWE about specific library identities.
 
-## Proposed pattern: blessed library wrappers
+## Canonical contract
 
-### 1. Convention components (wrapper markup only)
+### 1. Namespace
 
-- **ThreeScene**  
-  - Markup: a single container that Three.js will own. Prefer `<canvas>` for WebGL.  
-  - Contract: `data-rwe-lib="three"`, optional `data-config="{{props.config}}"` (JSON string for scene/camera/renderer options).  
-  - Example (in `.tsx`):
+Zeb Libraries are referenced through a Zebflow-owned namespace:
 
-    ```html
-    <canvas data-rwe-lib="three" data-config="{{props.config}}" class="w-full h-64"></canvas>
-    ```
+1. `zeb/codemirror`
+2. `zeb/threejs`
+3. `zeb/threejs-vrm`
+4. `zeb/deckgl`
+5. `zeb/d3`
 
-  - Usage in a page: `<ThreeScene config="{{input.sceneConfig}}" hydrate="visible" />`.  
-  - The component does **not** contain any script; it only provides the DOM node and a config payload.
+These names are stable product contracts. The backing implementation may be:
 
-- **D3Chart**  
-  - Markup: a container for D3 (typically SVG or a div).  
-  - Contract: `data-rwe-lib="d3"`, optional `data-config="{{props.config}}"`.  
-  - Example:
+1. inline bundled script
+2. locally served static asset
+3. thin Zebflow wrapper package over a shipped upstream asset
 
-    ```html
-    <div data-rwe-lib="d3" data-config="{{props.config}}" class="w-full h-64"></div>
-    ```
+User code should never care which of those delivery methods is used.
 
-  - Usage: `<D3Chart config="{{input.chartConfig}}" hydrate="visible" />`.
+### 2. Project ownership model
 
-These components live in the template tree (for example `templates/components/three-scene.tsx` and `d3-chart.tsx`) and are imported by pages or other components.
+The canonical project shape should be:
 
-### 2. Script loading: offline (bundle with engine)
+```text
+app/
+  libraries/
+    zeb/
+      codemirror/
+        0.1/
+      threejs/
+        0.3/
+  libraries.lock.json
+```
 
-Blessed lib scripts are **downloaded once** and **shipped/cached with the engine** so the client PC can run Zebflow offline.
+The project repo is the durable source of truth for library versions actually in
+use. This avoids silent breakage when Zebflow itself is upgraded.
 
-**Acquisition (build/setup time):**
+Resolution order should be:
 
-- Download the desired versions of Three.js and D3 (e.g. `three.min.js`, `d3.min.js`) from the official or CDN URLs.
-- Store them in the engine’s asset tree, e.g.:
-  - `crates/zebflow/vendor/three.min.js`, `crates/zebflow/vendor/d3.min.js`, or
-  - a build script / optional crate that fetches them into a `vendor/` (or `assets/vendor/`) directory at build time.
-- Do **not** rely on these URLs at runtime; they are only used to populate the local bundle.
+1. `app/libraries/...`
+2. local machine cache installed by Zebflow
+3. remote Zeb Libraries registry
+4. vendored copy written back into `app/libraries/...`
 
-**Delivery at render time (offline):**
+### 3. Delivery model
 
-Two equivalent options so the browser gets the script without network:
+Zeb Libraries should be delivered in one of two engine-controlled ways:
 
-1. **Inline injection (recommended for full offline)**  
-   At render time, for each blessed lib required by the page (e.g. inferred from used components or from options), inject a `<script data-rwe-vendor="three">...</script>` block whose content is the **local file content** (e.g. `include_str!("../vendor/three.min.js")` or from a runtime-loaded cache). Same pattern as the existing RWE runtime bundle: one inline script tag per blessed lib. No `src`; no request.
+1. inline injection at render time
+2. local static path served by the host
 
-2. **Local path (host serves vendor files)**  
-   If the host serves static files from a known prefix (e.g. `/assets/vendor/`), inject `<script src="/assets/vendor/three.min.js"></script>` and ensure those files are present on disk from the same build/setup step. Works offline as long as the client talks only to that host.
+The exact delivery path is generic RWE/platform plumbing. The library catalog,
+version, and vendoring rules remain platform concerns.
 
-**RWE / host responsibilities:**
+The contract requirement is:
 
-- Engine (or host) maintains a **vendor script store**: map lib id (e.g. `"three"`, `"d3"`) to script content or to a local path. Content can come from `include_str!` at compile time or from a file read at startup.
-- When rendering a page that uses a blessed lib component, the renderer injects that lib’s script(s) before the RWE runtime (e.g. before `</body>`), in dependency order if needed (e.g. Three before app code). No CDN; no `load_scripts`/allow-list for these—they are first-class bundled assets.
+1. no runtime CDN dependency
+2. no npm install step required by the Zebflow user
+3. versions are controlled by Zebflow
+4. offline use remains possible
 
-### 3. Library init on the client
+### 3.1 Install, autocomplete, compile pipeline
 
-Two options; both keep Three/D3 logic out of the RWE core.
+To keep the system lightspeed and non-redundant, Zeb Libraries should follow a
+three-tier pipeline:
 
-**Option A – Control script only (no RWE change)**  
-In the page’s control script, use an **effect** that runs once (e.g. `once: true` and `immediate: true`) and:
+1. install
+   - platform fetches the selected package source/dist
+   - platform normalizes it into project-owned library files
+   - platform generates library metadata once
+2. save
+   - editor/compiler reuse generated metadata
+   - no upstream re-ingest happens on every save
+   - only project files are reparsed and recompiled
+3. commit/publish
+   - platform emits the final optimized combined page artifact
+   - runtime stays separate from compiled page code
 
-- Queries all `[data-rwe-lib="three"]` (and optionally `[data-rwe-lib="d3"]`).
-- Reads `data-config` (JSON), then calls a small init function that uses the global `THREE` / `d3` to create the scene or chart and attach it to the element.
+The critical rule is:
 
-Authors are responsible for defining that init (e.g. in the same control script or a shared snippet). RWE does not need to know about Three or D3.
+- expensive library intelligence is generated at install time
+- save-time compile only consumes prepared metadata
 
-**Option B – Optional runtime hook (small RWE extension)**  
-Extend the RWE runtime so that after `R.mount` (and after hydration islands are set up), if `R.app.libs` exists and is an object, it runs:
+That metadata should include:
 
-- For each key `k` in `R.app.libs`, run `document.querySelectorAll('[data-rwe-lib="'+k+'"]').forEach(el => { const fn = R.app.libs[k]; if (typeof fn === 'function') fn(el, JSON.parse(el.getAttribute('data-config')||'{}')); });`
+1. `library.json`
+   - identity, version, trust level, source, install provenance
+2. `exports.json`
+   - raw exports and wrapper exports
+   - symbol -> runtime chunk/module mapping
+3. `keywords.json`
+   - autocomplete-optimized symbol list
+4. `types.json` later
+   - lightweight interface/type hints if available
 
-Then the page’s control script only needs to set e.g. `R.app.libs = { three: (el, config) => { /* Three.js init */ }, d3: (el, config) => { /* D3 init */ } }`. The runtime does not contain any Three/D3 code; it only invokes the provided functions. This avoids every page re-implementing the “find nodes and call init” logic.
+This lets CodeMirror autocomplete stay JSON-driven instead of depending on a
+browser LSP or repeated upstream parsing.
 
-**Recommendation:** Start with **Option A** (document the pattern; no runtime change). Add **Option B** if we want a single canonical hook and less boilerplate in every page.
+### 4. Usage pattern
 
-### 4. Summary of touch points
+The author-facing model should stay simple:
 
-| Area | Change |
-|------|--------|
-| **RWE core** | Optionally: (1) vendor script store (lib id → script content or path) and inject inline/local script at render when page uses a blessed lib; (2) optional “libs” init pass that calls `R.app.libs[k](el, config)` for each `[data-rwe-lib=k]`. |
-| **Vendor assets** | Download Three.js and D3 (e.g. at build time) into `vendor/` (or equivalent); ship/cache with engine so client runs offline. |
-| **Conventions** | Add two components: `ThreeScene`, `D3Chart` (markup only; container + `data-rwe-lib` + `data-config`). |
-| **Platform / demo** | Import wrapper components from the template tree; ensure render path injects bundled vendor scripts (no CDN) when those components are used. |
-| **Docs** | Document the “blessed lib” contract: `data-rwe-lib`, `data-config`, offline script bundle, and control-script init (effect or `R.app.libs`). |
+1. import a Zebflow-owned helper or wrapper from the `zeb/*` namespace
+2. render a normal TSX component or call a normal helper
+3. let platform/library resolution ensure the underlying library is present
 
-This keeps the integration minimal, script-only (no React), and **offline-first**: no CDN at runtime; scripts live inside the engine (or host) and are injected at render so Zebflow works on a client PC without network.
+Example directions:
+
+```tsx
+import { codemirror, CodeEditor } from "zeb/codemirror";
+import { threejs, ThreeScene } from "zeb/threejs";
+import { vrm, VrmViewer } from "zeb/threejs-vrm";
+import { deckgl, DeckMap } from "zeb/deckgl";
+import { d3, D3Chart } from "zeb/d3";
+```
+
+The first implementations can be thin wrappers over container markup and init
+contracts. They do not need to start as a deep component framework.
+
+Every Zeb Library should expose two surfaces:
+
+1. raw export surface
+2. Zeb wrapper surface
+
+That keeps advanced escape hatches and high-level productivity under one import
+namespace.
+
+### 5. Suggested first wrappers
+
+The first useful wrappers are:
+
+1. `CodeEditor`
+   - main editor surface for the platform templates workspace
+   - later reusable in user templates or script-node UI
+2. `ThreeScene`
+   - simple canvas/container ownership contract
+3. `VrmViewer`
+   - thin specialization on top of `ThreeScene`
+4. `DeckMap`
+   - map/canvas mount surface with config payload
+5. `D3Chart`
+   - svg/div mount surface with config payload
+
+Example minimal wrapper shape:
+
+```tsx
+export default function ThreeScene(props) {
+  return (
+    <canvas
+      data-zeb-lib="threejs"
+      data-config="{{props.config}}"
+      className="w-full h-full"
+      hydrate="visible"
+    />
+  );
+}
+```
+
+The wrapper stays simple. The platform/runtime decides how the backing library is mounted.
+
+### 6. Codemirror is special
+
+`zeb/codemirror` is not just another optional visualization library.
+It is part of Zebflow's own product surface.
+
+So it should be treated as:
+
+1. a platform dependency
+2. shippable with the installer
+3. reusable by the build/templates workspace first
+4. optionally exposed to user projects later
+
+### 7. Packaging direction
+
+Zebflow should be installable as one product package.
+
+That package can include:
+
+1. platform web templates/pages
+2. RWE runtime JS
+3. Zeb Libraries assets
+4. fonts
+5. default theme/preflight assets
+
+This is compatible with a single installer as long as the binary or package knows how to:
+
+1. expose static assets locally
+2. embed or ship vendor JS/fonts
+3. seed the default project/app structure
+
+The right mental model is:
+
+- Zebflow user installs one product
+- platform and default assets come with it
+- project templates and themes start from seeded local files
+- Zeb Libraries are available under `zeb/*`
+- projects pin concrete versions in `app/libraries.lock.json`
+
+The ideal output contract for page delivery remains:
+
+1. shared runtime script
+2. one combined compiled page script
+
+Internal library metadata, symbol graphs, or draft chunks may be more complex,
+but the served result should stay simple.

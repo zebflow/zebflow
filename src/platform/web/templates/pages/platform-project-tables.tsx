@@ -41,7 +41,7 @@ export default function Page(input) {
             <section className="project-content-section">
               <div className="project-content-body">
                 <div className="project-card-grid cols-2">
-                  <a jFor="item in input.connections" href="{item.path}" className="project-card">
+                  <a zFor="item in input.connections" href="{item.path}" className="project-card">
                     <div className="flex items-start justify-between gap-3">
                       <h3 className="project-card-title">{item.name}</h3>
                       <span className="project-inline-chip">{item.driver}</span>

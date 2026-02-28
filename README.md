@@ -69,6 +69,7 @@ What it does not own: graph traversal logic.
 Responsibility: web app shell and service composition for Zebflow runtime operations.
 What it owns: login flow, user/project services, adapter factories, filesystem project layout, platform routes.
 What it does not own: low-level pipeline execution internals or template compiler internals.
+It also owns product policy such as Zeb Libraries catalog/version management.
 
 ## What `framework` Means Here
 
@@ -95,6 +96,10 @@ Example pipeline contracts (`*.zf.json`), pin-based (`from_pin` -> `to_pin`).
 
 `docs/conventions/templates/`
 Example template sources (`*.tsx`) used by RWE.
+
+`libraries/`
+Platform-managed Zeb Libraries source catalog.
+Current use: first-party web library packages such as `zeb/codemirror`.
 
 `runtime/`
 Runtime assets required by engines.
@@ -193,7 +198,7 @@ RWE trait contract (`ReactiveWebEngine`) for template compile/render only.
 Template, compile artifact, render output, and RWE option contracts:
 - style engine mode (`tailwind-like` / off)
 - runtime mode (dev/prod runtime bundle)
-- reactive mode (`@click`, `j-text`, `j-model`, `j-attr:*` extraction)
+- reactive mode (`@click`, `z-text`, `z-model`, `z-attr:*` extraction)
 - resource allow-list (`css`, `scripts`, `urls`)
 - language run patch pass-through (`language.run_patch`) for sandbox control
 - processor pipeline (`processors`) for feature toggles (`tailwind`, `markdown`)
@@ -303,13 +308,13 @@ TSX module contracts:
 Reactive attributes in TSX:
 
 1. `onClick`, `onInput`, `onChange`, `onSubmit`
-2. `jText="path.to.value"`
-3. `jModel="path.to.value"`
-4. `jAttrClass="path.to.value"`
-5. `jShow="path.to.bool"`
-6. `jHide="path.to.bool"`
-7. `jFor="item in some.list.path"` (keyed list rendering)
-8. `jKey="item.id"` (stable key selector for `jFor`)
+2. `zText="path.to.value"`
+3. `zModel="path.to.value"`
+4. `zAttrClass="path.to.value"`
+5. `zShow="path.to.bool"`
+6. `zHide="path.to.bool"`
+7. `zFor="item in some.list.path"` (keyed list rendering)
+8. `zKey="item.id"` (stable key selector for `zFor`)
 9. `hydrate="off|interaction|visible|idle|immediate"` (hydration island mode)
 
 SSR placeholders in TSX expressions:
@@ -342,7 +347,7 @@ Control-script return keys (runtime convention):
 Not implemented yet (planned in `src/rwe/MILESTONE.md`):
 
 1. `.ts` helper-module import graph
-2. directive-level branching (`j-if`, `j-else`)
+2. directive-level branching (`zIf`, `zElse`)
 
 ## RWE Processor Features
 

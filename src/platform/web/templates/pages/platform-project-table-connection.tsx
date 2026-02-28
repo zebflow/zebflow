@@ -50,7 +50,7 @@ export default function Page(input) {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr jFor="item in input.tables">
+                    <tr zFor="item in input.tables">
                       <td>{item.name}</td>
                       <td>{item.rows}</td>
                       <td>{item.updated}</td>

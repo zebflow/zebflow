@@ -15,7 +15,11 @@ use serde_json::{Value, json};
 
 use crate::language::{LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
-use crate::platform::model::{CreateProjectRequest, CreateUserRequest, LoginRequest};
+use crate::platform::model::{
+    CreateProjectRequest, CreateUserRequest, LoginRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest,
+};
 use crate::platform::services::PlatformService;
 use crate::rwe::{
     CompiledTemplate, NoopReactiveWebEngine, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
@@ -24,6 +28,7 @@ use crate::rwe::{
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
+const PLATFORM_TEMPLATE_EDITOR_JS: &str = include_str!("runtime/template-editor.mjs");
 
 /// Shared frontend render bundle (compiled templates + engines).
 #[derive(Clone)]
@@ -50,6 +55,8 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
     Router::new()
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
+        .route("/assets/platform/{asset}", get(platform_asset))
+        .route("/assets/libraries/{*path}", get(library_asset))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -92,11 +99,43 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/projects/{owner}/{project}/settings",
             get(project_settings_page),
         )
+        .route(
+            "/projects/{owner}/{project}/settings/web-libraries",
+            get(project_settings_web_libraries_page),
+        )
+        .route(
+            "/projects/{owner}/{project}/settings/nodes",
+            get(project_settings_nodes_page),
+        )
         .route("/api/meta", get(api_meta))
         .route("/api/users", get(api_list_users).post(api_create_user))
         .route(
             "/api/users/{owner}/projects",
             get(api_list_projects).post(api_create_project),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/workspace",
+            get(api_template_workspace),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/file",
+            get(api_template_file).put(api_template_save).delete(api_template_delete),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/create",
+            post(api_template_create),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/move",
+            post(api_template_move),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/git-status",
+            get(api_template_git_status),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/diagnostics",
+            post(api_template_diagnostics),
         )
         .with_state(PlatformAppState { platform, frontend })
 }
@@ -107,9 +146,15 @@ fn build_frontend() -> Result<PlatformFrontend, PlatformError> {
     let template_root = platform_template_root();
 
     let options = ReactiveWebOptions {
+        load_scripts: vec!["/assets/platform/*".to_string()],
+        allow_list: crate::rwe::ResourceAllowList {
+            scripts: vec!["/assets/platform/*".to_string()],
+            urls: vec!["/assets/platform/*".to_string()],
+            ..Default::default()
+        },
         templates: TemplateOptions {
             template_root: Some(template_root.clone()),
-        style_entries: Vec::new(),
+            style_entries: Vec::new(),
         },
         processors: vec!["tailwind".to_string()],
         ..Default::default()
@@ -173,6 +218,18 @@ fn build_frontend() -> Result<PlatformFrontend, PlatformError> {
             "platform.project.studio",
             &template_root,
             "pages/platform-project-studio.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-project-build-templates",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.build.templates",
+            &template_root,
+            "pages/platform-project-build-templates.tsx",
             options.clone(),
         )?,
     );
@@ -278,11 +335,46 @@ struct PipelineRegistryQuery {
     path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TemplateWorkspaceQuery {
+    file: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TemplatePathQuery {
+    path: Option<String>,
+}
+
 async fn branding_asset(Path(asset): Path<String>) -> Response {
     match asset.as_str() {
         "logo.svg" => asset_response("image/svg+xml; charset=utf-8", BRAND_LOGO_SVG),
         "logo.png" => asset_response("image/png", BRAND_LOGO_PNG),
         _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+    }
+}
+
+async fn platform_asset(Path(asset): Path<String>) -> Response {
+    match asset.as_str() {
+        "template-editor.mjs" => {
+            asset_response("text/javascript; charset=utf-8", PLATFORM_TEMPLATE_EDITOR_JS.as_bytes())
+        }
+        _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+    }
+}
+
+async fn library_asset(Path(path): Path<String>) -> Response {
+    let root = libraries_root();
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
+    let full = root.join(&normalized);
+    if !full.starts_with(&root) || !full.is_file() {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
+    match fs::read(&full) {
+        Ok(bytes) => asset_response(content_type_for_path(&full), &bytes),
+        Err(_) => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
 
@@ -468,16 +560,18 @@ async fn project_build_root_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplateWorkspaceQuery>,
 ) -> Response {
-    render_project_build_with_tab(state, headers, owner, project, "templates").await
+    render_project_build_with_tab(state, headers, owner, project, "templates", query).await
 }
 
 async fn project_build_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, tab)): Path<(String, String, String)>,
+    Query(query): Query<TemplateWorkspaceQuery>,
 ) -> Response {
-    render_project_build_with_tab(state, headers, owner, project, &tab).await
+    render_project_build_with_tab(state, headers, owner, project, &tab, query).await
 }
 
 async fn project_studio_redirect_page(
@@ -590,12 +684,17 @@ async fn render_project_build_with_tab(
     owner: String,
     project: String,
     tab: &str,
+    query: TemplateWorkspaceQuery,
 ) -> Response {
     let Some(session_owner) = session_owner(&headers) else {
         return Redirect::to("/login").into_response();
     };
     if session_owner != owner {
         return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    }
+
+    if tab == "templates" {
+        return render_project_build_templates(state, owner, project, query).await;
     }
 
     let Some((tab_key, tab_title, tab_desc, action_label, items)) = build_tab_payload(tab) else {
@@ -630,6 +729,124 @@ async fn render_project_build_with_tab(
                 "nav": nav,
             });
             match render_page(&state, "platform-project-studio", &route, input) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn render_project_build_templates(
+    state: PlatformAppState,
+    owner: String,
+    project: String,
+    query: TemplateWorkspaceQuery,
+) -> Response {
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let workspace = match state.platform.projects.list_template_workspace(&owner, &project) {
+                Ok(workspace) => workspace,
+                Err(err) => return internal_error(err),
+            };
+
+            let selected_rel = query
+                .file
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| workspace.default_file.clone());
+
+            let selected_content = selected_rel
+                .as_deref()
+                .map(|rel| state.platform.projects.read_template_file(&owner, &project, rel))
+                .transpose();
+            let selected_content = match selected_content {
+                Ok(content) => content.unwrap_or_default(),
+                Err(err) => return internal_error(err),
+            };
+
+            let selected_rel = selected_rel.unwrap_or_else(|| "pages/home.tsx".to_string());
+            let selected_name = selected_rel
+                .rsplit('/')
+                .next()
+                .unwrap_or("home.tsx")
+                .to_string();
+            let selected_kind = template_kind_from_rel(&selected_rel);
+            let selected_lines = selected_content.lines().count().max(1);
+
+            let template_items = workspace
+                .items
+                .into_iter()
+                .map(|item| {
+                    let href = if item.kind == "file" {
+                        format!(
+                            "/projects/{owner}/{project}/build/templates?file={}",
+                            item.rel_path
+                        )
+                    } else {
+                        String::new()
+                    };
+                    json!({
+                        "name": item.name,
+                        "rel_path": item.rel_path,
+                        "kind": item.kind,
+                        "file_kind": item.file_kind,
+                        "indent_px": 12 + (item.depth * 14),
+                        "href": href,
+                        "is_file": item.kind == "file",
+                        "is_folder": item.kind == "folder",
+                        "is_page": item.file_kind == "page",
+                        "is_component": item.file_kind == "component",
+                        "is_script": item.file_kind == "script",
+                        "is_style": item.file_kind == "style",
+                        "is_selected": item.rel_path == selected_rel,
+                        "classes": if item.rel_path == selected_rel { "is-selected" } else { "" },
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let nav = nav_classes(&owner, &project, "build", Some("templates"));
+            let route = format!("/projects/{owner}/{project}/build/templates");
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - Templates", info.title),
+                    "description": "Project template workspace"
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": "Build / Templates",
+                "nav": nav,
+                "workspace": {
+                    "items": template_items,
+                    "api": {
+                        "workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
+                        "file": format!("/api/projects/{owner}/{project}/templates/file"),
+                        "save": format!("/api/projects/{owner}/{project}/templates/file"),
+                        "create": format!("/api/projects/{owner}/{project}/templates/create"),
+                        "move": format!("/api/projects/{owner}/{project}/templates/move"),
+                        "delete": format!("/api/projects/{owner}/{project}/templates/file"),
+                        "git_status": format!("/api/projects/{owner}/{project}/templates/git-status"),
+                        "diagnostics": format!("/api/projects/{owner}/{project}/templates/diagnostics"),
+                    },
+                    "selected_file": {
+                        "name": selected_name,
+                        "rel_path": selected_rel,
+                        "file_kind": selected_kind,
+                        "content": selected_content,
+                        "line_count": selected_lines,
+                    },
+                    "codemirror": {
+                        "runtime_src": "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+                        "package_label": "zeb/codemirror@0.1",
+                    }
+                },
+            });
+
+            match render_page(&state, "platform-project-build-templates", &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -829,6 +1046,9 @@ async fn project_settings_page(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
+    let web_libraries_href = format!("/projects/{owner}/{project}/settings/web-libraries");
+    let nodes_href = format!("/projects/{owner}/{project}/settings/nodes");
+    let settings_href = format!("/projects/{owner}/{project}/settings");
     render_section_page(
         state,
         headers,
@@ -838,8 +1058,92 @@ async fn project_settings_page(
         "Settings",
         "Project policies, adapters, and runtime defaults.",
         vec![
-            json!({"title":"Runtime Policy","description":"Timeout, retries, and execution policy."}),
-            json!({"title":"Environment","description":"Project-level variables and secrets policy."}),
+            json!({
+                "title":"Web Library Manager",
+                "description":"Install and pin Zeb Libraries for templates, editor autocomplete, and compile-time runtime assets.",
+                "href": web_libraries_href,
+                "tag":"Web"
+            }),
+            json!({
+                "title":"Node Manager",
+                "description":"Manage runtime nodes, extension packages, and future hot-reloadable execution capabilities.",
+                "href": nodes_href,
+                "tag":"Runtime"
+            }),
+            json!({
+                "title":"Runtime Policy",
+                "description":"Timeout, retries, and execution policy.",
+                "href": settings_href.clone(),
+                "tag":"Core"
+            }),
+            json!({
+                "title":"Environment",
+                "description":"Project-level variables and secrets policy.",
+                "href": settings_href,
+                "tag":"Core"
+            }),
+        ],
+    )
+    .await
+}
+
+async fn project_settings_web_libraries_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    render_section_page(
+        state,
+        headers,
+        owner,
+        project,
+        "settings",
+        "Web Library Manager",
+        "Install Zeb Libraries, pin versions into the project, and feed editor autocomplete plus compile-time runtime assets.",
+        vec![
+            json!({
+                "title":"zeb/codemirror",
+                "description":"Platform-managed editor dependency. Bundled for the Build > Templates workspace and reusable later in project templates.",
+                "href":"#",
+                "tag":"Official"
+            }),
+            json!({
+                "title":"Project Libraries",
+                "description":"Project-owned library state should live under app/libraries with versions pinned in app/libraries.lock.json.",
+                "href":"#",
+                "tag":"Contract"
+            }),
+        ],
+    )
+    .await
+}
+
+async fn project_settings_nodes_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    render_section_page(
+        state,
+        headers,
+        owner,
+        project,
+        "settings",
+        "Node Manager",
+        "Manage runtime node packages, execution extensions, and future hot-reloadable node capabilities.",
+        vec![
+            json!({
+                "title":"Official Nodes",
+                "description":"Verified runtime node packages distributed with or for Zebflow.",
+                "href":"#",
+                "tag":"Official"
+            }),
+            json!({
+                "title":"Community and Custom Nodes",
+                "description":"Future install lanes for project-specific extensions with stricter trust and permission policy.",
+                "href":"#",
+                "tag":"Future"
+            }),
         ],
     )
     .await
@@ -1008,6 +1312,33 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
     })
 }
 
+fn libraries_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libraries")
+}
+
+fn content_type_for_path(path: &FsPath) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("mjs") | Some("js") => "text/javascript; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml; charset=utf-8",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
+    }
+}
+
+fn template_kind_from_rel(rel: &str) -> &'static str {
+    if rel.ends_with(".css") {
+        "style"
+    } else if rel.ends_with(".ts") {
+        "script"
+    } else if rel.contains("/pages/") || rel.starts_with("pages/") {
+        "page"
+    } else {
+        "component"
+    }
+}
+
 async fn api_meta(State(state): State<PlatformAppState>) -> Response {
     Json(json!({
         "ok": true,
@@ -1063,12 +1394,254 @@ async fn api_create_project(
     }
 }
 
+async fn api_template_workspace(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.platform.projects.list_template_workspace(&owner, &project) {
+        Ok(workspace) => Json(workspace).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_file(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplatePathQuery>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(path) = query.path.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"missing path"})),
+        )
+            .into_response();
+    };
+    match state.platform.projects.read_template_payload(&owner, &project, path) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_save(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<TemplateSaveRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.platform.projects.write_template_file(&owner, &project, &req) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_create(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<TemplateCreateRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.platform.projects.create_template_entry(&owner, &project, &req) {
+        Ok(file) => Json(file).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_move(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<TemplateMoveRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.platform.projects.move_template_entry(&owner, &project, &req) {
+        Ok(rel_path) => Json(json!({ "rel_path": rel_path })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_delete(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplatePathQuery>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(path) = query.path.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"missing path"})),
+        )
+            .into_response();
+    };
+    match state.platform.projects.delete_template_entry(&owner, &project, path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_git_status(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match state.platform.projects.list_template_git_status(&owner, &project) {
+        Ok(items) => Json(items).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_diagnostics(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<TemplateCompileRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if session_owner != owner {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let owner = crate::platform::model::slug_segment(&owner);
+    let project = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
+
+    let response = compile_template_buffer(&state, &layout.app_templates_dir, &req);
+    Json(response).into_response()
+}
+
 fn session_owner(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     cookie.split(';').map(str::trim).find_map(|part| {
         part.strip_prefix("zebflow_session=")
             .map(ToString::to_string)
     })
+}
+
+fn compile_template_buffer(
+    state: &PlatformAppState,
+    template_root: &FsPath,
+    req: &TemplateCompileRequest,
+) -> TemplateCompileResponse {
+    let rel = req.rel_path.trim();
+    if rel.is_empty() {
+        return TemplateCompileResponse {
+            ok: false,
+            diagnostics: vec![TemplateDiagnostic {
+                code: "template_path_missing".to_string(),
+                message: "template path must not be empty".to_string(),
+                severity: "error".to_string(),
+                from: Some(0),
+                to: Some(1),
+            }],
+        };
+    }
+
+    let kind = template_kind_from_rel(rel);
+    if kind == "script" || kind == "style" {
+        return TemplateCompileResponse {
+            ok: true,
+            diagnostics: Vec::new(),
+        };
+    }
+
+    let options = ReactiveWebOptions {
+        load_scripts: vec!["/assets/platform/*".to_string()],
+        allow_list: crate::rwe::ResourceAllowList {
+            scripts: vec!["/assets/platform/*".to_string()],
+            urls: vec!["/assets/platform/*".to_string()],
+            ..Default::default()
+        },
+        templates: TemplateOptions {
+            template_root: Some(template_root.to_path_buf()),
+            style_entries: Vec::new(),
+        },
+        processors: vec!["tailwind".to_string()],
+        ..Default::default()
+    };
+
+    let source = TemplateSource {
+        id: format!("platform.editor.{}", rel.replace('/', ".")),
+        source_path: Some(template_root.join(rel)),
+        markup: req.content.clone(),
+    };
+
+    match state
+        .frontend
+        .rwe
+        .compile_template(&source, state.frontend.language.as_ref(), &options)
+    {
+        Ok(compiled) => TemplateCompileResponse {
+            ok: true,
+            diagnostics: compiled
+                .diagnostics
+                .into_iter()
+                .map(|diag| TemplateDiagnostic {
+                    code: diag.code,
+                    message: diag.message,
+                    severity: "warning".to_string(),
+                    from: None,
+                    to: None,
+                })
+                .collect(),
+        },
+        Err(err) => TemplateCompileResponse {
+            ok: false,
+            diagnostics: vec![TemplateDiagnostic {
+                code: err.code.to_string(),
+                message: err.message,
+                severity: "error".to_string(),
+                from: Some(0),
+                to: Some(1),
+            }],
+        },
+    }
 }
 
 fn internal_error(err: PlatformError) -> Response {

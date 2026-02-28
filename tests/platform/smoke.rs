@@ -107,7 +107,6 @@ async fn platform_bootstrap_and_login_flow_works() {
     assert!(html.contains("Settings"));
     assert!(html.contains("Pipeline Registry"));
     assert!(html.contains("Path"));
-
     let project_root = data_root.join("users").join("superadmin").join("default");
     assert!(project_root.join("data").exists());
     assert!(project_root.join("data").join("sekejap").exists());
@@ -122,6 +121,27 @@ async fn platform_bootstrap_and_login_flow_works() {
     assert!(project_root.join("app").exists());
     assert!(project_root.join("app").join(".git").exists());
     assert!(project_root.join("app").join("pipelines").exists());
+
+    let settings = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/projects/superadmin/default/settings")
+                .method("GET")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(settings.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(settings.into_body(), usize::MAX)
+        .await
+        .expect("settings body bytes");
+    let html = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(html.contains("Web Library Manager"));
+    assert!(html.contains("Node Manager"));
 }
 
 #[tokio::test]
@@ -154,6 +174,211 @@ async fn platform_sidebar_active_classes_have_tailwind_utilities_on_section_page
     // These classes come from dynamic nav class payloads (input.nav.classes.*).
     assert!(html.contains(".py-2{"));
     assert!(html.contains(".rounded-md{border-radius:0.375rem;}"));
+}
+
+#[tokio::test]
+async fn platform_templates_workspace_renders_seeded_tree_and_editor_bootstrap() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("templates-workspace");
+    config.default_password = "test-pass".to_string();
+
+    let app = build_router(config).expect("platform router");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/projects/superadmin/default/build/templates")
+                .method("GET")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("templates body bytes");
+    let html = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(html.contains("template-workspace"));
+    assert!(html.contains("data-template-workspace"));
+    assert!(html.contains("pages/home.tsx"));
+    assert!(html.contains("styles/main.css"));
+    assert!(html.contains("Search"));
+    assert!(html.contains("Git"));
+    assert!(html.contains("/assets/platform/template-editor.mjs"));
+    assert!(html.contains("data-template-sonner"));
+    assert!(html.contains("data-template-api-diagnostics"));
+    assert!(html.contains("zeb/codemirror@0.1"));
+}
+
+#[tokio::test]
+async fn platform_serves_local_codemirror_library_asset() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("templates-library-asset");
+    config.default_password = "test-pass".to_string();
+
+    let app = build_router(config).expect("platform router");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs")
+                .method("GET")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        Some("text/javascript; charset=utf-8")
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("library asset body");
+    let js = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(js.contains("EditorView"));
+    assert!(js.contains("basicSetup"));
+}
+
+#[tokio::test]
+async fn platform_template_api_supports_create_save_move_delete_and_git_status() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("template-api");
+    config.default_password = "test-pass".to_string();
+
+    let app = build_router(config).expect("platform router");
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/create")
+                .method("POST")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"kind":"component","name":"editor-panel","parent_rel_path":"components"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(create.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(create.into_body(), usize::MAX)
+        .await
+        .expect("create body");
+    let json = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(json.contains("components/editor-panel.tsx"));
+
+    let save = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/file")
+                .method("PUT")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"rel_path":"components/editor-panel.tsx","content":"export default function EditorPanel(props) {\n  return <div>Editor</div>;\n}\n"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(save.status(), axum::http::StatusCode::OK);
+
+    let git_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/git-status")
+                .method("GET")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(git_status.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(git_status.into_body(), usize::MAX)
+        .await
+        .expect("git body");
+    let json = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(json.contains("components/editor-panel.tsx"));
+    assert!(json.contains("??"));
+
+    let moved = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/move")
+                .method("POST")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"from_rel_path":"components/editor-panel.tsx","to_parent_rel_path":"pages"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(moved.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(moved.into_body(), usize::MAX)
+        .await
+        .expect("move body");
+    let json = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(json.contains("pages/editor-panel.tsx"));
+
+    let delete = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/file?path=pages/editor-panel.tsx")
+                .method("DELETE")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(delete.status(), axum::http::StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn platform_template_diagnostics_reports_compile_errors() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("template-diagnostics");
+    config.default_password = "test-pass".to_string();
+
+    let app = build_router(config).expect("platform router");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/projects/superadmin/default/templates/diagnostics")
+                .method("POST")
+                .header(header::COOKIE, "zebflow_session=superadmin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"rel_path":"pages/home.tsx","content":"export default function Page(input) { return (<Page><main><div></main></Page>); }"}"#,
+                ))
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("diagnostics body");
+    let json = String::from_utf8(body.to_vec()).expect("utf8");
+    assert!(json.contains("\"ok\":false"));
+    assert!(json.contains("\"severity\":\"error\""));
 }
 
 #[tokio::test]

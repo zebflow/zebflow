@@ -56,7 +56,7 @@ function setInstall(ctx, tab, cmd) {
         activeTab: "tsx",
         isTabTsx: true,
         isTabZfJson: false,
-        codeTsx: `export const app = {\n  state: {\n    ui: { title: \"Zebflow Engine\", count: 0 }\n  },\n  actions: {\n    \"counter.inc\": (ctx) => {\n      const n = Number(ctx.get(\"ui.count\") || 0) + 1;\n      ctx.set(\"ui.count\", n);\n      return \"ui.count\";\n    }\n  }\n};\n\nexport default function Page(input) {\n  return (\n    <div className=\"p-4 bg-gray-50\">\n      <h1 jText=\"ui.title\">Loading...</h1>\n      <button onClick=\"counter.inc\" className=\"btn-primary\">\n        Count: <span jText=\"ui.count\">0</span>\n      </button>\n    </div>\n  );\n}`,
+        codeTsx: `export const app = {\n  state: {\n    ui: { title: \"Zebflow Engine\", count: 0 }\n  },\n  actions: {\n    \"counter.inc\": (ctx) => {\n      const n = Number(ctx.get(\"ui.count\") || 0) + 1;\n      ctx.set(\"ui.count\", n);\n      return \"ui.count\";\n    }\n  }\n};\n\nexport default function Page(input) {\n  return (\n    <div className=\"p-4 bg-gray-50\">\n      <h1 zText=\"ui.title\">Loading...</h1>\n      <button onClick=\"counter.inc\" className=\"btn-primary\">\n        Count: <span zText=\"ui.count\">0</span>\n      </button>\n    </div>\n  );\n}`,
         codeZfJson: `{\n  \"id\": \"analysis-pipeline\",\n  \"nodes\": [\n    { \"id\": \"fetch\", \"type\": \"x.n.http.get\" },\n    { \"id\": \"process\", \"type\": \"x.n.script.deno\" }\n  ],\n  \"edges\": [\n    { \"from\": \"fetch.out\", \"to\": \"process.in\" }\n  ]\n}`
       }
     },
@@ -146,25 +146,25 @@ export default function Page(input) {
           <div className="w-full bg-gray-900 rounded-sm overflow-hidden shadow-2xl text-left">
             <div className="flex bg-black/50 border-b border-gray-800 text-xs font-mono">
               <button onClick="install.npm" className="px-4 py-2 uppercase tracking-wider text-gray-300 hover:text-white transition-colors">
-                npm <i data-lucide="circle" jShow="ui.isInstallNpm" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+                npm <i data-lucide="circle" zShow="ui.isInstallNpm" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
               </button>
               <button onClick="install.cargo" className="px-4 py-2 uppercase tracking-wider text-gray-300 hover:text-white transition-colors">
-                cargo <i data-lucide="circle" jShow="ui.isInstallCargo" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+                cargo <i data-lucide="circle" zShow="ui.isInstallCargo" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
               </button>
               <button onClick="install.shell" className="px-4 py-2 uppercase tracking-wider text-gray-300 hover:text-white transition-colors">
-                shell <i data-lucide="circle" jShow="ui.isInstallShell" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+                shell <i data-lucide="circle" zShow="ui.isInstallShell" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
               </button>
               <button onClick="install.pip" className="px-4 py-2 uppercase tracking-wider text-gray-300 hover:text-white transition-colors">
-                pip <i data-lucide="circle" jShow="ui.isInstallPip" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+                pip <i data-lucide="circle" zShow="ui.isInstallPip" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
               </button>
             </div>
             <div className="p-4 flex items-center justify-between group">
               <code className="text-gray-300 font-mono text-sm">
-                <span className="text-red-700 mr-2">$</span><span jText="ui.installCommand">npm i zebflow</span>
+                <span className="text-red-700 mr-2">$</span><span zText="ui.installCommand">npm i zebflow</span>
               </code>
               <button onClick="copy.install" className="text-gray-400 hover:text-white transition-colors" title="Copy to clipboard">
-                <i data-lucide="copy" jHide="ui.copied" className="w-4 h-4"></i>
-                <i data-lucide="check-check" jShow="ui.copied" className="w-4 h-4 text-green-500"></i>
+                <i data-lucide="copy" zHide="ui.copied" className="w-4 h-4"></i>
+                <i data-lucide="check-check" zShow="ui.copied" className="w-4 h-4 text-green-500"></i>
               </button>
             </div>
           </div>
@@ -269,15 +269,15 @@ export default function Page(input) {
         <div className="bg-black border border-white/10 shadow-2xl rounded-sm overflow-hidden lg:mt-10">
           <div className="flex items-center border-b border-white/10">
             <button onClick="tab.tsx" className="flex-1 px-4 py-4 text-xs font-mono tracking-widest uppercase text-gray-400 hover:text-white transition-colors">
-              ui_component.tsx <i data-lucide="circle" jShow="ui.isTabTsx" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+              ui_component.tsx <i data-lucide="circle" zShow="ui.isTabTsx" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
             </button>
             <button onClick="tab.zfjson" className="flex-1 px-4 py-4 text-xs font-mono tracking-widest uppercase text-gray-400 hover:text-white transition-colors">
-              agent_flow.zf.json <i data-lucide="circle" jShow="ui.isTabZfJson" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
+              agent_flow.zf.json <i data-lucide="circle" zShow="ui.isTabZfJson" className="w-3 h-3 text-red-700 inline-block align-middle"></i>
             </button>
           </div>
           <div className="p-6 font-mono text-sm leading-relaxed overflow-auto h-[360px]">
-            <pre jShow="ui.isTabTsx" className="text-gray-300" jText="ui.codeTsx"><code></code></pre>
-            <pre jShow="ui.isTabZfJson" className="text-gray-300" jText="ui.codeZfJson"><code></code></pre>
+            <pre zShow="ui.isTabTsx" className="text-gray-300" zText="ui.codeTsx"><code></code></pre>
+            <pre zShow="ui.isTabZfJson" className="text-gray-300" zText="ui.codeZfJson"><code></code></pre>
           </div>
         </div>
       </div>

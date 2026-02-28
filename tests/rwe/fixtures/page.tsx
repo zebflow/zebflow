@@ -60,11 +60,11 @@ export default function Page(input) {
     <button className="rounded-lg bg-zinc-100 text-zinc-900 px-4 py-2" onClick="counter.inc">
       Click
     </button>
-    <h1 jText="client.title">Fallback</h1>
-    <input jModel="client.title" />
-    <div jAttrClass="client.dynamicClass"></div>
-    <p jShow="client.showInfo">Visible when showInfo=true</p>
-    <p jHide="client.showInfo">Visible when showInfo=false</p>
+    <h1 zText="client.title">Fallback</h1>
+    <input zModel="client.title" />
+    <div zAttrClass="client.dynamicClass"></div>
+    <p zShow="client.showInfo">Visible when showInfo=true</p>
+    <p zHide="client.showInfo">Visible when showInfo=false</p>
 </Page>
   );
 }

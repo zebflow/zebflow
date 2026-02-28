@@ -177,6 +177,130 @@ pub struct PipelineRegistryListing {
     pub pipelines: Vec<PipelineRegistryItem>,
 }
 
+/// One template tree row for the templates workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateTreeItem {
+    /// Display name.
+    pub name: String,
+    /// Relative path under `app/templates`.
+    pub rel_path: String,
+    /// `folder` or `file`.
+    pub kind: String,
+    /// Nesting depth from template root.
+    pub depth: usize,
+    /// File classification for icon/behavior hints.
+    pub file_kind: String,
+}
+
+/// Template workspace listing for one project.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateWorkspaceListing {
+    /// Relative path of the preferred initial file.
+    pub default_file: Option<String>,
+    /// Flattened tree rows in display order.
+    pub items: Vec<TemplateTreeItem>,
+}
+
+/// One file status row from the project git repository for templates.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateGitStatusItem {
+    /// Relative path under `app/templates`.
+    pub rel_path: String,
+    /// Short git porcelain status such as `M`, `A`, `D`, `??`, or `R`.
+    pub code: String,
+}
+
+/// Payload used to save one template file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateSaveRequest {
+    /// Relative path under `app/templates`.
+    pub rel_path: String,
+    /// Full file content.
+    pub content: String,
+}
+
+/// Supported controlled template creation kinds.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateCreateKind {
+    /// `templates/pages/*.tsx`
+    Page,
+    /// `templates/components/*.tsx`
+    Component,
+    /// `templates/scripts/*.ts`
+    Script,
+    /// arbitrary folder inside `templates/`
+    Folder,
+}
+
+/// Payload used to create one controlled template entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateCreateRequest {
+    /// Creation kind.
+    pub kind: TemplateCreateKind,
+    /// Human-entered base name.
+    pub name: String,
+    /// Optional parent folder under `app/templates`.
+    pub parent_rel_path: Option<String>,
+}
+
+/// Payload used to move one template entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateMoveRequest {
+    /// Existing relative path under `app/templates`.
+    pub from_rel_path: String,
+    /// Destination parent folder under `app/templates`.
+    pub to_parent_rel_path: String,
+}
+
+/// Basic template file response used by the web editor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateFilePayload {
+    /// Relative path under `app/templates`.
+    pub rel_path: String,
+    /// Display filename.
+    pub name: String,
+    /// File classification.
+    pub file_kind: String,
+    /// Full file content.
+    pub content: String,
+    /// Line count.
+    pub line_count: usize,
+}
+
+/// Request payload used to compile one current template buffer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateCompileRequest {
+    /// Relative path under `app/templates`.
+    pub rel_path: String,
+    /// Unsaved editor content to compile.
+    pub content: String,
+}
+
+/// One platform-facing template compile diagnostic.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateDiagnostic {
+    /// Stable diagnostic code.
+    pub code: String,
+    /// Human-readable message.
+    pub message: String,
+    /// `error` or `warning`.
+    pub severity: String,
+    /// Optional zero-based source start offset.
+    pub from: Option<usize>,
+    /// Optional zero-based source end offset.
+    pub to: Option<usize>,
+}
+
+/// Compile result returned to the web editor.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateCompileResponse {
+    /// Whether compile completed without a hard failure.
+    pub ok: bool,
+    /// Diagnostics emitted by the compile path.
+    pub diagnostics: Vec<TemplateDiagnostic>,
+}
+
 /// File-system tree returned for one project.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFileLayout {

@@ -63,16 +63,16 @@ export default function Page(input) {
       <button onClick="list.append">Append</button>
       <button onClick="list.rotate">Rotate</button>
 
-      <p>Length: <span jText="list.length">0</span></p>
-      <p jShow="list.hasItems">Has items</p>
-      <p jHide="list.hasItems">No items</p>
+      <p>Length: <span zText="list.length">0</span></p>
+      <p zShow="list.hasItems">Has items</p>
+      <p zHide="list.hasItems">No items</p>
 
       <ul>
-        <li jText="list.rows.0">-</li>
-        <li jText="list.rows.1">-</li>
-        <li jText="list.rows.2">-</li>
-        <li jText="list.rows.3">-</li>
-        <li jText="list.rows.4">-</li>
+        <li zText="list.rows.0">-</li>
+        <li zText="list.rows.1">-</li>
+        <li zText="list.rows.2">-</li>
+        <li zText="list.rows.3">-</li>
+        <li zText="list.rows.4">-</li>
       </ul>
     </main>
 </Page>

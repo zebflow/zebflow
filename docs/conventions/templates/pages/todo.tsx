@@ -57,19 +57,19 @@ export default function Page(input) {
 <Page>
     <main className="px-4 py-2">
       <h1>Todo</h1>
-      <p>Total: <span jText="todo.count">0</span></p>
+      <p>Total: <span zText="todo.count">0</span></p>
 
       <label>
         New item
-        <input jModel="todo.draft" />
+        <input zModel="todo.draft" />
       </label>
       <button onClick="todo.add">Add</button>
       <button onClick="todo.clear">Clear</button>
 
-      <p jShow="todo.isEmpty">No items yet.</p>
-      <p jHide="todo.isEmpty">Items available.</p>
+      <p zShow="todo.isEmpty">No items yet.</p>
+      <p zHide="todo.isEmpty">Items available.</p>
 
-      <pre jText="todo.listText"></pre>
+      <pre zText="todo.listText"></pre>
     </main>
 </Page>
   );

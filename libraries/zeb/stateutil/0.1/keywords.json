@@ -1,0 +1,16 @@
+{
+  "package": "zeb/stateutil",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "stateutil",
+      "kind": "raw",
+      "doc": "Official Zeb state utility package root."
+    },
+    {
+      "name": "debounce",
+      "kind": "raw",
+      "doc": "Delay repeated editor-side work until input settles."
+    }
+  ]
+}

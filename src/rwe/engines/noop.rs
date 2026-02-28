@@ -5,7 +5,7 @@
 //! - inline `<style>` extraction from TSX/page markup
 //! - optional component expansion from PascalCase tags (`<Button />`)
 //! - SSR placeholder interpolation (`{{input.*}}`, `{{ctx.*}}`)
-//! - reactive binding scan (`@click`, `j-text`, `j-model`, etc.)
+//! - reactive binding scan (`@click`, `z-text`, `z-model`, etc.)
 //! - lightweight client runtime injection
 
 use std::fs;
@@ -426,15 +426,15 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
   }
   function initForBlocks(){
     if (!document || !document.body) return;
-    const nodes = Array.from(document.querySelectorAll("[j-for]"));
+    const nodes = Array.from(document.querySelectorAll("[z-for]"));
     for (let i = 0; i < nodes.length; i++) {
       const el = nodes[i];
       if (el.__rweForInit) continue;
       el.__rweForInit = true;
-      const parsed = parseForExpr(el.getAttribute("j-for"));
+      const parsed = parseForExpr(el.getAttribute("z-for"));
       if (!parsed) continue;
       const blockId = String(el.getAttribute("data-rwe-for-id") || ("rwefor_" + i));
-      const keyExpr = String(el.getAttribute("j-key") || "").trim();
+      const keyExpr = String(el.getAttribute("z-key") || "").trim();
 
       let scan = el.nextSibling;
       while (scan) {
@@ -454,8 +454,8 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
       }
 
       const templateEl = el.cloneNode(true);
-      templateEl.removeAttribute("j-for");
-      templateEl.removeAttribute("j-key");
+      templateEl.removeAttribute("z-for");
+      templateEl.removeAttribute("z-key");
       templateEl.removeAttribute("data-rwe-for-id");
       templateEl.removeAttribute("data-rwe-for-template");
       templateEl.removeAttribute("data-rwe-for-seeded");
@@ -560,31 +560,31 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
   }
   function flushBindings(){
     if (!document || !document.body) return;
-    const textNodes = document.querySelectorAll("[j-text]");
+    const textNodes = document.querySelectorAll("[z-text]");
     for (const el of textNodes) {
       if (!isNodeHydrated(el)) continue;
-      const p = el.getAttribute("j-text");
+      const p = el.getAttribute("z-text");
       const v = readPath(p || "");
       el.textContent = v == null ? "" : String(v);
     }
-    const modelNodes = document.querySelectorAll("[j-model]");
+    const modelNodes = document.querySelectorAll("[z-model]");
     for (const el of modelNodes) {
       if (!isNodeHydrated(el)) continue;
-      const p = el.getAttribute("j-model");
+      const p = el.getAttribute("z-model");
       const v = readPath(p || "");
       if (el.value !== String(v == null ? "" : v)) el.value = String(v == null ? "" : v);
     }
-    const classNodes = document.querySelectorAll("[j-attr\\:class]");
+    const classNodes = document.querySelectorAll("[z-attr\\:class]");
     for (const el of classNodes) {
       if (!isNodeHydrated(el)) continue;
-      const p = el.getAttribute("j-attr:class");
+      const p = el.getAttribute("z-attr:class");
       const v = readPath(p || "");
       if (typeof v === "string") el.setAttribute("class", v);
     }
-    const showNodes = document.querySelectorAll("[j-show]");
+    const showNodes = document.querySelectorAll("[z-show]");
     for (const el of showNodes) {
       if (!isNodeHydrated(el)) continue;
-      const p = el.getAttribute("j-show");
+      const p = el.getAttribute("z-show");
       const v = evalBindingTruthy(p || "");
       if (v) {
         el.removeAttribute("hidden");
@@ -592,10 +592,10 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
         el.setAttribute("hidden", "");
       }
     }
-    const hideNodes = document.querySelectorAll("[j-hide]");
+    const hideNodes = document.querySelectorAll("[z-hide]");
     for (const el of hideNodes) {
       if (!isNodeHydrated(el)) continue;
-      const p = el.getAttribute("j-hide");
+      const p = el.getAttribute("z-hide");
       const v = evalBindingTruthy(p || "");
       if (v) {
         el.setAttribute("hidden", "");
@@ -626,7 +626,7 @@ const RWE_RUNTIME_PROD_JS: &str = r#"
     document.addEventListener("input", function(ev){
       const el = ev.target;
       if (!el || !el.getAttribute) return;
-      const path = el.getAttribute("j-model");
+      const path = el.getAttribute("z-model");
       if (!path) return;
       if (!isNodeHydrated(el)) return;
       writePath(path, el.value);
@@ -1074,7 +1074,7 @@ fn apply_ssr_for_loops(html: &str, scope: &Value) -> JForSsrResult {
 }
 
 fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult> {
-    let for_attr_start_rel = html.find("j-for=\"")?;
+    let for_attr_start_rel = html.find("z-for=\"")?;
     let for_attr_start = for_attr_start_rel;
     let tag_start = html[..for_attr_start].rfind('<')?;
     let open_end_rel = html[tag_start..].find('>')?;
@@ -1089,12 +1089,12 @@ fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult>
     let (close_start, close_end) = find_matching_close_tag(html, open_end + 1, tag_name)?;
     let inner = &html[open_end + 1..close_start];
 
-    let for_expr = attr_value(open_tag, "j-for")?;
+    let for_expr = attr_value(open_tag, "z-for")?;
     let (item_var, list_expr) = parse_for_expr(for_expr)?;
-    let key_expr = attr_value(open_tag, "j-key");
+    let key_expr = attr_value(open_tag, "z-key");
 
     let seed_id = format!("rwefor_{tag_start}");
-    let mut template_open = remove_attr_from_open_tag(open_tag, "j-for");
+    let mut template_open = remove_attr_from_open_tag(open_tag, "z-for");
     template_open = add_attr_to_open_tag(&template_open, "data-rwe-for-id", &seed_id);
     template_open = add_attr_to_open_tag(&template_open, "data-rwe-for-template", "1");
     template_open = add_bool_attr_to_open_tag(&template_open, "hidden");
@@ -1105,8 +1105,8 @@ fn expand_first_ssr_for_loop(html: &str, scope: &Value) -> Option<JForSsrResult>
         .map(|items| {
             let mut rendered = String::new();
             for (idx, item) in items.iter().enumerate() {
-                let mut row_open = remove_attr_from_open_tag(open_tag, "j-for");
-                row_open = remove_attr_from_open_tag(&row_open, "j-key");
+                let mut row_open = remove_attr_from_open_tag(open_tag, "z-for");
+                row_open = remove_attr_from_open_tag(&row_open, "z-key");
                 row_open = add_attr_to_open_tag(&row_open, "data-rwe-for-seeded", &seed_id);
                 if let Some(expr) = key_expr {
                     let key = resolve_loop_key(expr, item_var, item, idx);
@@ -1167,8 +1167,8 @@ fn strip_visibility_attrs(html: &str) -> String {
         if matches!(next, b'/' | b'!' | b'?') {
             out.push_str(tag);
         } else {
-            let mut next_tag = remove_attr_from_open_tag(tag, "j-show");
-            next_tag = remove_attr_from_open_tag(&next_tag, "j-hide");
+            let mut next_tag = remove_attr_from_open_tag(tag, "z-show");
+            next_tag = remove_attr_from_open_tag(&next_tag, "z-hide");
             out.push_str(&next_tag);
         }
         cursor = end;
@@ -1290,8 +1290,8 @@ fn apply_ssr_visibility(html: &str, scope: &Value) -> SsrRenderResult {
             continue;
         }
 
-        let show_expr = attr_value(tag, "j-show");
-        let hide_expr = attr_value(tag, "j-hide");
+        let show_expr = attr_value(tag, "z-show");
+        let hide_expr = attr_value(tag, "z-hide");
         if show_expr.is_none() && hide_expr.is_none() {
             out.push_str(tag);
             cursor = end;
@@ -2534,13 +2534,13 @@ fn collect_reactive_bindings(html: &str) -> Vec<ReactiveBinding> {
     let mut out = Vec::new();
     collect_attr_bindings(html, "@click", "event.click", &mut out);
     collect_attr_bindings(html, "@change", "event.change", &mut out);
-    collect_attr_bindings(html, "j-text", "bind.text", &mut out);
-    collect_attr_bindings(html, "j-model", "bind.model", &mut out);
-    collect_attr_bindings(html, "j-attr:class", "bind.attr.class", &mut out);
-    collect_attr_bindings(html, "j-show", "bind.show", &mut out);
-    collect_attr_bindings(html, "j-hide", "bind.hide", &mut out);
-    collect_attr_bindings(html, "j-for", "bind.for", &mut out);
-    collect_attr_bindings(html, "j-key", "bind.for.key", &mut out);
+    collect_attr_bindings(html, "z-text", "bind.text", &mut out);
+    collect_attr_bindings(html, "z-model", "bind.model", &mut out);
+    collect_attr_bindings(html, "z-attr:class", "bind.attr.class", &mut out);
+    collect_attr_bindings(html, "z-show", "bind.show", &mut out);
+    collect_attr_bindings(html, "z-hide", "bind.hide", &mut out);
+    collect_attr_bindings(html, "z-for", "bind.for", &mut out);
+    collect_attr_bindings(html, "z-key", "bind.for.key", &mut out);
     collect_attr_bindings(html, "hydrate", "hydrate.mode", &mut out);
     out
 }

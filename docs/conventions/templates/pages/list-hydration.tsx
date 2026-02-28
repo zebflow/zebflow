@@ -39,7 +39,7 @@ export default function Page(input) {
       <section className="rounded-2xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl">
         <h2 className="text-sm uppercase tracking-wide text-zinc-400">SSR Keyed List</h2>
         <ul className="mt-4 space-y-2">
-          <li className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm" jFor="item in input.items" jKey="item.id">
+          <li className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm" zFor="item in input.items" zKey="item.id">
             {item.title} (#{item.id})
           </li>
         </ul>
@@ -60,7 +60,7 @@ export default function Page(input) {
           <button className="inline-flex items-center rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-cyan-400 transition-colors" onClick="counter.inc">
             Wake and Increment
           </button>
-          <p className="text-sm">Counter: <span className="font-semibold text-cyan-400" jText="client.counter">0</span></p>
+          <p className="text-sm">Counter: <span className="font-semibold text-cyan-400" zText="client.counter">0</span></p>
         </section>
       </section>
     </main>

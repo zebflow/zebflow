@@ -45,7 +45,7 @@ export default function Page(input) {
             <section className="project-content-section">
               <div className="project-content-body">
                 <div className="project-card-grid cols-3">
-                  <article jFor="item in input.items" className="project-card">
+                  <article zFor="item in input.items" className="project-card">
                     <h3 className="project-card-title">{item.title}</h3>
                     <p className="project-card-copy">{item.description}</p>
                   </article>

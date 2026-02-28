@@ -34,14 +34,14 @@ export default function Page(input) {
         </nav>
 
         <section className="project-workspace-body">
-          <div jShow="input.is_registry" className="project-registry-shell">
+          <div zShow="input.is_registry" className="project-registry-shell">
             <div className="project-surface-toolbar">
               <div className="project-inline-path">
                 <span className="project-inline-path-label">Path</span>
                 {/* Explicit separators keep breadcrumb rendering deterministic in SSR and runtime output. */}
                 {/* <span className="project-inline-path-divider">/</span> */}
-                <span jFor="crumb in input.registry.breadcrumbs" className="project-inline-path-item">
-                  <span jShow="crumb.show_divider" className="project-inline-path-divider">/</span>
+                <span zFor="crumb in input.registry.breadcrumbs" className="project-inline-path-item">
+                  <span zShow="crumb.show_divider" className="project-inline-path-divider">/</span>
                   <a href="{crumb.path}" className="project-inline-path-link">{crumb.name}</a>
                 </span>
               </div>
@@ -65,7 +65,7 @@ export default function Page(input) {
               </div>
               <div className="project-content-body">
                 <div className="project-entry-grid">
-                  <a jFor="folder in input.registry.folders" href="{folder.path}" className="project-entry-card">
+                  <a zFor="folder in input.registry.folders" href="{folder.path}" className="project-entry-card">
                     <span className="project-entry-icon">
                       <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
                         <path d="M3 7.5A1.5 1.5 0 014.5 6h4l1.5 2h9A1.5 1.5 0 0120.5 9.5v7A1.5 1.5 0 0119 18H4.5A1.5 1.5 0 013 16.5v-9z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
@@ -77,7 +77,7 @@ export default function Page(input) {
                     </div>
                   </a>
 
-                  <article jFor="item in input.registry.pipelines" className="project-entry-card">
+                  <article zFor="item in input.registry.pipelines" className="project-entry-card">
                     <span className="project-entry-icon">
                       <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
                         <circle cx="6" cy="12" r="2" stroke="currentColor" stroke-width="1.7"/>
@@ -103,10 +103,10 @@ export default function Page(input) {
             </section>
           </div>
 
-          <div jShow="input.is_non_registry" className="project-flat-list">
+          <div zShow="input.is_non_registry" className="project-flat-list">
             <div className="project-surface-panel-head">{input.page_title}</div>
             <div className="project-list">
-              <article jFor="item in input.pipeline_items" className="project-list-item">
+              <article zFor="item in input.pipeline_items" className="project-list-item">
                 <p className="project-list-title">{item.name}</p>
                 <p className="project-card-copy">{item.description}</p>
               </article>

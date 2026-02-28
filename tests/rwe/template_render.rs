@@ -328,7 +328,7 @@ fn template_render_supports_ssr_blog_templates() {
 }
 
 #[test]
-fn template_render_supports_boolean_jshow_and_jhide_expressions() {
+fn template_render_supports_boolean_zshow_and_zhide_expressions() {
     let engine = NoopReactiveWebEngine;
     let language = EchoLanguageEngine;
     let template = TemplateSource {
@@ -345,8 +345,8 @@ export const page = {
 export default function Page(input) {
   return (
     <Page>
-      <section id="shown" jShow="input.flags.show && !input.flags.hide">Shown</section>
-      <section id="hidden" jHide="input.flags.show || input.flags.hide">Hidden</section>
+      <section id="shown" zShow="input.flags.show && !input.flags.hide">Shown</section>
+      <section id="hidden" zHide="input.flags.show || input.flags.hide">Hidden</section>
     </Page>
   );
 }
@@ -376,8 +376,8 @@ export default function Page(input) {
         )
         .expect("render boolean visibility template");
 
-    assert!(rendered.html.contains("<section id=\"shown\" j-show=\"input.flags.show && !input.flags.hide\">Shown</section>"));
-    assert!(rendered.html.contains("<section id=\"hidden\" j-hide=\"input.flags.show || input.flags.hide\" hidden>Hidden</section>"));
+    assert!(rendered.html.contains("<section id=\"shown\" z-show=\"input.flags.show && !input.flags.hide\">Shown</section>"));
+    assert!(rendered.html.contains("<section id=\"hidden\" z-hide=\"input.flags.show || input.flags.hide\" hidden>Hidden</section>"));
 }
 
 #[test]
@@ -491,8 +491,8 @@ export default function Page(input) {
   return (
     <Page>
       <div className="path">
-        <span jFor="crumb in input.breadcrumbs" className="crumb">
-          <span jShow="crumb.show_divider" className="divider">/</span>
+        <span zFor="crumb in input.breadcrumbs" className="crumb">
+          <span zShow="crumb.show_divider" className="divider">/</span>
           <a href="{crumb.path}" className="label">{crumb.name}</a>
         </span>
       </div>
@@ -986,7 +986,7 @@ fn template_render_resolves_j_for_placeholders_in_tag_attributes() {
 <!doctype html>
 <html>
   <body>
-    <a j-for="item in input.items" href="/projects/{{item.owner}}/{{item.project}}">
+    <a z-for="item in input.items" href="/projects/{{item.owner}}/{{item.project}}">
       {{item.project}}
     </a>
   </body>
@@ -997,7 +997,7 @@ fn template_render_resolves_j_for_placeholders_in_tag_attributes() {
 
     let compiled = engine
         .compile_template(&template, &language, &ReactiveWebOptions::default())
-        .expect("compile j-for attribute template");
+        .expect("compile z-for attribute template");
 
     let rendered = engine
         .render(
@@ -1014,7 +1014,7 @@ fn template_render_resolves_j_for_placeholders_in_tag_attributes() {
                 metadata: json!({}),
             },
         )
-        .expect("render j-for attribute template");
+        .expect("render z-for attribute template");
 
     assert!(
         rendered
