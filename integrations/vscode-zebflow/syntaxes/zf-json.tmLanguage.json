@@ -1,0 +1,7 @@
+{
+  "name": "Zebflow ZF JSON",
+  "scopeName": "source.json.zebflow.zf",
+  "patterns": [
+    { "include": "source.json" }
+  ]
+}

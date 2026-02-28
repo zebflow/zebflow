@@ -1,0 +1,129 @@
+{
+  "name": "zebflow-lang",
+  "displayName": "Zebflow Language",
+  "description": "Language support for Zebflow TSX templates and ZF JSON pipeline files.",
+  "version": "0.1.0",
+  "publisher": "zebflow",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:zebflow-tsx",
+    "onCommand:zebflow.previewTsx"
+  ],
+  "main": "./extension.js",
+  "files": [
+    "extension.js",
+    "LICENSE",
+    "README.md",
+    "icons/**",
+    "language-configuration/**",
+    "snippets/**",
+    "syntaxes/**"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "zebflow.previewTsx",
+        "title": "Zebflow: Preview TSX"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "when": "resourceExtname == .tsx",
+          "command": "zebflow.previewTsx",
+          "group": "navigation@100"
+        }
+      ],
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .tsx",
+          "command": "zebflow.previewTsx",
+          "group": "navigation@100"
+        }
+      ]
+    },
+    "languages": [
+      {
+        "id": "zebflow-tsx",
+        "aliases": [
+          "Zebflow TSX",
+          "TSX"
+        ],
+        "extensions": [
+          ".tsx"
+        ],
+        "configuration": "./language-configuration/tsx-language-configuration.json",
+        "icon": {
+          "light": "./icons/tsx.svg",
+          "dark": "./icons/tsx.svg"
+        }
+      },
+      {
+        "id": "zebflow-zf-json",
+        "aliases": [
+          "Zebflow ZF JSON",
+          "ZF JSON"
+        ],
+        "extensions": [
+          ".zf.json"
+        ],
+        "configuration": "./language-configuration/zf-json-language-configuration.json",
+        "icon": {
+          "light": "./icons/zf-json.svg",
+          "dark": "./icons/zf-json.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "zebflow-tsx",
+        "scopeName": "text.html.zebflow.tsx",
+        "path": "./syntaxes/tsx.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.js": "javascript",
+          "source.css": "css",
+          "text.html.basic": "html"
+        }
+      },
+      {
+        "language": "zebflow-zf-json",
+        "scopeName": "source.json.zebflow.zf",
+        "path": "./syntaxes/zf-json.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.json": "json"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "zebflow-tsx",
+        "path": "./snippets/tsx.json"
+      },
+      {
+        "language": "zebflow-zf-json",
+        "path": "./snippets/zf-json.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "zebflow-icons",
+        "label": "Zebflow Icons",
+        "path": "./icons/zebflow-icon-theme.json"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.3.2"
+  }
+}

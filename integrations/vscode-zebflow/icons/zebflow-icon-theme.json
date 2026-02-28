@@ -1,0 +1,14 @@
+{
+  "iconDefinitions": {
+    "_tsx": {
+      "iconPath": "./tsx.svg"
+    },
+    "_zfjson": {
+      "iconPath": "./zf-json.svg"
+    }
+  },
+  "fileExtensions": {
+    "tsx": "_tsx",
+    "zf.json": "_zfjson"
+  }
+}

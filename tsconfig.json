@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "zebflow-jsx",
+    "baseUrl": ".",
+    "types": [],
+    "paths": {
+      "zebflow-jsx": [
+        "runtime/tsx/index.d.ts"
+      ],
+      "zebflow-jsx/jsx-runtime": [
+        "runtime/tsx/jsx-runtime.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "conventions/templates/**/*.tsx",
+    "src/platform/web/templates/**/*.tsx",
+    "bench-fixtures/**/*.tsx",
+    "tests/rwe/fixtures/**/*.tsx",
+    "runtime/tsx/**/*.d.ts"
+  ],
+  "exclude": [
+    "target",
+    "integrations/**",
+    "src/**/*.rs",
+    "tests/**/*.rs"
+  ]
+}

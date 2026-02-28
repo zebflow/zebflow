@@ -1,0 +1,26 @@
+/target
+**/target/
+
+# package managers
+node_modules/
+dist/
+
+# macOS
+.DS_Store
+
+# editor / local agent state
+.claude/
+.gemini/
+.playwright-mcp/
+
+# local runtime data
+.*platform-data/
+*.cookies
+
+# logs / temp
+*.log
+*.tmp
+tmp_rendered.html
+
+# local binaries
+test_runtime

@@ -1,0 +1,184 @@
+a {
+  text-underline-offset: 0.16em;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+[data-zf-surface="panel"] {
+  border-radius: var(--zf-radius-panel);
+}
+
+.platform-sidebar-shell {
+  width: 4rem;
+  overflow: visible;
+}
+
+.platform-sidebar-toggle-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.platform-sidebar-panel {
+  width: 4rem;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.98);
+  border-right: 1px solid rgb(226 232 240);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06);
+  overflow: visible;
+  transition: width 180ms ease, box-shadow 180ms ease;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel {
+  width: 15rem;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+}
+
+.platform-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid rgb(241 245 249);
+}
+
+.platform-sidebar-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.platform-sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  color: rgb(71 85 105);
+  background: rgb(248 250 252);
+  border: 1px solid rgb(226 232 240);
+  flex-shrink: 0;
+  transition: transform 180ms ease, background-color 180ms ease;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel .platform-sidebar-toggle {
+  transform: rotate(180deg);
+}
+
+.platform-sidebar-nav {
+  height: calc(100vh - 74px);
+  overflow: visible;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.platform-sidebar-main {
+  justify-content: center;
+  cursor: pointer;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel .platform-sidebar-main {
+  justify-content: flex-start;
+}
+
+.platform-sidebar-label {
+  display: none;
+  white-space: nowrap;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel .platform-sidebar-label {
+  display: inline;
+}
+
+.platform-sidebar-submenu {
+  display: none;
+  padding-left: 2.5rem;
+  padding-right: 0.25rem;
+  gap: 0.125rem;
+  flex-direction: column;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel .platform-sidebar-group[open] .platform-sidebar-submenu {
+  display: flex;
+}
+
+.platform-sidebar-subitem {
+  align-items: center;
+}
+
+.platform-sidebar-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.platform-sidebar-group > summary {
+  list-style: none;
+}
+
+.platform-sidebar-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.platform-sidebar-group-chevron {
+  display: none;
+  margin-left: auto;
+  transition: transform 180ms ease;
+}
+
+.platform-sidebar-toggle-input:checked + .platform-sidebar-panel .platform-sidebar-group-chevron {
+  display: inline-flex;
+}
+
+.platform-sidebar-group[open] .platform-sidebar-group-chevron {
+  transform: rotate(180deg);
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-toggle {
+  margin-inline: auto;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-brand {
+  justify-content: center;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-group {
+  position: relative;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-group > .platform-sidebar-main {
+  justify-content: center;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-group[open] > .platform-sidebar-submenu {
+  display: flex;
+  position: absolute;
+  top: 0;
+  left: calc(100% + 0.5rem);
+  min-width: 12rem;
+  padding: 0.5rem;
+  border: 1px solid rgb(226 232 240);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+  z-index: 30;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-group[open] > .platform-sidebar-submenu .platform-sidebar-label {
+  display: inline;
+}
+
+.platform-sidebar-toggle-input:not(:checked) + .platform-sidebar-panel .platform-sidebar-group[open] > .platform-sidebar-submenu .platform-sidebar-subitem {
+  min-height: 2rem;
+}

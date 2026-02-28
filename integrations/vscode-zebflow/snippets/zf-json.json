@@ -1,0 +1,20 @@
+{
+  "ZF JSON Pipeline Contract": {
+    "prefix": "zfjson-pipeline",
+    "body": [
+      "{",
+      "  \"id\": \"${1:common_backend}\",",
+      "  \"nodes\": [",
+      "    { \"id\": \"webhook_1\", \"type\": \"x.n.webhook\", \"inputs\": [], \"outputs\": [\"out\"] },",
+      "    { \"id\": \"script_1\", \"type\": \"x.n.script\", \"inputs\": [\"in\"], \"outputs\": [\"out\"] },",
+      "    { \"id\": \"db_1\", \"type\": \"x.n.pg.query\", \"inputs\": [\"in\"], \"outputs\": [\"out\"] }",
+      "  ],",
+      "  \"edges\": [",
+      "    { \"from\": \"webhook_1.out\", \"to\": \"script_1.in\" },",
+      "    { \"from\": \"script_1.out\", \"to\": \"db_1.in\" }",
+      "  ]",
+      "}"
+    ],
+    "description": "Create a starter Zebflow ZF JSON pipeline contract file."
+  }
+}

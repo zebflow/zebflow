@@ -1,0 +1,31 @@
+//! Reactive Web Engine (RWE) module.
+//!
+//! Responsibility:
+//!
+//! - compile `.tsx` templates
+//! - render HTML + hydration payload
+//! - optionally integrate language engines for control scripts
+
+pub mod axum_demo;
+pub(crate) mod class_notation;
+pub mod engines;
+pub mod interface;
+pub mod model;
+pub mod processors;
+pub mod protocol;
+pub mod registry;
+pub mod tsx_frontend;
+
+pub use engines::NoopReactiveWebEngine;
+pub use interface::ReactiveWebEngine;
+pub use model::{
+    CompiledTemplate, ComponentOptions, LanguageOptions, ReactiveBinding, ReactiveMode,
+    ReactiveWebDiagnostic, ReactiveWebError, ReactiveWebOptions, RenderContext, RenderOutput,
+    ResourceAllowList, RuntimeBundle, RuntimeMode, StyleEngineMode, TemplateOptions,
+    TemplateSource,
+};
+pub use protocol::{
+    CompileTemplateRequest, CompileTemplateResponse, ProtocolError, ProtocolMeta,
+    RWE_PROTOCOL_VERSION, RenderTemplateRequest, RenderTemplateResponse,
+};
+pub use registry::ReactiveWebEngineRegistry;

@@ -1,0 +1,31 @@
+{
+  "TSX Page Module": {
+    "prefix": "tsx-page",
+    "body": [
+      "export const app = {",
+      "  state: {",
+      "    ui: { title: \"${1:Hello Zebflow}\", count: 0 }",
+      "  },",
+      "  actions: {",
+      "    \"counter.inc\": (ctx) => {",
+      "      const next = Number(ctx.get(\"ui.count\") || 0) + 1;",
+      "      ctx.set(\"ui.count\", next);",
+      "      return \"ui.count\";",
+      "    }",
+      "  }",
+      "};",
+      "",
+      "export default function Page(input) {",
+      "  return (",
+      "    <main className=\"p-6\">",
+      "      <h1 jText=\"ui.title\">${2:Hello Zebflow}</h1>",
+      "      <button onClick=\"counter.inc\" className=\"px-3 py-2 bg-black text-white rounded\">",
+      "        Count: <span jText=\"ui.count\">0</span>",
+      "      </button>",
+      "    </main>",
+      "  );",
+      "}"
+    ],
+    "description": "Create a Zebflow TSX page module with state and actions."
+  }
+}
