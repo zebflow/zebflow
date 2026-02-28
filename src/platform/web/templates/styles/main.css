@@ -67,14 +67,14 @@ select {
 }
 
 .project-studio-frame {
-  --studio-bg: rgb(2 6 23);
-  --studio-panel: rgb(15 23 42);
-  --studio-panel-2: rgb(17 24 39);
-  --studio-panel-3: rgb(30 41 59);
-  --studio-border: rgb(51 65 85);
-  --studio-border-soft: rgb(30 41 59);
-  --studio-text: rgb(226 232 240);
-  --studio-text-soft: rgb(148 163 184);
+  --studio-bg: #0b1120;
+  --studio-panel: #111827;
+  --studio-panel-2: #172033;
+  --studio-panel-3: #1e293b;
+  --studio-border: #2b3648;
+  --studio-border-soft: #20293a;
+  --studio-text: #e5edf7;
+  --studio-text-soft: #93a4ba;
   --studio-accent: var(--zf-color-brand-orange);
   --studio-accent-strong: var(--zf-color-brand-orange-ink);
   --studio-accent-alt: var(--zf-color-brand-blue);
@@ -1033,7 +1033,15 @@ select {
   border-left: 2px solid var(--studio-accent);
 }
 
+.template-tree-item.is-open:not(.is-selected) {
+  color: var(--studio-text);
+}
+
 .template-tree-item.is-folder {
+  color: var(--studio-text);
+}
+
+.template-tree-item.is-protected {
   color: var(--studio-text);
 }
 
@@ -1059,6 +1067,13 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.template-tree-lock {
+  display: inline-flex;
+  align-items: center;
+  color: var(--studio-text-soft);
+  opacity: 0.85;
 }
 
 .template-tree-git {
@@ -1283,6 +1298,11 @@ select {
   color: color-mix(in srgb, #fca5a5 82%, var(--studio-text-soft));
 }
 
+.template-editor-action[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .template-editor-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1372,33 +1392,25 @@ select {
   height: 1.75rem;
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.65rem;
   padding: 0 0.85rem;
   border-top: 1px solid var(--studio-border);
   background: color-mix(in srgb, var(--studio-panel) 55%, transparent);
   font-size: 0.72rem;
 }
 
-.template-editor-status-group {
+.template-editor-status-icon {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
   min-width: 0;
-}
-
-.template-editor-status-group.is-right {
-  margin-left: auto;
-}
-
-.template-editor-status-label {
   color: var(--studio-text-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
 }
 
 .template-editor-status-value {
   color: var(--studio-text);
   white-space: nowrap;
+  font-size: 0.72rem;
 }
 
 .template-editor-status-value[data-state="success"] {
@@ -1411,6 +1423,10 @@ select {
 
 .template-editor-status-value[data-state="error"] {
   color: #fca5a5;
+}
+
+.template-editor-status-spacer {
+  flex: 1;
 }
 
 .template-sonner {

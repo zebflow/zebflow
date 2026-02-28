@@ -1,5 +1,7 @@
 //! Axum web layer for Zebflow platform flows, rendered via RWE templates.
 
+mod embedded;
+
 use std::fs;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -16,15 +18,16 @@ use serde_json::{Value, json};
 use crate::language::{LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, CreateUserRequest, LoginRequest, TemplateCompileRequest,
-    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
-    TemplateSaveRequest,
+    CreateProjectRequest, CreateUserRequest, LoginRequest, ProjectAccessSubject,
+    ProjectCapability, TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest,
+    TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
 };
 use crate::platform::services::PlatformService;
 use crate::rwe::{
     CompiledTemplate, NoopReactiveWebEngine, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
     TemplateOptions, TemplateSource,
 };
+use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
@@ -48,7 +51,7 @@ pub struct PlatformAppState {
 
 /// Builds Zebflow platform router.
 pub fn router(platform: Arc<PlatformService>) -> Router {
-    let frontend = build_frontend().unwrap_or_else(|err| {
+    let frontend = build_frontend(&platform.config.data_root).unwrap_or_else(|err| {
         panic!("failed building platform frontend templates: {err}");
     });
 
@@ -140,10 +143,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .with_state(PlatformAppState { platform, frontend })
 }
 
-fn build_frontend() -> Result<PlatformFrontend, PlatformError> {
+fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError> {
     let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(NoopReactiveWebEngine);
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
-    let template_root = platform_template_root();
+    let template_root = materialize_platform_template_root(data_root)?;
 
     let options = ReactiveWebOptions {
         load_scripts: vec!["/assets/platform/*".to_string()],
@@ -292,8 +295,16 @@ fn compile_page(
     .map_err(|e| PlatformError::new("PLATFORM_RWE_COMPILE", e.to_string()))
 }
 
-fn platform_template_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/platform/web/templates")
+fn materialize_platform_template_root(data_root: &FsPath) -> Result<PathBuf, PlatformError> {
+    let root = data_root.join("platform").join("embedded").join("templates");
+    for asset in PLATFORM_TEMPLATE_ASSETS {
+        let full = root.join(asset.path);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(full, asset.bytes)?;
+    }
+    Ok(root)
 }
 
 fn render_page(
@@ -363,18 +374,10 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
 }
 
 async fn library_asset(Path(path): Path<String>) -> Response {
-    let root = libraries_root();
     let normalized = path.trim_start_matches('/').replace('\\', "/");
-    if normalized.is_empty() {
-        return (StatusCode::NOT_FOUND, "asset not found").into_response();
-    }
-    let full = root.join(&normalized);
-    if !full.starts_with(&root) || !full.is_file() {
-        return (StatusCode::NOT_FOUND, "asset not found").into_response();
-    }
-    match fs::read(&full) {
-        Ok(bytes) => asset_response(content_type_for_path(&full), &bytes),
-        Err(_) => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+    match platform_library_asset(&normalized) {
+        Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
+        None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
 
@@ -594,11 +597,14 @@ async fn render_project_pipelines_with_tab(
     tab: &str,
     registry_path: &str,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if session_owner != owner {
-        return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
     }
 
     let is_registry = tab == "registry";
@@ -686,11 +692,19 @@ async fn render_project_build_with_tab(
     tab: &str,
     query: TemplateWorkspaceQuery,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
+    let capability = if tab == "templates" {
+        ProjectCapability::TemplatesRead
+    } else {
+        ProjectCapability::ProjectRead
     };
-    if session_owner != owner {
-        return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        capability,
+    ) {
+        return response;
     }
 
     if tab == "templates" {
@@ -758,23 +772,28 @@ async fn render_project_build_templates(
                 .map(str::to_string)
                 .or_else(|| workspace.default_file.clone());
 
-            let selected_content = selected_rel
+            let selected_file = selected_rel
                 .as_deref()
-                .map(|rel| state.platform.projects.read_template_file(&owner, &project, rel))
+                .map(|rel| state.platform.projects.read_template_payload(&owner, &project, rel))
                 .transpose();
-            let selected_content = match selected_content {
-                Ok(content) => content.unwrap_or_default(),
+            let selected_file = match selected_file {
+                Ok(file) => file,
                 Err(err) => return internal_error(err),
             };
 
-            let selected_rel = selected_rel.unwrap_or_else(|| "pages/home.tsx".to_string());
-            let selected_name = selected_rel
-                .rsplit('/')
-                .next()
-                .unwrap_or("home.tsx")
-                .to_string();
-            let selected_kind = template_kind_from_rel(&selected_rel);
-            let selected_lines = selected_content.lines().count().max(1);
+            let selected_file = selected_file.unwrap_or_else(|| crate::platform::model::TemplateFilePayload {
+                rel_path: "pages/home.tsx".to_string(),
+                name: "home.tsx".to_string(),
+                file_kind: "page".to_string(),
+                content: String::new(),
+                line_count: 1,
+                is_protected: false,
+            });
+            let selected_rel = selected_file.rel_path.clone();
+            let selected_name = selected_file.name.clone();
+            let selected_kind = selected_file.file_kind.clone();
+            let selected_lines = selected_file.line_count;
+            let selected_content = selected_file.content.clone();
 
             let template_items = workspace
                 .items
@@ -793,6 +812,7 @@ async fn render_project_build_templates(
                         "rel_path": item.rel_path,
                         "kind": item.kind,
                         "file_kind": item.file_kind,
+                        "is_protected": item.is_protected,
                         "indent_px": 12 + (item.depth * 14),
                         "href": href,
                         "is_file": item.kind == "file",
@@ -838,6 +858,7 @@ async fn render_project_build_templates(
                         "file_kind": selected_kind,
                         "content": selected_content,
                         "line_count": selected_lines,
+                        "is_protected": selected_file.is_protected,
                     },
                     "codemirror": {
                         "runtime_src": "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
@@ -873,6 +894,7 @@ async fn project_dashboard_page(
         owner,
         project,
         "dashboard",
+        ProjectCapability::ProjectRead,
         "Dashboard",
         "Observe runtime health, pipeline throughput, and execution traces.",
         vec![
@@ -894,6 +916,7 @@ async fn project_credentials_page(
         owner,
         project,
         "credentials",
+        ProjectCapability::ProjectRead,
         "Credentials",
         "Store and manage API keys, DB credentials, and runtime secrets.",
         vec![
@@ -909,11 +932,14 @@ async fn project_tables_connections_page(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if session_owner != owner {
-        return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -960,11 +986,14 @@ async fn project_table_connection_page(
     headers: HeaderMap,
     Path((owner, project, connection)): Path<(String, String, String)>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if session_owner != owner {
-        return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -1010,6 +1039,7 @@ async fn project_files_page(
         owner,
         project,
         "files",
+        ProjectCapability::FilesRead,
         "Files",
         "Git-sync friendly project files and assets.",
         vec![
@@ -1031,6 +1061,7 @@ async fn project_todo_page(
         owner,
         project,
         "todo",
+        ProjectCapability::ProjectRead,
         "Todo",
         "Collaborative notes and task lists for project delivery.",
         vec![
@@ -1055,6 +1086,7 @@ async fn project_settings_page(
         owner,
         project,
         "settings",
+        ProjectCapability::SettingsRead,
         "Settings",
         "Project policies, adapters, and runtime defaults.",
         vec![
@@ -1098,6 +1130,7 @@ async fn project_settings_web_libraries_page(
         owner,
         project,
         "settings",
+        ProjectCapability::SettingsRead,
         "Web Library Manager",
         "Install Zeb Libraries, pin versions into the project, and feed editor autocomplete plus compile-time runtime assets.",
         vec![
@@ -1129,6 +1162,7 @@ async fn project_settings_nodes_page(
         owner,
         project,
         "settings",
+        ProjectCapability::SettingsRead,
         "Node Manager",
         "Manage runtime node packages, execution extensions, and future hot-reloadable node capabilities.",
         vec![
@@ -1155,15 +1189,15 @@ async fn render_section_page(
     owner: String,
     project: String,
     section_key: &str,
+    capability: ProjectCapability,
     section_title: &str,
     section_desc: &str,
     cards: Vec<Value>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
-    };
-    if session_owner != owner {
-        return (StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response();
+    if let Err(response) =
+        require_project_page_capability(&state, &headers, &owner, &project, capability)
+    {
+        return response;
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -1312,10 +1346,6 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
     })
 }
 
-fn libraries_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("libraries")
-}
-
 fn content_type_for_path(path: &FsPath) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("mjs") | Some("js") => "text/javascript; charset=utf-8",
@@ -1399,11 +1429,14 @@ async fn api_template_workspace(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
     }
     match state.platform.projects.list_template_workspace(&owner, &project) {
         Ok(workspace) => Json(workspace).into_response(),
@@ -1417,11 +1450,14 @@ async fn api_template_file(
     Path((owner, project)): Path<(String, String)>,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
     }
     let Some(path) = query.path.as_deref() else {
         return (
@@ -1442,11 +1478,14 @@ async fn api_template_save(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<TemplateSaveRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesWrite,
+    ) {
+        return response;
     }
     match state.platform.projects.write_template_file(&owner, &project, &req) {
         Ok(file) => Json(file).into_response(),
@@ -1460,11 +1499,14 @@ async fn api_template_create(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<TemplateCreateRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesCreate,
+    ) {
+        return response;
     }
     match state.platform.projects.create_template_entry(&owner, &project, &req) {
         Ok(file) => Json(file).into_response(),
@@ -1478,11 +1520,14 @@ async fn api_template_move(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<TemplateMoveRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesMove,
+    ) {
+        return response;
     }
     match state.platform.projects.move_template_entry(&owner, &project, &req) {
         Ok(rel_path) => Json(json!({ "rel_path": rel_path })).into_response(),
@@ -1496,11 +1541,14 @@ async fn api_template_delete(
     Path((owner, project)): Path<(String, String)>,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesDelete,
+    ) {
+        return response;
     }
     let Some(path) = query.path.as_deref() else {
         return (
@@ -1520,11 +1568,14 @@ async fn api_template_git_status(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
     }
     match state.platform.projects.list_template_git_status(&owner, &project) {
         Ok(items) => Json(items).into_response(),
@@ -1538,11 +1589,14 @@ async fn api_template_diagnostics(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<TemplateCompileRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if session_owner != owner {
-        return StatusCode::FORBIDDEN.into_response();
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesDiagnostics,
+    ) {
+        return response;
     }
 
     let owner = crate::platform::model::slug_segment(&owner);
@@ -1562,6 +1616,60 @@ fn session_owner(headers: &HeaderMap) -> Option<String> {
         part.strip_prefix("zebflow_session=")
             .map(ToString::to_string)
     })
+}
+
+fn require_project_page_capability(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    capability: ProjectCapability,
+) -> Result<ProjectAccessSubject, Response> {
+    let Some(session_owner) = session_owner(headers) else {
+        return Err(Redirect::to("/login").into_response());
+    };
+    let subject = ProjectAccessSubject::user(&session_owner);
+    match state
+        .platform
+        .authz
+        .ensure_project_capability(&subject, owner, project, capability)
+    {
+        Ok(()) => Ok(subject),
+        Err(err) if err.code == "PLATFORM_PROJECT_MISSING" => {
+            Err((StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response())
+        }
+        Err(err) if err.code == "PLATFORM_AUTHZ_FORBIDDEN" => {
+            Err((StatusCode::FORBIDDEN, Html("forbidden".to_string())).into_response())
+        }
+        Err(err) => Err(internal_error(err)),
+    }
+}
+
+fn require_project_api_capability(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    capability: ProjectCapability,
+) -> Result<ProjectAccessSubject, Response> {
+    let Some(session_owner) = session_owner(headers) else {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    };
+    let subject = ProjectAccessSubject::user(&session_owner);
+    match state
+        .platform
+        .authz
+        .ensure_project_capability(&subject, owner, project, capability)
+    {
+        Ok(()) => Ok(subject),
+        Err(err) if err.code == "PLATFORM_PROJECT_MISSING" => {
+            Err(StatusCode::NOT_FOUND.into_response())
+        }
+        Err(err) if err.code == "PLATFORM_AUTHZ_FORBIDDEN" => {
+            Err(StatusCode::FORBIDDEN.into_response())
+        }
+        Err(err) => Err(internal_error(err)),
+    }
 }
 
 fn compile_template_buffer(

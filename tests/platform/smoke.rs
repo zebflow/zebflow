@@ -2,7 +2,10 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, header};
 use tower::ServiceExt;
 
-use zebflow::platform::{PlatformConfig, build_router};
+use zebflow::platform::{
+    CreateUserRequest, PlatformConfig, PlatformService, ProjectAccessSubject, ProjectCapability,
+    build_router,
+};
 
 fn temp_test_dir(name: &str) -> std::path::PathBuf {
     let now = std::time::SystemTime::now()
@@ -347,6 +350,66 @@ async fn platform_template_api_supports_create_save_move_delete_and_git_status()
         .await
         .expect("response");
     assert_eq!(delete.status(), axum::http::StatusCode::NO_CONTENT);
+}
+
+#[test]
+fn platform_project_authorization_is_policy_based_and_shared() {
+    let mut config = PlatformConfig::default();
+    config.data_root = temp_test_dir("project-authz");
+    config.default_password = "test-pass".to_string();
+
+    let platform = PlatformService::from_config(config).expect("platform service");
+
+    let owner_subject = ProjectAccessSubject::user("superadmin");
+    let owner_caps = platform
+        .authz
+        .resolve_project_capabilities(&owner_subject, "superadmin", "default")
+        .expect("owner capabilities");
+    assert!(owner_caps.contains(&ProjectCapability::TemplatesWrite));
+    assert!(owner_caps.contains(&ProjectCapability::SettingsWrite));
+    assert!(owner_caps.contains(&ProjectCapability::McpSessionCreate));
+
+    let policies = platform
+        .data
+        .list_project_policies("superadmin", "default")
+        .expect("project policies");
+    assert!(policies.iter().any(|policy| policy.policy_id == "owner"));
+    assert!(policies.iter().any(|policy| policy.policy_id == "viewer"));
+    assert!(policies.iter().any(|policy| policy.policy_id == "agent.templates"));
+
+    let bindings = platform
+        .data
+        .list_project_policy_bindings("superadmin", "default")
+        .expect("project policy bindings");
+    assert!(bindings.iter().any(|binding| {
+        binding.subject_id == "superadmin" && binding.policy_id == "owner"
+    }));
+
+    platform
+        .users
+        .create_or_update_user(&CreateUserRequest {
+            owner: "alice".to_string(),
+            password: "alice-pass".to_string(),
+            role: "member".to_string(),
+        })
+        .expect("create alice");
+    let alice_subject = ProjectAccessSubject::user("alice");
+    let alice_caps = platform
+        .authz
+        .resolve_project_capabilities(&alice_subject, "superadmin", "default")
+        .expect("alice capabilities");
+    assert!(alice_caps.is_empty());
+
+    let err = platform
+        .authz
+        .ensure_project_capability(
+            &alice_subject,
+            "superadmin",
+            "default",
+            ProjectCapability::TemplatesRead,
+        )
+        .expect_err("alice must be denied");
+    assert_eq!(err.code, "PLATFORM_AUTHZ_FORBIDDEN");
 }
 
 #[tokio::test]

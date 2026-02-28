@@ -8,6 +8,7 @@ import {
   linter,
   lintGutter,
   setDiagnostics,
+  oneDark,
 } from "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs";
 import { createSplitPane } from "/assets/libraries/zeb/interact/0.1/runtime/interact.bundle.mjs";
 import { debounce } from "/assets/libraries/zeb/stateutil/0.1/runtime/stateutil.bundle.mjs";
@@ -141,10 +142,15 @@ function setEditorDoc(view, content) {
 }
 
 function buildTreeItemHtml(item, state) {
-  const isSelected = item.rel_path === state.selectedFile;
+  const isSelected = item.kind === "folder"
+    ? item.rel_path === state.selectedFolder
+    : !state.selectedFolder && item.rel_path === state.selectedFile;
+  const isOpenFile = item.kind === "file" && item.rel_path === state.selectedFile;
   const classes = [
     "template-tree-item",
     item.kind === "folder" ? "is-folder" : "",
+    item.is_protected ? "is-protected" : "",
+    isOpenFile ? "is-open" : "",
     isSelected ? "is-selected" : "",
   ]
     .filter(Boolean)
@@ -157,11 +163,16 @@ function buildTreeItemHtml(item, state) {
     item.kind === "folder"
       ? 'data-template-folder-item="true"'
       : 'data-template-file-item="true"',
+    `data-template-protected="${item.is_protected ? "true" : "false"}"`,
     'draggable="true"',
   ].join(" ");
+  const lock = item.is_protected
+    ? '<span class="template-tree-lock" title="Protected"><svg viewBox="0 0 24 24" fill="none" class="w-3.5 h-3.5"><path d="M8 11V8a4 4 0 118 0v3M7 11h10v9H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>'
+    : "";
   return `<div ${attrs}>
     <span class="template-tree-icon">${iconForItem(item)}</span>
     <span class="template-tree-label">${item.name}</span>
+    ${lock}
     <span class="template-tree-git">${gitCode}</span>
   </div>`;
 }
@@ -169,62 +180,6 @@ function buildTreeItemHtml(item, state) {
 function renderTree(state) {
   const tree = state.treeEl;
   tree.innerHTML = state.workspace.items.map((item) => buildTreeItemHtml(item, state)).join("");
-
-  tree.querySelectorAll("[data-template-file-item]").forEach((node) => {
-    node.addEventListener("click", (event) => {
-      event.preventDefault();
-      openFile(state, node.getAttribute("data-template-rel-path"));
-    });
-  });
-
-  tree.querySelectorAll("[draggable='true']").forEach((node) => {
-    node.addEventListener("dragstart", (event) => {
-      state.draggingRelPath = node.getAttribute("data-template-rel-path");
-      event.dataTransfer?.setData("text/plain", state.draggingRelPath || "");
-      event.dataTransfer.effectAllowed = "move";
-    });
-    node.addEventListener("dragend", () => {
-      state.draggingRelPath = null;
-    });
-  });
-
-  tree.querySelectorAll("[data-template-folder-item]").forEach((node) => {
-    node.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      node.classList.add("is-drop-target");
-    });
-    node.addEventListener("dragleave", () => {
-      node.classList.remove("is-drop-target");
-    });
-    node.addEventListener("drop", async (event) => {
-      event.preventDefault();
-      node.classList.remove("is-drop-target");
-      const fromRelPath = state.draggingRelPath || event.dataTransfer?.getData("text/plain");
-      const toParentRelPath = node.getAttribute("data-template-rel-path") || "";
-      if (!fromRelPath || !toParentRelPath) {
-        return;
-      }
-      if (dirname(fromRelPath) === toParentRelPath) {
-        return;
-      }
-      await moveEntry(state, fromRelPath, toParentRelPath);
-    });
-  });
-
-  tree.addEventListener("dragover", (event) => {
-    event.preventDefault();
-  });
-  tree.addEventListener("drop", async (event) => {
-    if (event.target.closest("[data-template-folder-item]")) {
-      return;
-    }
-    event.preventDefault();
-    const fromRelPath = state.draggingRelPath || event.dataTransfer?.getData("text/plain");
-    if (!fromRelPath || !dirname(fromRelPath)) {
-      return;
-    }
-    await moveEntry(state, fromRelPath, "");
-  });
 }
 
 function renderSearch(state) {
@@ -289,6 +244,21 @@ function updateTab(state) {
   if (meta) {
     meta.textContent = kind;
   }
+
+  if (state.currentFileStatusEl) {
+    state.currentFileStatusEl.textContent = name;
+  }
+  if (state.currentFileStatusIconEl) {
+    state.currentFileStatusIconEl.setAttribute(
+      "title",
+      state.currentFile?.rel_path || name,
+    );
+  }
+}
+
+function setSelectedFolder(state, relPath) {
+  state.selectedFolder = relPath || "";
+  renderTree(state);
 }
 
 function currentImportSuggestions(state) {
@@ -335,6 +305,7 @@ function templateCompletions(state) {
 function editorExtensions(state, fileKind) {
   const extensions = [
     basicSetup,
+    oneDark,
     autocompletion({ override: [templateCompletions(state)] }),
     linter(() => []),
     lintGutter(),
@@ -384,7 +355,11 @@ function applyDiagnostics(state, diagnostics) {
     severity: diag.severity === "error" ? "error" : "warning",
     message: diag.message,
   }));
-  setDiagnostics(state.view, cmDiagnostics);
+  try {
+    state.view.dispatch(setDiagnostics(state.view.state, cmDiagnostics));
+  } catch (error) {
+    console.error("[ZEBFLOW][TEMPLATES] diagnostics apply failed", error);
+  }
 }
 
 async function runDiagnostics(state, contentOverride = null) {
@@ -461,6 +436,7 @@ async function openFile(state, relPath, options = {}) {
   const file = await requestJson(`${state.api.file}?path=${encodePath(relPath)}`);
   state.currentFile = file;
   state.selectedFile = file.rel_path;
+  state.selectedFolder = dirname(file.rel_path);
   state.lastSavedContent = file.content;
   state.isDirty = false;
   state.sourceEl.value = file.content;
@@ -468,6 +444,7 @@ async function openFile(state, relPath, options = {}) {
   updateTab(state);
   renderTree(state);
   setIndicator(state.saveStateEl, "Saved", "success");
+  state.deleteButton?.toggleAttribute("disabled", !!file.is_protected);
   updateGitIndicator(state);
   await runDiagnostics(state, file.content);
   if (!options.silentStatus) {
@@ -511,7 +488,7 @@ async function createEntry(state, kind) {
   if (!name) {
     return;
   }
-  const parent = state.currentFile ? dirname(state.currentFile.rel_path) : "";
+  const parent = state.selectedFolder || (state.currentFile ? dirname(state.currentFile.rel_path) : "");
   const payload = await requestJson(state.api.create, {
     method: "POST",
     body: JSON.stringify({
@@ -549,6 +526,11 @@ async function deleteCurrent(state) {
   if (!state.currentFile) {
     return;
   }
+  if (state.currentFile.is_protected) {
+    showToast(state, "Protected file cannot be deleted", "error");
+    setStatus(state, "Protected", "error");
+    return;
+  }
   const relPath = state.currentFile.rel_path;
   const ok = window.confirm(`Delete ${relPath}?`);
   if (!ok) {
@@ -576,6 +558,73 @@ async function loadKeywordSymbols() {
 }
 
 function bindUi(state) {
+  state.treeEl?.addEventListener("click", (event) => {
+    const fileNode = event.target.closest("[data-template-file-item]");
+    if (fileNode) {
+      event.preventDefault();
+      openFile(state, fileNode.getAttribute("data-template-rel-path"));
+      return;
+    }
+    const folderNode = event.target.closest("[data-template-folder-item]");
+    if (folderNode) {
+      event.preventDefault();
+      setSelectedFolder(state, folderNode.getAttribute("data-template-rel-path") || "");
+    }
+  });
+
+  state.treeEl?.addEventListener("dragstart", (event) => {
+    const item = event.target.closest("[draggable='true']");
+    if (!item) {
+      return;
+    }
+    state.draggingRelPath = item.getAttribute("data-template-rel-path");
+    event.dataTransfer?.setData("text/plain", state.draggingRelPath || "");
+    event.dataTransfer.effectAllowed = "move";
+  });
+
+  state.treeEl?.addEventListener("dragend", () => {
+    state.draggingRelPath = null;
+    state.treeEl.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
+  });
+
+  state.treeEl?.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    const folderNode = event.target.closest("[data-template-folder-item]");
+    state.treeEl.querySelectorAll(".is-drop-target").forEach((node) => {
+      if (node !== folderNode) {
+        node.classList.remove("is-drop-target");
+      }
+    });
+    if (folderNode) {
+      folderNode.classList.add("is-drop-target");
+    }
+  });
+
+  state.treeEl?.addEventListener("dragleave", (event) => {
+    const folderNode = event.target.closest("[data-template-folder-item]");
+    if (folderNode) {
+      folderNode.classList.remove("is-drop-target");
+    }
+  });
+
+  state.treeEl?.addEventListener("drop", async (event) => {
+    event.preventDefault();
+    const folderNode = event.target.closest("[data-template-folder-item]");
+    state.treeEl.querySelectorAll(".is-drop-target").forEach((node) => node.classList.remove("is-drop-target"));
+    const fromRelPath = state.draggingRelPath || event.dataTransfer?.getData("text/plain");
+    if (!fromRelPath) {
+      return;
+    }
+    const toParentRelPath = folderNode?.getAttribute("data-template-rel-path") || "";
+    if (!toParentRelPath && !dirname(fromRelPath)) {
+      return;
+    }
+    if (dirname(fromRelPath) === toParentRelPath) {
+      return;
+    }
+    await moveEntry(state, fromRelPath, toParentRelPath);
+  });
+
   state.root.querySelector("[data-template-new-folder]")?.addEventListener("click", () => {
     createEntry(state, "folder").catch((error) => {
       setStatus(state, "Create failed", "error");
@@ -645,6 +694,7 @@ function createWorkspaceState(root) {
       diagnostics: root.dataset.templateApiDiagnostics,
     },
     selectedFile: root.dataset.templateSelectedFile || "",
+    selectedFolder: "",
     workspace: { default_file: null, items: [] },
     currentFile: null,
     currentDiagnostics: [],
@@ -666,6 +716,9 @@ function createWorkspaceState(root) {
     gitStateEl: root.querySelector("[data-template-git-state]"),
     compileStateEl: root.querySelector("[data-template-compile-state]"),
     tabEl: root.querySelector("[data-template-editor-tab]"),
+    currentFileStatusIconEl: root.querySelector("[data-template-current-file]"),
+    currentFileStatusEl: root.querySelector("[data-template-current-file-value]"),
+    deleteButton: root.querySelector("[data-template-delete]"),
     view: null,
     markDraftReady: null,
   };

@@ -2,7 +2,9 @@
 
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
-use crate::platform::model::{PipelineMeta, PlatformProject, PlatformUser, StoredUser};
+use crate::platform::model::{
+    PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+};
 
 /// Stub adapter for future Firebase support.
 #[derive(Default)]
@@ -71,6 +73,45 @@ impl DataAdapter for FirebaseDataAdapter {
         _owner: &str,
         _project: &str,
     ) -> Result<Vec<PipelineMeta>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn put_project_policy(&self, _policy: &ProjectPolicy) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn list_project_policies(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectPolicy>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn put_project_policy_binding(
+        &self,
+        _binding: &ProjectPolicyBinding,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn list_project_policy_bindings(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectPolicyBinding>, PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
             "firebase adapter is not implemented yet",

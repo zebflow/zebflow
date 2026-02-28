@@ -7,7 +7,7 @@ use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
-use crate::platform::services::{AuthService, ProjectService, UserService};
+use crate::platform::services::{AuthService, AuthorizationService, ProjectService, UserService};
 
 /// Main platform service graph, created once per process.
 #[derive(Clone)]
@@ -24,6 +24,8 @@ pub struct PlatformService {
     pub users: Arc<UserService>,
     /// Auth domain service.
     pub auth: Arc<AuthService>,
+    /// Project-level authorization service shared by REST/MCP/assistant.
+    pub authz: Arc<AuthorizationService>,
     /// Project domain service.
     pub projects: Arc<ProjectService>,
 }
@@ -44,6 +46,7 @@ impl PlatformService {
             project_data.clone(),
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
+        let authz = Arc::new(AuthorizationService::new(data.clone()));
 
         let svc = Self {
             config,
@@ -52,6 +55,7 @@ impl PlatformService {
             project_data,
             users,
             auth,
+            authz,
             projects,
         };
         svc.bootstrap_defaults()?;

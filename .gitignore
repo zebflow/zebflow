@@ -24,3 +24,6 @@ tmp_rendered.html
 
 # local binaries
 test_runtime
+
+# local website scratch
+integrations/website/index.html

@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, StoredUser,
+    DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -43,6 +44,25 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
     ) -> Result<Vec<PipelineMeta>, PlatformError>;
+    /// Upsert one project policy.
+    fn put_project_policy(&self, policy: &ProjectPolicy) -> Result<(), PlatformError>;
+    /// List project policies by owner/project.
+    fn list_project_policies(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectPolicy>, PlatformError>;
+    /// Upsert one project policy binding.
+    fn put_project_policy_binding(
+        &self,
+        binding: &ProjectPolicyBinding,
+    ) -> Result<(), PlatformError>;
+    /// List project policy bindings by owner/project.
+    fn list_project_policy_bindings(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectPolicyBinding>, PlatformError>;
 }
 
 /// Builds selected metadata adapter.

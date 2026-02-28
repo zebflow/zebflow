@@ -98,63 +98,7 @@ export default function Page(input) {
               </div>
 
               <section className="template-sidebar-pane is-active" data-template-pane="files">
-                <div className="template-tree" data-template-tree="true" data-template-root-drop="true">
-                  <div zFor="item in input.workspace.items">
-                    <a
-                      zShow="item.is_file"
-                      href="{item.href}"
-                      className="template-tree-item {item.classes}"
-                      style="padding-left:{item.indent_px}px"
-                      data-template-file-item="true"
-                      data-template-rel-path="{item.rel_path}"
-                      data-template-kind="{item.file_kind}"
-                      draggable="true"
-                    >
-                      <span className="template-tree-icon" zShow="item.is_page">
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                          <path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-                          <path d="M14 4v4h4" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-                        </svg>
-                      </span>
-                      <span className="template-tree-icon" zShow="item.is_component">
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                          <path d="M8 8h8v8H8z" stroke="currentColor" stroke-width="1.7"/>
-                          <path d="M12 4v4M12 16v4M4 12h4M16 12h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-                        </svg>
-                      </span>
-                      <span className="template-tree-icon" zShow="item.is_script">
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                          <path d="M8 6h8M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-                          <path d="M6 4h12v16H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-                        </svg>
-                      </span>
-                      <span className="template-tree-icon" zShow="item.is_style">
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                          <path d="M7 5h10v14H7z" stroke="currentColor" stroke-width="1.7"/>
-                          <path d="M9 9h6M9 13h6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-                        </svg>
-                      </span>
-                      <span className="template-tree-label">{item.name}</span>
-                      <span className="template-tree-git" data-template-git-code="{item.rel_path}"></span>
-                    </a>
-
-                    <div
-                      zShow="item.is_folder"
-                      className="template-tree-item is-folder"
-                      style="padding-left:{item.indent_px}px"
-                      data-template-folder-item="true"
-                      data-template-rel-path="{item.rel_path}"
-                      draggable="true"
-                    >
-                      <span className="template-tree-icon">
-                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                          <path d="M4 7h6l2 2h8v8H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-                        </svg>
-                      </span>
-                      <span className="template-tree-label">{item.name}</span>
-                    </div>
-                  </div>
-                </div>
+                <div className="template-tree" data-template-tree="true" data-template-root-drop="true"></div>
               </section>
 
               <section className="template-sidebar-pane" data-template-pane="search">
@@ -187,7 +131,7 @@ export default function Page(input) {
                 </div>
                 <div className="template-editor-tab-actions">
                   <button type="button" className="template-editor-action" data-template-save="true">Save</button>
-                  <button type="button" className="template-editor-action is-danger" data-template-delete="true">Delete</button>
+                  <button type="button" className="template-editor-action is-danger" data-template-delete="true" data-template-delete-protected="{input.workspace.selected_file.is_protected}">Delete</button>
                 </div>
               </div>
 
@@ -197,40 +141,64 @@ export default function Page(input) {
               </div>
 
               <div className="template-editor-statusbar">
-                <div className="template-editor-status-group">
-                  <span className="template-editor-status-label">File</span>
-                  <span className="template-editor-status-value">{input.workspace.selected_file.rel_path}</span>
+                <div className="template-editor-status-icon" title="{input.workspace.selected_file.rel_path}" data-template-current-file="true">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M7 4h7l4 4v12H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                    <path d="M14 4v4h4" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  </svg>
+                  <span className="template-editor-status-value" data-template-current-file-value="true">{input.workspace.selected_file.name}</span>
                 </div>
-                <div className="template-editor-status-group">
-                  <span className="template-editor-status-label">Lines</span>
-                  <span className="template-editor-status-value">{input.workspace.selected_file.line_count}</span>
+                <div className="template-editor-status-icon" title="zeb/codemirror@0.1">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M8 6h8M8 10h8M8 14h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                    <path d="M6 4h12v16H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  </svg>
+                  <span className="template-editor-status-value">CM</span>
                 </div>
-                <div className="template-editor-status-group">
-                  <span className="template-editor-status-label">Library</span>
-                  <span className="template-editor-status-value">{input.workspace.codemirror.package_label}</span>
+                <div className="template-editor-status-icon" title="zeb/interact@0.1">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M8 7l3 9M16 7l-3 9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                    <circle cx="6" cy="6" r="2" stroke="currentColor" stroke-width="1.7"/>
+                    <circle cx="18" cy="6" r="2" stroke="currentColor" stroke-width="1.7"/>
+                    <circle cx="12" cy="18" r="2" stroke="currentColor" stroke-width="1.7"/>
+                  </svg>
+                  <span className="template-editor-status-value">IN</span>
                 </div>
-                <div className="template-editor-status-group">
-                  <span className="template-editor-status-label">Interact</span>
-                  <span className="template-editor-status-value">zeb/interact@0.1</span>
+                <div className="template-editor-status-icon" title="zeb/stateutil@0.1">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M6 12h12M12 6v12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                  </svg>
+                  <span className="template-editor-status-value">ST</span>
                 </div>
-                <div className="template-editor-status-group">
-                  <span className="template-editor-status-label">State</span>
-                  <span className="template-editor-status-value">zeb/stateutil@0.1</span>
-                </div>
-                <div className="template-editor-status-group is-right">
-                  <span className="template-editor-status-label">Save</span>
+                <div className="template-editor-status-spacer"></div>
+                <div className="template-editor-status-icon" title="Save state">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M6 4h9l3 3v13H6z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                    <path d="M9 4v5h6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  </svg>
                   <span className="template-editor-status-value" data-template-save-state="true">Clean</span>
                 </div>
-                <div className="template-editor-status-group is-right">
-                  <span className="template-editor-status-label">Git</span>
+                <div className="template-editor-status-icon" title="Git status">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <circle cx="6" cy="6" r="2" stroke="currentColor" stroke-width="1.7"/>
+                    <circle cx="18" cy="6" r="2" stroke="currentColor" stroke-width="1.7"/>
+                    <circle cx="12" cy="18" r="2" stroke="currentColor" stroke-width="1.7"/>
+                    <path d="M8 7l3 9M16 7l-3 9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                  </svg>
                   <span className="template-editor-status-value" data-template-git-state="true">Synced</span>
                 </div>
-                <div className="template-editor-status-group is-right">
-                  <span className="template-editor-status-label">Compile</span>
+                <div className="template-editor-status-icon" title="Compile state">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M12 8v5M12 17h.01" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                    <path d="M10.3 4.8L3.8 16a2 2 0 001.73 3h13a2 2 0 001.73-3L13.73 4.8a2 2 0 00-3.46 0z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  </svg>
                   <span className="template-editor-status-value" data-template-compile-state="true">Unknown</span>
                 </div>
-                <div className="template-editor-status-group is-right">
-                  <span className="template-editor-status-label">Editor</span>
+                <div className="template-editor-status-icon" title="Editor state">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.7"/>
+                    <path d="M12 8v4l2.5 2.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
                   <span className="template-editor-status-value" data-template-status="true">Booting</span>
                 </div>
               </div>

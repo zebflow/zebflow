@@ -99,6 +99,152 @@ pub struct PlatformProject {
     pub updated_at: i64,
 }
 
+/// Atomic project-scoped permission used by REST, MCP, and internal assistants.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectCapability {
+    ProjectRead,
+    TemplatesRead,
+    TemplatesWrite,
+    TemplatesCreate,
+    TemplatesDelete,
+    TemplatesMove,
+    TemplatesDiagnostics,
+    PipelinesRead,
+    PipelinesWrite,
+    PipelinesCreate,
+    PipelinesDelete,
+    PipelinesMove,
+    PipelinesExecute,
+    FilesRead,
+    FilesWrite,
+    FilesDelete,
+    TablesRead,
+    TablesWrite,
+    LibrariesRead,
+    LibrariesInstall,
+    LibrariesRemove,
+    SettingsRead,
+    SettingsWrite,
+    McpSessionCreate,
+    McpSessionRevoke,
+}
+
+impl ProjectCapability {
+    /// Stable string id used by policy payloads and UI.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ProjectRead => "project.read",
+            Self::TemplatesRead => "templates.read",
+            Self::TemplatesWrite => "templates.write",
+            Self::TemplatesCreate => "templates.create",
+            Self::TemplatesDelete => "templates.delete",
+            Self::TemplatesMove => "templates.move",
+            Self::TemplatesDiagnostics => "templates.diagnostics",
+            Self::PipelinesRead => "pipelines.read",
+            Self::PipelinesWrite => "pipelines.write",
+            Self::PipelinesCreate => "pipelines.create",
+            Self::PipelinesDelete => "pipelines.delete",
+            Self::PipelinesMove => "pipelines.move",
+            Self::PipelinesExecute => "pipelines.execute",
+            Self::FilesRead => "files.read",
+            Self::FilesWrite => "files.write",
+            Self::FilesDelete => "files.delete",
+            Self::TablesRead => "tables.read",
+            Self::TablesWrite => "tables.write",
+            Self::LibrariesRead => "libraries.read",
+            Self::LibrariesInstall => "libraries.install",
+            Self::LibrariesRemove => "libraries.remove",
+            Self::SettingsRead => "settings.read",
+            Self::SettingsWrite => "settings.write",
+            Self::McpSessionCreate => "mcp.session.create",
+            Self::McpSessionRevoke => "mcp.session.revoke",
+        }
+    }
+}
+
+/// Project policy bundle stored in metadata and reused by users, MCP sessions, and assistants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectPolicy {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Stable policy id (`viewer`, `editor`, `owner`, ...).
+    pub policy_id: String,
+    /// Display label.
+    pub title: String,
+    /// Capability bundle.
+    pub capabilities: Vec<ProjectCapability>,
+    /// Whether this policy is platform-managed.
+    pub managed: bool,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Subject kind bound to one project policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSubjectKind {
+    User,
+    McpSession,
+    AssistantProfile,
+}
+
+impl ProjectSubjectKind {
+    /// Stable string id for storage and transport.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::McpSession => "mcp_session",
+            Self::AssistantProfile => "assistant_profile",
+        }
+    }
+}
+
+/// One project-level subject -> policy binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectPolicyBinding {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Subject kind (`user`, `mcp_session`, `assistant_profile`).
+    pub subject_kind: ProjectSubjectKind,
+    /// Stable subject id.
+    pub subject_id: String,
+    /// Bound policy id.
+    pub policy_id: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Runtime subject passed into authorization checks so REST, MCP, and assistant paths
+/// share the same policy gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectAccessSubject {
+    /// Subject kind.
+    pub kind: ProjectSubjectKind,
+    /// Stable subject id.
+    pub id: String,
+}
+
+impl ProjectAccessSubject {
+    /// Creates a user subject.
+    pub fn user(owner: &str) -> Self {
+        Self {
+            kind: ProjectSubjectKind::User,
+            id: slug_segment(owner),
+        }
+    }
+}
+
 /// Pipeline metadata catalog entry stored in platform-level metadata DB.
 ///
 /// The pipeline source file is stored under one project `app/` workspace
@@ -190,6 +336,8 @@ pub struct TemplateTreeItem {
     pub depth: usize,
     /// File classification for icon/behavior hints.
     pub file_kind: String,
+    /// Whether the entry is protected from destructive actions.
+    pub is_protected: bool,
 }
 
 /// Template workspace listing for one project.
@@ -266,6 +414,8 @@ pub struct TemplateFilePayload {
     pub content: String,
     /// Line count.
     pub line_count: usize,
+    /// Whether the entry is protected from destructive actions.
+    pub is_protected: bool,
 }
 
 /// Request payload used to compile one current template buffer.

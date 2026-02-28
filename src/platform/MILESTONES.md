@@ -1,0 +1,10 @@
+- platform-level smart routing
+    - change admin n login main path
+    - reroute path to another path
+    - lightspeed static / cacheable configuration
+- security-first under platform
+    - Server security barrier 
+    - Zero access policy
+        -> mcp, rest api, internal llm
+- discovery-first under platform
+    - SEO related based on webhook that is seoable

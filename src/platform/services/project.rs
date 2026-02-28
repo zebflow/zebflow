@@ -400,6 +400,7 @@ impl ProjectService {
                 file_kind: "folder".to_string(),
                 content: String::new(),
                 line_count: 0,
+                is_protected: template_entry_is_protected(&rel, true),
             });
         }
 
@@ -448,10 +449,10 @@ impl ProjectService {
                 format!("template entry '{}' not found", rel),
             ));
         }
-        if rel == "styles/main.css" {
+        if template_entry_is_protected(&rel, abs.is_dir()) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_DELETE",
-                "project main.css cannot be deleted",
+                format!("protected template entry '{}' cannot be deleted", rel),
             ));
         }
         if abs.is_dir() {
@@ -759,6 +760,7 @@ fn walk_template_tree(
                 kind: "folder".to_string(),
                 depth,
                 file_kind: "folder".to_string(),
+                is_protected: template_entry_is_protected(&rel, true),
             });
             walk_template_tree(root, &path, depth + 1, items, default_file)?;
         } else if file_type.is_file() {
@@ -768,10 +770,11 @@ fn walk_template_tree(
             }
             items.push(TemplateTreeItem {
                 name: entry.file_name().to_string_lossy().to_string(),
-                rel_path: rel,
+                rel_path: rel.clone(),
                 kind: "file".to_string(),
                 depth,
                 file_kind,
+                is_protected: template_entry_is_protected(&rel, false),
             });
         }
     }
@@ -923,6 +926,15 @@ fn template_payload_from_content(rel_path: &str, content: &str) -> TemplateFileP
         file_kind: template_file_kind(Path::new(rel_path)),
         content: content.to_string(),
         line_count: content.lines().count().max(1),
+        is_protected: template_entry_is_protected(rel_path, false),
+    }
+}
+
+fn template_entry_is_protected(rel_path: &str, is_dir: bool) -> bool {
+    match rel_path {
+        "styles" | "scripts" => is_dir,
+        "styles/main.css" => true,
+        _ => false,
     }
 }
 

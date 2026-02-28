@@ -30,6 +30,7 @@ Zebflow is built from four layers:
    - login, home, project shell
    - built using the same RWE contract
    - owns product policy such as Zeb Libraries
+   - owns project-level authorization policy for REST, MCP, and assistant access
 
 ## Canonical Web Delivery Policy
 
@@ -87,3 +88,23 @@ At runtime, a manager such as Zebflow platform supplies the per-project
 
 The goal of `docs/` is to keep the active contract in one place so the
 framework, platform, and editor layers do not drift.
+
+## Project Authorization Direction
+
+Project access should be resolved through one shared capability model:
+
+1. capability
+   - smallest permission unit
+2. policy
+   - named bundle of capabilities
+3. binding
+   - assignment of one policy to one subject in one project
+
+This is intentionally platform-level policy, not RWE policy.
+
+It is the foundation for:
+
+1. current REST access control
+2. future MCP session scopes
+3. future internal assistant profiles
+4. future contributor RBAC

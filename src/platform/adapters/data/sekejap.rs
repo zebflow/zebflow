@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, StoredUser, normalize_virtual_path, slug_segment,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    normalize_virtual_path, slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -47,6 +48,32 @@ impl SekejapDataAdapter {
             slug_segment(project),
             slug_segment(&vp),
             slug_segment(name)
+        )
+    }
+
+    fn project_policy_slug(owner: &str, project: &str, policy_id: &str) -> String {
+        format!(
+            "project_policy/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(policy_id)
+        )
+    }
+
+    fn project_policy_binding_slug(
+        owner: &str,
+        project: &str,
+        subject_kind: &str,
+        subject_id: &str,
+        policy_id: &str,
+    ) -> String {
+        format!(
+            "project_policy_binding/{}/{}/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(subject_kind),
+            slug_segment(subject_id),
+            slug_segment(policy_id)
         )
     }
 
@@ -304,6 +331,97 @@ impl DataAdapter for SekejapDataAdapter {
             a.virtual_path
                 .cmp(&b.virtual_path)
                 .then(a.name.cmp(&b.name))
+        });
+        Ok(out)
+    }
+
+    fn put_project_policy(&self, policy: &ProjectPolicy) -> Result<(), PlatformError> {
+        let data = json!({
+            "_id": Self::project_policy_slug(&policy.owner, &policy.project, &policy.policy_id),
+            "_collection": "project_policy",
+            "owner": policy.owner,
+            "project": policy.project,
+            "policy_id": policy.policy_id,
+            "title": policy.title,
+            "capabilities": policy.capabilities,
+            "managed": policy.managed,
+            "created_at": policy.created_at,
+            "updated_at": policy.updated_at,
+        });
+        let op = json!({"mutation":"put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_project_policies(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectPolicy>, PlatformError> {
+        let rows = self.query_payloads(vec![
+            json!({"op":"collection","name":"project_policy"}),
+            json!({"op":"where_eq","field":"owner","value":owner}),
+            json!({"op":"where_eq","field":"project","value":project}),
+            json!({"op":"take","n":QUERY_LIMIT}),
+        ])?;
+        let mut out = rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<ProjectPolicy>(v).ok())
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| a.policy_id.cmp(&b.policy_id));
+        Ok(out)
+    }
+
+    fn put_project_policy_binding(
+        &self,
+        binding: &ProjectPolicyBinding,
+    ) -> Result<(), PlatformError> {
+        let data = json!({
+            "_id": Self::project_policy_binding_slug(
+                &binding.owner,
+                &binding.project,
+                binding.subject_kind.key(),
+                &binding.subject_id,
+                &binding.policy_id,
+            ),
+            "_collection": "project_policy_binding",
+            "owner": binding.owner,
+            "project": binding.project,
+            "subject_kind": binding.subject_kind,
+            "subject_id": binding.subject_id,
+            "policy_id": binding.policy_id,
+            "created_at": binding.created_at,
+            "updated_at": binding.updated_at,
+        });
+        let op = json!({"mutation":"put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_project_policy_bindings(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectPolicyBinding>, PlatformError> {
+        let rows = self.query_payloads(vec![
+            json!({"op":"collection","name":"project_policy_binding"}),
+            json!({"op":"where_eq","field":"owner","value":owner}),
+            json!({"op":"where_eq","field":"project","value":project}),
+            json!({"op":"take","n":QUERY_LIMIT}),
+        ])?;
+        let mut out = rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<ProjectPolicyBinding>(v).ok())
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| {
+            a.subject_kind
+                .cmp(&b.subject_kind)
+                .then(a.subject_id.cmp(&b.subject_id))
+                .then(a.policy_id.cmp(&b.policy_id))
         });
         Ok(out)
     }

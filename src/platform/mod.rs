@@ -21,9 +21,9 @@ pub use error::PlatformError;
 pub use model::{
     AuthSession, CreateProjectRequest, CreateUserRequest, DataAdapterKind, FileAdapterKind,
     LoginRequest, PipelineMeta, PipelineRegistryListing, PlatformConfig, PlatformProject,
-    PlatformUser, ProjectFileLayout,
+    PlatformUser, ProjectAccessSubject, ProjectCapability, ProjectFileLayout,
 };
-pub use services::{AuthService, PlatformService, ProjectService, UserService};
+pub use services::{AuthService, AuthorizationService, PlatformService, ProjectService, UserService};
 
 /// Builds platform router + service graph from config.
 pub fn build_router(config: PlatformConfig) -> Result<Router, PlatformError> {

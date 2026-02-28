@@ -72,6 +72,40 @@ For Zeb Libraries specifically, the platform-side flow should be:
 The editor should consume metadata such as `keywords.json` and `exports.json`,
 not raw upstream package source on every keystroke.
 
+## Project Authorization Boundary
+
+Project-level access is now modeled as a shared policy system, not as route-local
+owner checks.
+
+Core pieces:
+
+1. capabilities
+   - atomic permissions such as:
+     - `templates.read`
+     - `templates.write`
+     - `pipelines.read`
+     - `settings.read`
+2. policies
+   - named bundles such as:
+     - `owner`
+     - `viewer`
+     - `editor`
+     - `maintainer`
+     - `agent.templates`
+     - `agent.project`
+3. bindings
+   - attach one policy to a subject at project scope
+
+This lives in the platform service layer so the same checks can be reused by:
+
+1. REST handlers
+2. future MCP sessions
+3. future internal assistant profiles
+
+The web layer should call project-capability checks through the shared
+authorization service rather than implementing custom owner comparison logic in
+each route.
+
 ## Platform Template Root
 
 Current platform template root:
