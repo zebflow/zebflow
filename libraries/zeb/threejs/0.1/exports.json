@@ -1,0 +1,28 @@
+{
+  "package": "zeb/threejs",
+  "version": "0.1",
+  "raw": {
+    "threejs": {
+      "entry": "runtime/threejs.bundle.mjs",
+      "description": "Official Zebflow Three.js bridge runtime namespace."
+    },
+    "ensureThree": {
+      "entry": "runtime/threejs.bundle.mjs",
+      "description": "Resolve Three.js runtime from explicit argument or globalThis.THREE."
+    },
+    "createSceneRuntime": {
+      "entry": "runtime/threejs.bundle.mjs",
+      "description": "Create one basic Three.js scene runtime bound to a canvas."
+    },
+    "mountThreeScene": {
+      "entry": "runtime/threejs.bundle.mjs",
+      "description": "Mount a canvas into a host element and start a Three.js scene runtime."
+    }
+  },
+  "wrappers": {
+    "ThreeScene": {
+      "entry": "wrappers/ThreeScene.tsx",
+      "description": "TSX wrapper component shell for Three.js canvas mounting."
+    }
+  }
+}

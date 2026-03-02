@@ -1,11 +1,36 @@
 //! Webhook trigger node.
 
+use crate::framework::{
+    FrameworkError, NodeDefinition,
+    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use crate::framework::{FrameworkError, nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput}};
 
-pub const NODE_KIND: &str = "x.n.trigger.webhook";
-pub const INPUT_PIN_IN: &str = "in";
+pub const NODE_KIND: &str = "n.trigger.webhook";
 pub const OUTPUT_PIN_OUT: &str = "out";
+
+/// Unified node-definition metadata for `n.trigger.webhook`.
+pub fn definition() -> NodeDefinition {
+    NodeDefinition {
+        kind: NODE_KIND.to_string(),
+        title: "Webhook Trigger".to_string(),
+        description: "Start pipeline run from inbound HTTP path + method.".to_string(),
+        input_schema: serde_json::json!({
+            "type":"object",
+            "description":"Request payload forwarded from webhook ingress."
+        }),
+        output_schema: serde_json::json!({
+            "type":"object",
+            "description":"Unmodified request payload for downstream nodes."
+        }),
+        input_pins: vec![],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        script_available: false,
+        script_bridge: None,
+        ai_tool: Default::default(),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -28,18 +53,22 @@ impl Node {
     }
 }
 
+#[async_trait]
 impl FrameworkNode for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
-    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
-        if input.input_pin != INPUT_PIN_IN {
-            return Err(FrameworkError::new(
-                "FW_NODE_TRIGGER_WEBHOOK_INPUT_PIN",
-                format!("unsupported input pin '{}'", input.input_pin),
-            ));
-        }
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, FrameworkError> {
         Ok(NodeExecutionOutput {
             output_pin: OUTPUT_PIN_OUT.to_string(),
             payload: input.payload,

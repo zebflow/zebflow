@@ -1,0 +1,10 @@
+{
+  "raw": [
+    { "name": "d3lib", "kind": "namespace" },
+    { "name": "ensureD3", "kind": "function" },
+    { "name": "mountBarChart", "kind": "function" }
+  ],
+  "wrappers": [
+    { "name": "D3Bars", "kind": "tsx-component", "path": "wrappers/D3Bars.tsx" }
+  ]
+}

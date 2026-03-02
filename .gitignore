@@ -13,6 +13,10 @@ dist/
 .gemini/
 .playwright-mcp/
 
+# env (API keys)
+.env
+.env.local
+
 # local runtime data
 .*platform-data/
 *.cookies

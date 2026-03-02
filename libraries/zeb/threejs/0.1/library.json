@@ -1,0 +1,24 @@
+{
+  "name": "zeb/threejs",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "three",
+    "package_version": "bridge",
+    "entry": "runtime/threejs.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["threejs", "ensureThree", "createSceneRuntime", "mountThreeScene"],
+    "wrappers": ["ThreeScene"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/threejs.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

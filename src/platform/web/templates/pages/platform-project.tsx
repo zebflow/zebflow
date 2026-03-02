@@ -23,6 +23,8 @@ export default function Page(input) {
       projectHref="{input.project_href}"
       projectLabel="{input.title}"
       currentMenu="Pipelines / Registry"
+      owner="{input.owner}"
+      project="{input.project}"
     >
       <div className="project-workspace">
         <nav className="project-tab-strip"></nav>

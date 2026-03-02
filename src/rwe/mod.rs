@@ -14,18 +14,20 @@ pub mod model;
 pub mod processors;
 pub mod protocol;
 pub mod registry;
+pub mod script_cache;
 pub mod tsx_frontend;
 
 pub use engines::NoopReactiveWebEngine;
 pub use interface::ReactiveWebEngine;
 pub use model::{
-    CompiledTemplate, ComponentOptions, LanguageOptions, ReactiveBinding, ReactiveMode,
-    ReactiveWebDiagnostic, ReactiveWebError, ReactiveWebOptions, RenderContext, RenderOutput,
-    ResourceAllowList, RuntimeBundle, RuntimeMode, StyleEngineMode, TemplateOptions,
-    TemplateSource,
+    CompiledScript, CompiledScriptScope, CompiledTemplate, ComponentOptions, LanguageOptions,
+    ReactiveBinding, ReactiveMode, ReactiveWebDiagnostic, ReactiveWebError, ReactiveWebOptions,
+    RenderContext, RenderOutput, ResourceAllowList, RuntimeBundle, RuntimeMode, StyleEngineMode,
+    TemplateOptions, TemplateSource,
 };
 pub use protocol::{
     CompileTemplateRequest, CompileTemplateResponse, ProtocolError, ProtocolMeta,
     RWE_PROTOCOL_VERSION, RenderTemplateRequest, RenderTemplateResponse,
 };
 pub use registry::ReactiveWebEngineRegistry;
+pub use script_cache::{CachedScriptRef, RenderScriptCache, ScriptCacheConfig};

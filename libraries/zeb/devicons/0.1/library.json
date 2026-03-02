@@ -1,0 +1,24 @@
+{
+  "name": "zeb/devicons",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "devicon",
+    "package_version": "bridge",
+    "entry": "runtime/devicons.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["ensureDevicons", "dbKindIconClass", "dbObjectIconClass"],
+    "wrappers": []
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/devicons.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

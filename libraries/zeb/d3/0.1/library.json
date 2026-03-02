@@ -1,0 +1,24 @@
+{
+  "name": "zeb/d3",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "d3",
+    "package_version": "bridge",
+    "entry": "runtime/d3.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["d3lib", "ensureD3", "mountBarChart"],
+    "wrappers": ["D3Bars"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/d3.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

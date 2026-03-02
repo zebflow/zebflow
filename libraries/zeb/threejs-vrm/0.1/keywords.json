@@ -1,0 +1,21 @@
+{
+  "package": "zeb/threejs-vrm",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "vrm",
+      "kind": "raw",
+      "doc": "Official Zeb Three.js VRM bridge package root."
+    },
+    {
+      "name": "mountVrmViewer",
+      "kind": "raw",
+      "doc": "Mount a host element and load one VRM avatar model."
+    },
+    {
+      "name": "VrmViewer",
+      "kind": "wrapper",
+      "doc": "TSX wrapper for declarative VRM viewer hosts."
+    }
+  ]
+}

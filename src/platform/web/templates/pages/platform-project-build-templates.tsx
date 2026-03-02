@@ -30,12 +30,14 @@ export default function Page(input) {
       projectHref="{input.project_href}"
       projectLabel="{input.title}"
       currentMenu="{input.current_menu}"
+      owner="{input.owner}"
+      project="{input.project}"
     >
       <div className="project-workspace">
         <nav className="project-tab-strip">
           <a href="{input.nav.links.build_templates}" className="project-tab-link {input.nav.classes.build_templates}">Templates</a>
           <a href="{input.nav.links.build_assets}" className="project-tab-link {input.nav.classes.build_assets}">Assets</a>
-          <a href="{input.nav.links.build_schema}" className="project-tab-link {input.nav.classes.build_schema}">Schema</a>
+          <a href="{input.nav.links.build_docs}" className="project-tab-link {input.nav.classes.build_docs}">Docs</a>
         </nav>
 
         <section className="project-workspace-body">

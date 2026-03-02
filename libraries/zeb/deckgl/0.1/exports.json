@@ -1,0 +1,11 @@
+{
+  "raw": [
+    { "name": "deckgl", "kind": "namespace" },
+    { "name": "ensureDeck", "kind": "function" },
+    { "name": "createDeckMapRuntime", "kind": "function" },
+    { "name": "mountDeckMap", "kind": "function" }
+  ],
+  "wrappers": [
+    { "name": "DeckMap", "kind": "tsx-component", "path": "wrappers/DeckMap.tsx" }
+  ]
+}

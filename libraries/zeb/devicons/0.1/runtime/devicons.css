@@ -1,0 +1,59 @@
+/* Devicon font pack (CDN) + local fallback classes for Zebflow DB/UI surfaces. */
+@import url("https://cdn.jsdelivr.net/gh/devicons/devicon@2.16.0/devicon.min.css");
+
+.zf-devicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  line-height: 1;
+  color: currentColor;
+  flex: 0 0 auto;
+}
+
+.zf-devicon::before {
+  font-size: 0.95rem;
+}
+
+.zf-devicon--lg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.zf-devicon--lg::before {
+  font-size: 1.2rem;
+}
+
+/* Local fallback classes for custom/non-devicon entities. */
+.zf-icon-sjtable::before {
+  content: "◫";
+}
+
+.zf-icon-schema::before {
+  content: "◨";
+}
+
+.zf-icon-table::before {
+  content: "▦";
+}
+
+.zf-icon-function::before {
+  content: "ƒ";
+}
+
+.zf-icon-node::before {
+  content: "◎";
+}
+
+.zf-icon-file::before {
+  content: "◧";
+}
+
+.zf-icon-folder::before {
+  content: "◩";
+}
+
+.zf-icon-default-db::before {
+  content: "◍";
+}

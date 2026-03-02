@@ -1,0 +1,15 @@
+{
+  "name": "zeb/graphui",
+  "version": "0.1",
+  "trust": "official",
+  "surface": "web",
+  "runtime": {
+    "entry": "runtime/graphui.bundle.mjs",
+    "format": "esm"
+  },
+  "exports": {
+    "raw": ["graphui", "createGraphUI", "createSeedScenes", "createPipelineScene"],
+    "wrappers": ["GraphCanvas"]
+  },
+  "description": "Interactive graph canvas primitives for pipeline visualization and editing seed UIs."
+}

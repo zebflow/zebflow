@@ -12,10 +12,10 @@ use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
-    PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectFileLayout,
-    TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem,
-    TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing,
-    normalize_virtual_path, now_ts, slug_segment,
+    PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
+    ProjectFileLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
+    TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
+    TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
 };
 
 /// Project service backed by swappable data + file adapters.
@@ -193,6 +193,41 @@ impl ProjectService {
         Ok(meta)
     }
 
+    /// Lists all pipeline metadata rows for one project.
+    pub fn list_pipeline_meta_rows(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<PipelineMeta>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let mut rows = self.data.list_pipeline_meta(&owner, &project)?;
+        rows.sort_by(|a, b| {
+            normalize_virtual_path(&a.virtual_path)
+                .cmp(&normalize_virtual_path(&b.virtual_path))
+                .then(a.name.cmp(&b.name))
+        });
+        Ok(rows)
+    }
+
+    /// Returns one pipeline metadata row by stable file id (`file_rel_path`).
+    pub fn get_pipeline_meta_by_file_id(
+        &self,
+        owner: &str,
+        project: &str,
+        file_id: &str,
+    ) -> Result<Option<PipelineMeta>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let wanted = file_id.trim().replace('\\', "/");
+        let meta = self
+            .data
+            .list_pipeline_meta(&owner, &project)?
+            .into_iter()
+            .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
+        Ok(meta)
+    }
+
     /// Reads current working-tree source for one pipeline file.
     pub fn read_pipeline_source(
         &self,
@@ -236,7 +271,11 @@ impl ProjectService {
                     "pipeline '{}/{}{}{}' not found",
                     owner,
                     project,
-                    if normalize_virtual_path(virtual_path) == "/" { "/" } else { "" },
+                    if normalize_virtual_path(virtual_path) == "/" {
+                        "/"
+                    } else {
+                        ""
+                    },
                     slug_segment(name)
                 ),
             ));
@@ -244,8 +283,12 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
-        let snapshot_path =
-            self.runtime_pipeline_snapshot_path(&layout, &meta.virtual_path, &meta.name, &current_hash)?;
+        let snapshot_path = self.runtime_pipeline_snapshot_path(
+            &layout,
+            &meta.virtual_path,
+            &meta.name,
+            &current_hash,
+        )?;
         if let Some(parent) = snapshot_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -320,8 +363,12 @@ impl ProjectService {
                 format!("pipeline '{}' is not active", meta.name),
             )
         })?;
-        let snapshot_path =
-            self.runtime_pipeline_snapshot_path(&layout, &meta.virtual_path, &meta.name, active_hash)?;
+        let snapshot_path = self.runtime_pipeline_snapshot_path(
+            &layout,
+            &meta.virtual_path,
+            &meta.name,
+            active_hash,
+        )?;
         if !snapshot_path.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING",
@@ -520,9 +567,8 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let parent_rel = normalize_template_folder_rel_path(
-            req.parent_rel_path.as_deref().unwrap_or_default(),
-        );
+        let parent_rel =
+            normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
         let parent_rel = default_template_parent(&req.kind, &parent_rel);
         let parent_abs = layout.app_templates_dir.join(&parent_rel);
         if !parent_abs.starts_with(&layout.app_templates_dir) {
@@ -635,7 +681,8 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (from_rel, from_abs) = resolve_template_entry(&layout.app_templates_dir, &req.from_rel_path)?;
+        let (from_rel, from_abs) =
+            resolve_template_entry(&layout.app_templates_dir, &req.from_rel_path)?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -732,7 +779,10 @@ impl ProjectService {
                 }
             };
             if !rel.is_empty() {
-                items.push(TemplateGitStatusItem { rel_path: rel, code });
+                items.push(TemplateGitStatusItem {
+                    rel_path: rel,
+                    code,
+                });
             }
         }
         items.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
@@ -745,21 +795,108 @@ impl ProjectService {
   "version": "0.1",
   "id": "blog-list-posts",
   "metadata": {"virtual_path":"/contents/blog"},
-  "nodes": []
+  "entry_nodes": ["trigger_list_posts"],
+  "nodes": [
+    {
+      "id": "trigger_list_posts",
+      "kind": "n.trigger.webhook",
+      "input_pins": [],
+      "output_pins": ["out"],
+      "config": {"path":"/blog","method":"GET"}
+    },
+    {
+      "id": "script_build_list",
+      "kind": "n.script",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "source": "const sample = [{ slug: \"welcome\", title: \"Welcome\" }, { slug: \"zebflow\", title: \"Building Zebflow\" }]; return { page_title: \"Blog\", posts: sample, query: input.query || {}, params: input.params || {} };"
+      }
+    },
+    {
+      "id": "render_blog_list",
+      "kind": "n.web.render",
+      "input_pins": ["in"],
+      "output_pins": ["out","error"],
+      "config": {
+        "template_id":"blog.list",
+        "route":"/blog",
+        "markup":"export const page = { head: { title: \"Blog\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><h1>{input.page_title}</h1><ul><li zFor=\"post in input.posts\"><a href={'/blog/' + post.slug}>{post.title}</a></li></ul></main></Page>); }"
+      }
+    }
+  ],
+  "edges": [
+    {"from_node":"trigger_list_posts","from_pin":"out","to_node":"script_build_list","to_pin":"in"},
+    {"from_node":"script_build_list","from_pin":"out","to_node":"render_blog_list","to_pin":"in"}
+  ]
 }"#;
         let get_post = r#"{
   "kind": "zebflow.pipeline",
   "version": "0.1",
   "id": "blog-get-post",
   "metadata": {"virtual_path":"/contents/blog"},
-  "nodes": []
+  "entry_nodes": ["trigger_get_post"],
+  "nodes": [
+    {
+      "id": "trigger_get_post",
+      "kind": "n.trigger.webhook",
+      "input_pins": [],
+      "output_pins": ["out"],
+      "config": {"path":"/blog/{slug}","method":"GET"}
+    },
+    {
+      "id": "script_build_post",
+      "kind": "n.script",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "source": "const slug = input.params?.slug || \"unknown\"; return { title: slug.replace(/-/g, \" \"), slug, body: `Post detail for ${slug}`, query: input.query || {} };"
+      }
+    },
+    {
+      "id": "render_blog_post",
+      "kind": "n.web.render",
+      "input_pins": ["in"],
+      "output_pins": ["out","error"],
+      "config": {
+        "template_id":"blog.post",
+        "route":"/blog/{slug}",
+        "markup":"export const page = { head: { title: \"Blog Post\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><p><a href=\"/blog\">Back</a></p><h1>{input.title}</h1><p>{input.body}</p><small>{input.slug}</small></main></Page>); }"
+      }
+    }
+  ],
+  "edges": [
+    {"from_node":"trigger_get_post","from_pin":"out","to_node":"script_build_post","to_pin":"in"},
+    {"from_node":"script_build_post","from_pin":"out","to_node":"render_blog_post","to_pin":"in"}
+  ]
 }"#;
         let send_digest = r#"{
   "kind": "zebflow.pipeline",
   "version": "0.1",
   "id": "email-send-digest",
-  "metadata": {"virtual_path":"/automation/email"},
-  "nodes": []
+  "metadata": {"virtual_path":"/automation/email","locked":true},
+  "entry_nodes": ["trigger_digest_schedule"],
+  "nodes": [
+    {
+      "id": "trigger_digest_schedule",
+      "kind": "n.trigger.schedule",
+      "input_pins": [],
+      "output_pins": ["out"],
+      "config": {"cron":"*/10 * * * *","timezone":"UTC"}
+    },
+    {
+      "id": "script_digest_payload",
+      "kind": "n.script",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "source": "return { status: \"queued\", channel: \"email\", generated_at: new Date().toISOString(), input };"
+      }
+    }
+  ],
+  "edges": [
+    {"from_node":"trigger_digest_schedule","from_pin":"out","to_node":"script_digest_payload","to_pin":"in"}
+  ]
 }"#;
 
         let _ = self.upsert_pipeline_definition(
@@ -905,6 +1042,152 @@ export default function Page(input) {
         }
         Ok(abs)
     }
+
+    /// Lists project doc files under app/docs (ERD, README.md, AGENTS.md, use cases, etc.).
+    pub fn list_project_docs(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectDocItem>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let mut items = Vec::new();
+        walk_docs_tree(&layout.app_docs_dir, &layout.app_docs_dir, &mut items)?;
+        Ok(items)
+    }
+
+    /// Reads one project doc file by path under app/docs.
+    pub fn read_project_doc(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (_rel, abs) = resolve_doc_path(&layout.app_docs_dir, rel_path)?;
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MISSING",
+                format!("doc file '{}' not found", rel_path),
+            ));
+        }
+        fs::read_to_string(&abs).map_err(PlatformError::from)
+    }
+
+    /// Creates or updates one project doc file by path under `app/docs`.
+    pub fn upsert_project_doc(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        content: &str,
+    ) -> Result<ProjectDocItem, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_doc_path(&layout.app_docs_dir, rel_path)?;
+
+        if rel.ends_with('/') {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_PATH",
+                "doc path must point to a file",
+            ));
+        }
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&abs, content)?;
+
+        let name = abs
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("doc")
+            .to_string();
+        Ok(ProjectDocItem {
+            path: rel,
+            name,
+            kind: "file".to_string(),
+        })
+    }
+}
+
+fn walk_docs_tree(
+    root: &Path,
+    current: &Path,
+    items: &mut Vec<ProjectDocItem>,
+) -> Result<(), PlatformError> {
+    if !current.exists() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(current)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let b_is_dir = b.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.file_name().cmp(&b.file_name()),
+        }
+    });
+    for entry in entries {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|_| PlatformError::new("PLATFORM_DOC_PATH", "invalid doc path"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            items.push(ProjectDocItem {
+                path: rel.clone(),
+                name: name.clone(),
+                kind: "folder".to_string(),
+            });
+            walk_docs_tree(root, &path, items)?;
+        } else {
+            items.push(ProjectDocItem {
+                path: rel,
+                name,
+                kind: "file".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn resolve_doc_path(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
+    let normalized = rel_path
+        .trim()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string();
+    if normalized.contains("..") {
+        return Err(PlatformError::new(
+            "PLATFORM_DOC_PATH",
+            "doc path must not contain ..",
+        ));
+    }
+    if normalized.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_DOC_PATH",
+            "doc path must not be empty",
+        ));
+    }
+    let abs = root.join(&normalized);
+    if !abs.starts_with(root) {
+        return Err(PlatformError::new(
+            "PLATFORM_DOC_PATH",
+            "resolved doc path escaped docs root",
+        ));
+    }
+    Ok((normalized, abs))
 }
 
 fn walk_template_tree(
@@ -1018,18 +1301,13 @@ fn slug_preserving_extension(raw: &str) -> String {
     }
 }
 
-fn resolve_template_entry(
-    root: &Path,
-    rel_path: &str,
-) -> Result<(String, PathBuf), PlatformError> {
-    let normalized = if rel_path.ends_with(".tsx")
-        || rel_path.ends_with(".ts")
-        || rel_path.ends_with(".css")
-    {
-        normalize_template_rel_path(rel_path)
-    } else {
-        normalize_template_folder_rel_path(rel_path)
-    };
+fn resolve_template_entry(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
+    let normalized =
+        if rel_path.ends_with(".tsx") || rel_path.ends_with(".ts") || rel_path.ends_with(".css") {
+            normalize_template_rel_path(rel_path)
+        } else {
+            normalize_template_folder_rel_path(rel_path)
+        };
     if normalized.is_empty() {
         return Err(PlatformError::new(
             "PLATFORM_TEMPLATE_PATH",
@@ -1091,9 +1369,7 @@ fn scaffold_template_entry(
         TemplateCreateKind::Script => {
             let filename = format!("{base}.ts");
             let export_name = script_export_name(&base);
-            let content = format!(
-                "export function {export_name}() {{\n  return null;\n}}\n"
-            );
+            let content = format!("export function {export_name}() {{\n  return null;\n}}\n");
             Ok((filename, content))
         }
         TemplateCreateKind::Folder => Err(PlatformError::new(

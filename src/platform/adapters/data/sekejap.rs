@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser, normalize_virtual_path, slug_segment,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
+    ProjectPolicy, ProjectPolicyBinding, StoredUser, normalize_virtual_path, slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -44,6 +44,15 @@ impl SekejapDataAdapter {
             slug_segment(owner),
             slug_segment(project),
             slug_segment(credential_id)
+        )
+    }
+
+    fn project_db_connection_slug(owner: &str, project: &str, connection_slug: &str) -> String {
+        format!(
+            "project_db_connection/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(connection_slug)
         )
     }
 
@@ -123,7 +132,13 @@ impl DataAdapter for SekejapDataAdapter {
         let Some(raw) = self.db.nodes().get(&slug) else {
             return Ok(None);
         };
-        let v: Value = serde_json::from_str(&raw)?;
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_err) => {
+                // Corrupted legacy value should not hard-fail auth paths; treat as missing so bootstrap/upsert can heal it.
+                return Ok(None);
+            }
+        };
         let profile = PlatformUser {
             owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
             role: v
@@ -193,7 +208,13 @@ impl DataAdapter for SekejapDataAdapter {
         let Some(raw) = self.db.nodes().get(&slug) else {
             return Ok(None);
         };
-        let v: Value = serde_json::from_str(&raw)?;
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_err) => {
+                // Corrupted legacy value should not block bootstrap/upsert; treat as missing so writer can heal it.
+                return Ok(None);
+            }
+        };
         Ok(Some(PlatformProject {
             owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
             project: Self::pick_non_empty(v.get("project").and_then(Value::as_str), project),
@@ -293,10 +314,7 @@ impl DataAdapter for SekejapDataAdapter {
         }))
     }
 
-    fn put_project_credential(
-        &self,
-        credential: &ProjectCredential,
-    ) -> Result<(), PlatformError> {
+    fn put_project_credential(&self, credential: &ProjectCredential) -> Result<(), PlatformError> {
         let data = json!({
             "_id": Self::project_credential_slug(
                 &credential.owner,
@@ -382,6 +400,148 @@ impl DataAdapter for SekejapDataAdapter {
         credential_id: &str,
     ) -> Result<(), PlatformError> {
         let slug = Self::project_credential_slug(owner, project, credential_id);
+        self.db
+            .nodes()
+            .remove(&slug)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_project_db_connection(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_slug: &str,
+    ) -> Result<Option<ProjectDbConnection>, PlatformError> {
+        let slug = Self::project_db_connection_slug(owner, project, connection_slug);
+        let Some(raw) = self.db.nodes().get(&slug) else {
+            return Ok(None);
+        };
+        let v: Value = serde_json::from_str(&raw)?;
+        Ok(Some(ProjectDbConnection {
+            owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+            project: Self::pick_non_empty(v.get("project").and_then(Value::as_str), project),
+            connection_id: Self::pick_non_empty(
+                v.get("connection_id").and_then(Value::as_str),
+                connection_slug,
+            ),
+            connection_slug: Self::pick_non_empty(
+                v.get("connection_slug").and_then(Value::as_str),
+                connection_slug,
+            ),
+            connection_label: v
+                .get("connection_label")
+                .and_then(Value::as_str)
+                .unwrap_or(connection_slug)
+                .to_string(),
+            database_kind: v
+                .get("database_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("sjtable")
+                .to_string(),
+            credential_id: v
+                .get("credential_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            config: v.get("config").cloned().unwrap_or(Value::Null),
+            created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+            updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+        }))
+    }
+
+    fn put_project_db_connection(
+        &self,
+        connection: &ProjectDbConnection,
+    ) -> Result<(), PlatformError> {
+        let data = json!({
+            "_id": Self::project_db_connection_slug(
+                &connection.owner,
+                &connection.project,
+                &connection.connection_slug,
+            ),
+            "_collection": "project_db_connection",
+            "owner": connection.owner,
+            "project": connection.project,
+            "connection_id": connection.connection_id,
+            "connection_slug": connection.connection_slug,
+            "connection_label": connection.connection_label,
+            "database_kind": connection.database_kind,
+            "credential_id": connection.credential_id,
+            "config": connection.config,
+            "created_at": connection.created_at,
+            "updated_at": connection.updated_at,
+        });
+        let op = json!({"mutation":"put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_project_db_connections(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectDbConnection>, PlatformError> {
+        let rows = self.query_payloads(vec![
+            json!({"op":"collection","name":"project_db_connection"}),
+            json!({"op":"where_eq","field":"owner","value":owner}),
+            json!({"op":"where_eq","field":"project","value":project}),
+            json!({"op":"take","n":QUERY_LIMIT}),
+        ])?;
+        let mut items = rows
+            .into_iter()
+            .filter_map(|v| {
+                let connection_slug = v
+                    .get("connection_slug")
+                    .and_then(Value::as_str)?
+                    .trim()
+                    .to_string();
+                if connection_slug.is_empty() {
+                    return None;
+                }
+                Some(ProjectDbConnection {
+                    owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+                    project: Self::pick_non_empty(
+                        v.get("project").and_then(Value::as_str),
+                        project,
+                    ),
+                    connection_id: Self::pick_non_empty(
+                        v.get("connection_id").and_then(Value::as_str),
+                        &connection_slug,
+                    ),
+                    connection_slug: connection_slug.clone(),
+                    connection_label: v
+                        .get("connection_label")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&connection_slug)
+                        .to_string(),
+                    database_kind: v
+                        .get("database_kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or("sjtable")
+                        .to_string(),
+                    credential_id: v
+                        .get("credential_id")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string),
+                    config: v.get("config").cloned().unwrap_or(Value::Null),
+                    created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+                    updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+                })
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|a, b| a.connection_slug.cmp(&b.connection_slug));
+        Ok(items)
+    }
+
+    fn delete_project_db_connection(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_slug: &str,
+    ) -> Result<(), PlatformError> {
+        let slug = Self::project_db_connection_slug(owner, project, connection_slug);
         self.db
             .nodes()
             .remove(&slug)
@@ -575,5 +735,44 @@ impl DataAdapter for SekejapDataAdapter {
                 .then(a.policy_id.cmp(&b.policy_id))
         });
         Ok(out)
+    }
+
+    fn delete_project_policy(
+        &self,
+        owner: &str,
+        project: &str,
+        policy_id: &str,
+    ) -> Result<(), PlatformError> {
+        let slug = Self::project_policy_slug(owner, project, policy_id);
+        let op = json!({"mutation":"delete_node", "id": slug}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_project_policy_binding(
+        &self,
+        owner: &str,
+        project: &str,
+        subject_id: &str,
+    ) -> Result<(), PlatformError> {
+        let bindings = self.list_project_policy_bindings(owner, project)?;
+        for binding in bindings {
+            if binding.subject_id == subject_id {
+                let slug = Self::project_policy_binding_slug(
+                    owner,
+                    project,
+                    &binding.subject_kind.key(),
+                    subject_id,
+                    &binding.policy_id,
+                );
+                let op = json!({"mutation":"delete_node", "id": slug}).to_string();
+                self.db
+                    .mutate(&op)
+                    .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 }

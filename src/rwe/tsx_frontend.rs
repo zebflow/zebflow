@@ -771,8 +771,7 @@ fn strip_jsx_comments(input: &str) -> String {
     let mut i = 0usize;
 
     while i < bytes.len() {
-        if bytes[i] == b'{' && i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'*'
-        {
+        if bytes[i] == b'{' && i + 2 < bytes.len() && bytes[i + 1] == b'/' && bytes[i + 2] == b'*' {
             let mut j = i + 3;
             let mut end = None;
             while j + 1 < bytes.len() {

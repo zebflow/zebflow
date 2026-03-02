@@ -8,7 +8,8 @@ use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_
 use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
 use crate::platform::services::{
-    AuthService, AuthorizationService, CredentialService, PipelineRuntimeService, ProjectService,
+    AuthService, AuthorizationService, CredentialService, DbConnectionService, DbRuntimeService,
+    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectService,
     SimpleTableService, UserService,
 };
 
@@ -31,12 +32,20 @@ pub struct PlatformService {
     pub authz: Arc<AuthorizationService>,
     /// Project credential management service.
     pub credentials: Arc<CredentialService>,
+    /// Project DB connection management service.
+    pub db_connections: Arc<DbConnectionService>,
+    /// Project DB runtime service (kind-dispatched describe/query).
+    pub db_runtime: Arc<DbRuntimeService>,
     /// Project domain service.
     pub projects: Arc<ProjectService>,
     /// Active production pipeline registry compiled from activated snapshots.
     pub pipeline_runtime: Arc<PipelineRuntimeService>,
+    /// Lightweight execution hit/error counters per pipeline.
+    pub pipeline_hits: Arc<PipelineHitsService>,
     /// Project Simple Table management service.
     pub simple_tables: Arc<SimpleTableService>,
+    /// MCP session management (in-memory tokens for project-scoped remote control).
+    pub mcp_sessions: Arc<McpSessionService>,
 }
 
 impl PlatformService {
@@ -57,11 +66,16 @@ impl PlatformService {
         let auth = Arc::new(AuthService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone()));
-        let simple_tables = Arc::new(SimpleTableService::new(
-            file.clone(),
-            project_data.clone(),
+        let db_connections = Arc::new(DbConnectionService::new(data.clone()));
+        let simple_tables = Arc::new(SimpleTableService::new(file.clone(), project_data.clone()));
+        let db_runtime = Arc::new(DbRuntimeService::new(
+            db_connections.clone(),
+            credentials.clone(),
+            simple_tables.clone(),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
+        let pipeline_hits = Arc::new(PipelineHitsService::new(10));
+        let mcp_sessions = Arc::new(McpSessionService::new(data.clone()));
 
         let svc = Self {
             config,
@@ -72,9 +86,13 @@ impl PlatformService {
             auth,
             authz,
             credentials,
+            db_connections,
+            db_runtime,
             projects,
             pipeline_runtime,
+            pipeline_hits,
             simple_tables,
+            mcp_sessions,
         };
         svc.bootstrap_defaults()?;
         let _ = svc

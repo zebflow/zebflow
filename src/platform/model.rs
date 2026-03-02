@@ -141,10 +141,52 @@ pub struct ProjectCredentialListItem {
     pub updated_at: i64,
 }
 
+/// Stored project DB connection record used by DB suite and runtime nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectDbConnection {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Stable connection id.
+    pub connection_id: String,
+    /// Stable route slug.
+    pub connection_slug: String,
+    /// Display label.
+    pub connection_label: String,
+    /// Database kind (`sjtable`, `postgresql`, ...).
+    pub database_kind: String,
+    /// Optional linked credential id.
+    pub credential_id: Option<String>,
+    /// Optional kind-specific config payload.
+    pub config: serde_json::Value,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One project DB connection summary row safe to return in list responses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectDbConnectionListItem {
+    /// Stable connection id.
+    pub connection_id: String,
+    /// Stable route slug.
+    pub connection_slug: String,
+    /// Display label.
+    pub connection_label: String,
+    /// Database kind (`sjtable`, `postgresql`, ...).
+    pub database_kind: String,
+    /// Optional linked credential id.
+    pub credential_id: Option<String>,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
 /// Atomic project-scoped permission used by REST, MCP, and internal assistants.
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectCapability {
     ProjectRead,
@@ -207,6 +249,40 @@ impl ProjectCapability {
             Self::SettingsWrite => "settings.write",
             Self::McpSessionCreate => "mcp.session.create",
             Self::McpSessionRevoke => "mcp.session.revoke",
+        }
+    }
+
+    /// Parse from stable string key.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "project.read" => Some(Self::ProjectRead),
+            "credentials.read" => Some(Self::CredentialsRead),
+            "credentials.write" => Some(Self::CredentialsWrite),
+            "templates.read" => Some(Self::TemplatesRead),
+            "templates.write" => Some(Self::TemplatesWrite),
+            "templates.create" => Some(Self::TemplatesCreate),
+            "templates.delete" => Some(Self::TemplatesDelete),
+            "templates.move" => Some(Self::TemplatesMove),
+            "templates.diagnostics" => Some(Self::TemplatesDiagnostics),
+            "pipelines.read" => Some(Self::PipelinesRead),
+            "pipelines.write" => Some(Self::PipelinesWrite),
+            "pipelines.create" => Some(Self::PipelinesCreate),
+            "pipelines.delete" => Some(Self::PipelinesDelete),
+            "pipelines.move" => Some(Self::PipelinesMove),
+            "pipelines.execute" => Some(Self::PipelinesExecute),
+            "files.read" => Some(Self::FilesRead),
+            "files.write" => Some(Self::FilesWrite),
+            "files.delete" => Some(Self::FilesDelete),
+            "tables.read" => Some(Self::TablesRead),
+            "tables.write" => Some(Self::TablesWrite),
+            "libraries.read" => Some(Self::LibrariesRead),
+            "libraries.install" => Some(Self::LibrariesInstall),
+            "libraries.remove" => Some(Self::LibrariesRemove),
+            "settings.read" => Some(Self::SettingsRead),
+            "settings.write" => Some(Self::SettingsWrite),
+            "mcp.session.create" => Some(Self::McpSessionCreate),
+            "mcp.session.revoke" => Some(Self::McpSessionRevoke),
+            _ => None,
         }
     }
 }
@@ -289,6 +365,14 @@ impl ProjectAccessSubject {
             id: slug_segment(owner),
         }
     }
+
+    /// Creates an MCP session subject.
+    pub fn mcp_session(token: &str) -> Self {
+        Self {
+            kind: ProjectSubjectKind::McpSession,
+            id: token.to_string(),
+        }
+    }
 }
 
 /// Pipeline metadata catalog entry stored in platform-level metadata DB.
@@ -324,6 +408,17 @@ pub struct PipelineMeta {
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
+}
+
+/// One project doc file/folder in app/docs (ERD, README.md, AGENTS.md, use cases, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectDocItem {
+    /// Relative path under app/docs.
+    pub path: String,
+    /// Display name (file or folder name).
+    pub name: String,
+    /// "file" or "folder".
+    pub kind: String,
 }
 
 /// One breadcrumb segment in pipeline registry.
@@ -372,6 +467,80 @@ pub struct PipelineRegistryListing {
     pub folders: Vec<PipelineFolderItem>,
     /// Pipeline entries located exactly at `current_path`.
     pub pipelines: Vec<PipelineRegistryItem>,
+}
+
+/// API payload used to create/update one pipeline definition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpsertPipelineDefinitionRequest {
+    /// Logical virtual folder path (`/` or `/a/b`).
+    #[serde(default)]
+    pub virtual_path: String,
+    /// Pipeline id/name.
+    pub name: String,
+    /// Optional display title.
+    #[serde(default)]
+    pub title: String,
+    /// Optional human-readable description.
+    #[serde(default)]
+    pub description: String,
+    /// Trigger kind (`webhook`, `schedule`, `function`, ...).
+    #[serde(default)]
+    pub trigger_kind: String,
+    /// Full pipeline source (`*.zf.json`).
+    pub source: String,
+}
+
+/// API payload used to target one pipeline by path and name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineLocateRequest {
+    /// Logical virtual folder path (`/` or `/a/b`).
+    #[serde(default)]
+    pub virtual_path: String,
+    /// Pipeline id/name.
+    pub name: String,
+}
+
+/// Trigger type used for explicit pipeline execution calls.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineExecuteTrigger {
+    Webhook,
+    Schedule,
+    Manual,
+}
+
+/// API payload used to execute one active pipeline with explicit trigger context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutePipelineRequest {
+    /// Logical virtual folder path (`/` or `/a/b`).
+    #[serde(default)]
+    pub virtual_path: String,
+    /// Pipeline id/name.
+    pub name: String,
+    /// Trigger mode to validate against active trigger nodes.
+    pub trigger: PipelineExecuteTrigger,
+    /// Optional webhook path matcher.
+    #[serde(default)]
+    pub webhook_path: Option<String>,
+    /// Optional webhook method matcher.
+    #[serde(default)]
+    pub webhook_method: Option<String>,
+    /// Optional schedule cron matcher.
+    #[serde(default)]
+    pub schedule_cron: Option<String>,
+    /// Request input payload passed to pipeline execution.
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
+/// Payload used to create/update one project doc file under `app/docs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpsertProjectDocRequest {
+    /// Relative path under `app/docs`.
+    pub path: String,
+    /// Full file content.
+    #[serde(default)]
+    pub content: String,
 }
 
 /// One template tree row for the templates workspace.
@@ -540,6 +709,142 @@ pub struct UpsertProjectCredentialRequest {
     pub notes: String,
 }
 
+/// Create/update payload for one project DB connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpsertProjectDbConnectionRequest {
+    /// Stable route slug.
+    pub connection_slug: String,
+    /// Display label.
+    pub connection_label: String,
+    /// Database kind (`sjtable`, `postgresql`, ...).
+    pub database_kind: String,
+    /// Optional linked credential id.
+    pub credential_id: Option<String>,
+    /// Optional kind-specific config payload.
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+/// Test payload for one project DB connection (existing or draft).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestProjectDbConnectionRequest {
+    /// Existing connection slug to test.
+    pub connection_slug: Option<String>,
+    /// Optional draft database kind (used when slug is not provided).
+    pub database_kind: Option<String>,
+    /// Optional draft credential id (used when slug is not provided).
+    pub credential_id: Option<String>,
+    /// Optional draft config payload.
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+/// Describe payload for one DB connection runtime endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct DescribeProjectDbConnectionRequest {
+    /// Describe scope (`tree`, `schemas`, `tables`, `functions`).
+    pub scope: Option<String>,
+    /// Optional schema filter.
+    pub schema: Option<String>,
+    /// Whether system schemas should be included when supported.
+    pub include_system: Option<bool>,
+}
+
+/// One node in DB object tree.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DbObjectNode {
+    /// Object kind (`schema`, `table`, `function`).
+    pub kind: String,
+    /// Object name.
+    pub name: String,
+    /// Optional schema name.
+    pub schema: Option<String>,
+    /// Optional children.
+    #[serde(default)]
+    pub children: Vec<DbObjectNode>,
+    /// Optional metadata.
+    #[serde(default)]
+    pub meta: serde_json::Value,
+}
+
+/// Describe result for one DB connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectDbConnectionDescribeResult {
+    /// Stable connection id.
+    pub connection_id: String,
+    /// Stable route slug.
+    pub connection_slug: String,
+    /// Database kind (`sjtable`, `postgresql`, ...).
+    pub database_kind: String,
+    /// Effective scope.
+    pub scope: String,
+    /// Object tree/list payload.
+    #[serde(default)]
+    pub nodes: Vec<DbObjectNode>,
+}
+
+/// Query payload for one DB connection runtime endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct QueryProjectDbConnectionRequest {
+    /// SQL text (for SQL engines like PostgreSQL).
+    #[serde(default)]
+    pub sql: String,
+    /// Positional bind parameters.
+    #[serde(default)]
+    pub params: Vec<serde_json::Value>,
+    /// Optional table identifier for engines that do not use SQL directly.
+    pub table: Option<String>,
+    /// Optional max rows to return.
+    pub limit: Option<usize>,
+    /// Whether write statements are blocked (defaults true).
+    pub read_only: Option<bool>,
+}
+
+/// One query result column.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DbQueryColumn {
+    /// Column name.
+    pub name: String,
+    /// Optional engine-native data type.
+    pub data_type: Option<String>,
+}
+
+/// Query result for one DB connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectDbConnectionQueryResult {
+    /// Stable connection id.
+    pub connection_id: String,
+    /// Stable route slug.
+    pub connection_slug: String,
+    /// Database kind (`sjtable`, `postgresql`, ...).
+    pub database_kind: String,
+    /// Returned columns.
+    #[serde(default)]
+    pub columns: Vec<DbQueryColumn>,
+    /// Returned rows as column-aligned vectors.
+    #[serde(default)]
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// Number of rows in this payload.
+    pub row_count: usize,
+    /// Whether payload was truncated due to row limit.
+    pub truncated: bool,
+    /// Optional affected rows for write statements.
+    pub affected_rows: Option<u64>,
+    /// Query execution duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Result payload returned by DB connection test endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectDbConnectionTestResult {
+    /// Whether test passed.
+    pub ok: bool,
+    /// Human-friendly message.
+    pub message: String,
+    /// Optional details.
+    pub details: serde_json::Value,
+}
+
 /// Create payload for one Simple Table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateSimpleTableRequest {
@@ -621,6 +926,8 @@ pub struct ProjectFileLayout {
     pub app_templates_dir: PathBuf,
     /// `.../app/components`
     pub app_components_dir: PathBuf,
+    /// `.../app/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
+    pub app_docs_dir: PathBuf,
 }
 
 /// Request payload for user creation.
@@ -717,5 +1024,73 @@ pub fn normalize_virtual_path(raw: &str) -> String {
         "/".to_string()
     } else {
         format!("/{}", parts.join("/"))
+    }
+}
+
+/// MCP session record (in-memory, per-project).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSession {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Capabilities allowed for this session.
+    pub capabilities: Vec<ProjectCapability>,
+    /// Opaque session token.
+    pub token: String,
+}
+
+/// Request to create an MCP session for a project.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSessionCreateRequest {
+    /// Capabilities to allow for this session (can be specified as strings or capability keys).
+    pub capabilities: Vec<String>,
+}
+
+/// Response after creating an MCP session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSessionResponse {
+    /// Opaque session token for Authorization header.
+    pub token: String,
+    /// Full MCP endpoint URL for this project.
+    pub mcp_url: String,
+    /// Allowed capabilities echoed back.
+    pub capabilities: Vec<String>,
+}
+
+/// Maps MCP tool name to required project capability.
+pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
+    match tool_name {
+        "list_pipelines" => Some(ProjectCapability::PipelinesRead),
+        "get_pipeline" => Some(ProjectCapability::PipelinesRead),
+        "upsert_pipeline" => Some(ProjectCapability::PipelinesWrite),
+        "activate_pipeline" => Some(ProjectCapability::PipelinesWrite),
+        "deactivate_pipeline" => Some(ProjectCapability::PipelinesWrite),
+        "execute_pipeline" => Some(ProjectCapability::PipelinesExecute),
+        "list_templates" => Some(ProjectCapability::TemplatesRead),
+        "get_template" => Some(ProjectCapability::TemplatesRead),
+        "save_template" => Some(ProjectCapability::TemplatesWrite),
+        "create_template" => Some(ProjectCapability::TemplatesCreate),
+        "delete_template" => Some(ProjectCapability::TemplatesDelete),
+        "list_credentials" => Some(ProjectCapability::CredentialsRead),
+        "get_credential" => Some(ProjectCapability::CredentialsRead),
+        "upsert_credential" => Some(ProjectCapability::CredentialsWrite),
+        "list_db_connections" => Some(ProjectCapability::TablesRead),
+        "get_db_connection" => Some(ProjectCapability::TablesRead),
+        "upsert_db_connection" => Some(ProjectCapability::TablesWrite),
+        "update_db_connection" => Some(ProjectCapability::TablesWrite),
+        "delete_db_connection" => Some(ProjectCapability::TablesWrite),
+        "test_db_connection" => Some(ProjectCapability::TablesRead),
+        "describe_db_connection" => Some(ProjectCapability::TablesRead),
+        "query_db_connection" => Some(ProjectCapability::TablesRead),
+        "list_db_connection_schemas" => Some(ProjectCapability::TablesRead),
+        "list_db_connection_tables" => Some(ProjectCapability::TablesRead),
+        "list_db_connection_functions" => Some(ProjectCapability::TablesRead),
+        "preview_db_connection_table" => Some(ProjectCapability::TablesRead),
+        "list_tables" => Some(ProjectCapability::TablesRead),
+        "list_project_docs" => Some(ProjectCapability::ProjectRead),
+        "read_project_doc" => Some(ProjectCapability::ProjectRead),
+        "create_project_doc" => Some(ProjectCapability::FilesWrite),
+        _ => None,
     }
 }

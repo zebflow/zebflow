@@ -1,0 +1,57 @@
+{
+  "package": "zeb/graphui",
+  "version": "0.1",
+  "raw": [
+    {
+      "name": "graphui",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Package root with graph classes and helpers."
+    },
+    {
+      "name": "createGraphUI",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Mount a customizable graph UI app into a DOM root."
+    },
+    {
+      "name": "createSeedScenes",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Load demo logic/branch/custom scenes from the seed implementation."
+    },
+    {
+      "name": "createPipelineScene",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Adapt Zebflow pipeline JSON into a graph scene for editor visualization."
+    },
+    {
+      "name": "GraphStore",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "In-memory node/link graph state model."
+    },
+    {
+      "name": "GraphNode",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Base class for DOM-backed graph nodes with input/output ports."
+    },
+    {
+      "name": "GraphCanvasUI",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Canvas/interaction layer (pan, zoom, drag, wire connect, select/delete)."
+    },
+    {
+      "name": "DEFAULT_THEME",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Default color token set used by the graph canvas."
+    },
+    {
+      "name": "DEFAULT_NODE_KIND_COLORS",
+      "runtime": "runtime/graphui.bundle.mjs",
+      "description": "Default node-kind color map for Zebflow pipeline rendering."
+    }
+  ],
+  "wrappers": {
+    "GraphCanvas": {
+      "entry": "wrappers/GraphCanvas.tsx",
+      "description": "Template wrapper for embedding zeb/graphui container in TSX pages."
+    }
+  }
+}

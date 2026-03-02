@@ -12,6 +12,7 @@ The initial scope is:
 3. `zeb/threejs-vrm`
 4. `zeb/deckgl`
 5. `zeb/d3`
+6. `zeb/devicons`
 
 Offline-first remains mandatory: Zeb Libraries are bundled with Zebflow or
 shipped as local static assets and never fetched from a CDN at runtime.
@@ -68,6 +69,7 @@ Zeb Libraries are referenced through a Zebflow-owned namespace:
 3. `zeb/threejs-vrm`
 4. `zeb/deckgl`
 5. `zeb/d3`
+6. `zeb/devicons`
 
 These names are stable product contracts. The backing implementation may be:
 
@@ -172,6 +174,7 @@ import { threejs, ThreeScene } from "zeb/threejs";
 import { vrm, VrmViewer } from "zeb/threejs-vrm";
 import { deckgl, DeckMap } from "zeb/deckgl";
 import { d3, D3Chart } from "zeb/d3";
+import { ensureDevicons } from "zeb/devicons";
 ```
 
 The first implementations can be thin wrappers over container markup and init

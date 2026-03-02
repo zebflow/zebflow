@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -44,8 +44,7 @@ pub trait DataAdapter: Send + Sync {
         credential_id: &str,
     ) -> Result<Option<ProjectCredential>, PlatformError>;
     /// Upsert one project credential.
-    fn put_project_credential(&self, credential: &ProjectCredential)
-        -> Result<(), PlatformError>;
+    fn put_project_credential(&self, credential: &ProjectCredential) -> Result<(), PlatformError>;
     /// List project credentials.
     fn list_project_credentials(
         &self,
@@ -58,6 +57,31 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
         credential_id: &str,
+    ) -> Result<(), PlatformError>;
+    /// Load one project DB connection.
+    fn get_project_db_connection(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_slug: &str,
+    ) -> Result<Option<ProjectDbConnection>, PlatformError>;
+    /// Upsert one project DB connection.
+    fn put_project_db_connection(
+        &self,
+        connection: &ProjectDbConnection,
+    ) -> Result<(), PlatformError>;
+    /// List project DB connections.
+    fn list_project_db_connections(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectDbConnection>, PlatformError>;
+    /// Delete one project DB connection.
+    fn delete_project_db_connection(
+        &self,
+        owner: &str,
+        project: &str,
+        connection_slug: &str,
     ) -> Result<(), PlatformError>;
     /// Upsert one pipeline metadata row.
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
@@ -86,6 +110,20 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
     ) -> Result<Vec<ProjectPolicyBinding>, PlatformError>;
+    /// Delete one project policy.
+    fn delete_project_policy(
+        &self,
+        owner: &str,
+        project: &str,
+        policy_id: &str,
+    ) -> Result<(), PlatformError>;
+    /// Delete one project policy binding.
+    fn delete_project_policy_binding(
+        &self,
+        owner: &str,
+        project: &str,
+        subject_id: &str,
+    ) -> Result<(), PlatformError>;
 }
 
 /// Builds selected metadata adapter.

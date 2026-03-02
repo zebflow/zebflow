@@ -23,6 +23,8 @@ export default function Page(input) {
       projectHref="{input.project_href}"
       projectLabel="{input.title}"
       currentMenu="{input.current_menu}"
+      owner="{input.owner}"
+      project="{input.project}"
     >
       <div className="project-workspace">
         <div className="project-tab-strip"></div>

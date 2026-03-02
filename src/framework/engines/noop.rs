@@ -3,6 +3,7 @@
 //! `NoopFrameworkEngine` validates node/pin wiring and returns a synthetic
 //! payload instead of performing real graph traversal.
 
+use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -13,6 +14,7 @@ use crate::framework::model::{FrameworkContext, FrameworkError, FrameworkOutput,
 #[derive(Default)]
 pub struct NoopFrameworkEngine;
 
+#[async_trait]
 impl FrameworkEngine for NoopFrameworkEngine {
     fn id(&self) -> &'static str {
         "framework.noop"
@@ -62,10 +64,11 @@ impl FrameworkEngine for NoopFrameworkEngine {
         Ok(())
     }
 
-    fn execute(
+    async fn execute_with_options_async(
         &self,
         graph: &PipelineGraph,
         ctx: &FrameworkContext,
+        _options: &crate::framework::ExecuteOptions,
     ) -> Result<FrameworkOutput, FrameworkError> {
         self.validate_graph(graph)?;
         Ok(FrameworkOutput {

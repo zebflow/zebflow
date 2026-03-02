@@ -1,17 +1,25 @@
 //! Platform service layer (auth, user, project, platform bootstrap).
 
-pub mod authorization;
 pub mod auth;
+pub mod authorization;
 pub mod credential;
+pub mod db_connection;
+pub mod db_runtime;
+pub mod mcp_session;
+pub mod pipeline_hits;
 pub mod pipeline_runtime;
 pub mod platform;
 pub mod project;
 pub mod simple_table;
 pub mod user;
 
-pub use authorization::AuthorizationService;
 pub use auth::AuthService;
+pub use authorization::AuthorizationService;
 pub use credential::CredentialService;
+pub use db_connection::DbConnectionService;
+pub use db_runtime::DbRuntimeService;
+pub use mcp_session::McpSessionService;
+pub use pipeline_hits::PipelineHitsService;
 pub use pipeline_runtime::PipelineRuntimeService;
 pub use platform::PlatformService;
 pub use project::ProjectService;

@@ -1,0 +1,20 @@
+{
+  "package": "zeb/threejs-vrm",
+  "version": "0.1",
+  "raw": {
+    "vrm": {
+      "entry": "runtime/threejs-vrm.bundle.mjs",
+      "description": "Official Zebflow VRM viewer bridge namespace."
+    },
+    "mountVrmViewer": {
+      "entry": "runtime/threejs-vrm.bundle.mjs",
+      "description": "Mount a VRM-capable viewer using preloaded global runtime dependencies."
+    }
+  },
+  "wrappers": {
+    "VrmViewer": {
+      "entry": "wrappers/VrmViewer.tsx",
+      "description": "TSX wrapper component shell for VRM avatar viewer hosts."
+    }
+  }
+}

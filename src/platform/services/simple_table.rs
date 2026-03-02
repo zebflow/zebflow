@@ -102,8 +102,12 @@ impl SimpleTableService {
             .put_json(&meta.to_string())
             .map_err(|e| PlatformError::new("PLATFORM_SIMPLE_TABLE_META", e.to_string()))?;
 
-        self.get_table(owner, project, &table)?
-            .ok_or_else(|| PlatformError::new("PLATFORM_SIMPLE_TABLE_DEFINE", "table created but not readable"))
+        self.get_table(owner, project, &table)?.ok_or_else(|| {
+            PlatformError::new(
+                "PLATFORM_SIMPLE_TABLE_DEFINE",
+                "table created but not readable",
+            )
+        })
     }
 
     /// Resolves one Simple Table definition.
@@ -142,12 +146,13 @@ impl SimpleTableService {
             ));
         };
 
-        let rows = self.query_collection_rows(&db, &def.collection, SIMPLE_TABLE_QUERY_LIMIT_MAX)?;
+        let rows =
+            self.query_collection_rows(&db, &def.collection, SIMPLE_TABLE_QUERY_LIMIT_MAX)?;
         for row in rows {
             if let Some(slug) = row.get("_id").and_then(Value::as_str) {
-                db.nodes()
-                    .remove(slug)
-                    .map_err(|e| PlatformError::new("PLATFORM_SIMPLE_TABLE_DELETE", e.to_string()))?;
+                db.nodes().remove(slug).map_err(|e| {
+                    PlatformError::new("PLATFORM_SIMPLE_TABLE_DELETE", e.to_string())
+                })?;
             }
         }
         db.nodes()
@@ -219,7 +224,11 @@ impl SimpleTableService {
         Ok(SimpleTableQueryResult { table, rows })
     }
 
-    fn project_layout(&self, owner: &str, project: &str) -> Result<ProjectFileLayout, PlatformError> {
+    fn project_layout(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectFileLayout, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
@@ -301,10 +310,7 @@ fn simple_table_definition_from_meta(
         .unwrap_or(&simple_table_collection_name(&table))
         .to_string();
     let describe = db.describe_collection(&collection);
-    let row_count = describe
-        .get("count")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
+    let row_count = describe.get("count").and_then(Value::as_u64).unwrap_or(0) as usize;
     Ok(SimpleTableDefinition {
         table: table.clone(),
         title: row

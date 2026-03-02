@@ -1,0 +1,31 @@
+{
+  "package": "zeb/threejs",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "threejs",
+      "kind": "raw",
+      "doc": "Official Zeb Three.js bridge package root."
+    },
+    {
+      "name": "ensureThree",
+      "kind": "raw",
+      "doc": "Resolve Three.js from runtime context."
+    },
+    {
+      "name": "createSceneRuntime",
+      "kind": "raw",
+      "doc": "Create a basic Three.js scene bound to a canvas element."
+    },
+    {
+      "name": "mountThreeScene",
+      "kind": "raw",
+      "doc": "Mount and run a Three.js scene inside a host node."
+    },
+    {
+      "name": "ThreeScene",
+      "kind": "wrapper",
+      "doc": "TSX wrapper for declarative Three.js scene hosts."
+    }
+  ]
+}

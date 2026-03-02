@@ -6,8 +6,8 @@ use std::sync::Arc;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ProjectAccessSubject, ProjectCapability, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind,
-    now_ts, slug_segment,
+    ProjectAccessSubject, ProjectCapability, ProjectPolicy, ProjectPolicyBinding,
+    ProjectSubjectKind, now_ts, slug_segment,
 };
 
 /// Resolves project-scoped policies and capabilities.
@@ -22,11 +22,7 @@ impl AuthorizationService {
     }
 
     /// Ensures the canonical managed project policies and owner binding exist.
-    pub fn ensure_project_defaults(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<(), PlatformError> {
+    pub fn ensure_project_defaults(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         if owner.is_empty() || project.is_empty() {
@@ -67,15 +63,16 @@ impl AuthorizationService {
                 && binding.policy_id == "owner"
         });
         if !owner_binding_exists {
-            self.data.put_project_policy_binding(&ProjectPolicyBinding {
-                owner: owner.clone(),
-                project: project.clone(),
-                subject_kind: ProjectSubjectKind::User,
-                subject_id: owner,
-                policy_id: "owner".to_string(),
-                created_at: now,
-                updated_at: now,
-            })?;
+            self.data
+                .put_project_policy_binding(&ProjectPolicyBinding {
+                    owner: owner.clone(),
+                    project: project.clone(),
+                    subject_kind: ProjectSubjectKind::User,
+                    subject_id: owner,
+                    policy_id: "owner".to_string(),
+                    created_at: now,
+                    updated_at: now,
+                })?;
         }
 
         Ok(())
@@ -146,7 +143,14 @@ impl AuthorizationService {
 
 fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<ProjectPolicy> {
     vec![
-        policy(owner, project, "owner", "Owner", all_project_capabilities(), now),
+        policy(
+            owner,
+            project,
+            "owner",
+            "Owner",
+            all_project_capabilities(),
+            now,
+        ),
         policy(
             owner,
             project,

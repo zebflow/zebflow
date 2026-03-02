@@ -173,6 +173,7 @@ pub fn process_tailwind(html: &str) -> String {
     css.push_str(&dynamic_runtime_css_for_patterns(
         &variants.wildcard_patterns,
     ));
+    let css = minify_css_lossy(&css);
     if css.is_empty() {
         return html.to_string();
     }
@@ -269,7 +270,7 @@ fn token_precedence_key(token: &str) -> (u8, u8) {
 
 fn tailwind_preflight_css() -> &'static str {
     TAILWIND_PREFLIGHT_NORMALIZED
-        .get_or_init(|| normalize_theme_functions(TAILWIND_PREFLIGHT_RAW))
+        .get_or_init(|| minify_css_lossy(&normalize_theme_functions(TAILWIND_PREFLIGHT_RAW)))
         .as_str()
 }
 
@@ -291,6 +292,92 @@ fn normalize_theme_functions(raw: &str) -> String {
 
     out.push_str(&raw[cursor..]);
     out
+}
+
+fn minify_css_lossy(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string: Option<char> = None;
+    let mut escaped = false;
+    let mut pending_space = false;
+
+    while let Some(ch) = chars.next() {
+        if let Some(quote) = in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == quote {
+                in_string = None;
+            }
+            continue;
+        }
+
+        if ch == '\'' || ch == '"' {
+            if pending_space && should_emit_space(out.chars().last(), Some(ch)) {
+                out.push(' ');
+            }
+            pending_space = false;
+            in_string = Some(ch);
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '/' && matches!(chars.peek(), Some('*')) {
+            chars.next();
+            let mut prev = '\0';
+            for c in chars.by_ref() {
+                if prev == '*' && c == '/' {
+                    break;
+                }
+                prev = c;
+            }
+            pending_space = true;
+            continue;
+        }
+
+        if ch.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+
+        if pending_space && should_emit_space(out.chars().last(), Some(ch)) {
+            out.push(' ');
+        }
+        pending_space = false;
+
+        if is_css_punct(ch) && out.ends_with(' ') {
+            out.pop();
+        }
+        out.push(ch);
+    }
+
+    out.trim().to_string()
+}
+
+fn is_css_punct(ch: char) -> bool {
+    matches!(
+        ch,
+        '{' | '}' | ':' | ';' | ',' | '>' | '+' | '~' | '(' | ')' | '[' | ']' | '='
+    )
+}
+
+fn should_emit_space(prev: Option<char>, next: Option<char>) -> bool {
+    let (Some(p), Some(n)) = (prev, next) else {
+        return false;
+    };
+    if p.is_whitespace() || n.is_whitespace() {
+        return false;
+    }
+    if is_css_punct(p) || is_css_punct(n) {
+        return false;
+    }
+    true
 }
 
 fn extract_theme_args(input: &str, args_start: usize) -> Option<(&str, usize)> {
@@ -1648,5 +1735,38 @@ fn format_rem(v: f64) -> String {
         "0rem".to_string()
     } else {
         format!("{}rem", s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{minify_css_lossy, process_tailwind};
+
+    #[test]
+    fn css_minifier_removes_comments_and_compacts_whitespace() {
+        let raw = r#"
+/* comment */
+.a { color: red; }
+.b    { margin : 0 ; padding : 4px ; }
+"#;
+        let minified = minify_css_lossy(raw);
+        assert_eq!(minified, ".a{color:red;}.b{margin:0;padding:4px;}");
+    }
+
+    #[test]
+    fn process_tailwind_injects_compacted_style_block() {
+        let html =
+            "<html><head></head><body><div class=\"p-4 text-slate-100\"></div></body></html>";
+        let out = process_tailwind(html);
+        let start = out.find("<style data-rwe-tw>").expect("style open");
+        let content_start = start + "<style data-rwe-tw>".len();
+        let end = out[content_start..].find("</style>").expect("style close") + content_start;
+        let css = &out[content_start..end];
+        assert!(
+            !css.contains("/*"),
+            "css should not include preflight comments"
+        );
+        assert!(css.contains(".p-4{padding:1rem;}"));
+        assert!(css.contains(".text-slate-100{color:#f1f5f9;}"));
     }
 }

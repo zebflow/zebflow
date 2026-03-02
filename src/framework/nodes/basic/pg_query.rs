@@ -1,22 +1,51 @@
-//! Postgres query node using stored project credentials.
-
+/// Postgres query node using stored project credentials.
 use std::sync::Arc;
 
-use postgres::{Client, NoTls, types::{ToSql, Type}};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sqlx::{Column, Row, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::framework::{
-    FrameworkError,
+    FrameworkError, NodeDefinition,
     nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::language::LanguageEngine;
 use crate::platform::services::CredentialService;
 
-use super::util::{metadata_scope, resolve_array_values};
+use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
 
-pub const NODE_KIND: &str = "x.n.pg.query";
+pub const NODE_KIND: &str = "n.pg.query";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
+
+/// Unified node-definition metadata for `n.pg.query`.
+pub fn definition() -> NodeDefinition {
+    NodeDefinition {
+        kind: NODE_KIND.to_string(),
+        title: "Postgres Query".to_string(),
+        description: "Execute SQL using project credential and return rows/affected count."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type":"object",
+            "description":"Input context for query/parameter bindings."
+        }),
+        output_schema: serde_json::json!({
+            "oneOf":[
+                {"type":"object","properties":{"rows":{"type":"array"}}},
+                {"type":"object","properties":{"affected_rows":{"type":"integer"}}}
+            ]
+        }),
+        input_pins: vec![INPUT_PIN_IN.to_string()],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        script_available: true,
+        script_bridge: Some(crate::framework::NodeScriptBridge {
+            name: "n.pg.query".to_string(),
+            enabled: false,
+        }),
+        ai_tool: Default::default(),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -24,22 +53,47 @@ pub struct Config {
     pub query: String,
     #[serde(default)]
     pub params_path: Option<String>,
+    #[serde(default)]
+    pub credential_id_expr: Option<String>,
+    #[serde(default)]
+    pub query_expr: Option<String>,
+    #[serde(default)]
+    pub params_expr: Option<String>,
 }
 
 pub struct Node {
     config: Config,
     credentials: Arc<CredentialService>,
+    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
-    pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, FrameworkError> {
-        if config.credential_id.trim().is_empty() {
+    pub fn new(
+        config: Config,
+        credentials: Arc<CredentialService>,
+        language: Arc<dyn LanguageEngine>,
+    ) -> Result<Self, FrameworkError> {
+        if config.credential_id.trim().is_empty()
+            && config
+                .credential_id_expr
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+        {
             return Err(FrameworkError::new(
                 "FW_NODE_PG_CONFIG",
                 "config.credential_id must not be empty",
             ));
         }
-        if config.query.trim().is_empty() {
+        if config.query.trim().is_empty()
+            && config
+                .query_expr
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+        {
             return Err(FrameworkError::new(
                 "FW_NODE_PG_CONFIG",
                 "config.query must not be empty",
@@ -48,25 +102,52 @@ impl Node {
         Ok(Self {
             config,
             credentials,
+            language,
         })
     }
 }
 
+#[async_trait]
 impl FrameworkNode for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
-    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, FrameworkError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
+        let credential_id = resolve_string_binding(
+            &self.language,
+            &input.payload,
+            &input.metadata,
+            self.config.credential_id_expr.as_deref(),
+            &self.config.credential_id,
+            "credential_id",
+        )?;
+        let query = resolve_string_binding(
+            &self.language,
+            &input.payload,
+            &input.metadata,
+            self.config.query_expr.as_deref(),
+            &self.config.query,
+            "query",
+        )?;
         let credential = self
             .credentials
-            .get_project_credential(owner, project, &self.config.credential_id)
+            .get_project_credential(owner, project, &credential_id)
             .map_err(|err| FrameworkError::new("FW_NODE_PG_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
                 FrameworkError::new(
                     "FW_NODE_PG_CREDENTIAL_MISSING",
-                    format!("credential '{}' not found", self.config.credential_id),
+                    format!("credential '{}' not found", credential_id),
                 )
             })?;
         if credential.kind != "postgres" {
@@ -78,28 +159,54 @@ impl FrameworkNode for Node {
                 ),
             ));
         }
-        let connection_string = build_postgres_connection_string(&credential.secret)?;
-        let mut client = Client::connect(&connection_string, NoTls)
-            .map_err(|err| FrameworkError::new("FW_NODE_PG_CONNECT", err.to_string()))?;
-        let param_values = resolve_array_values(&input.payload, self.config.params_path.as_deref());
-        let param_boxes = build_postgres_params(param_values)?;
-        let params: Vec<&(dyn ToSql + Sync)> = param_boxes
-            .iter()
-            .map(|value| &**value as &(dyn ToSql + Sync))
-            .collect();
+        let connect_options = build_postgres_connect_options(&credential.secret)?;
 
-        let lower = self.config.query.trim_start().to_ascii_lowercase();
+        let param_values = if let Some(expr) = self.config.params_expr.as_deref() {
+            let evaluated = eval_deno_expr(
+                self.language.as_ref(),
+                expr,
+                &input.payload,
+                &input.metadata,
+            )?;
+            match evaluated {
+                Value::Array(items) => items,
+                other => vec![other],
+            }
+        } else {
+            resolve_array_values(&input.payload, self.config.params_path.as_deref())
+        };
+
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_options)
+            .await
+            .map_err(|err| FrameworkError::new("FW_NODE_PG_CONNECT", err.to_string()))?;
+
+        let lower = query.trim_start().to_ascii_lowercase();
         let payload = if lower.starts_with("select") || lower.starts_with("with") {
-            let rows = client
-                .query(&self.config.query, &params)
+            let mut sql_query = sqlx::query(&query);
+            for param in &param_values {
+                sql_query = bind_json_param(sql_query, param);
+            }
+            let rows = sql_query
+                .fetch_all(&pool)
+                .await
                 .map_err(|err| FrameworkError::new("FW_NODE_PG_QUERY", err.to_string()))?;
-            let json_rows = rows.into_iter().map(row_to_json).collect::<Result<Vec<_>, _>>()?;
+            let json_rows = rows
+                .into_iter()
+                .map(row_to_json)
+                .collect::<Result<Vec<_>, _>>()?;
             json!({ "rows": json_rows })
         } else {
-            let affected = client
-                .execute(&self.config.query, &params)
+            let mut sql_query = sqlx::query(&query);
+            for param in &param_values {
+                sql_query = bind_json_param(sql_query, param);
+            }
+            let result = sql_query
+                .execute(&pool)
+                .await
                 .map_err(|err| FrameworkError::new("FW_NODE_PG_QUERY", err.to_string()))?;
-            json!({ "affected_rows": affected })
+            json!({ "affected_rows": result.rows_affected() })
         };
 
         Ok(NodeExecutionOutput {
@@ -110,12 +217,51 @@ impl FrameworkNode for Node {
     }
 }
 
-fn build_postgres_connection_string(secret: &Value) -> Result<String, FrameworkError> {
+fn resolve_string_binding(
+    language: &Arc<dyn LanguageEngine>,
+    input: &Value,
+    metadata: &Value,
+    expr: Option<&str>,
+    fallback: &str,
+    field: &str,
+) -> Result<String, FrameworkError> {
+    if let Some(expr) = expr {
+        let value = eval_deno_expr(language.as_ref(), expr, input, metadata)?;
+        return value.as_str().map(ToString::to_string).ok_or_else(|| {
+            FrameworkError::new(
+                "FW_NODE_PG_BINDING",
+                format!("binding expression for '{field}' must return string"),
+            )
+        });
+    }
+    let out = fallback.trim();
+    if out.is_empty() {
+        return Err(FrameworkError::new(
+            "FW_NODE_PG_BINDING",
+            format!("resolved '{field}' must not be empty"),
+        ));
+    }
+    Ok(out.to_string())
+}
+
+fn build_postgres_connect_options(secret: &Value) -> Result<PgConnectOptions, FrameworkError> {
     let host = secret
         .get("host")
         .and_then(Value::as_str)
         .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.host is required"))?;
-    let port = secret.get("port").and_then(Value::as_u64).unwrap_or(5432);
+    let port = secret
+        .get("port")
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|raw| raw.trim().parse::<u64>().ok())
+            })
+        })
+        .unwrap_or(5432);
+    let port = u16::try_from(port).map_err(|_| {
+        FrameworkError::new("FW_NODE_PG_SECRET", "secret.port must be in 0..=65535")
+    })?;
     let database = secret
         .get("database")
         .and_then(Value::as_str)
@@ -128,68 +274,75 @@ fn build_postgres_connection_string(secret: &Value) -> Result<String, FrameworkE
         .get("password")
         .and_then(Value::as_str)
         .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.password is required"))?;
-    Ok(format!(
-        "host={host} port={port} dbname={database} user={user} password={password}"
-    ))
+    Ok(PgConnectOptions::new()
+        .host(host)
+        .port(port)
+        .database(database)
+        .username(user)
+        .password(password))
 }
 
-fn build_postgres_params(
-    values: Vec<Value>,
-) -> Result<Vec<Box<dyn ToSql + Sync>>, FrameworkError> {
-    let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
-    for value in values {
-        match value {
-            Value::Null => params.push(Box::new(Option::<String>::None)),
-            Value::Bool(v) => params.push(Box::new(v)),
-            Value::Number(v) => {
-                if let Some(i) = v.as_i64() {
-                    params.push(Box::new(i));
-                } else if let Some(u) = v.as_u64() {
-                    let i = i64::try_from(u).map_err(|_| {
-                        FrameworkError::new("FW_NODE_PG_PARAMS", "u64 parameter exceeds i64 range")
-                    })?;
-                    params.push(Box::new(i));
-                } else if let Some(f) = v.as_f64() {
-                    params.push(Box::new(f));
-                }
-            }
-            Value::String(v) => params.push(Box::new(v)),
-            other => {
-                params.push(Box::new(other.to_string()));
-            }
-        }
+fn bind_json_param<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    value: &Value,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    // Bind owned values so query lifetime never depends on input payload references.
+    match value {
+        Value::Null => query.bind(Option::<String>::None),
+        Value::Bool(v) => query.bind(*v),
+        Value::Number(n) => query.bind(n.to_string()),
+        Value::String(s) => query.bind(s.clone()),
+        other => query.bind(other.to_string()),
     }
-    Ok(params)
 }
 
-fn row_to_json(row: postgres::Row) -> Result<Value, FrameworkError> {
+fn row_to_json(row: PgRow) -> Result<Value, FrameworkError> {
     let mut map = Map::new();
-    for column in row.columns() {
+    let columns = row.columns();
+
+    for (idx, column) in columns.iter().enumerate() {
         let name = column.name().to_string();
-        let value = match *column.type_() {
-            Type::BOOL => row.try_get::<_, Option<bool>>(name.as_str())
-                .map(Value::from)
-                .unwrap_or(Value::Null),
-            Type::INT2 => row.try_get::<_, Option<i16>>(name.as_str())
-                .map(Value::from)
-                .unwrap_or(Value::Null),
-            Type::INT4 => row.try_get::<_, Option<i32>>(name.as_str())
-                .map(Value::from)
-                .unwrap_or(Value::Null),
-            Type::INT8 => row.try_get::<_, Option<i64>>(name.as_str())
-                .map(Value::from)
-                .unwrap_or(Value::Null),
-            Type::FLOAT4 => row.try_get::<_, Option<f32>>(name.as_str())
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null),
-            Type::FLOAT8 => row.try_get::<_, Option<f64>>(name.as_str())
-                .map(|v| json!(v))
-                .unwrap_or(Value::Null),
-            _ => row.try_get::<_, Option<String>>(name.as_str())
-                .map(Value::from)
-                .unwrap_or(Value::Null),
-        };
+        let value = row_cell_to_json(&row, idx);
         map.insert(name, value);
     }
     Ok(Value::Object(map))
+}
+
+fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
+    if let Ok(v) = row.try_get::<Option<serde_json::Value>, _>(idx) {
+        return v.unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<String>, _>(idx) {
+        return v.map(Value::String).unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<bool>, _>(idx) {
+        return v.map(Value::Bool).unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<i64>, _>(idx) {
+        return v.map(|x| json!(x)).unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<i32>, _>(idx) {
+        return v.map(|x| json!(x)).unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<i16>, _>(idx) {
+        return v.map(|x| json!(x)).unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<f64>, _>(idx) {
+        return v
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<f32>, _>(idx) {
+        return v
+            .and_then(|x| serde_json::Number::from_f64(x as f64))
+            .map(Value::Number)
+            .unwrap_or(Value::Null);
+    }
+    if let Ok(v) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+        return v
+            .map(|bytes| Value::String(hex::encode(bytes)))
+            .unwrap_or(Value::Null);
+    }
+    Value::Null
 }

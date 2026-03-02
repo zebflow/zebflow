@@ -160,6 +160,36 @@ pub struct RuntimeBundle {
     pub source: String,
 }
 
+/// Compile/render-time script artifact emitted by RWE.
+///
+/// Platform can persist and serve these as external immutable assets keyed by
+/// `content_hash`, instead of keeping all scripts in memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledScript {
+    /// Stable script id inside one render output (`runtime`, `page`, ...).
+    pub id: String,
+    /// Script scope (`shared` or `page`).
+    pub scope: CompiledScriptScope,
+    /// Content type for HTTP responses.
+    pub content_type: String,
+    /// Raw JavaScript source.
+    pub content: String,
+    /// Deterministic content hash used for cache keys and immutable URLs.
+    pub content_hash: String,
+    /// Suggested file name suffix for platform-managed storage.
+    pub suggested_file_name: String,
+}
+
+/// Scope hint used by platform-level cache/storage policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompiledScriptScope {
+    /// Shared script candidate reusable across many pages.
+    Shared,
+    /// Page/request-specific script candidate.
+    Page,
+}
+
 /// Collected reactive binding entry from template markup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReactiveBinding {
@@ -238,6 +268,15 @@ pub struct RenderContext {
 pub struct RenderOutput {
     /// Final HTML output.
     pub html: String,
+    /// JS artifacts produced during render.
+    ///
+    /// Notes:
+    ///
+    /// - RWE does not persist or route these assets.
+    /// - Platform can map `content_hash` -> storage path/URL and inject
+    ///   external `<script src=...>` references.
+    #[serde(default)]
+    pub compiled_scripts: Vec<CompiledScript>,
     /// Hydration/bootstrap payload for client runtime.
     pub hydration_payload: Value,
     /// Render trace entries.

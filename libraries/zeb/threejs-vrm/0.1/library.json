@@ -1,0 +1,24 @@
+{
+  "name": "zeb/threejs-vrm",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "three-vrm",
+    "package_version": "bridge",
+    "entry": "runtime/threejs-vrm.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["vrm", "mountVrmViewer"],
+    "wrappers": ["VrmViewer"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/threejs-vrm.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

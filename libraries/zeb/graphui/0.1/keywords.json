@@ -1,0 +1,31 @@
+{
+  "package": "zeb/graphui",
+  "version": "0.1",
+  "symbols": [
+    {
+      "name": "graphui",
+      "kind": "raw",
+      "doc": "Official Zeb graph visualization and editor primitives."
+    },
+    {
+      "name": "createGraphUI",
+      "kind": "raw",
+      "doc": "Mount graph editor UI inside any container element."
+    },
+    {
+      "name": "createSeedScenes",
+      "kind": "raw",
+      "doc": "Seed scenes showcasing node/edge interaction capabilities."
+    },
+    {
+      "name": "createPipelineScene",
+      "kind": "raw",
+      "doc": "Create a scene from Zebflow PipelineGraph JSON."
+    },
+    {
+      "name": "GraphCanvas",
+      "kind": "wrapper",
+      "doc": "TSX wrapper component shell for graph canvas containers."
+    }
+  ]
+}

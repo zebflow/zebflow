@@ -1,15 +1,43 @@
 //! Script execution node backed by the language engine.
 
-use serde::{Deserialize, Serialize};
-use crate::framework::{FrameworkError, nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput}};
+use crate::framework::{
+    FrameworkError, NodeDefinition,
+    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, ExecutionContext, LanguageEngine,
     ModuleSource, SourceKind,
 };
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-pub const NODE_KIND: &str = "x.n.script";
+pub const NODE_KIND: &str = "n.script";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
+
+/// Unified node-definition metadata for `n.script`.
+pub fn definition() -> NodeDefinition {
+    NodeDefinition {
+        kind: NODE_KIND.to_string(),
+        title: "Script".to_string(),
+        description:
+            "Execute sandboxed Deno logic with runtime signature async function(input, n, ctx)."
+                .to_string(),
+        input_schema: serde_json::json!({
+            "type":"object",
+            "description":"Upstream payload available as `input`."
+        }),
+        output_schema: serde_json::json!({
+            "type":"any",
+            "description":"Script return value forwarded downstream."
+        }),
+        input_pins: vec![INPUT_PIN_IN.to_string()],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        script_available: false,
+        script_bridge: None,
+        ai_tool: Default::default(),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -44,7 +72,10 @@ impl Node {
             code: config.source,
         };
         let ir = language.parse(&module).map_err(|err| {
-            FrameworkError::new("FW_NODE_SCRIPT_PARSE", format!("node '{}': {}", node_id, err))
+            FrameworkError::new(
+                "FW_NODE_SCRIPT_PARSE",
+                format!("node '{}': {}", node_id, err),
+            )
         })?;
         let compiled = language
             .compile(
@@ -56,7 +87,10 @@ impl Node {
                 },
             )
             .map_err(|err| {
-                FrameworkError::new("FW_NODE_SCRIPT_COMPILE", format!("node '{}': {}", node_id, err))
+                FrameworkError::new(
+                    "FW_NODE_SCRIPT_COMPILE",
+                    format!("node '{}': {}", node_id, err),
+                )
             })?;
         Ok(Self {
             node_id: node_id.to_string(),
@@ -66,12 +100,22 @@ impl Node {
     }
 }
 
+#[async_trait]
 impl FrameworkNode for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
-    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, FrameworkError> {
         if input.input_pin != INPUT_PIN_IN {
             return Err(FrameworkError::new(
                 "FW_NODE_SCRIPT_INPUT_PIN",
@@ -105,7 +149,10 @@ impl FrameworkNode for Node {
             .language
             .run(&self.compiled, input.payload, &ctx)
             .map_err(|err| {
-                FrameworkError::new("FW_NODE_SCRIPT_RUN", format!("node '{}': {}", self.node_id, err))
+                FrameworkError::new(
+                    "FW_NODE_SCRIPT_RUN",
+                    format!("node '{}': {}", self.node_id, err),
+                )
             })?;
 
         let mut trace = vec![format!("node_kind={NODE_KIND}")];

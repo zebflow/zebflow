@@ -86,6 +86,12 @@ impl CredentialService {
                 "credential id must not be empty",
             ));
         }
+        if !is_uuid_v4(&credential_id) {
+            return Err(PlatformError::new(
+                "PLATFORM_CREDENTIAL_INVALID",
+                "credential id must be UUID v4",
+            ));
+        }
         let kind = slug_segment(&req.kind);
         if kind.is_empty() {
             return Err(PlatformError::new(
@@ -148,4 +154,29 @@ impl CredentialService {
             format!("project '{owner}/{project}' not found"),
         ))
     }
+}
+
+fn is_uuid_v4(value: &str) -> bool {
+    if value.len() != 36 {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    for (idx, ch) in bytes.iter().enumerate() {
+        let is_dash = matches!(idx, 8 | 13 | 18 | 23);
+        if is_dash {
+            if *ch != b'-' {
+                return false;
+            }
+            continue;
+        }
+        if !((*ch >= b'0' && *ch <= b'9') || (*ch >= b'a' && *ch <= b'f')) {
+            return false;
+        }
+    }
+    // UUID version nibble at index 14 must be '4'
+    if bytes[14] != b'4' {
+        return false;
+    }
+    // UUID variant nibble at index 19 must be 8,9,a,b
+    matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
 }

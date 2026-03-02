@@ -1,0 +1,24 @@
+{
+  "name": "zeb/deckgl",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "deck.gl",
+    "package_version": "bridge",
+    "entry": "runtime/deckgl.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["deckgl", "ensureDeck", "createDeckMapRuntime", "mountDeckMap"],
+    "wrappers": ["DeckMap"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/deckgl.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

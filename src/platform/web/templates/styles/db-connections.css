@@ -1,0 +1,15 @@
+.db-connection-name,
+.db-connection-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.db-connection-name .zf-devicon,
+.db-connection-kind .zf-devicon {
+  color: color-mix(in srgb, var(--studio-text) 86%, transparent);
+}
+
+.db-connection-kind .zf-devicon.colored {
+  color: inherit;
+}

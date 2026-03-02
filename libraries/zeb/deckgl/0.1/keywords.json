@@ -1,0 +1,10 @@
+[
+  "deckgl",
+  "ensureDeck",
+  "createDeckMapRuntime",
+  "mountDeckMap",
+  "DeckMap",
+  "ScatterplotLayer",
+  "HexagonLayer",
+  "GeoJsonLayer"
+]

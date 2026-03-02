@@ -21,9 +21,9 @@ use crate::rwe::class_notation::{
 };
 use crate::rwe::interface::ReactiveWebEngine;
 use crate::rwe::model::{
-    CompiledTemplate, ComponentOptions, ReactiveBinding, ReactiveMode, ReactiveWebDiagnostic,
-    ReactiveWebError, ReactiveWebOptions, RenderContext, RenderOutput, RuntimeBundle, RuntimeMode,
-    TemplateSource,
+    CompiledScript, CompiledScriptScope, CompiledTemplate, ComponentOptions, ReactiveBinding,
+    ReactiveMode, ReactiveWebDiagnostic, ReactiveWebError, ReactiveWebOptions, RenderContext,
+    RenderOutput, RuntimeBundle, RuntimeMode, TemplateSource,
 };
 use crate::rwe::processors;
 use crate::rwe::processors::tailwind::collect_tw_variants;
@@ -946,30 +946,64 @@ impl ReactiveWebEngine for NoopReactiveWebEngine {
             trace.push(format!("ssr_replacements={}", ssr_result.replacements));
         }
 
-        let mut html = inject_runtime_bundle(&ssr_result.html, &compiled.runtime_bundle);
+        let runtime_source = compiled.runtime_bundle.source.clone();
+        let mut page_source = String::new();
         if !compiled.reactive_bindings.is_empty() {
-            let bootstrap = format!(
-                "<script>window.__ZEBFLOW_RWE_BINDINGS__={};</script>",
-                serde_json::to_string(&compiled.reactive_bindings).unwrap_or("[]".to_string())
-            );
-            html = inject_before_body_end(&html, &bootstrap);
+            page_source.push_str(&reactive_bindings_bootstrap_snippet(
+                &compiled.reactive_bindings,
+            ));
         }
         if let Some(source) = &compiled.control_script_source {
             if !source.trim().is_empty() {
-                html = inject_control_mount_script(&html, source, &hydration_payload);
+                page_source.push_str(&control_mount_script_snippet(source, &hydration_payload));
                 trace.push("rwe_control_script=mounted".to_string());
             }
         }
         if !compiled.tailwind_variant_patterns.is_empty() {
-            html = inject_tailwind_dynamic_runtime(&html, &compiled.tailwind_variant_patterns);
+            page_source.push_str(&tailwind_dynamic_runtime_script_snippet(
+                &compiled.tailwind_variant_patterns,
+            ));
             trace.push(format!(
                 "rwe_tw_variants_runtime={}",
                 compiled.tailwind_variant_patterns.join(",")
             ));
         }
 
+        let mut compiled_scripts = vec![CompiledScript {
+            id: "runtime".to_string(),
+            scope: CompiledScriptScope::Shared,
+            content_type: "text/javascript; charset=utf-8".to_string(),
+            content_hash: stable_content_hash(&runtime_source),
+            suggested_file_name: format!(
+                "{}.{}",
+                compiled.runtime_bundle.name.trim_end_matches(".js"),
+                "js"
+            ),
+            content: runtime_source.clone(),
+        }];
+        if !page_source.is_empty() {
+            compiled_scripts.push(CompiledScript {
+                id: "page".to_string(),
+                scope: CompiledScriptScope::Page,
+                content_type: "text/javascript; charset=utf-8".to_string(),
+                content_hash: stable_content_hash(&page_source),
+                suggested_file_name: format!("{}.page.js", compiled.template_id),
+                content: page_source.clone(),
+            });
+        }
+
+        // Backward compatibility: current HTML still receives one inline script
+        // while platform-level external script routing is rolled out.
+        let inline_source = format!("{runtime_source}{page_source}");
+        let runtime_bundle = RuntimeBundle {
+            name: compiled.runtime_bundle.name.clone(),
+            source: inline_source,
+        };
+        let html = inject_runtime_bundle(&ssr_result.html, &runtime_bundle);
+
         Ok(RenderOutput {
             html,
+            compiled_scripts,
             hydration_payload,
             trace,
         })
@@ -1014,18 +1048,24 @@ fn collect_dynamic_class_placeholders(html: &str) -> Vec<String> {
     found.into_iter().collect()
 }
 
-fn inject_control_mount_script(html: &str, source: &str, hydration_payload: &Value) -> String {
+fn reactive_bindings_bootstrap_snippet(bindings: &[ReactiveBinding]) -> String {
+    format!(
+        "window.__ZEBFLOW_RWE_BINDINGS__={};",
+        serde_json::to_string(bindings).unwrap_or("[]".to_string())
+    )
+}
+
+fn control_mount_script_snippet(source: &str, hydration_payload: &Value) -> String {
     let bootstrap = json!({
         "input": hydration_payload.get("input").cloned().unwrap_or(Value::Null),
         "metadata": hydration_payload.get("metadata").cloned().unwrap_or(Value::Null),
     });
     let source_json = serde_json::to_string(source).unwrap_or_else(|_| "\"\"".to_string());
     let bootstrap_json = serde_json::to_string(&bootstrap).unwrap_or_else(|_| "{}".to_string());
-    let script = format!(
-        "<script>(function(){{try{{const __tj_bootstrap={};const __tj_factory=new Function('input','metadata',{});const __tj_app=__tj_factory(__tj_bootstrap.input,__tj_bootstrap.metadata)||{{}};if(window.__ZEBFLOW_RWE__&&typeof window.__ZEBFLOW_RWE__.mount==='function'){{window.__ZEBFLOW_RWE__.mount(__tj_app,__tj_bootstrap);}}}}catch(err){{console.error('[ZEBFLOW][RWE] control script failed',err);}}}})();</script>",
+    format!(
+        "(function(){{try{{const __tj_bootstrap={};const __tj_factory=new Function('input','metadata',{});const __tj_app=__tj_factory(__tj_bootstrap.input,__tj_bootstrap.metadata)||{{}};if(window.__ZEBFLOW_RWE__&&typeof window.__ZEBFLOW_RWE__.mount==='function'){{window.__ZEBFLOW_RWE__.mount(__tj_app,__tj_bootstrap);}}}}catch(err){{console.error('[ZEBFLOW][RWE] control script failed',err);}}}})();",
         bootstrap_json, source_json
-    );
-    inject_before_body_end(html, &script)
+    )
 }
 
 fn inject_before_body_end(html: &str, snippet: &str) -> String {
@@ -1038,12 +1078,21 @@ fn inject_before_body_end(html: &str, snippet: &str) -> String {
     }
 }
 
-fn inject_tailwind_dynamic_runtime(html: &str, patterns: &[String]) -> String {
+fn stable_content_hash(input: &str) -> String {
+    // Deterministic FNV-1a 64-bit (lightweight, no extra dependency).
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in input.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x00000100000001B3);
+    }
+    format!("{h:016x}")
+}
+
+fn tailwind_dynamic_runtime_script_snippet(patterns: &[String]) -> String {
     let patterns_json = serde_json::to_string(patterns).unwrap_or_else(|_| "[]".to_string());
-    let script = format!(
-        "<script>(function(){{const patterns={patterns_json};if(!Array.isArray(patterns)||patterns.length===0)return;const hasBg=patterns.indexOf('bg-[*]')!==-1;const hasText=patterns.indexOf('text-[*]')!==-1;const hasBorder=patterns.indexOf('border-[*]')!==-1;if(!hasBg&&!hasText&&!hasBorder)return;function sanitize(raw){{if(typeof raw!=='string')return null;const v=raw.replace(/_/g,' ').trim();if(!v||v.length>128)return null;if(/[;{{}}]/.test(v))return null;if(/url\\s*\\(/i.test(v))return null;if(/expression\\s*\\(/i.test(v))return null;return v;}}function matchToken(token,prefix){{if(!token.startsWith(prefix+'-[')||!token.endsWith(']'))return null;return sanitize(token.slice(prefix.length+2,-1));}}function uniq(tokens){{const out=[];const seen=new Set();for(const t of tokens){{if(!t||seen.has(t))continue;seen.add(t);out.push(t);}}return out;}}function applyEl(el){{if(!el||!el.getAttribute)return;const classValue=el.getAttribute('class');if(!classValue)return;const parts=classValue.split(/\\s+/).filter(Boolean);if(parts.length===0)return;let changed=false;const next=[];for(const token of parts){{let consumed=false;if(hasBg){{const v=matchToken(token,'bg');if(v!==null){{next.push('tw-bg-dyn');el.style.setProperty('--tw-bg',v);changed=true;consumed=true;}}}}if(!consumed&&hasText){{const v=matchToken(token,'text');if(v!==null){{next.push('tw-text-dyn');el.style.setProperty('--tw-text',v);changed=true;consumed=true;}}}}if(!consumed&&hasBorder){{const v=matchToken(token,'border');if(v!==null){{next.push('tw-border-dyn');el.style.setProperty('--tw-border',v);changed=true;consumed=true;}}}}if(!consumed)next.push(token);}}if(changed){{el.setAttribute('class',uniq(next).join(' '));}}}}function scan(root){{const target=root&&root.querySelectorAll?root:document;if(!target)return;if(root&&root.nodeType===1&&root.getAttribute&&root.getAttribute('class'))applyEl(root);const nodes=target.querySelectorAll?target.querySelectorAll('[class]'):[];for(const el of nodes)applyEl(el);}}scan(document);if(typeof MutationObserver==='function'){{const mo=new MutationObserver((records)=>{{for(const r of records){{if(r.type==='attributes'&&r.attributeName==='class'){{applyEl(r.target);continue;}}if(r.type==='childList'){{for(const n of r.addedNodes){{if(n&&n.nodeType===1)scan(n);}}}}}});}});mo.observe(document.documentElement||document.body,{{subtree:true,childList:true,attributes:true,attributeFilter:['class']}});}}window.__ZEBFLOW_TW_DYN__={{patterns:patterns,scan:scan}};}})();</script>"
-    );
-    inject_before_body_end(html, &script)
+    format!(
+        "(function(){{const patterns={patterns_json};if(!Array.isArray(patterns)||patterns.length===0)return;const hasBg=patterns.indexOf('bg-[*]')!==-1;const hasText=patterns.indexOf('text-[*]')!==-1;const hasBorder=patterns.indexOf('border-[*]')!==-1;if(!hasBg&&!hasText&&!hasBorder)return;function sanitize(raw){{if(typeof raw!=='string')return null;const v=raw.replace(/_/g,' ').trim();if(!v||v.length>128)return null;if(/[;{{}}]/.test(v))return null;if(/url\\s*\\(/i.test(v))return null;if(/expression\\s*\\(/i.test(v))return null;return v;}}function matchToken(token,prefix){{if(!token.startsWith(prefix+'-[')||!token.endsWith(']'))return null;return sanitize(token.slice(prefix.length+2,-1));}}function uniq(tokens){{const out=[];const seen=new Set();for(const t of tokens){{if(!t||seen.has(t))continue;seen.add(t);out.push(t);}}return out;}}function applyEl(el){{if(!el||!el.getAttribute)return;const classValue=el.getAttribute('class');if(!classValue)return;const parts=classValue.split(/\\s+/).filter(Boolean);if(parts.length===0)return;let changed=false;const next=[];for(const token of parts){{let consumed=false;if(hasBg){{const v=matchToken(token,'bg');if(v!==null){{next.push('tw-bg-dyn');el.style.setProperty('--tw-bg',v);changed=true;consumed=true;}}}}if(!consumed&&hasText){{const v=matchToken(token,'text');if(v!==null){{next.push('tw-text-dyn');el.style.setProperty('--tw-text',v);changed=true;consumed=true;}}}}if(!consumed&&hasBorder){{const v=matchToken(token,'border');if(v!==null){{next.push('tw-border-dyn');el.style.setProperty('--tw-border',v);changed=true;consumed=true;}}}}if(!consumed)next.push(token);}}if(changed){{el.setAttribute('class',uniq(next).join(' '));}}}}function scan(root){{const target=root&&root.querySelectorAll?root:document;if(!target)return;if(root&&root.nodeType===1&&root.getAttribute&&root.getAttribute('class'))applyEl(root);const nodes=target.querySelectorAll?target.querySelectorAll('[class]'):[];for(const el of nodes)applyEl(el);}}scan(document);if(typeof MutationObserver==='function'){{const mo=new MutationObserver((records)=>{{for(const r of records){{if(r.type==='attributes'&&r.attributeName==='class'){{applyEl(r.target);continue;}}if(r.type==='childList'){{for(const n of r.addedNodes){{if(n&&n.nodeType===1)scan(n);}}}}}});}});mo.observe(document.documentElement||document.body,{{subtree:true,childList:true,attributes:true,attributeFilter:['class']}});}}window.__ZEBFLOW_TW_DYN__={{patterns:patterns,scan:scan}};}})();"
+    )
 }
 
 fn build_ssr_scope(input: &Value, ctx: &RenderContext) -> Value {
@@ -1178,7 +1227,11 @@ fn strip_visibility_attrs(html: &str) -> String {
     out
 }
 
-fn find_matching_close_tag(html: &str, search_start: usize, tag_name: &str) -> Option<(usize, usize)> {
+fn find_matching_close_tag(
+    html: &str,
+    search_start: usize,
+    tag_name: &str,
+) -> Option<(usize, usize)> {
     let open_prefix = format!("<{tag_name}");
     let close_tag = format!("</{tag_name}>");
     let mut cursor = search_start;
@@ -1514,11 +1567,7 @@ fn parse_binding_expr_unary(scope: &Value, tokens: &[BindingExprToken], idx: &mu
     parse_binding_expr_primary(scope, tokens, idx)
 }
 
-fn parse_binding_expr_primary(
-    scope: &Value,
-    tokens: &[BindingExprToken],
-    idx: &mut usize,
-) -> bool {
+fn parse_binding_expr_primary(scope: &Value, tokens: &[BindingExprToken], idx: &mut usize) -> bool {
     match tokens.get(*idx) {
         Some(BindingExprToken::LParen) => {
             *idx += 1;

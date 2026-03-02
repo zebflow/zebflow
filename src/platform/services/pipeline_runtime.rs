@@ -54,14 +54,17 @@ impl CompiledPipeline {
         let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
             PlatformError::new(
                 "PLATFORM_PIPELINE_PARSE",
-                format!("failed parsing active pipeline '{}': {}", meta.file_rel_path, err),
+                format!(
+                    "failed parsing active pipeline '{}': {}",
+                    meta.file_rel_path, err
+                ),
             )
         })?;
         let mut webhook_triggers = Vec::new();
         let mut schedule_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
-                "x.n.trigger.webhook" => {
+                "n.trigger.webhook" => {
                     let path = node
                         .config
                         .get("path")
@@ -80,7 +83,7 @@ impl CompiledPipeline {
                         method,
                     });
                 }
-                "x.n.trigger.schedule" => {
+                "n.trigger.schedule" => {
                     let cron = node
                         .config
                         .get("cron")
@@ -140,7 +143,9 @@ impl PipelineRuntimeService {
         next.retain(|_, compiled| !(compiled.owner == owner && compiled.project == project));
 
         for meta in active_rows {
-            let source = self.projects.read_active_pipeline_source(&owner, &project, &meta)?;
+            let source = self
+                .projects
+                .read_active_pipeline_source(&owner, &project, &meta)?;
             let compiled = CompiledPipeline::from_active_meta(&meta, &source)?;
             next.insert(compiled.key.clone(), compiled);
         }
@@ -174,7 +179,9 @@ impl PipelineRuntimeService {
         next.remove(&key);
 
         if meta.active_hash.is_some() {
-            let source = self.projects.read_active_pipeline_source(&owner, &project, &meta)?;
+            let source = self
+                .projects
+                .read_active_pipeline_source(&owner, &project, &meta)?;
             let compiled = CompiledPipeline::from_active_meta(&meta, &source)?;
             next.insert(compiled.key.clone(), compiled);
         }

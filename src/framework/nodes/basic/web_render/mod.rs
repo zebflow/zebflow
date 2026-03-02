@@ -7,16 +7,17 @@
 //!
 //! and exposes the result through framework pin contracts.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::framework::FrameworkError;
 use crate::framework::nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput};
+use crate::framework::{FrameworkError, NodeDefinition};
 use crate::language::LanguageEngine;
 use crate::rwe::{CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, TemplateSource};
 
 /// Node kind identifier.
-pub const NODE_KIND: &str = "x.n.web.render";
+pub const NODE_KIND: &str = "n.web.render";
 /// Standard input pin.
 pub const INPUT_PIN_IN: &str = "in";
 /// Success output pin.
@@ -24,7 +25,34 @@ pub const OUTPUT_PIN_OUT: &str = "out";
 /// Error output pin.
 pub const OUTPUT_PIN_ERROR: &str = "error";
 
-/// Static configuration for `x.n.web.render`.
+/// Unified node-definition metadata for `n.web.render`.
+pub fn definition() -> NodeDefinition {
+    NodeDefinition {
+        kind: NODE_KIND.to_string(),
+        title: "Web Render".to_string(),
+        description: "Render RWE template into HTML using upstream payload as template input."
+            .to_string(),
+        input_schema: serde_json::json!({
+            "type":"object",
+            "description":"Template input object."
+        }),
+        output_schema: serde_json::json!({
+            "type":"object",
+            "properties":{
+                "html":{"type":"string"},
+                "compiled_scripts":{"type":"array"},
+                "hydration_payload":{"type":"object"}
+            }
+        }),
+        input_pins: vec![INPUT_PIN_IN.to_string()],
+        output_pins: vec![OUTPUT_PIN_OUT.to_string(), OUTPUT_PIN_ERROR.to_string()],
+        script_available: false,
+        script_bridge: None,
+        ai_tool: Default::default(),
+    }
+}
+
+/// Static configuration for `n.web.render`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Template id for traceability.
@@ -97,6 +125,7 @@ impl Node {
     }
 }
 
+#[async_trait]
 impl FrameworkNode for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
@@ -110,7 +139,10 @@ impl FrameworkNode for Node {
         &[OUTPUT_PIN_OUT, OUTPUT_PIN_ERROR]
     }
 
-    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, FrameworkError> {
         if input.input_pin != INPUT_PIN_IN {
             return Err(FrameworkError::new(
                 "FW_NODE_WEB_RENDER_INPUT_PIN",
@@ -181,6 +213,7 @@ pub fn render_with_engines(
         output_pin: OUTPUT_PIN_OUT.to_string(),
         payload: json!({
             "html": rendered.html,
+            "compiled_scripts": rendered.compiled_scripts,
             "hydration_payload": rendered.hydration_payload,
         }),
         trace,
@@ -200,7 +233,10 @@ pub fn render_from_config(
     let markup = config.markup.clone().ok_or_else(|| {
         FrameworkError::new(
             "FW_NODE_WEB_RENDER_CONFIG",
-            format!("node '{}' requires config.markup for inline execution", node_id),
+            format!(
+                "node '{}' requires config.markup for inline execution",
+                node_id
+            ),
         )
     })?;
     let compiled = Node::compile(

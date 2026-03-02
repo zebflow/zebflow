@@ -6,6 +6,7 @@ export default function ProjectStudioShell(props) {
   return (
 <div className="project-studio-shell">
     <input id="project-theme-toggle" type="checkbox" className="project-theme-toggle-input" />
+    <script src="/assets/platform/session-manager.mjs" type="module"></script>
 
     <div className="project-studio-frame">
       <PlatformSidebar />
@@ -73,12 +74,74 @@ export default function ProjectStudioShell(props) {
                 </div>
               </details>
 
-              <button type="button" className="project-shell-tool-button project-shell-session-button" title="Remote control session">
-                <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-                  <path d="M8 6h8M6 10h12M9 14h6M11 18h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                </svg>
-                <span className="project-shell-session-label">Session</span>
-              </button>
+              <details className="project-shell-session" data-owner="{props.owner}" data-project="{props.project}">
+                <summary className="project-shell-tool-button" title="Remote control session">
+                  <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+                    <path d="M8 6h8M6 10h12M9 14h6M11 18h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                  </svg>
+                  <span className="project-shell-session-label">Session</span>
+                </summary>
+
+                <div className="project-shell-session-panel">
+                  <div className="project-shell-session-head">
+                    <p className="project-shell-session-title">MCP Session</p>
+                    <p className="project-shell-session-subtitle">Enable per-project remote control for LLM agents (Cursor, etc.)</p>
+                  </div>
+
+                  <div className="project-shell-session-body">
+                    <div className="project-shell-session-block">
+                      <label className="project-shell-session-toggle-label">
+                        <input type="checkbox" className="project-shell-session-toggle" />
+                        <span>Enable MCP session</span>
+                      </label>
+                    </div>
+
+                    <div className="project-shell-session-block project-shell-session-operations">
+                      <p className="project-shell-session-label">Allowed capabilities:</p>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="pipelines.read" checked />
+                        <span>Pipelines Read</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="pipelines.write" />
+                        <span>Pipelines Write</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="pipelines.execute" />
+                        <span>Pipelines Execute</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="templates.read" />
+                        <span>Templates Read</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="templates.write" />
+                        <span>Templates Write</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="credentials.read" />
+                        <span>Credentials Read</span>
+                      </label>
+                      <label className="project-shell-session-checkbox-label">
+                        <input type="checkbox" value="tables.read" />
+                        <span>Tables Read</span>
+                      </label>
+                    </div>
+
+                    <div className="project-shell-session-block project-shell-session-token-block">
+                      <p className="project-shell-session-label">Token:</p>
+                      <input type="text" className="project-shell-session-token-input" readonly placeholder="Enable session to generate token" />
+                      <button type="button" className="project-shell-session-copy-button">Copy</button>
+                      <p className="project-shell-session-help">Add in Cursor: URL above + Authorization: Bearer TOKEN</p>
+                    </div>
+
+                    <div className="project-shell-session-block project-shell-session-url-block">
+                      <p className="project-shell-session-label">MCP URL:</p>
+                      <input type="text" className="project-shell-session-url-input" readonly placeholder="Enable session to get URL" />
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
         </header>

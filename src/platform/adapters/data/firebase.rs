@@ -3,8 +3,8 @@
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
+    ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Stub adapter for future Firebase support.
@@ -74,10 +74,7 @@ impl DataAdapter for FirebaseDataAdapter {
         ))
     }
 
-    fn put_project_credential(
-        &self,
-        _credential: &ProjectCredential,
-    ) -> Result<(), PlatformError> {
+    fn put_project_credential(&self, _credential: &ProjectCredential) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
             "firebase adapter is not implemented yet",
@@ -100,6 +97,51 @@ impl DataAdapter for FirebaseDataAdapter {
         _owner: &str,
         _project: &str,
         _credential_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn get_project_db_connection(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _connection_slug: &str,
+    ) -> Result<Option<ProjectDbConnection>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn put_project_db_connection(
+        &self,
+        _connection: &ProjectDbConnection,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn list_project_db_connections(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectDbConnection>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn delete_project_db_connection(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _connection_slug: &str,
     ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
@@ -161,6 +203,30 @@ impl DataAdapter for FirebaseDataAdapter {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
             "firebase adapter is not implemented yet",
+        ))
+    }
+
+    fn delete_project_policy(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _policy_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn delete_project_policy_binding(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _subject_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
         ))
     }
 }

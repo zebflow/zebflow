@@ -11,7 +11,7 @@ export default function PlatformSidebar(input) {
         <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="w-9 h-9 shrink-0" />
         <span className="platform-sidebar-label">
           <span className="platform-sidebar-brand-title block text-base font-black tracking-tight">ZEBFLOW</span>
-          <span className="platform-sidebar-brand-subtitle block text-[10px] font-mono uppercase tracking-[0.18em]">Project</span>
+          <span className="platform-sidebar-brand-subtitle block text-[10px] font-mono uppercase tracking-[0.18em]">Project Studio</span>
         </span>
       </a>
 
@@ -53,6 +53,10 @@ export default function PlatformSidebar(input) {
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M12 8v4l3 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
             <span className="platform-sidebar-label">Schedules</span>
           </a>
+          <a href="{input.nav.links.pipelines_manual}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.pipeline_manual}">
+            <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M6 12h12M12 6l6 6-6 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <span className="platform-sidebar-label">Manual</span>
+          </a>
           <a href="{input.nav.links.pipelines_functions}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.pipeline_functions}">
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M7 7h10M10 17l4-10M7 17h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
             <span className="platform-sidebar-label">Functions</span>
@@ -83,9 +87,9 @@ export default function PlatformSidebar(input) {
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M5 7h14v10H5zM8 13l2-2 2 2 3-3 2 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             <span className="platform-sidebar-label">Assets</span>
           </a>
-          <a href="{input.nav.links.build_schema}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.build_schema}">
+          <a href="{input.nav.links.build_docs}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.build_docs}">
             <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M7 6h10M7 12h10M7 18h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
-            <span className="platform-sidebar-label">Schema</span>
+            <span className="platform-sidebar-label">Docs</span>
           </a>
         </div>
       </details>
@@ -108,28 +112,15 @@ export default function PlatformSidebar(input) {
         <span className="platform-sidebar-label">Credentials</span>
       </a>
 
-      <details name="platform-sidebar-groups" data-group="tables" className="platform-sidebar-group">
-        <summary className="platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm {input.nav.classes.tables}">
-          <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
-              <ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.8"/>
-              <path d="M5 6v8c0 1.7 3.1 3 7 3s7-1.3 7-3V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <span className="platform-sidebar-label">Tables</span>
-          <span className="platform-sidebar-group-chevron">
-            <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-              <path d="M7 10l5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </span>
-        </summary>
-        <div className="platform-sidebar-submenu">
-          <a href="{input.nav.links.tables_connections}" className="platform-sidebar-subitem flex items-center gap-2 px-2 py-1.5 rounded-md text-xs font-mono uppercase tracking-[0.14em] {input.nav.classes.table_connections}">
-            <span className="inline-flex items-center justify-center w-4 h-4 shrink-0"><svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M7 7h10v10H7zM12 7v10M7 12h10" stroke="currentColor" stroke-width="1.6"/></svg></span>
-            <span className="platform-sidebar-label">Connections</span>
-          </a>
-        </div>
-      </details>
+      <a href="{input.nav.links.db_connections}" className="platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm {input.nav.classes.databases}">
+        <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
+          <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
+            <ellipse cx="12" cy="6" rx="7" ry="3" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M5 6v8c0 1.7 3.1 3 7 3s7-1.3 7-3V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <span className="platform-sidebar-label">Databases</span>
+      </a>
 
       <a href="{input.nav.links.files}" className="platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm {input.nav.classes.files}">
         <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
