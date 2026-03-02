@@ -80,11 +80,24 @@ impl DbDriver for SjtableDbDriver {
         req: &QueryProjectDbConnectionRequest,
     ) -> Result<ProjectDbConnectionQueryResult, PlatformError> {
         let started = Instant::now();
+        let sql = req.sql.trim();
+
+        if looks_like_json_query(sql) {
+            let payload: Value = serde_json::from_str(sql).map_err(|err| {
+                PlatformError::new("PLATFORM_DB_QUERY_INVALID", format!("invalid JSON query: {err}"))
+            })?;
+            let payload = normalize_native_query_payload(payload)?;
+            let rows = ctx
+                .simple_tables
+                .query_native_rows(&ctx.owner, &ctx.project, &payload)?;
+            return Ok(rows_to_result(ctx, rows, started.elapsed().as_millis() as u64));
+        }
+
         let table = resolve_target_table(req);
         if table.is_empty() {
             return Err(PlatformError::new(
                 "PLATFORM_DB_QUERY_INVALID",
-                "sjtable query requires request.table or a parseable SELECT ... FROM <table>",
+                "sjtable query requires request.table, SQL SELECT ... FROM <table>, or a JSON query payload",
             ));
         }
 
@@ -182,4 +195,78 @@ fn parse_table_from_sql(sql: &str) -> String {
         }
     }
     String::new()
+}
+
+fn looks_like_json_query(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.starts_with('{') || trimmed.starts_with('[')
+}
+
+fn normalize_native_query_payload(payload: Value) -> Result<Value, PlatformError> {
+    match payload {
+        Value::Object(map) => Ok(Value::Object(map)),
+        Value::Array(items) => Ok(json!({ "pipeline": items })),
+        _ => Err(PlatformError::new(
+            "PLATFORM_DB_QUERY_INVALID",
+            "sjtable JSON query must be object or array",
+        )),
+    }
+}
+
+fn rows_to_result(
+    ctx: &DbDriverContext,
+    raw_rows: Vec<Value>,
+    duration_ms: u64,
+) -> ProjectDbConnectionQueryResult {
+    let mut columns = BTreeSet::<String>::new();
+    for row in &raw_rows {
+        if let Some(obj) = row.as_object() {
+            for key in obj.keys() {
+                columns.insert(key.to_string());
+            }
+        } else {
+            columns.insert("value".to_string());
+        }
+    }
+    let ordered_columns = columns.into_iter().collect::<Vec<_>>();
+    let rows = raw_rows
+        .iter()
+        .map(|row| {
+            if let Some(obj) = row.as_object() {
+                ordered_columns
+                    .iter()
+                    .map(|column| obj.get(column).cloned().unwrap_or(Value::Null))
+                    .collect::<Vec<_>>()
+            } else {
+                ordered_columns
+                    .iter()
+                    .map(|column| {
+                        if column == "value" {
+                            row.clone()
+                        } else {
+                            Value::Null
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    ProjectDbConnectionQueryResult {
+        connection_id: ctx.connection.connection_id.clone(),
+        connection_slug: ctx.connection.connection_slug.clone(),
+        database_kind: ctx.connection.database_kind.clone(),
+        columns: ordered_columns
+            .iter()
+            .map(|name| DbQueryColumn {
+                name: name.clone(),
+                data_type: None,
+            })
+            .collect(),
+        row_count: rows.len(),
+        rows,
+        truncated: false,
+        affected_rows: None,
+        duration_ms,
+    }
 }

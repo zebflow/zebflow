@@ -3,8 +3,8 @@
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectAssistantConfig, ProjectCredential,
+    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Stub adapter for future DynamoDB support.
@@ -142,6 +142,27 @@ impl DataAdapter for DynamoDbDataAdapter {
         _owner: &str,
         _project: &str,
         _connection_slug: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "dynamodb adapter is not implemented yet",
+        ))
+    }
+
+    fn get_project_assistant_config(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Option<ProjectAssistantConfig>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "dynamodb adapter is not implemented yet",
+        ))
+    }
+
+    fn put_project_assistant_config(
+        &self,
+        _config: &ProjectAssistantConfig,
     ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",

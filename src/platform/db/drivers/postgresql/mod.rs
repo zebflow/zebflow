@@ -4,9 +4,9 @@ use std::time::Instant;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use serde_json::{Map, Value, json};
-use sqlx::{Column, Row, TypeInfo, postgres::PgConnectOptions, postgres::PgRow};
 use sqlx::types::Uuid;
 use sqlx::types::chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use sqlx::{Column, Row, TypeInfo, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::platform::db::driver::{DbDriver, DbDriverContext};
 use crate::platform::error::PlatformError;
@@ -402,7 +402,9 @@ fn row_cell_to_json(row: &PgRow, idx: usize) -> Value {
         return v.map(Value::String).unwrap_or(Value::Null);
     }
     if let Ok(v) = row.try_get::<Option<Uuid>, _>(idx) {
-        return v.map(|value| Value::String(value.to_string())).unwrap_or(Value::Null);
+        return v
+            .map(|value| Value::String(value.to_string()))
+            .unwrap_or(Value::Null);
     }
     if let Ok(v) = row.try_get::<Option<DateTime<Utc>>, _>(idx) {
         return v

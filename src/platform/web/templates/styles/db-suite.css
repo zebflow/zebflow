@@ -69,6 +69,18 @@
   margin: 0 0.75rem 0.45rem;
 }
 
+.db-suite-side-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0.65rem 0.35rem;
+}
+
+.db-suite-side-actions .db-suite-side-title {
+  margin: 0;
+}
+
 .db-suite-object-group {
   margin-bottom: 0.2rem;
 }
@@ -318,6 +330,115 @@
 .db-suite-query-bottom .db-suite-grid-wrap {
   width: 100%;
   height: 100%;
+}
+
+.db-suite-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(2px);
+  padding: 1rem;
+}
+
+.db-suite-modal-backdrop.is-hidden {
+  display: none;
+}
+
+.db-suite-modal-card {
+  width: min(36rem, 100%);
+  border: 1px solid var(--studio-border);
+  background: var(--studio-panel);
+  border-radius: 0.75rem;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+}
+
+.db-suite-modal-head {
+  min-height: 2.7rem;
+  border-bottom: 1px solid var(--studio-border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.85rem;
+}
+
+.db-suite-modal-head h2 {
+  margin: 0;
+  font-size: 0.92rem;
+  font-family: var(--zf-font-display);
+}
+
+.db-suite-modal-close {
+  border: 1px solid var(--studio-border-soft);
+  background: var(--studio-panel-2);
+  color: var(--studio-text);
+  border-radius: 0.45rem;
+  width: 1.8rem;
+  height: 1.8rem;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.db-suite-create-form {
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.db-suite-form-field {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.db-suite-form-field span {
+  font-size: 0.72rem;
+  color: var(--studio-text-soft);
+}
+
+.db-suite-form-field input {
+  min-height: 2rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--studio-border-soft);
+  background: color-mix(in srgb, var(--studio-panel-2) 75%, transparent);
+  color: var(--studio-text);
+  padding: 0 0.62rem;
+  font-size: 0.78rem;
+}
+
+.db-suite-form-note {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--studio-text-soft);
+}
+
+.db-suite-form-status {
+  min-height: 1rem;
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--studio-text-soft);
+}
+
+.db-suite-form-status[data-state="ok"] {
+  color: #34d399;
+}
+
+.db-suite-form-status[data-state="error"] {
+  color: #f87171;
+}
+
+.db-suite-form-status[data-state="busy"] {
+  color: #fbbf24;
+}
+
+.db-suite-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .db-suite-empty {

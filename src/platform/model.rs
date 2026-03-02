@@ -185,6 +185,27 @@ pub struct ProjectDbConnectionListItem {
     pub updated_at: i64,
 }
 
+/// Project-scoped assistant runtime configuration (used by Zebtune/chat assistant).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectAssistantConfig {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Credential id for high-level reasoning/planning model.
+    pub llm_high_credential_id: Option<String>,
+    /// Credential id for general/cheap model.
+    pub llm_general_credential_id: Option<String>,
+    /// Max execution steps per request.
+    pub max_steps: u32,
+    /// Max replan attempts.
+    pub max_replans: u32,
+    /// Whether assistant is enabled for this project.
+    pub enabled: bool,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
 /// Atomic project-scoped permission used by REST, MCP, and internal assistants.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -723,6 +744,21 @@ pub struct UpsertProjectDbConnectionRequest {
     /// Optional kind-specific config payload.
     #[serde(default)]
     pub config: serde_json::Value,
+}
+
+/// Create/update payload for one project assistant config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpsertProjectAssistantConfigRequest {
+    /// Credential id for high-level reasoning/planning model.
+    pub llm_high_credential_id: Option<String>,
+    /// Credential id for general/cheap model.
+    pub llm_general_credential_id: Option<String>,
+    /// Max execution steps per request.
+    pub max_steps: Option<u32>,
+    /// Max replan attempts.
+    pub max_replans: Option<u32>,
+    /// Whether assistant is enabled for this project.
+    pub enabled: Option<bool>,
 }
 
 /// Test payload for one project DB connection (existing or draft).

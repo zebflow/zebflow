@@ -14,6 +14,7 @@
 pub mod automaton;
 pub mod framework;
 pub mod language;
+pub mod llm;
 pub mod platform;
 pub mod rwe;
 

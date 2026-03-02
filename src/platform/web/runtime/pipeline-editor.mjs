@@ -114,6 +114,11 @@ function normalizeVirtualPath(raw) {
   return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
 }
 
+function isTemplateToken(value) {
+  const text = String(value || "");
+  return text.includes("{") || text.includes("}");
+}
+
 function nodeColor(kind) {
   return DEFAULT_NODE_KIND_COLORS[kind] || "#334155";
 }
@@ -826,6 +831,46 @@ function attachNodeEditButtons(state) {
   });
 }
 
+function scheduleAttachNodeEditButtons(state) {
+  attachNodeEditButtons(state);
+  window.setTimeout(() => attachNodeEditButtons(state), 0);
+  window.setTimeout(() => attachNodeEditButtons(state), 120);
+}
+
+function ensureNodeEditObserver(state) {
+  const root = state.root.querySelector("[data-pipeline-graph-root]");
+  if (!root) {
+    return;
+  }
+  if (state.nodeEditObserver) {
+    state.nodeEditObserver.disconnect();
+  }
+  const observer = new MutationObserver(() => {
+    attachNodeEditButtons(state);
+  });
+  observer.observe(root, { childList: true, subtree: true });
+  state.nodeEditObserver = observer;
+}
+
+function resolveInitialPipelineId(root, selectedId) {
+  const selected = String(selectedId || "").trim();
+  if (selected && !isTemplateToken(selected)) {
+    return selected;
+  }
+  const items = Array.from(root.querySelectorAll("[data-editor-pipeline-id]"));
+  for (const item of items) {
+    if (item.hasAttribute("hidden")) {
+      continue;
+    }
+    const id = String(item.getAttribute("data-editor-pipeline-id") || "").trim();
+    if (!id || isTemplateToken(id)) {
+      continue;
+    }
+    return id;
+  }
+  return "";
+}
+
 function renderNodeFormFields(fieldsContainer, fields) {
   fieldsContainer.innerHTML = "";
   fields.forEach((field) => {
@@ -1307,7 +1352,7 @@ function addNodeFromCatalog(state, kind) {
   node.zfConfig = {};
   node.zfPipelineNodeId = generateNodeSlug(kind, state.graphApp.graph.nodes);
   state.graphApp.addNode(node);
-  attachNodeEditButtons(state);
+  scheduleAttachNodeEditButtons(state);
   closeCategoryMenu(state);
 }
 
@@ -1350,7 +1395,8 @@ async function loadPipeline(state, id) {
     scenes: { pipeline: scene },
     initialScene: "pipeline",
   });
-  attachNodeEditButtons(state);
+  scheduleAttachNodeEditButtons(state);
+  ensureNodeEditObserver(state);
 
   updateSelectedItemClass(state);
   setLockedState(state);
@@ -1555,6 +1601,7 @@ async function initPipelineEditor(root) {
     },
     pgCredentials: [],
     pageTemplates: [],
+    nodeEditObserver: null,
   };
 
   bindDialogs(state);
@@ -1597,7 +1644,7 @@ async function initPipelineEditor(root) {
     }
   }
 
-  const firstId = state.selectedId || root.querySelector("[data-editor-pipeline-id]")?.getAttribute("data-editor-pipeline-id") || "";
+  const firstId = resolveInitialPipelineId(root, state.selectedId);
   if (!firstId) {
     setLockedState(state);
     setHeaderInfo(state);

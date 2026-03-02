@@ -28,7 +28,8 @@ pub use model::{
     ProjectCapability, ProjectFileLayout, UpsertPipelineDefinitionRequest,
 };
 pub use services::{
-    AuthService, AuthorizationService, PlatformService, ProjectService, UserService,
+    AssistantConfigService, AuthService, AuthorizationService, PlatformService, ProjectService,
+    UserService,
 };
 
 /// Builds platform router + service graph from config.

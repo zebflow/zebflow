@@ -3,9 +3,11 @@
 mod embedded;
 
 use std::collections::{BTreeSet, VecDeque};
+use std::convert::Infallible;
 use std::fs;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Form, Path, Query, State};
@@ -13,15 +15,21 @@ use axum::http::{
     HeaderMap, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL, header::CONTENT_TYPE,
     header::SET_COOKIE,
 };
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
+use futures::stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
+use crate::automaton::assistant_config::load_project_assistant_llm;
+use crate::automaton::llm_interface::{
+    Message as AssistantLlmMessage, MessageRole as AssistantLlmRole,
+};
 use crate::framework::{BasicFrameworkEngine, FrameworkContext, FrameworkEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
@@ -32,8 +40,9 @@ use crate::platform::model::{
     ProjectCapability, QueryProjectDbConnectionRequest, SimpleTableQueryRequest,
     TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic,
     TemplateMoveRequest, TemplateSaveRequest, TestProjectDbConnectionRequest,
-    UpsertPipelineDefinitionRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, UpsertSimpleTableRowRequest,
+    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
+    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    UpsertSimpleTableRowRequest,
 };
 use crate::platform::services::PlatformService;
 use crate::rwe::{
@@ -51,7 +60,13 @@ const PLATFORM_UI_COLLAPSIBLE_TREE_JS: &str = include_str!("runtime/ui-collapsib
 const PLATFORM_PROJECT_CREDENTIALS_JS: &str = include_str!("runtime/project-credentials.mjs");
 const PLATFORM_PROJECT_DB_CONNECTIONS_JS: &str = include_str!("runtime/project-db-connections.mjs");
 const PLATFORM_PROJECT_DB_SUITE_JS: &str = include_str!("runtime/project-db-suite.mjs");
+const PLATFORM_PROJECT_DB_SUITE_POSTGRESQL_JS: &str =
+    include_str!("runtime/project-db-suite-postgresql.mjs");
+const PLATFORM_PROJECT_DB_SUITE_SJTABLE_JS: &str =
+    include_str!("runtime/project-db-suite-sjtable.mjs");
 const PLATFORM_SESSION_MANAGER_JS: &str = include_str!("runtime/session-manager.mjs");
+const PLATFORM_PROJECT_ASSISTANT_JS: &str = include_str!("runtime/project-assistant.mjs");
+const PLATFORM_PROJECT_SETTINGS_JS: &str = include_str!("runtime/project-settings.mjs");
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 
 /// Shared frontend render bundle (compiled templates + engines).
@@ -157,12 +172,12 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             get(project_settings_page),
         )
         .route(
-            "/projects/{owner}/{project}/settings/web-libraries",
-            get(project_settings_web_libraries_page),
+            "/projects/{owner}/{project}/settings/{tab}",
+            get(project_settings_tab_page),
         )
         .route(
-            "/projects/{owner}/{project}/settings/nodes",
-            get(project_settings_nodes_page),
+            "/projects/{owner}/{project}/settings/web-libraries",
+            get(project_settings_web_libraries_legacy_redirect_page),
         )
         .route("/api/meta", get(api_meta))
         .route(
@@ -241,6 +256,14 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             get(api_get_credential)
                 .put(api_upsert_credential_by_path)
                 .delete(api_delete_credential),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/assistant/config",
+            get(api_get_project_assistant_config).put(api_upsert_project_assistant_config),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/assistant/chat",
+            post(api_project_assistant_chat),
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections",
@@ -407,6 +430,18 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
     );
 
     pages.insert(
+        "platform-project-settings",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.settings",
+            &template_root,
+            "pages/platform-project-settings.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
         "platform-project-studio",
         compile_page(
             rwe.as_ref(),
@@ -462,7 +497,31 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             "platform.project.table_connection",
             &template_root,
             "pages/platform-project-table-connection.tsx",
-            options,
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-project-table-connection-postgresql",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.table_connection.postgresql",
+            &template_root,
+            "pages/platform-project-table-connection-postgresql.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-project-table-connection-sjtable",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.table_connection.sjtable",
+            &template_root,
+            "pages/platform-project-table-connection-sjtable.tsx",
+            options.clone(),
         )?,
     );
 
@@ -719,6 +778,30 @@ impl Default for PrepareProjectAssetsRequest {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+struct AssistantChatRequest {
+    message: String,
+    history: Vec<AssistantChatMessage>,
+    use_high_model: bool,
+}
+
+impl Default for AssistantChatRequest {
+    fn default() -> Self {
+        Self {
+            message: String::new(),
+            history: Vec::new(),
+            use_high_model: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AssistantChatMessage {
+    role: String,
+    content: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ProjectAssetChunkItem {
     chunk_id: String,
@@ -792,9 +875,25 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
             "text/javascript; charset=utf-8",
             PLATFORM_PROJECT_DB_SUITE_JS.as_bytes(),
         ),
+        "project-db-suite-postgresql.mjs" => asset_response(
+            "text/javascript; charset=utf-8",
+            PLATFORM_PROJECT_DB_SUITE_POSTGRESQL_JS.as_bytes(),
+        ),
+        "project-db-suite-sjtable.mjs" => asset_response(
+            "text/javascript; charset=utf-8",
+            PLATFORM_PROJECT_DB_SUITE_SJTABLE_JS.as_bytes(),
+        ),
         "session-manager.mjs" => asset_response(
             "text/javascript; charset=utf-8",
             PLATFORM_SESSION_MANAGER_JS.as_bytes(),
+        ),
+        "project-assistant.mjs" => asset_response(
+            "text/javascript; charset=utf-8",
+            PLATFORM_PROJECT_ASSISTANT_JS.as_bytes(),
+        ),
+        "project-settings.mjs" => asset_response(
+            "text/javascript; charset=utf-8",
+            PLATFORM_PROJECT_SETTINGS_JS.as_bytes(),
         ),
         "db-suite.css" => {
             asset_response("text/css; charset=utf-8", PLATFORM_DB_SUITE_CSS.as_bytes())
@@ -2081,12 +2180,25 @@ async fn project_db_suite_page(
             }
             let nav = nav_classes(&owner, &project, "databases", Some("connections"));
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
+            let table_page_key = match connection_info.database_kind.as_str() {
+                "postgresql" => "platform-project-table-connection-postgresql",
+                "sjtable" => "platform-project-table-connection-sjtable",
+                _ => "platform-project-table-connection",
+            };
 
             let requested = query.table.unwrap_or_default();
             let selected_table = requested.trim().to_lowercase().replace(
                 |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.',
                 "-",
             );
+            let query_example = if connection_info.database_kind == "sjtable" {
+                format!(
+                    "{{\n  \"pipeline\": [\n    {{ \"op\": \"collection\", \"name\": \"sjtable__{}\" }},\n    {{ \"op\": \"take\", \"n\": 200 }}\n  ]\n}}",
+                    selected_table.split('.').next_back().unwrap_or("your_table")
+                )
+            } else {
+                "-- Write SQL and click Run Query.".to_string()
+            };
 
             let table_query = if selected_table.is_empty() {
                 String::new()
@@ -2151,7 +2263,7 @@ async fn project_db_suite_page(
                     "rows": Vec::<Vec<String>>::new(),
                     "empty": true,
                 },
-                "query_example": "-- Write SQL and click Run Query.".to_string(),
+                "query_example": query_example,
                 "schema_text": "{}",
                 "tab_flags": {
                     "tables": tab_key == "tables",
@@ -2161,7 +2273,7 @@ async fn project_db_suite_page(
                 },
                 "nav": nav,
             });
-            match render_page(&state, "platform-project-table-connection", &route, input) {
+            match render_page(&state, table_page_key, &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -2235,133 +2347,273 @@ async fn project_settings_page(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    let web_libraries_href = format!("/projects/{owner}/{project}/settings/web-libraries");
-    let nodes_href = format!("/projects/{owner}/{project}/settings/nodes");
-    let settings_href = format!("/projects/{owner}/{project}/settings");
-    render_section_page(
-        state,
-        headers,
-        owner,
-        project,
-        "settings",
-        ProjectCapability::SettingsRead,
-        "Settings",
-        "Project policies, adapters, and runtime defaults.",
-        vec![
-            json!({
-                "title":"Web Library Manager",
-                "description":"Install and pin Zeb Libraries for templates, editor autocomplete, and compile-time runtime assets.",
-                "href": web_libraries_href,
-                "tag":"Web"
-            }),
-            json!({
-                "title":"Node Manager",
-                "description":"Manage runtime nodes, extension packages, and future hot-reloadable execution capabilities.",
-                "href": nodes_href,
-                "tag":"Runtime"
-            }),
-            json!({
-                "title":"Runtime Policy",
-                "description":"Timeout, retries, and execution policy.",
-                "href": settings_href.clone(),
-                "tag":"Core"
-            }),
-            json!({
-                "title":"Environment",
-                "description":"Project-level variables and secrets policy.",
-                "href": settings_href,
-                "tag":"Core"
-            }),
-        ],
-    )
-    .await
+    render_settings_tab_page(state, headers, owner, project, "general".to_string()).await
 }
 
-async fn project_settings_web_libraries_page(
+async fn project_settings_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
+    Path((owner, project, tab)): Path<(String, String, String)>,
 ) -> Response {
-    render_section_page(
-        state,
-        headers,
-        owner,
-        project,
-        "settings",
-        ProjectCapability::SettingsRead,
-        "Web Library Manager",
-        "Install Zeb Libraries, pin versions into the project, and feed editor autocomplete plus compile-time runtime assets.",
-        vec![
-            json!({
-                "title":"zeb/codemirror",
-                "description":"Platform-managed editor dependency. Bundled for the Build > Templates workspace and reusable later in project templates.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/graphui",
-                "description":"Graph canvas seed for pipeline visualization/editing UI, including scene helpers and pipeline JSON adapter.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/interact",
-                "description":"Reusable pointer/drag/split interaction primitives shared across platform editors.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/stateutil",
-                "description":"Small shared state helpers (debounce and related editor-side utility glue).",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/threejs",
-                "description":"Three.js scene bridge runtime + TSX wrapper (`ThreeScene`) for interactive 3D web surfaces.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/threejs-vrm",
-                "description":"VRM viewer bridge scaffold (`VrmViewer`) layered on Three.js for avatar and digital-human flows.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/deckgl",
-                "description":"Deck.gl bridge runtime + `DeckMap` wrapper for large-scale geospatial visualization pages.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/d3",
-                "description":"D3 bridge runtime + `D3Bars` wrapper for charting and SVG-driven data visuals.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"zeb/devicons",
-                "description":"Shared dev icon pack + fallback icon classes for nodes, DB connections, file types, and tree objects.",
-                "href":"#",
-                "tag":"Official"
-            }),
-            json!({
-                "title":"Project Libraries",
-                "description":"Project-owned library state should live under app/libraries with versions pinned in app/libraries.lock.json.",
-                "href":"#",
-                "tag":"Contract"
-            }),
-        ],
-    )
-    .await
+    render_settings_tab_page(state, headers, owner, project, tab).await
 }
 
-async fn project_settings_nodes_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
+async fn project_settings_web_libraries_legacy_redirect_page(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
+    Redirect::to(&format!("/projects/{owner}/{project}/settings/libraries")).into_response()
+}
+
+async fn render_settings_tab_page(
+    state: PlatformAppState,
+    headers: HeaderMap,
+    owner: String,
+    project: String,
+    raw_tab: String,
+) -> Response {
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+
+    let tab = normalize_settings_tab(&raw_tab);
+    let tab_title = settings_tab_title(tab);
+    let tab_subtitle = settings_tab_subtitle(tab);
+
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let nav = nav_classes(&owner, &project, "settings", None);
+            let route = if tab == "general" {
+                format!("/projects/{owner}/{project}/settings")
+            } else {
+                format!("/projects/{owner}/{project}/settings/{tab}")
+            };
+
+            let tabs = settings_tab_items(&owner, &project, tab);
+            let general_cards = settings_general_cards(&owner, &project);
+            let policy_cards = settings_policy_cards();
+            let library_cards = settings_library_cards();
+            let node_cards = settings_node_cards();
+
+            let assistant_config = match state
+                .platform
+                .assistant_configs
+                .get_project_assistant_config(&owner, &project)
+            {
+                Ok(config) => config,
+                Err(err) => return internal_error(err),
+            };
+
+            let assistant_credentials = match state
+                .platform
+                .credentials
+                .list_project_credentials(&owner, &project)
+            {
+                Ok(items) => items
+                    .into_iter()
+                    .filter(|item| item.kind == "openai")
+                    .map(|item| {
+                        json!({
+                            "credential_id": item.credential_id,
+                            "title": item.title,
+                            "kind": item.kind
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                Err(err) => return internal_error(err),
+            };
+
+            let mcp_session = state
+                .platform
+                .mcp_sessions
+                .get_for_project(&owner, &project);
+
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - Settings / {}", info.title, tab_title),
+                    "description": tab_subtitle
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": "Settings",
+                "settings_tabs": tabs,
+                "active_tab": tab,
+                "tab_flags": {
+                    "general": tab == "general",
+                    "policy": tab == "policy",
+                    "automatons": tab == "automatons",
+                    "libraries": tab == "libraries",
+                    "nodes": tab == "nodes"
+                },
+                "page_title": tab_title,
+                "page_subtitle": tab_subtitle,
+                "cards_general": general_cards,
+                "cards_policy": policy_cards,
+                "cards_libraries": library_cards,
+                "cards_nodes": node_cards,
+                "assistant": {
+                    "api": {
+                        "config": format!("/api/projects/{owner}/{project}/assistant/config")
+                    },
+                    "config": assistant_config,
+                    "credentials": assistant_credentials
+                },
+                "mcp": {
+                    "active": mcp_session.is_some(),
+                    "status_label": if mcp_session.is_some() { "active" } else { "inactive" },
+                    "capabilities": mcp_session
+                        .as_ref()
+                        .map(|session| session.capabilities.iter().map(|cap| cap.key()).collect::<Vec<_>>())
+                        .unwrap_or_default()
+                },
+                "nav": nav,
+            });
+            match render_page(&state, "platform-project-settings", &route, input) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+fn normalize_settings_tab(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "general" => "general",
+        "policy" => "policy",
+        "automatons" => "automatons",
+        "libraries" => "libraries",
+        "nodes" => "nodes",
+        _ => "general",
+    }
+}
+
+fn settings_tab_title(tab: &str) -> &'static str {
+    match tab {
+        "policy" => "Policy",
+        "automatons" => "Automatons",
+        "libraries" => "Libraries",
+        "nodes" => "Nodes",
+        _ => "General",
+    }
+}
+
+fn settings_tab_subtitle(tab: &str) -> &'static str {
+    match tab {
+        "policy" => "Capability boundaries, runtime constraints, and session controls.",
+        "automatons" => "Assistant and automation runtime configuration per project.",
+        "libraries" => "Installed web libraries and runtime package contracts.",
+        "nodes" => "Live node contracts and script/tool availability.",
+        _ => "Core project defaults and shared runtime switches.",
+    }
+}
+
+fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
+    let base = format!("/projects/{owner}/{project}/settings");
+    let entries = [
+        ("general", "General"),
+        ("policy", "Policy"),
+        ("automatons", "Automatons"),
+        ("libraries", "Libraries"),
+        ("nodes", "Nodes"),
+    ];
+    entries
+        .iter()
+        .map(|(key, label)| {
+            json!({
+                "key": *key,
+                "label": *label,
+                "href": if *key == "general" { base.clone() } else { format!("{base}/{key}") },
+                "classes": if *key == active { "is-active" } else { "" }
+            })
+        })
+        .collect::<Vec<_>>()
+}
+
+fn settings_general_cards(owner: &str, project: &str) -> Vec<Value> {
+    vec![
+        json!({
+            "title":"Runtime Defaults",
+            "description":"Project-wide defaults for execution cadence, retries, and production activation flow.",
+            "href": format!("/projects/{owner}/{project}/settings/automatons"),
+            "tag":"Core"
+        }),
+        json!({
+            "title":"Connected Services",
+            "description":"Credentials, DB connections, and tool-facing service contract usage.",
+            "href": format!("/projects/{owner}/{project}/settings/libraries"),
+            "tag":"Core"
+        }),
+    ]
+}
+
+fn settings_policy_cards() -> Vec<Value> {
+    vec![
+        json!({
+            "title":"Capability Gate",
+            "description":"Subject capability checks enforced across REST, MCP, and assistant channels.",
+            "href":"#",
+            "tag":"Access"
+        }),
+        json!({
+            "title":"Request Boundary",
+            "description":"Input validation, payload size bounds, and deterministic error contracts.",
+            "href":"#",
+            "tag":"Runtime"
+        }),
+        json!({
+            "title":"Session Scope",
+            "description":"Project-scoped session constraints for remote control and internal assistant execution.",
+            "href":"#",
+            "tag":"Session"
+        }),
+    ]
+}
+
+fn settings_library_cards() -> Vec<Value> {
+    vec![
+        json!({
+            "title":"zeb/codemirror",
+            "description":"Platform-managed editor dependency for template and query editing.",
+            "href":"#",
+            "tag":"Official"
+        }),
+        json!({
+            "title":"zeb/graphui",
+            "description":"Graph canvas package for pipeline visualization and editing.",
+            "href":"#",
+            "tag":"Official"
+        }),
+        json!({
+            "title":"zeb/threejs",
+            "description":"Three.js bridge runtime and reusable TSX wrapper modules.",
+            "href":"#",
+            "tag":"Official"
+        }),
+        json!({
+            "title":"zeb/deckgl",
+            "description":"Deck.gl bridge runtime for geospatial data surfaces.",
+            "href":"#",
+            "tag":"Official"
+        }),
+        json!({
+            "title":"zeb/d3",
+            "description":"D3 runtime bridge and chart wrapper catalog.",
+            "href":"#",
+            "tag":"Official"
+        }),
+    ]
+}
+
+fn settings_node_cards() -> Vec<Value> {
     let mut cards = crate::framework::nodes::builtin_node_definitions()
         .into_iter()
         .map(|def| {
@@ -2391,18 +2643,7 @@ async fn project_settings_nodes_page(
             "tag":"runtime"
         }));
     }
-    render_section_page(
-        state,
-        headers,
-        owner,
-        project,
-        "settings",
-        ProjectCapability::SettingsRead,
-        "Node Manager",
-        "Manage runtime node packages, capability metadata, and script/tool availability contracts.",
-        cards,
-    )
-    .await
+    cards
 }
 
 async fn render_section_page(
@@ -4614,6 +4855,191 @@ async fn api_delete_credential(
     }
 }
 
+async fn api_get_project_assistant_config(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .assistant_configs
+        .get_project_assistant_config(&owner, &project)
+    {
+        Ok(config) => Json(json!({"ok": true, "config": config})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_project_assistant_config(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<UpsertProjectAssistantConfigRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .assistant_configs
+        .upsert_project_assistant_config(&owner, &project, &req)
+    {
+        Ok(config) => Json(json!({"ok": true, "config": config})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_project_assistant_chat(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<AssistantChatRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectRead,
+    ) {
+        return response;
+    }
+
+    let message = req.message.trim();
+    if message.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "ASSISTANT_MESSAGE_INVALID",
+                    "message": "message must not be empty"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let bundle = match load_project_assistant_llm(state.platform.data.as_ref(), &owner, &project) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            let status = match err.code {
+                "ASSISTANT_NOT_CONFIGURED"
+                | "ASSISTANT_DISABLED"
+                | "ASSISTANT_NO_LLM"
+                | "ASSISTANT_CREDENTIAL_MISSING"
+                | "ASSISTANT_CREDENTIAL_INVALID" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            return (
+                status,
+                Json(json!({
+                    "ok": false,
+                    "error": { "code": err.code, "message": err.message }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let mut messages = Vec::new();
+    messages.push(AssistantLlmMessage {
+        role: AssistantLlmRole::System,
+        content: format!(
+            "You are Zebflow project assistant for project '{}/{}'. Keep responses concise, practical, and grounded in project context.",
+            owner, project
+        ),
+    });
+    for item in req.history.into_iter().take(32) {
+        let content = item.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+        if let Some(role) = parse_assistant_chat_role(&item.role) {
+            messages.push(AssistantLlmMessage {
+                role,
+                content: content.to_string(),
+            });
+        }
+    }
+    messages.push(AssistantLlmMessage {
+        role: AssistantLlmRole::User,
+        content: message.to_string(),
+    });
+
+    let llm = if req.use_high_model {
+        bundle.high.clone()
+    } else {
+        bundle.general.clone()
+    };
+    let answer = match llm.call(messages).await {
+        Ok(text) => text,
+        Err(message) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "ASSISTANT_LLM_CALL_FAILED",
+                        "message": message
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let events = vec![
+        Ok::<Event, Infallible>(
+            Event::default().event("start").data(
+                json!({
+                    "ok": true,
+                    "project": { "owner": owner, "project": project },
+                    "model_tier": if req.use_high_model { "high" } else { "general" },
+                    "max_steps": bundle.max_steps,
+                    "max_replans": bundle.max_replans
+                })
+                .to_string(),
+            ),
+        ),
+        Ok::<Event, Infallible>(
+            Event::default()
+                .event("message")
+                .data(json!({"role":"assistant","content":answer}).to_string()),
+        ),
+        Ok::<Event, Infallible>(
+            Event::default().event("done").data(
+                json!({
+                    "ok": true
+                })
+                .to_string(),
+            ),
+        ),
+    ];
+    Sse::new(stream::iter(events))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
 async fn api_list_db_connections(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -5632,6 +6058,15 @@ fn resolve_pipeline_registry_scope(
                 Ok(PipelineRegistryScope::Project)
             }
         }
+    }
+}
+
+fn parse_assistant_chat_role(raw: &str) -> Option<AssistantLlmRole> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "system" => Some(AssistantLlmRole::System),
+        "assistant" => Some(AssistantLlmRole::Assistant),
+        "user" => Some(AssistantLlmRole::User),
+        _ => None,
     }
 }
 

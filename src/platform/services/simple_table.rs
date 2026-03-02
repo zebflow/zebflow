@@ -224,6 +224,21 @@ impl SimpleTableService {
         Ok(SimpleTableQueryResult { table, rows })
     }
 
+    /// Executes one native Sekejap query payload against project DB and returns payload rows.
+    ///
+    /// Expected payload shape follows Sekejap query API, usually:
+    /// `{ "pipeline": [ ...ops ] }`.
+    pub fn query_native_rows(
+        &self,
+        owner: &str,
+        project: &str,
+        payload: &Value,
+    ) -> Result<Vec<Value>, PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        let db = self.open_db(&layout)?;
+        query_json_rows(&db, payload)
+    }
+
     fn project_layout(
         &self,
         owner: &str,
@@ -281,8 +296,14 @@ impl SimpleTableService {
 }
 
 fn query_payload_rows(db: &SekejapDB, pipeline: Vec<Value>) -> Result<Vec<Value>, PlatformError> {
+    query_json_rows(db, &json!({ "pipeline": pipeline }))
+}
+
+fn query_json_rows(db: &SekejapDB, payload: &Value) -> Result<Vec<Value>, PlatformError> {
+    let raw_payload = serde_json::to_string(payload)
+        .map_err(|err| PlatformError::new("PLATFORM_SIMPLE_TABLE_QUERY", err.to_string()))?;
     let out = db
-        .query(&json!({ "pipeline": pipeline }).to_string())
+        .query(&raw_payload)
         .map_err(|e| PlatformError::new("PLATFORM_SIMPLE_TABLE_QUERY", e.to_string()))?;
     let mut rows = Vec::new();
     for hit in out.data {

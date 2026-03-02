@@ -157,7 +157,7 @@ export default function Page(input) {
                   <p className="pipeline-editor-subtitle" data-db-credential-status="true">Create a credential and bind it to this connection.</p>
 
                   <label className="pipeline-editor-field">
-                    <span>Credential ID (UUID v4)</span>
+                    <span>Credential ID</span>
                     <input name="credential_id" type="text" readonly data-db-credential-id="true" />
                   </label>
 

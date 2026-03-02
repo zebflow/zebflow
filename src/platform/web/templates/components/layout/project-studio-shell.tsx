@@ -7,6 +7,7 @@ export default function ProjectStudioShell(props) {
 <div className="project-studio-shell">
     <input id="project-theme-toggle" type="checkbox" className="project-theme-toggle-input" />
     <script src="/assets/platform/session-manager.mjs" type="module"></script>
+    <script src="/assets/platform/project-assistant.mjs" type="module"></script>
 
     <div className="project-studio-frame">
       <PlatformSidebar />
@@ -41,7 +42,7 @@ export default function ProjectStudioShell(props) {
                 </span>
               </label>
 
-              <details className="project-shell-chat">
+              <details className="project-shell-chat" data-owner="{props.owner}" data-project="{props.project}">
                 <summary className="project-shell-tool-button" title="Open assistant">
                   <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
                     <path d="M8 10h8M8 14h5M7 5h10a3 3 0 013 3v6a3 3 0 01-3 3h-4l-4 3v-3H7a3 3 0 01-3-3V8a3 3 0 013-3z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -55,21 +56,25 @@ export default function ProjectStudioShell(props) {
                   </div>
 
                   <div className="project-shell-chat-body">
-                    <div className="project-shell-chat-block">
-                      <p className="project-shell-chat-label">Suggested</p>
-                      <ul className="project-shell-chat-list">
-                        <li>Inspect the current workspace</li>
-                        <li>Explain the selected route or pipeline</li>
-                        <li>Draft the next template or schema step</li>
-                      </ul>
+                    <div className="project-shell-chat-thread" data-assistant-thread="true"></div>
+
+                    <div className="project-shell-chat-meta">
+                      <label className="project-shell-chat-toggle-label">
+                        <input type="checkbox" data-assistant-use-high="true" />
+                        <span>Use high model</span>
+                      </label>
+                      <span className="project-shell-chat-status" data-assistant-status="true">Ready</span>
                     </div>
 
-                    <div className="project-shell-chat-block">
-                      <p className="project-shell-chat-label">Runtime</p>
-                      <p className="project-shell-chat-copy">
-                        This launcher is platform-wide. The actual assistant runtime can be swapped later without changing the shell contract.
-                      </p>
-                    </div>
+                    <form className="project-shell-chat-form" data-assistant-form="true">
+                      <textarea
+                        className="project-shell-chat-input"
+                        rows="3"
+                        placeholder="Ask about this project..."
+                        data-assistant-input="true"
+                      ></textarea>
+                      <button type="submit" className="project-shell-chat-send" data-assistant-send="true">Send</button>
+                    </form>
                   </div>
                 </div>
               </details>

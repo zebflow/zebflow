@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser, normalize_virtual_path, slug_segment,
+    PipelineMeta, PlatformProject, PlatformUser, ProjectAssistantConfig, ProjectCredential,
+    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser, normalize_virtual_path,
+    slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -53,6 +54,14 @@ impl SekejapDataAdapter {
             slug_segment(owner),
             slug_segment(project),
             slug_segment(connection_slug)
+        )
+    }
+
+    fn project_assistant_config_slug(owner: &str, project: &str) -> String {
+        format!(
+            "project_assistant_config/{}/{}",
+            slug_segment(owner),
+            slug_segment(project)
         )
     }
 
@@ -545,6 +554,65 @@ impl DataAdapter for SekejapDataAdapter {
         self.db
             .nodes()
             .remove(&slug)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_project_assistant_config(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<ProjectAssistantConfig>, PlatformError> {
+        let slug = Self::project_assistant_config_slug(owner, project);
+        let Some(raw) = self.db.nodes().get(&slug) else {
+            return Ok(None);
+        };
+        let v: Value = serde_json::from_str(&raw)?;
+        Ok(Some(ProjectAssistantConfig {
+            owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+            project: Self::pick_non_empty(v.get("project").and_then(Value::as_str), project),
+            llm_high_credential_id: v
+                .get("llm_high_credential_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            llm_general_credential_id: v
+                .get("llm_general_credential_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string),
+            max_steps: v
+                .get("max_steps")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32)
+                .unwrap_or(50),
+            max_replans: v
+                .get("max_replans")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32)
+                .unwrap_or(2),
+            enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+        }))
+    }
+
+    fn put_project_assistant_config(
+        &self,
+        config: &ProjectAssistantConfig,
+    ) -> Result<(), PlatformError> {
+        let data = json!({
+            "_id": Self::project_assistant_config_slug(&config.owner, &config.project),
+            "_collection": "project_assistant_config",
+            "owner": config.owner,
+            "project": config.project,
+            "llm_high_credential_id": config.llm_high_credential_id,
+            "llm_general_credential_id": config.llm_general_credential_id,
+            "max_steps": config.max_steps,
+            "max_replans": config.max_replans,
+            "enabled": config.enabled,
+            "updated_at": config.updated_at,
+        });
+        let op = json!({"mutation":"put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
             .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
         Ok(())
     }

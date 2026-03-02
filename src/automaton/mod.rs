@@ -3,6 +3,7 @@
 //! - Objective → plan → execute; contract + flow for LLM-in-the-loop (tools, chain-of-thought).
 //! - REPL: one message = one objective; optional LLM + allowlisted tools.
 
+pub mod assistant_config;
 pub mod config;
 pub mod contract;
 pub mod engines;

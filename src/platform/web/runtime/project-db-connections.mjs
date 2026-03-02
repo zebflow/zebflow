@@ -41,7 +41,7 @@ function slugify(value) {
 }
 
 function normalizeCredentialId(value) {
-  return String(value || "").trim().toLowerCase();
+  return slugify(value);
 }
 
 function dbKindIconClass(kind) {
@@ -70,16 +70,21 @@ function dbKindIconClass(kind) {
   return "zf-icon-default-db";
 }
 
-function generateCredentialUuid() {
-  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
-    return globalThis.crypto.randomUUID().toLowerCase();
+function generateCredentialSlug(kind, existingIds = []) {
+  const used = new Set(
+    (Array.isArray(existingIds) ? existingIds : [])
+      .map((value) => slugify(value))
+      .filter(Boolean)
+  );
+  const base = slugify(`${kind || "credential"}-main`) || "credential";
+  if (!used.has(base)) {
+    return base;
   }
-  // Fallback RFC4122-ish v4 generator
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
-    const r = Math.floor(Math.random() * 16);
-    const v = ch === "x" ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  let index = 1;
+  while (used.has(`${base}-${index}`)) {
+    index += 1;
+  }
+  return `${base}-${index}`;
 }
 
 function credentialKindForDatabaseKind(databaseKind) {
@@ -483,7 +488,10 @@ async function initDbConnections(root) {
     const dbKind = String(state.kindField.value || "sjtable").trim().toLowerCase();
     const credentialKind = credentialKindForDatabaseKind(dbKind) || "custom";
 
-    const generatedId = generateCredentialUuid();
+    const generatedId = generateCredentialSlug(
+      credentialKind,
+      state.credentials.map((item) => item?.credential_id || "")
+    );
     const suggestedTitle = credentialKind === "custom"
       ? "Custom Credential"
       : `${credentialKind.toUpperCase()} Credential`;

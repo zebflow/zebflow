@@ -48,12 +48,24 @@ pub const PLATFORM_TEMPLATE_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("templates/pages/platform-project-section.tsx"),
     },
     EmbeddedAsset {
+        path: "pages/platform-project-settings.tsx",
+        bytes: include_bytes!("templates/pages/platform-project-settings.tsx"),
+    },
+    EmbeddedAsset {
         path: "pages/platform-project-studio.tsx",
         bytes: include_bytes!("templates/pages/platform-project-studio.tsx"),
     },
     EmbeddedAsset {
         path: "pages/platform-project-table-connection.tsx",
         bytes: include_bytes!("templates/pages/platform-project-table-connection.tsx"),
+    },
+    EmbeddedAsset {
+        path: "pages/platform-project-table-connection-postgresql.tsx",
+        bytes: include_bytes!("templates/pages/platform-project-table-connection-postgresql.tsx"),
+    },
+    EmbeddedAsset {
+        path: "pages/platform-project-table-connection-sjtable.tsx",
+        bytes: include_bytes!("templates/pages/platform-project-table-connection-sjtable.tsx"),
     },
     EmbeddedAsset {
         path: "pages/platform-project-tables.tsx",

@@ -8,9 +8,9 @@ use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_
 use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
 use crate::platform::services::{
-    AuthService, AuthorizationService, CredentialService, DbConnectionService, DbRuntimeService,
-    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectService,
-    SimpleTableService, UserService,
+    AssistantConfigService, AuthService, AuthorizationService, CredentialService,
+    DbConnectionService, DbRuntimeService, McpSessionService, PipelineHitsService,
+    PipelineRuntimeService, ProjectService, SimpleTableService, UserService,
 };
 
 /// Main platform service graph, created once per process.
@@ -32,6 +32,8 @@ pub struct PlatformService {
     pub authz: Arc<AuthorizationService>,
     /// Project credential management service.
     pub credentials: Arc<CredentialService>,
+    /// Project assistant config service.
+    pub assistant_configs: Arc<AssistantConfigService>,
     /// Project DB connection management service.
     pub db_connections: Arc<DbConnectionService>,
     /// Project DB runtime service (kind-dispatched describe/query).
@@ -66,6 +68,7 @@ impl PlatformService {
         let auth = Arc::new(AuthService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone()));
+        let assistant_configs = Arc::new(AssistantConfigService::new(data.clone()));
         let db_connections = Arc::new(DbConnectionService::new(data.clone()));
         let simple_tables = Arc::new(SimpleTableService::new(file.clone(), project_data.clone()));
         let db_runtime = Arc::new(DbRuntimeService::new(
@@ -86,6 +89,7 @@ impl PlatformService {
             auth,
             authz,
             credentials,
+            assistant_configs,
             db_connections,
             db_runtime,
             projects,
