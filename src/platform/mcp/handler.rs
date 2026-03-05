@@ -4,12 +4,38 @@ use std::sync::Arc;
 
 use axum::http;
 use rmcp::handler::server::{ServerHandler, tool::Extension};
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
+use rmcp::schemars::JsonSchema;
+use rmcp::{ErrorData as McpError, schemars, tool, tool_handler, tool_router};
 use serde_json::json;
 
 use crate::platform::model::{McpSession, ProjectAccessSubject, mcp_tool_capability};
 use crate::platform::services::PlatformService;
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct GetPipelineParams {
+    /// File-relative path of the pipeline (e.g. "pipelines/my-pipeline.zf.json").
+    file_rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct GetTemplateParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct ReadProjectDocParams {
+    /// Relative path to the doc file under app/docs (e.g. "README.md").
+    path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct ReadSkillParams {
+    /// Skill name to read (e.g. "pipeline-authoring", "rwe-templates").
+    name: String,
+}
 
 /// Zebflow MCP handler with project-scoped tools.
 ///
@@ -77,34 +103,54 @@ impl ZebflowMcpHandler {
         }
     }
 
-    #[tool(description = "Get a specific pipeline by virtual path and name")]
+    #[tool(description = "Get a specific pipeline by file-relative path")]
     async fn get_pipeline(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<GetPipelineParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "get_pipeline")?;
 
-        // TODO: Add parameters support
-        Err(McpError::invalid_params(
-            "Parameters not yet implemented for get_pipeline",
-            None,
-        ))
+        let meta = self
+            .platform
+            .projects
+            .get_pipeline_meta_by_file_id(&session.owner, &session.project, &params.file_rel_path)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let Some(meta) = meta else {
+            return Err(McpError::invalid_params(
+                format!("Pipeline '{}' not found", params.file_rel_path),
+                None,
+            ));
+        };
+        let source = self
+            .platform
+            .projects
+            .read_pipeline_source(&session.owner, &session.project, &meta.file_rel_path)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let content = json!({ "meta": meta, "source": source });
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&content).unwrap(),
+        )]))
     }
 
-    #[tool(description = "Get a specific template by path")]
+    #[tool(description = "Get a specific template by relative path")]
     async fn get_template(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<GetTemplateParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "get_template")?;
 
-        // TODO: Add parameters support
-        Err(McpError::invalid_params(
-            "Parameters not yet implemented for get_template",
-            None,
-        ))
+        match self
+            .platform
+            .projects
+            .read_template_file(&session.owner, &session.project, &params.rel_path)
+        {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(err) => Err(McpError::internal_error(err.to_string(), None)),
+        }
     }
 
     #[tool(description = "List all tables in the project")]
@@ -162,15 +208,64 @@ impl ZebflowMcpHandler {
     async fn read_project_doc(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ReadProjectDocParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "read_project_doc")?;
 
-        // TODO: Add path parameter support
-        Err(McpError::invalid_params(
-            "Parameters not yet implemented for read_project_doc (path required)",
-            None,
-        ))
+        match self
+            .platform
+            .projects
+            .read_project_doc(&session.owner, &session.project, &params.path)
+        {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(err) => Err(McpError::internal_error(err.to_string(), None)),
+        }
+    }
+
+    #[tool(description = "List all available Zebflow platform skills (operational knowledge docs)")]
+    async fn list_skills(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "list_skills")?;
+
+        let skills = crate::platform::skills::all_skills();
+        let items: Vec<_> = skills
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "title": s.title,
+                    "summary": s.summary(),
+                })
+            })
+            .collect();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&json!({"skills": items, "count": items.len()})).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Read the full content of a Zebflow platform skill by name")]
+    async fn read_skill(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ReadSkillParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "read_skill")?;
+
+        match crate::platform::skills::get_skill(&params.name) {
+            Some(skill) => Ok(CallToolResult::success(vec![Content::text(skill.content)])),
+            None => Err(McpError::invalid_params(
+                format!(
+                    "Skill '{}' not found. Use list_skills to see available skills.",
+                    params.name
+                ),
+                None,
+            )),
+        }
     }
 
     fn get_session_from_http_parts(
@@ -219,7 +314,13 @@ impl ServerHandler for ZebflowMcpHandler {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Zebflow project management. Requires per-project session token.".into(),
+                "Zebflow project management tools. Requires per-project session token.\n\n\
+                 Available tools: list_pipelines, get_pipeline, list_templates, get_template, \
+                 list_tables, list_project_docs, read_project_doc, list_skills, read_skill.\n\n\
+                 To understand how to use Zebflow effectively, call list_skills first to see \
+                 available knowledge docs, then read_skill to get detailed operational guidance \
+                 on pipelines, templates, tables, and the API."
+                    .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()

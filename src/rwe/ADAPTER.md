@@ -36,7 +36,7 @@ async def preview():
     compile_req = {
         "meta": {
             "version": "rwe.v1",
-            "rwe_engine": "rwe.noop",
+            "rwe_engine": "rwe",
             "language_engine": "language.deno_sandbox",
         },
         "template": {

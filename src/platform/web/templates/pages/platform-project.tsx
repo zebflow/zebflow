@@ -20,11 +20,12 @@ export default function Page(input) {
   return (
 <Page>
     <ProjectStudioShell
-      projectHref="{input.project_href}"
-      projectLabel="{input.title}"
+      projectHref={input.project_href}
+      projectLabel={input.title}
       currentMenu="Pipelines / Registry"
-      owner="{input.owner}"
-      project="{input.project}"
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
     >
       <div className="project-workspace">
         <nav className="project-tab-strip"></nav>

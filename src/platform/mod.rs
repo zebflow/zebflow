@@ -14,6 +14,7 @@ pub mod mcp;
 pub mod model;
 pub mod operations;
 pub mod services;
+pub mod skills;
 pub mod web;
 
 use std::sync::Arc;

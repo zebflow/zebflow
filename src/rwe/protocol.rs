@@ -19,7 +19,7 @@ pub const RWE_PROTOCOL_VERSION: &str = "rwe.v1";
 pub struct ProtocolMeta {
     /// Protocol version expected by client/server.
     pub version: String,
-    /// Target RWE engine id (for example `rwe.noop`).
+    /// Target RWE engine id (for example `rwe`).
     pub rwe_engine: String,
     /// Target language engine id used for control script compile/run.
     pub language_engine: String,
@@ -29,7 +29,7 @@ impl Default for ProtocolMeta {
     fn default() -> Self {
         Self {
             version: RWE_PROTOCOL_VERSION.to_string(),
-            rwe_engine: "rwe.noop".to_string(),
+            rwe_engine: "rwe".to_string(),
             language_engine: "language.deno_sandbox".to_string(),
         }
     }

@@ -11,7 +11,7 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
+    AgentDocItem, CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
     PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
     ProjectFileLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
     TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
@@ -821,7 +821,7 @@ impl ProjectService {
       "config": {
         "template_id":"blog.list",
         "route":"/blog",
-        "markup":"export const page = { head: { title: \"Blog\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><h1>{input.page_title}</h1><ul><li zFor=\"post in input.posts\"><a href={'/blog/' + post.slug}>{post.title}</a></li></ul></main></Page>); }"
+        "markup":"export const page = { head: { title: \"Blog\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><h1>{input.page_title}</h1><ul>{(input.posts || []).map((post) => (<li key={post.slug}><a href={'/blog/' + post.slug}>{post.title}</a></li>))}</ul></main></Page>); }"
       }
     }
   ],
@@ -1112,7 +1112,98 @@ export default function Page(input) {
             kind: "file".to_string(),
         })
     }
+
+    /// Lists the three agent doc files (AGENTS.md, SOUL.md, MEMORY.md), creating defaults if absent.
+    pub fn list_agent_docs(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<AgentDocItem>, PlatformError> {
+        self.ensure_agent_docs_defaults(owner, project)?;
+        Ok(vec![
+            AgentDocItem { name: "AGENTS.md".to_string(), user_editable: true },
+            AgentDocItem { name: "SOUL.md".to_string(), user_editable: true },
+            AgentDocItem { name: "MEMORY.md".to_string(), user_editable: false },
+        ])
+    }
+
+    /// Reads one agent doc file (AGENTS.md, SOUL.md, or MEMORY.md).
+    pub fn read_agent_doc(
+        &self,
+        owner: &str,
+        project: &str,
+        name: &str,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let safe_name = Self::validate_agent_doc_name(name)?;
+        let path = layout.agent_docs_dir.join(safe_name);
+        if path.is_file() {
+            fs::read_to_string(&path).map_err(PlatformError::from)
+        } else {
+            Ok(String::new())
+        }
+    }
+
+    /// Creates or replaces one agent doc file. All three names are valid.
+    pub fn upsert_agent_doc(
+        &self,
+        owner: &str,
+        project: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let safe_name = Self::validate_agent_doc_name(name)?;
+        let path = layout.agent_docs_dir.join(safe_name);
+        fs::write(&path, content).map_err(PlatformError::from)
+    }
+
+    /// Creates default agent doc files if they don't exist yet.
+    pub fn ensure_agent_docs_defaults(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let defaults: &[(&str, &str)] = &[
+            ("AGENTS.md", AGENTS_MD_DEFAULT),
+            ("SOUL.md", SOUL_MD_DEFAULT),
+            ("MEMORY.md", MEMORY_MD_DEFAULT),
+        ];
+        for (name, content) in defaults {
+            let path = layout.agent_docs_dir.join(name);
+            if !path.exists() {
+                fs::write(&path, content)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_agent_doc_name(name: &str) -> Result<&str, PlatformError> {
+        match name {
+            "AGENTS.md" | "SOUL.md" | "MEMORY.md" => Ok(name),
+            _ => Err(PlatformError::new(
+                "PLATFORM_AGENT_DOC_INVALID",
+                format!("agent doc name must be AGENTS.md, SOUL.md, or MEMORY.md; got '{name}'"),
+            )),
+        }
+    }
 }
+
+const AGENTS_MD_DEFAULT: &str = "# Agents\n\nDescribe AI agents for this project, their roles, \
+tools they are authorized to use, and any important constraints.\n";
+
+const SOUL_MD_DEFAULT: &str = "# Soul\n\nDescribe the assistant's personality, communication style, \
+and tone for this project.\n";
+
+const MEMORY_MD_DEFAULT: &str = "# Memory\n\n_(This file is managed by the assistant. \
+It records important project information discovered during conversations.)_\n";
 
 fn walk_docs_tree(
     root: &Path,

@@ -1,0 +1,10 @@
+{
+  "raw": [
+    { "name": "renderMarkdown", "kind": "function" },
+    { "name": "marked", "kind": "namespace" },
+    { "name": "DOMPurify", "kind": "namespace" }
+  ],
+  "wrappers": [
+    { "name": "Markdown", "kind": "tsx-component", "path": "wrappers/Markdown.tsx" }
+  ]
+}

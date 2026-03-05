@@ -11,9 +11,12 @@ use crate::platform::model::{
 const DEFAULT_MAX_STEPS: u32 = 50;
 const DEFAULT_MAX_REPLANS: u32 = 2;
 const DEFAULT_ENABLED: bool = true;
+const DEFAULT_CHAT_HISTORY_PAIRS: u32 = 10;
 const MIN_MAX_STEPS: u32 = 1;
 const MAX_MAX_STEPS: u32 = 1_000;
 const MAX_MAX_REPLANS: u32 = 64;
+const MIN_CHAT_HISTORY_PAIRS: u32 = 0;
+const MAX_CHAT_HISTORY_PAIRS: u32 = 50;
 
 /// Project-scoped assistant settings stored in metadata catalog.
 pub struct AssistantConfigService {
@@ -66,6 +69,7 @@ impl AssistantConfigService {
             max_steps: sanitize_max_steps(req.max_steps),
             max_replans: sanitize_max_replans(req.max_replans),
             enabled: req.enabled.unwrap_or(DEFAULT_ENABLED),
+            chat_history_pairs: sanitize_chat_history_pairs(req.chat_history_pairs),
             updated_at: now_ts(),
         };
         self.data.put_project_assistant_config(&config)?;
@@ -96,6 +100,7 @@ impl AssistantConfigService {
             max_steps: sanitize_max_steps(Some(config.max_steps)),
             max_replans: sanitize_max_replans(Some(config.max_replans)),
             enabled: config.enabled,
+            chat_history_pairs: sanitize_chat_history_pairs(Some(config.chat_history_pairs)),
             updated_at: if config.updated_at > 0 {
                 config.updated_at
             } else {
@@ -116,6 +121,7 @@ impl AssistantConfigService {
             max_steps: DEFAULT_MAX_STEPS,
             max_replans: DEFAULT_MAX_REPLANS,
             enabled: DEFAULT_ENABLED,
+            chat_history_pairs: DEFAULT_CHAT_HISTORY_PAIRS,
             updated_at: now_ts(),
         }
     }
@@ -165,4 +171,10 @@ fn sanitize_max_steps(value: Option<u32>) -> u32 {
 
 fn sanitize_max_replans(value: Option<u32>) -> u32 {
     value.unwrap_or(DEFAULT_MAX_REPLANS).min(MAX_MAX_REPLANS)
+}
+
+fn sanitize_chat_history_pairs(value: Option<u32>) -> u32 {
+    value
+        .unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS)
+        .clamp(MIN_CHAT_HISTORY_PAIRS, MAX_CHAT_HISTORY_PAIRS)
 }

@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, PipelineMeta, PlatformProject, PlatformUser, ProjectAssistantConfig,
-    ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, McpSession, PipelineMeta, PlatformProject, PlatformUser,
+    ProjectAssistantConfig, ProjectCredential, ProjectDbConnection, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -135,6 +136,43 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         subject_id: &str,
     ) -> Result<(), PlatformError>;
+    /// List all persisted MCP sessions.
+    fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError>;
+    /// Persist one MCP session.
+    fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError>;
+    /// Delete a persisted MCP session by token.
+    fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError>;
+    /// Admin: list collection names with counts. Default impl returns unsupported error.
+    fn admin_list_collections(&self) -> Result<Vec<(String, usize)>, PlatformError> {
+        Err(PlatformError::new(
+            "ADMIN_DB_UNAVAILABLE",
+            "Admin DB access not supported by this adapter",
+        ))
+    }
+    /// Admin: run a raw SekejapQL pipeline JSON. Default impl returns unsupported error.
+    fn admin_raw_query(&self, pipeline_json: &str) -> Result<Vec<serde_json::Value>, PlatformError> {
+        let _ = pipeline_json;
+        Err(PlatformError::new(
+            "ADMIN_DB_UNAVAILABLE",
+            "Admin DB access not supported by this adapter",
+        ))
+    }
+    /// Admin: get a raw node by slug. Default impl returns unsupported error.
+    fn admin_get_node(&self, slug: &str) -> Result<Option<String>, PlatformError> {
+        let _ = slug;
+        Err(PlatformError::new(
+            "ADMIN_DB_UNAVAILABLE",
+            "Admin DB access not supported by this adapter",
+        ))
+    }
+    /// Admin: delete a raw node by slug. Returns true if the node existed.
+    fn admin_delete_node(&self, slug: &str) -> Result<bool, PlatformError> {
+        let _ = slug;
+        Err(PlatformError::new(
+            "ADMIN_DB_UNAVAILABLE",
+            "Admin DB access not supported by this adapter",
+        ))
+    }
 }
 
 /// Builds selected metadata adapter.

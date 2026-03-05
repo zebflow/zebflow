@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    PipelineMeta, PlatformProject, PlatformUser, ProjectAssistantConfig, ProjectCredential,
-    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser, normalize_virtual_path,
-    slug_segment,
+    McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectAssistantConfig,
+    ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    normalize_virtual_path, slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -128,6 +128,72 @@ impl SekejapDataAdapter {
             }
         }
         Ok(rows)
+    }
+
+    /// Execute a raw SekejapQL pipeline JSON string and return payload values.
+    pub fn raw_query(&self, pipeline_json: &str) -> Result<Vec<Value>, PlatformError> {
+        let out = self
+            .db
+            .query(pipeline_json)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_QUERY", e.to_string()))?;
+        let mut rows = Vec::new();
+        for hit in out.data {
+            if let Some(payload) = hit.payload
+                && let Ok(v) = serde_json::from_str::<Value>(&payload)
+            {
+                rows.push(v);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Get a raw node by slug, returns the JSON string payload if present.
+    pub fn get_node_raw(&self, slug: &str) -> Option<String> {
+        self.db.nodes().get(slug)
+    }
+
+    /// Delete a node by slug. Returns true if the node existed.
+    pub fn delete_node_raw(&self, slug: &str) -> Result<bool, PlatformError> {
+        match self.db.nodes().remove(slug) {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("not found") || msg.contains("NotFound") {
+                    Ok(false)
+                } else {
+                    Err(PlatformError::new("PLATFORM_SEKEJAP_MUTATE", msg))
+                }
+            }
+        }
+    }
+
+    /// List known collection names with approximate row counts.
+    /// Uses the fixed set of collections known to this adapter.
+    pub fn list_collections(&self) -> Vec<(String, usize)> {
+        let known = [
+            "user",
+            "project",
+            "project_credential",
+            "project_db_connection",
+            "project_assistant_config",
+            "pipeline_meta",
+            "project_policy",
+            "project_policy_binding",
+            "mcp_session",
+        ];
+        known
+            .iter()
+            .map(|name| {
+                let count = self
+                    .query_payloads(vec![
+                        json!({"op": "collection", "name": name}),
+                        json!({"op": "take", "n": 1_000_000}),
+                    ])
+                    .map(|rows| rows.len())
+                    .unwrap_or(0);
+                (name.to_string(), count)
+            })
+            .collect()
     }
 }
 
@@ -590,6 +656,11 @@ impl DataAdapter for SekejapDataAdapter {
                 .map(|n| n as u32)
                 .unwrap_or(2),
             enabled: v.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+            chat_history_pairs: v
+                .get("chat_history_pairs")
+                .and_then(Value::as_u64)
+                .map(|n| n as u32)
+                .unwrap_or(10),
             updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
         }))
     }
@@ -608,6 +679,7 @@ impl DataAdapter for SekejapDataAdapter {
             "max_steps": config.max_steps,
             "max_replans": config.max_replans,
             "enabled": config.enabled,
+            "chat_history_pairs": config.chat_history_pairs,
             "updated_at": config.updated_at,
         });
         let op = json!({"mutation":"put_json", "data": data}).to_string();
@@ -842,5 +914,67 @@ impl DataAdapter for SekejapDataAdapter {
             }
         }
         Ok(())
+    }
+
+    fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError> {
+        let rows = self.query_payloads(vec![
+            json!({"op": "collection", "name": "mcp_session"}),
+            json!({"op": "take", "n": QUERY_LIMIT}),
+        ])?;
+        let sessions = rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<McpSession>(v).ok())
+            .collect();
+        Ok(sessions)
+    }
+
+    fn put_mcp_session(&self, session: &McpSession) -> Result<(), PlatformError> {
+        let slug = format!(
+            "mcp_session/{}/{}",
+            slug_segment(&session.owner),
+            slug_segment(&session.project)
+        );
+        let mut data = serde_json::to_value(session)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        data["_id"] = json!(slug);
+        data["_collection"] = json!("mcp_session");
+        let op = json!({"mutation": "put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError> {
+        // Find the session first to get owner/project for slug
+        let sessions = self.list_all_mcp_sessions()?;
+        if let Some(session) = sessions.iter().find(|s| s.token == token) {
+            let slug = format!(
+                "mcp_session/{}/{}",
+                slug_segment(&session.owner),
+                slug_segment(&session.project)
+            );
+            self.db
+                .nodes()
+                .remove(&slug)
+                .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn admin_list_collections(&self) -> Result<Vec<(String, usize)>, PlatformError> {
+        Ok(self.list_collections())
+    }
+
+    fn admin_raw_query(&self, pipeline_json: &str) -> Result<Vec<Value>, PlatformError> {
+        self.raw_query(pipeline_json)
+    }
+
+    fn admin_get_node(&self, slug: &str) -> Result<Option<String>, PlatformError> {
+        Ok(self.get_node_raw(slug))
+    }
+
+    fn admin_delete_node(&self, slug: &str) -> Result<bool, PlatformError> {
+        self.delete_node_raw(slug)
     }
 }

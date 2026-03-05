@@ -40,8 +40,12 @@ impl DbDriver for SjtableDbDriver {
                 meta: json!({
                     "row_count": table.row_count,
                     "collection": table.collection,
+                    "attributes": table.attributes,
                     "hash_indexed_fields": table.hash_indexed_fields,
                     "range_indexed_fields": table.range_indexed_fields,
+                    "fulltext_fields": table.fulltext_fields,
+                    "vector_fields": table.vector_fields,
+                    "spatial_fields": table.spatial_fields,
                 }),
             })
             .collect::<Vec<_>>();

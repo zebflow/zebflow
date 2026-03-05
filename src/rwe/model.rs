@@ -250,6 +250,12 @@ pub struct CompiledTemplate {
     pub tailwind_variant_patterns: Vec<String>,
     /// Effective compile/render options.
     pub options: ReactiveWebOptions,
+    /// Engine-specific serialized payload (for example compile/render plans).
+    ///
+    /// This is optional to keep backward compatibility with engines that only
+    /// use shared fields.
+    #[serde(default)]
+    pub engine_payload: Option<Value>,
 }
 
 /// Request-level render context.

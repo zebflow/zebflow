@@ -19,7 +19,6 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
-use futures::stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use swc_common::{FileName, SourceMap, sync::Lrc};
@@ -27,9 +26,6 @@ use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::assistant_config::load_project_assistant_llm;
-use crate::automaton::llm_interface::{
-    Message as AssistantLlmMessage, MessageRole as AssistantLlmRole,
-};
 use crate::framework::{BasicFrameworkEngine, FrameworkContext, FrameworkEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
@@ -46,28 +42,18 @@ use crate::platform::model::{
 };
 use crate::platform::services::PlatformService;
 use crate::rwe::{
-    CompiledScript, CompiledTemplate, NoopReactiveWebEngine, ReactiveWebEngine, ReactiveWebOptions,
-    RenderContext, RenderScriptCache, ScriptCacheConfig, TemplateOptions, TemplateSource,
+    CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
+    RenderScriptCache, ScriptCacheConfig, TemplateOptions, TemplateSource,
+    resolve_engine_or_default,
 };
 use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
-const PLATFORM_TEMPLATE_EDITOR_JS: &str = include_str!("runtime/template-editor.mjs");
-const PLATFORM_PIPELINE_EDITOR_JS: &str = include_str!("runtime/pipeline-editor.mjs");
-const PLATFORM_PIPELINE_WEBHOOK_TREE_JS: &str = include_str!("runtime/pipeline-webhook-tree.mjs");
-const PLATFORM_UI_COLLAPSIBLE_TREE_JS: &str = include_str!("runtime/ui-collapsible-tree.mjs");
-const PLATFORM_PROJECT_CREDENTIALS_JS: &str = include_str!("runtime/project-credentials.mjs");
-const PLATFORM_PROJECT_DB_CONNECTIONS_JS: &str = include_str!("runtime/project-db-connections.mjs");
-const PLATFORM_PROJECT_DB_SUITE_JS: &str = include_str!("runtime/project-db-suite.mjs");
-const PLATFORM_PROJECT_DB_SUITE_POSTGRESQL_JS: &str =
-    include_str!("runtime/project-db-suite-postgresql.mjs");
-const PLATFORM_PROJECT_DB_SUITE_SJTABLE_JS: &str =
-    include_str!("runtime/project-db-suite-sjtable.mjs");
-const PLATFORM_SESSION_MANAGER_JS: &str = include_str!("runtime/session-manager.mjs");
-const PLATFORM_PROJECT_ASSISTANT_JS: &str = include_str!("runtime/project-assistant.mjs");
-const PLATFORM_PROJECT_SETTINGS_JS: &str = include_str!("runtime/project-settings.mjs");
+const RWE_ROUTER_JS: &str = include_str!("rwe_router.js");
+const PLATFORM_MAIN_CSS: &str = include_str!("templates/styles/main.css");
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
+const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
 
 /// Shared frontend render bundle (compiled templates + engines).
 #[derive(Clone)]
@@ -98,6 +84,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
     Router::new()
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
+        .route("/assets/platform/rwe-router.js", get(rwe_router_js_handler))
         .route("/assets/platform/{asset}", get(platform_asset))
         .route("/assets/rwe/scripts/{hash}", get(rwe_script_asset))
         .route(
@@ -180,6 +167,9 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             get(project_settings_web_libraries_legacy_redirect_page),
         )
         .route("/api/meta", get(api_meta))
+        .route("/api/admin/db/collections", get(api_admin_db_list_collections))
+        .route("/api/admin/db/query", post(api_admin_db_query))
+        .route("/api/admin/db/node/{slug}", get(api_admin_db_get_node).delete(api_admin_db_delete_node))
         .route(
             "/api/projects/{owner}/{project}/nodes",
             get(api_list_node_definitions),
@@ -312,6 +302,14 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             get(api_read_project_doc).put(api_upsert_project_doc_file),
         )
         .route(
+            "/api/projects/{owner}/{project}/agent-docs",
+            get(api_list_agent_docs),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/agent-docs/file",
+            get(api_read_agent_doc).put(api_upsert_agent_doc_file),
+        )
+        .route(
             "/api/projects/{owner}/{project}/tables",
             get(api_list_simple_tables).post(api_create_simple_table),
         )
@@ -360,7 +358,8 @@ fn build_render_script_cache(data_root: &FsPath) -> Option<Arc<RenderScriptCache
 }
 
 fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError> {
-    let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(NoopReactiveWebEngine);
+    let rwe_engine_id = std::env::var("ZEBFLOW_PLATFORM_RWE_ENGINE_ID").ok();
+    let rwe: Arc<dyn ReactiveWebEngine> = resolve_engine_or_default(rwe_engine_id.as_deref());
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
     let template_root = materialize_platform_template_root(data_root)?;
 
@@ -416,6 +415,17 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             options.clone(),
         )?,
     );
+    pages.insert(
+        "platform-project-pipelines-registry",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.pipelines.registry",
+            &template_root,
+            "pages/platform-project-pipelines-registry.tsx",
+            options.clone(),
+        )?,
+    );
 
     pages.insert(
         "platform-project-section",
@@ -461,6 +471,18 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             "platform.project.build.templates",
             &template_root,
             "pages/platform-project-build-templates.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-project-docs",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.docs",
+            &template_root,
+            "pages/platform-project-docs.tsx",
             options.clone(),
         )?,
     );
@@ -571,7 +593,198 @@ fn materialize_platform_template_root(data_root: &FsPath) -> Result<PathBuf, Pla
         }
         fs::write(full, asset.bytes)?;
     }
+    rewrite_platform_template_alias_imports(&root)?;
     Ok(root)
+}
+
+fn rewrite_platform_template_alias_imports(root: &FsPath) -> Result<(), PlatformError> {
+    fn visit(dir: &FsPath, out: &mut Vec<PathBuf>) -> Result<(), PlatformError> {
+        for entry in fs::read_dir(dir).map_err(|e| {
+            PlatformError::new(
+                "PLATFORM_TEMPLATE_READ_DIR",
+                format!("failed reading '{}': {e}", dir.display()),
+            )
+        })? {
+            let entry = entry.map_err(|e| {
+                PlatformError::new(
+                    "PLATFORM_TEMPLATE_READ_DIR",
+                    format!("failed reading dir entry in '{}': {e}", dir.display()),
+                )
+            })?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, out)?;
+                continue;
+            }
+            if let Some(ext) = path.extension().and_then(|v| v.to_str())
+                && matches!(ext, "tsx" | "ts" | "jsx" | "js")
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(root, &mut files)?;
+
+    for file in files {
+        let source = fs::read_to_string(&file).map_err(|e| {
+            PlatformError::new(
+                "PLATFORM_TEMPLATE_READ",
+                format!("failed reading '{}': {e}", file.display()),
+            )
+        })?;
+        let normalized = normalize_legacy_attr_values_in_source(&source);
+        let rewritten = rewrite_alias_imports_for_source(&normalized, root)?;
+        if rewritten != source {
+            fs::write(&file, rewritten).map_err(|e| {
+                PlatformError::new(
+                    "PLATFORM_TEMPLATE_WRITE",
+                    format!("failed writing '{}': {e}", file.display()),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn normalize_legacy_attr_values_in_source(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    let mut out = String::with_capacity(source.len());
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let Some(tag_end) = find_tag_end_for_rewrite(source, i) else {
+                out.push_str(&source[i..]);
+                break;
+            };
+            let tag_src = &source[i..=tag_end];
+            out.push_str(&convert_legacy_attr_expr_in_tag_source(tag_src));
+            i = tag_end + 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn find_tag_end_for_rewrite(source: &str, tag_start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut i = tag_start;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match in_quote {
+            Some(q) if b == q => in_quote = None,
+            None if b == b'\'' || b == b'"' => in_quote = Some(b),
+            None if b == b'>' => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn convert_legacy_attr_expr_in_tag_source(tag_source: &str) -> String {
+    if tag_source.starts_with("</") || tag_source.starts_with("<!") || tag_source.starts_with("<?")
+    {
+        return tag_source.to_string();
+    }
+    let bytes = tag_source.as_bytes();
+    let mut i = 0usize;
+    let mut out = String::with_capacity(tag_source.len());
+
+    while i < bytes.len() {
+        if bytes[i] == b'=' && i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+            let value_start = i + 2;
+            let mut j = value_start;
+            while j < bytes.len() && bytes[j] != b'"' {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                out.push_str(&tag_source[i..]);
+                break;
+            }
+            let value = &tag_source[value_start..j];
+            let trimmed = value.trim();
+            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
+                let inner = trimmed[1..trimmed.len() - 1].trim();
+                out.push('=');
+                out.push('{');
+                out.push_str(inner);
+                out.push('}');
+            } else {
+                out.push('=');
+                out.push('"');
+                out.push_str(value);
+                out.push('"');
+            }
+            i = j + 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn rewrite_alias_imports_for_source(source: &str, root: &FsPath) -> Result<String, PlatformError> {
+    let mut out = source.to_string();
+    out = rewrite_alias_import_variant(&out, root, '"')?;
+    out = rewrite_alias_import_variant(&out, root, '\'')?;
+    Ok(out)
+}
+
+fn rewrite_alias_import_variant(
+    source: &str,
+    root: &FsPath,
+    quote: char,
+) -> Result<String, PlatformError> {
+    let marker = format!("from {}", quote);
+    let mut out = source.to_string();
+    let mut cursor = 0usize;
+    while let Some(rel_idx) = out[cursor..].find(marker.as_str()) {
+        let idx = cursor + rel_idx;
+        let spec_start = idx + marker.len();
+        let Some(end_rel) = out[spec_start..].find(quote) else {
+            break;
+        };
+        let spec_end = spec_start + end_rel;
+        let rel = &out[spec_start..spec_end];
+        if !rel.starts_with("@/") {
+            cursor = spec_end + 1;
+            continue;
+        }
+        let resolved = resolve_platform_alias_import(root, rel.trim_start_matches("@/"))?;
+        out.replace_range(spec_start..spec_end, &resolved);
+        cursor = spec_start + resolved.len();
+    }
+    Ok(out)
+}
+
+fn resolve_platform_alias_import(root: &FsPath, rel: &str) -> Result<String, PlatformError> {
+    let base = root.join(rel);
+    if base.exists() {
+        let abs = fs::canonicalize(&base).unwrap_or(base);
+        return Ok(abs.to_string_lossy().to_string());
+    }
+    for ext in [".tsx", ".ts", ".jsx", ".js"] {
+        let candidate = PathBuf::from(format!("{}{}", base.display(), ext));
+        if candidate.exists() {
+            let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
+            return Ok(abs.to_string_lossy().to_string());
+        }
+    }
+    for index in ["index.tsx", "index.ts", "index.jsx", "index.js"] {
+        let candidate = base.join(index);
+        if candidate.exists() {
+            let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
+            return Ok(abs.to_string_lossy().to_string());
+        }
+    }
+    Ok(base.to_string_lossy().to_string())
 }
 
 fn render_page(
@@ -601,12 +814,69 @@ fn render_page(
         )
         .map_err(|e| PlatformError::new("PLATFORM_RWE_RENDER", e.to_string()))?;
 
+    let mut html = out.html;
+
+    // Ensure UTF-8 meta is present early in the document so browsers don't
+    // fall back to Latin-1 when no DOCTYPE or explicit encoding is in the fragment.
+    html = ensure_meta_charset(html);
+
+    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str)
+        && !css.trim().is_empty()
+    {
+        let style_block = format!("<style data-rwe-tw>{css}</style>");
+        if let Some(pos) = html.find("</head>") {
+            html.insert_str(pos, &style_block);
+        } else {
+            html = format!("{style_block}{html}");
+        }
+    }
+
+    // All project workspace pages depend on shared shell/design CSS.
+    if route.starts_with("/projects/") {
+        html = ensure_stylesheet_link(html, "/assets/platform/main.css");
+    }
+    // DB suite pages require dedicated layout rules + devicons.
+    if html.contains("data-db-suite=\"true\"") {
+        html = ensure_stylesheet_link(html, "/assets/platform/db-suite.css");
+        html = ensure_stylesheet_link(
+            html,
+            "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css",
+        );
+    }
+
     Ok(externalize_rwe_scripts(
         state,
-        out.html.as_str(),
+        html.as_str(),
         &out.compiled_scripts,
         None,
     ))
+}
+
+fn ensure_meta_charset(mut html: String) -> String {
+    if html.contains("<meta charset") || html.contains("<meta http-equiv=\"Content-Type\"") {
+        return html;
+    }
+    let tag = "<meta charset=\"utf-8\">";
+    if let Some(pos) = html.find("<head>") {
+        html.insert_str(pos + "<head>".len(), tag);
+    } else if let Some(pos) = html.find("</head>") {
+        html.insert_str(pos, tag);
+    } else {
+        html = format!("{tag}{html}");
+    }
+    html
+}
+
+fn ensure_stylesheet_link(mut html: String, href: &str) -> String {
+    if html.contains(href) {
+        return html;
+    }
+    let link = format!("<link rel=\"stylesheet\" href=\"{href}\">");
+    if let Some(pos) = html.find("</head>") {
+        html.insert_str(pos, &link);
+        return html;
+    }
+    format!("{link}{html}")
 }
 
 fn externalize_rwe_scripts(
@@ -649,7 +919,7 @@ fn externalize_rwe_scripts(
             None => format!("/assets/rwe/scripts/{}", script.content_hash),
         };
         script_tags.push_str(&format!(
-            "<script defer data-rwe-external=\"{}\" src=\"{}\"></script>",
+            "<script type=\"module\" defer data-rwe-external=\"{}\" src=\"{}\"></script>",
             role, src
         ));
     }
@@ -784,6 +1054,8 @@ struct AssistantChatRequest {
     message: String,
     history: Vec<AssistantChatMessage>,
     use_high_model: bool,
+    current_page: Option<String>,
+    client_time: Option<String>,
 }
 
 impl Default for AssistantChatRequest {
@@ -792,6 +1064,8 @@ impl Default for AssistantChatRequest {
             message: String::new(),
             history: Vec::new(),
             use_high_model: false,
+            current_page: None,
+            client_time: None,
         }
     }
 }
@@ -845,59 +1119,22 @@ async fn branding_asset(Path(asset): Path<String>) -> Response {
     }
 }
 
+async fn rwe_router_js_handler() -> Response {
+    asset_response("application/javascript; charset=utf-8", RWE_ROUTER_JS.as_bytes())
+}
+
 async fn platform_asset(Path(asset): Path<String>) -> Response {
     match asset.as_str() {
-        "template-editor.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_TEMPLATE_EDITOR_JS.as_bytes(),
-        ),
-        "pipeline-editor.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PIPELINE_EDITOR_JS.as_bytes(),
-        ),
-        "pipeline-webhook-tree.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PIPELINE_WEBHOOK_TREE_JS.as_bytes(),
-        ),
-        "ui-collapsible-tree.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_UI_COLLAPSIBLE_TREE_JS.as_bytes(),
-        ),
-        "project-credentials.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_CREDENTIALS_JS.as_bytes(),
-        ),
-        "project-db-connections.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_DB_CONNECTIONS_JS.as_bytes(),
-        ),
-        "project-db-suite.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_DB_SUITE_JS.as_bytes(),
-        ),
-        "project-db-suite-postgresql.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_DB_SUITE_POSTGRESQL_JS.as_bytes(),
-        ),
-        "project-db-suite-sjtable.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_DB_SUITE_SJTABLE_JS.as_bytes(),
-        ),
-        "session-manager.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_SESSION_MANAGER_JS.as_bytes(),
-        ),
-        "project-assistant.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_ASSISTANT_JS.as_bytes(),
-        ),
-        "project-settings.mjs" => asset_response(
-            "text/javascript; charset=utf-8",
-            PLATFORM_PROJECT_SETTINGS_JS.as_bytes(),
-        ),
+        "main.css" => {
+            asset_response("text/css; charset=utf-8", PLATFORM_MAIN_CSS.as_bytes())
+        }
         "db-suite.css" => {
             asset_response("text/css; charset=utf-8", PLATFORM_DB_SUITE_CSS.as_bytes())
         }
+        "db-connections.css" => asset_response(
+            "text/css; charset=utf-8",
+            PLATFORM_DB_CONNECTIONS_CSS.as_bytes(),
+        ),
         _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
@@ -1642,7 +1879,12 @@ async fn render_project_pipelines_with_tab(
                 "nav": nav,
             });
 
-            match render_page(&state, "platform-project-pipelines", &route, input) {
+            let page_id = if is_registry {
+                "platform-project-pipelines-registry"
+            } else {
+                "platform-project-pipelines"
+            };
+            match render_page(&state, page_id, &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -1949,12 +2191,15 @@ async fn render_project_build_docs(
                     "api": {
                         "list": format!("/api/projects/{owner}/{project}/docs"),
                         "read": format!("/api/projects/{owner}/{project}/docs/file"),
-                        "create": format!("/api/projects/{owner}/{project}/docs")
+                        "create": format!("/api/projects/{owner}/{project}/docs"),
+                        "agent_list": format!("/api/projects/{owner}/{project}/agent-docs"),
+                        "agent_read": format!("/api/projects/{owner}/{project}/agent-docs/file"),
+                        "agent_save": format!("/api/projects/{owner}/{project}/agent-docs/file"),
                     }
                 },
                 "nav": nav,
             });
-            match render_page(&state, "platform-project-studio", &route, input) {
+            match render_page(&state, "platform-project-docs", &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -2769,6 +3014,32 @@ fn build_tab_payload(
         )),
         _ => None,
     }
+}
+
+fn project_nav_map(owner: &str, project: &str) -> String {
+    let b = format!("/projects/{owner}/{project}");
+    let pb = format!("{b}/pipelines");
+    format!(
+        "  - Pipelines › Registry: {pb}/registry?path=/\n\
+           - Pipelines › Webhooks: {pb}/webhooks\n\
+           - Pipelines › Schedules: {pb}/schedules\n\
+           - Pipelines › Manual: {pb}/manual\n\
+           - Pipelines › Functions: {pb}/functions\n\
+           - Build › Templates: {b}/build/templates\n\
+           - Build › Assets: {b}/build/assets\n\
+           - Build › Docs: {b}/build/docs\n\
+           - Dashboard: {b}/dashboard\n\
+           - Credentials: {b}/credentials\n\
+           - Databases / Tables (lists all connections): {b}/db/connections\n\
+           - Files: {b}/files\n\
+           - Todo: {b}/todo\n\
+           - Settings: {b}/settings\n\
+         \n\
+         DB connection sub-pages (substitute actual db_kind and connection_id):\n\
+           - {b}/db/{{db_kind}}/{{connection_id}}/tables  — browse tables\n\
+           - {b}/db/{{db_kind}}/{{connection_id}}/query   — run SQL / query UI\n\
+           - {b}/db/{{db_kind}}/{{connection_id}}/schema  — schema explorer"
+    )
 }
 
 fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str>) -> Value {
@@ -3837,6 +4108,107 @@ async fn api_list_node_definitions(
     .into_response()
 }
 
+// ── Admin DB endpoints ──────────────────────────────────────────────────────
+
+fn require_superadmin(state: &PlatformAppState, headers: &HeaderMap) -> Result<(), Response> {
+    let Some(owner) = session_owner(headers) else {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    };
+    let is_superadmin = state
+        .platform
+        .users
+        .get_user(&owner)
+        .ok()
+        .flatten()
+        .map(|u| u.role == "superadmin")
+        .unwrap_or(false);
+    if !is_superadmin {
+        return Err(StatusCode::FORBIDDEN.into_response());
+    }
+    Ok(())
+}
+
+async fn api_admin_db_list_collections(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.admin_list_collections() {
+        Ok(collections) => Json(json!({
+            "ok": true,
+            "collections": collections.into_iter().map(|(name, count)| json!({"name": name, "count": count})).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AdminDbQueryRequest {
+    pipeline: serde_json::Value,
+}
+
+async fn api_admin_db_query(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<AdminDbQueryRequest>,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    let q = json!({"pipeline": req.pipeline}).to_string();
+    match state.platform.data.admin_raw_query(&q) {
+        Ok(rows) => {
+            let count = rows.len();
+            Json(json!({"ok": true, "rows": rows, "count": count})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_admin_db_get_node(
+    State(state): State<PlatformAppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.admin_get_node(&slug) {
+        Ok(Some(raw)) => {
+            let v: serde_json::Value =
+                serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+            Json(json!({"ok": true, "slug": slug, "node": v})).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": {"code": "NODE_NOT_FOUND", "message": format!("Node not found: {slug}")}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_admin_db_delete_node(
+    State(state): State<PlatformAppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = require_superadmin(&state, &headers) {
+        return r;
+    }
+    match state.platform.data.admin_delete_node(&slug) {
+        Ok(deleted) => {
+            Json(json!({"ok": true, "deleted": deleted, "slug": slug})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 async fn api_list_users(State(state): State<PlatformAppState>) -> Response {
     match state.platform.users.list_users() {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
@@ -4428,7 +4800,7 @@ async fn api_execute_pipeline(
     };
     let engine = BasicFrameworkEngine::new(
         Arc::new(DenoSandboxEngine::default()),
-        Arc::new(NoopReactiveWebEngine),
+        state.frontend.rwe.clone(),
         Some(credentials),
         Some(simple_tables),
     );
@@ -4904,6 +5276,56 @@ async fn api_upsert_project_assistant_config(
     }
 }
 
+/// Load up to `max_pairs * 2` chat messages from the project's runtime data dir.
+fn load_chat_history(
+    file: &Arc<dyn crate::platform::adapters::file::FileAdapter>,
+    owner: &str,
+    project: &str,
+) -> Vec<Value> {
+    let layout = match file.ensure_project_layout(owner, project) {
+        Ok(l) => l,
+        Err(_) => return vec![],
+    };
+    let path = layout.data_runtime_dir.join("chat_history.json");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    serde_json::from_str::<Vec<Value>>(&content).unwrap_or_default()
+}
+
+/// Append a user+assistant exchange and persist to disk, keeping the last `max_pairs` pairs.
+fn save_chat_history(
+    file: &Arc<dyn crate::platform::adapters::file::FileAdapter>,
+    owner: &str,
+    project: &str,
+    user_msg: &str,
+    assistant_msg: &str,
+    max_pairs: usize,
+) {
+    let layout = match file.ensure_project_layout(owner, project) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let path = layout.data_runtime_dir.join("chat_history.json");
+    let mut history: Vec<Value> =
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_default();
+    history.push(json!({"role": "user", "content": user_msg}));
+    history.push(json!({"role": "assistant", "content": assistant_msg}));
+    // Keep last max_pairs pairs = max_pairs * 2 messages
+    let keep = max_pairs * 2;
+    if history.len() > keep {
+        history.drain(0..history.len() - keep);
+    }
+    if let Ok(json) = serde_json::to_string(&history) {
+        std::fs::create_dir_all(&layout.data_runtime_dir).ok();
+        std::fs::write(&path, json).ok();
+    }
+}
+
 async fn api_project_assistant_chat(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -4920,7 +5342,7 @@ async fn api_project_assistant_chat(
         return response;
     }
 
-    let message = req.message.trim();
+    let message = req.message.trim().to_string();
     if message.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -4957,87 +5379,365 @@ async fn api_project_assistant_chat(
         }
     };
 
-    let mut messages = Vec::new();
-    messages.push(AssistantLlmMessage {
-        role: AssistantLlmRole::System,
-        content: format!(
-            "You are Zebflow project assistant for project '{}/{}'. Keep responses concise, practical, and grounded in project context.",
-            owner, project
-        ),
-    });
-    for item in req.history.into_iter().take(32) {
-        let content = item.content.trim();
-        if content.is_empty() {
-            continue;
-        }
-        if let Some(role) = parse_assistant_chat_role(&item.role) {
-            messages.push(AssistantLlmMessage {
-                role,
-                content: content.to_string(),
-            });
-        }
+    let tools = crate::platform::services::AssistantPlatformTools::new(
+        state.platform.clone(),
+        &owner,
+        &project,
+    );
+
+    let tool_defs = crate::platform::services::AssistantPlatformTools::tool_defs();
+
+    let mut messages: Vec<Value> = Vec::new();
+    {
+        let skills = crate::platform::skills::all_skills();
+        let skills_text = crate::platform::skills::format_skills_for_system_prompt(skills);
+        let page_context = req.current_page
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .map(|p| format!("\nCurrently viewing: {p}"))
+            .unwrap_or_default();
+        let time_context = req.client_time
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .map(|t| format!("\nUser local time: {t}"))
+            .unwrap_or_default();
+        let nav_map = project_nav_map(&owner, &project);
+
+        // Load agent docs for system prompt
+        state.platform.projects.ensure_agent_docs_defaults(&owner, &project).ok();
+        let memory = state.platform.projects.read_agent_doc(&owner, &project, "MEMORY.md").unwrap_or_default();
+        let soul   = state.platform.projects.read_agent_doc(&owner, &project, "SOUL.md").unwrap_or_default();
+        let agents = state.platform.projects.read_agent_doc(&owner, &project, "AGENTS.md").unwrap_or_default();
+        let readme = state.platform.projects.read_project_doc(&owner, &project, "README.md").unwrap_or_default();
+        let readme_section = if readme.trim().is_empty() {
+            String::new()
+        } else {
+            format!("\n\n## Project README\n{readme}")
+        };
+
+        let system = format!(
+            "You are the Zebflow project assistant.\n\
+             Project: {owner}/{project}{page_context}{time_context}\n\n\
+             ## Your Memory\n{memory}\n\n\
+             ## Your Soul\n{soul}\n\n\
+             ## Project Context\n{agents}{readme_section}\n\n\
+             ## Behavior\n\
+             When you discover important project information (architecture, decisions, patterns, \
+             data models), check Your Memory above. If it is not already recorded, call \
+             `update_memory` with the full updated MEMORY.md content.\n\n\
+             ## Navigation Rules\n\
+             Use `navigate_to` with these exact URLs.\n\
+             ALWAYS navigate first — never use tools to fetch data that a page already shows.\n\
+             \n\
+             For database queries:\n\
+             - Always call `describe_db_connection` first to see the schema tree.\n\
+             - Then call `get_table_columns` for EACH table you will touch — NEVER guess column names.\n\
+             - Use `run_db_query` to execute SQL and get results (also shows in the browser UI for the user).\n\
+             Do NOT use `query_table` for interactive queries — use `run_db_query` instead.\n\
+             \n\
+             Available pages:\n\
+             {nav_map}\n\n\
+             ## Zebflow Knowledge\n\n{skills_text}"
+        );
+        messages.push(json!({"role": "system", "content": system}));
     }
-    messages.push(AssistantLlmMessage {
-        role: AssistantLlmRole::User,
-        content: message.to_string(),
-    });
+
+    // Server-side history takes precedence; fall back to client-sent history if empty.
+    let server_history = load_chat_history(&state.platform.file, &owner, &project);
+    let history_source: Box<dyn Iterator<Item = Value>> = if server_history.is_empty() {
+        // Fall back to client-sent history (first session or no persistence yet)
+        Box::new(
+            req.history
+                .into_iter()
+                .filter(|item| !item.content.trim().is_empty())
+                .filter_map(|item| match item.role.as_str() {
+                    "user" | "assistant" => Some(json!({"role": item.role, "content": item.content.trim()})),
+                    _ => None,
+                })
+                .take(20),
+        )
+    } else {
+        Box::new(server_history.into_iter().take(20))
+    };
+    for item in history_source {
+        messages.push(item);
+    }
+    messages.push(json!({"role": "user", "content": message}));
 
     let llm = if req.use_high_model {
         bundle.high.clone()
     } else {
         bundle.general.clone()
     };
-    let answer = match llm.call(messages).await {
-        Ok(text) => text,
-        Err(message) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "ASSISTANT_LLM_CALL_FAILED",
-                        "message": message
-                    }
-                })),
-            )
-                .into_response();
-        }
-    };
 
-    let events = vec![
-        Ok::<Event, Infallible>(
+    let max_steps = bundle.max_steps;
+    let chat_history_pairs_for_save = bundle.chat_history_pairs;
+    let model_tier = if req.use_high_model { "high" } else { "general" };
+
+    // Channel for streaming step events to SSE
+    let (step_tx, mut step_rx) =
+        tokio::sync::mpsc::unbounded_channel::<AssistantStepEvent>();
+
+    // Spawn the agentic loop as a background task
+    let loop_task = tokio::spawn(async move {
+        run_assistant_loop(llm, &tools, tool_defs, messages, max_steps, &step_tx).await
+    });
+
+    // Collect all SSE events: start + step events + message + done
+    let owner_clone = owner.clone();
+    let project_clone = project.clone();
+    let file_for_history = state.platform.file.clone();
+    let message_for_history = message.clone();
+
+    let sse_stream = async_stream::stream! {
+        // start event
+        yield Ok::<Event, Infallible>(
             Event::default().event("start").data(
                 json!({
                     "ok": true,
-                    "project": { "owner": owner, "project": project },
-                    "model_tier": if req.use_high_model { "high" } else { "general" },
-                    "max_steps": bundle.max_steps,
-                    "max_replans": bundle.max_replans
+                    "owner": owner_clone,
+                    "project": project_clone,
+                    "model_tier": model_tier,
+                    "max_steps": max_steps,
                 })
                 .to_string(),
             ),
-        ),
-        Ok::<Event, Infallible>(
-            Event::default()
-                .event("message")
-                .data(json!({"role":"assistant","content":answer}).to_string()),
-        ),
-        Ok::<Event, Infallible>(
-            Event::default().event("done").data(
-                json!({
-                    "ok": true
-                })
-                .to_string(),
-            ),
-        ),
-    ];
-    Sse::new(stream::iter(events))
+        );
+
+        // Drain step events while loop is running
+        let mut budget_exhausted = false;
+        let mut steps_taken: u32 = 0;
+        let final_content;
+
+        loop {
+            match step_rx.recv().await {
+                Some(AssistantStepEvent::ToolCall { step, tool, args, thought }) => {
+                    steps_taken = step;
+                    yield Ok(Event::default().event("tool_call").data(
+                        json!({
+                            "step": step,
+                            "tool": tool,
+                            "args": args,
+                            "thought": thought,
+                        }).to_string()
+                    ));
+                }
+                Some(AssistantStepEvent::ToolResult { step, tool, result_preview }) => {
+                    steps_taken = step;
+                    yield Ok(Event::default().event("tool_result").data(
+                        json!({
+                            "step": step,
+                            "tool": tool,
+                            "result_preview": result_preview,
+                        }).to_string()
+                    ));
+                }
+                Some(AssistantStepEvent::Navigate { url, label }) => {
+                    yield Ok(Event::default().event("navigate").data(
+                        json!({ "url": url, "label": label }).to_string()
+                    ));
+                }
+                Some(AssistantStepEvent::FillInput { selector, value, submit }) => {
+                    yield Ok(Event::default().event("fill_input").data(
+                        json!({ "selector": selector, "value": value, "submit": submit }).to_string()
+                    ));
+                }
+                Some(AssistantStepEvent::InteractionSequence { id, label, steps }) => {
+                    yield Ok(Event::default().event("interaction_sequence").data(
+                        json!({ "id": id, "label": label, "steps": steps }).to_string()
+                    ));
+                }
+                Some(AssistantStepEvent::BudgetExhausted) => {
+                    budget_exhausted = true;
+                }
+                Some(AssistantStepEvent::Done(content)) => {
+                    final_content = content;
+                    break;
+                }
+                None => {
+                    // Channel closed (loop task ended without Done — shouldn't happen)
+                    final_content = String::new();
+                    break;
+                }
+            }
+        }
+
+        // Await loop task to make sure it's fully done
+        let _ = loop_task.await;
+
+        // Persist this exchange to server-side chat history (last 10 pairs)
+        if !final_content.is_empty() {
+            save_chat_history(
+                &file_for_history,
+                &owner_clone,
+                &project_clone,
+                &message_for_history,
+                &final_content,
+                chat_history_pairs_for_save as usize,
+            );
+        }
+
+        let content_html = crate::rwe::processors::markdown::render_markdown_fragment(&final_content);
+        yield Ok(Event::default().event("message").data(
+            json!({"role":"assistant","content": final_content, "content_html": content_html}).to_string()
+        ));
+        yield Ok(Event::default().event("done").data(
+            json!({"ok": true, "steps_taken": steps_taken, "budget_exhausted": budget_exhausted}).to_string()
+        ));
+    };
+
+    Sse::new(sse_stream)
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("keep-alive"),
         )
         .into_response()
+}
+
+/// Events emitted by the assistant agentic loop.
+enum AssistantStepEvent {
+    ToolCall {
+        step: u32,
+        tool: String,
+        args: Value,
+        thought: String,
+    },
+    ToolResult {
+        step: u32,
+        tool: String,
+        result_preview: String,
+    },
+    Navigate {
+        url: String,
+        label: String,
+    },
+    FillInput {
+        selector: String,
+        value: String,
+        submit: bool,
+    },
+    InteractionSequence {
+        id: String,
+        label: String,
+        steps: Value,
+    },
+    BudgetExhausted,
+    Done(String),
+}
+
+async fn run_assistant_loop(
+    llm: std::sync::Arc<dyn crate::automaton::llm_interface::LlmCall>,
+    tools: &crate::platform::services::AssistantPlatformTools,
+    tool_defs: Vec<crate::automaton::llm_interface::ToolDef>,
+    mut messages: Vec<Value>,
+    max_steps: u32,
+    step_tx: &tokio::sync::mpsc::UnboundedSender<AssistantStepEvent>,
+) -> String {
+    use crate::automaton::llm_interface::CallResult;
+
+    for step in 1..=max_steps {
+        let result = match llm.call_with_tools(messages.clone(), &tool_defs).await {
+            Ok(r) => r,
+            Err(err) => {
+                let content = format!("(LLM error: {err})");
+                let _ = step_tx.send(AssistantStepEvent::Done(content.clone()));
+                return content;
+            }
+        };
+
+        match result {
+            CallResult::Text(content) => {
+                let _ = step_tx.send(AssistantStepEvent::Done(content.clone()));
+                return content;
+            }
+            CallResult::ToolCalls(calls) => {
+                // Append the assistant's tool_calls message to history
+                let tool_calls_json: Vec<Value> = calls
+                    .iter()
+                    .map(|tc| {
+                        json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": { "name": tc.name, "arguments": tc.arguments }
+                        })
+                    })
+                    .collect();
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": tool_calls_json
+                }));
+
+                // Execute each call and append tool result messages
+                for tc in &calls {
+                    let args: Value =
+                        serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+
+                    let _ = step_tx.send(AssistantStepEvent::ToolCall {
+                        step,
+                        tool: tc.name.clone(),
+                        args: args.clone(),
+                        thought: String::new(),
+                    });
+
+                    let tool_result = tools.run_async(&tc.name, &args).await;
+                    let result_str = tool_result.text.clone();
+
+                    // Side-effect events for interactive tools
+                    if let Some(seq) = tool_result.interaction {
+                        // Interaction sequence takes priority over navigate/fill events
+                        let id = seq["id"].as_str().unwrap_or(&tc.id).to_string();
+                        let label = seq["label"].as_str().unwrap_or(&tc.name).to_string();
+                        let steps = seq["steps"].clone();
+                        let _ = step_tx.send(AssistantStepEvent::InteractionSequence {
+                            id,
+                            label,
+                            steps,
+                        });
+                    } else if tc.name == "navigate_to" {
+                        if let Some(url) = args["url"].as_str() {
+                            let label = args["label"].as_str().unwrap_or(url).to_string();
+                            let _ = step_tx.send(AssistantStepEvent::Navigate {
+                                url: url.to_string(),
+                                label,
+                            });
+                        }
+                    } else if tc.name == "fill_input" {
+                        if let Some(selector) = args["selector"].as_str() {
+                            let value = args["value"].as_str().unwrap_or("").to_string();
+                            let submit = args["submit"].as_bool().unwrap_or(false);
+                            let _ = step_tx.send(AssistantStepEvent::FillInput {
+                                selector: selector.to_string(),
+                                value,
+                                submit,
+                            });
+                        }
+                    }
+
+                    let result_preview = result_str.chars().take(500).collect::<String>();
+
+                    let _ = step_tx.send(AssistantStepEvent::ToolResult {
+                        step,
+                        tool: tc.name.clone(),
+                        result_preview,
+                    });
+
+                    messages.push(json!({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result_str
+                    }));
+                }
+            }
+        }
+    }
+
+    // Budget exhausted
+    let _ = step_tx.send(AssistantStepEvent::BudgetExhausted);
+    let content = "(max steps reached)".to_string();
+    let _ = step_tx.send(AssistantStepEvent::Done(content.clone()));
+    content
 }
 
 async fn api_list_db_connections(
@@ -5501,6 +6201,102 @@ async fn api_upsert_project_doc_file(
     api_upsert_project_doc(State(state), headers, Path((owner, project)), Json(req)).await
 }
 
+async fn api_list_agent_docs(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectRead,
+    ) {
+        return response;
+    }
+    match state.platform.projects.list_agent_docs(&owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_read_agent_doc(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<DocPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectRead,
+    ) {
+        return response;
+    }
+    let Some(name) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_AGENT_DOC_INVALID","message":"missing name query param"}})),
+        )
+            .into_response();
+    };
+    match state.platform.projects.read_agent_doc(&owner, &project, name) {
+        Ok(content) => Json(json!({"ok": true, "doc": {"name": name, "content": content}})).into_response(),
+        Err(err) if err.code == "PLATFORM_AGENT_DOC_INVALID" => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_agent_doc_file(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<DocPathQuery>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return response;
+    }
+    let Some(name) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_AGENT_DOC_INVALID","message":"missing name query param"}})),
+        )
+            .into_response();
+    };
+    // Only user-editable docs can be written via REST (not MEMORY.md)
+    if name == "MEMORY.md" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_AGENT_DOC_READONLY","message":"MEMORY.md is managed by the assistant and cannot be written via REST"}})),
+        )
+            .into_response();
+    }
+    let content = String::from_utf8(body.to_vec()).unwrap_or_default();
+    match state.platform.projects.upsert_agent_doc(&owner, &project, name, &content) {
+        Ok(_) => Json(json!({"ok": true, "name": name})).into_response(),
+        Err(err) if err.code == "PLATFORM_AGENT_DOC_INVALID" => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_list_simple_tables(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -5737,7 +6533,7 @@ async fn public_webhook_ingress(
     let file_rel_path = selected.compiled.file_rel_path.clone();
     let engine = BasicFrameworkEngine::new(
         Arc::new(DenoSandboxEngine::default()),
-        Arc::new(NoopReactiveWebEngine),
+        state.frontend.rwe.clone(),
         Some(credentials),
         Some(simple_tables),
     );
@@ -6061,14 +6857,6 @@ fn resolve_pipeline_registry_scope(
     }
 }
 
-fn parse_assistant_chat_role(raw: &str) -> Option<AssistantLlmRole> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "system" => Some(AssistantLlmRole::System),
-        "assistant" => Some(AssistantLlmRole::Assistant),
-        "user" => Some(AssistantLlmRole::User),
-        _ => None,
-    }
-}
 
 fn session_owner(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
@@ -6398,11 +7186,14 @@ async fn api_get_mcp_session(
             }
         }))
         .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "no active MCP session"})),
-        )
-            .into_response(),
+        None => Json(json!({
+            "ok": true,
+            "session": {
+                "active": false,
+                "capabilities": Vec::<String>::new(),
+            }
+        }))
+        .into_response(),
     }
 }
 
@@ -6445,7 +7236,7 @@ async fn api_create_mcp_session(
     match state
         .platform
         .mcp_sessions
-        .create(&owner, &project, capabilities, &base_url)
+        .create(&owner, &project, capabilities, &base_url, req.auto_reset_seconds)
     {
         Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
         Err(err) => internal_error(err),

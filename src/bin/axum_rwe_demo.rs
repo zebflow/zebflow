@@ -7,7 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("Zebflow Axum RWE demo listening on http://{}", addr);
     println!(
-        "Try routes: / /showcase /recycling /todo /list-hydration /state-sharing /blog /blog/post-a /blog/composed"
+        "Try routes: / /rwe/comprehensive /rwe/dashboard /rwe/frontpage /rwe/lab /showcase /recycling /todo /list-hydration /state-sharing /blog /blog/post-a /blog/composed"
     );
     axum::serve(listener, app).await?;
     Ok(())

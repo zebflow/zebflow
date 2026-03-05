@@ -1,6 +1,7 @@
 //! Platform service layer (auth, user, project, platform bootstrap).
 
 pub mod assistant_config;
+pub mod assistant_tools;
 pub mod auth;
 pub mod authorization;
 pub mod credential;
@@ -15,6 +16,7 @@ pub mod simple_table;
 pub mod user;
 
 pub use assistant_config::AssistantConfigService;
+pub use assistant_tools::AssistantPlatformTools;
 pub use auth::AuthService;
 pub use authorization::AuthorizationService;
 pub use credential::CredentialService;

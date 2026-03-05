@@ -1,4 +1,5 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
+import { initProjectDbConnectionsBehavior } from "@/components/behavior/project-db-connections";
 
 export const page = {
   head: {
@@ -8,7 +9,6 @@ export const page = {
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
     ],
-    scripts: [{ type: "module", src: "/assets/platform/project-db-connections.mjs" }],
   },
   html: {
     lang: "en",
@@ -22,18 +22,31 @@ export const page = {
 export const app = {};
 
 export default function Page(input) {
+  initProjectDbConnectionsBehavior();
+  const connections = Array.isArray(input?.connections) ? input.connections : [];
+  const dbConnectionsRuntime = {
+    owner: input?.owner ?? "",
+    project: input?.project ?? "",
+    api: {
+      list: input?.db_connections?.api?.list ?? "",
+      item_base: input?.db_connections?.api?.item_base ?? "",
+      test: input?.db_connections?.api?.test ?? "",
+      credentials_list: input?.db_connections?.api?.credentials_list ?? "",
+    },
+  };
   return (
 <Page>
     <ProjectStudioShell
-      projectHref="{input.project_href}"
-      projectLabel="{input.title}"
+      projectHref={input.project_href}
+      projectLabel={input.title}
       currentMenu="Databases / Connections"
-      owner="{input.owner}"
-      project="{input.project}"
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
     >
       <div className="project-workspace">
         <nav className="project-tab-strip">
-          <a href="{input.nav.links.db_connections}" className="project-tab-link is-active">Connections</a>
+          <a href={input.nav?.links?.db_connections ?? "#"} className="project-tab-link is-active">Connections</a>
         </nav>
         <section className="project-workspace-body">
           <div className="project-content-wrap">
@@ -46,14 +59,10 @@ export default function Page(input) {
                 <button type="button" className="project-inline-chip project-inline-chip-accent" data-db-connection-create="true">+ New Database Connection</button>
               </div>
             </section>
-            <section className="project-content-section" data-project-db-connections="true"
-              data-owner="{input.owner}"
-              data-project="{input.project}"
-              data-api-list="{input.db_connections.api.list}"
-              data-api-item="{input.db_connections.api.item_base}"
-              data-api-test="{input.db_connections.api.test}"
-              data-api-credentials="{input.db_connections.api.credentials_list}"
-            >
+            <section className="project-content-section" data-project-db-connections="true">
+              <script id="project-db-connections-runtime" type="application/json">
+                {JSON.stringify(dbConnectionsRuntime)}
+              </script>
               <div className="project-content-body">
                 <table className="project-table">
                   <thead>
@@ -67,26 +76,28 @@ export default function Page(input) {
                     </tr>
                   </thead>
                   <tbody data-db-connection-rows="true">
-                    <tr zFor="item in input.connections">
-                      <td>
-                        <span className="db-connection-name">
-                          <i className="zf-devicon {item.icon_class}" aria-hidden="true"></i>
-                          <span>{item.slug}</span>
-                        </span>
-                      </td>
-                      <td>{item.name}</td>
-                      <td>
-                        <span className="db-connection-kind">
-                          <i className="zf-devicon {item.icon_class}" aria-hidden="true"></i>
-                          <span>{item.kind}</span>
-                        </span>
-                      </td>
-                      <td>{item.credential_id || "-"}</td>
-                      <td>{item.updated_at || "-"}</td>
-                      <td>
-                        <a href="{item.path}" className="project-inline-chip">Open</a>
-                      </td>
-                    </tr>
+                    {connections.map((item, index) => (
+                      <tr key={`${item?.slug ?? "conn"}-${index}`}>
+                        <td>
+                          <span className="db-connection-name">
+                            <i className={`zf-devicon ${item.icon_class || ""}`} aria-hidden="true"></i>
+                            <span>{item.slug}</span>
+                          </span>
+                        </td>
+                        <td>{item.name}</td>
+                        <td>
+                          <span className="db-connection-kind">
+                            <i className={`zf-devicon ${item.icon_class || ""}`} aria-hidden="true"></i>
+                            <span>{item.kind}</span>
+                          </span>
+                        </td>
+                        <td>{item.credential_id || "-"}</td>
+                        <td>{item.updated_at || "-"}</td>
+                        <td>
+                          <a href={item.path} className="project-inline-chip">Open</a>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -139,7 +150,7 @@ export default function Page(input) {
 
                   <label className="pipeline-editor-field">
                     <span>Config JSON</span>
-                    <textarea name="config_json" rows="6" placeholder="{ }" data-db-connection-config-json="true"></textarea>
+                    <textarea name="config_json" rows="6" placeholder="JSON config" data-db-connection-config-json="true"></textarea>
                   </label>
 
                   <div className="pipeline-editor-dialog-actions">
@@ -158,7 +169,7 @@ export default function Page(input) {
 
                   <label className="pipeline-editor-field">
                     <span>Credential ID</span>
-                    <input name="credential_id" type="text" readonly data-db-credential-id="true" />
+                    <input name="credential_id" type="text" readOnly data-db-credential-id="true" />
                   </label>
 
                   <label className="pipeline-editor-field">

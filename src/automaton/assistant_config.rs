@@ -18,6 +18,7 @@ pub struct ProjectAssistantLlm {
     pub general: Arc<dyn LlmCall>,
     pub max_steps: u32,
     pub max_replans: u32,
+    pub chat_history_pairs: u32,
 }
 
 /// Load dual LLM for a project from stored credentials.
@@ -71,6 +72,7 @@ pub fn load_project_assistant_llm(
         general,
         max_steps: config.max_steps,
         max_replans: config.max_replans,
+        chat_history_pairs: config.chat_history_pairs,
     })
 }
 

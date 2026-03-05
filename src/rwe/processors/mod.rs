@@ -9,7 +9,7 @@
 //! - `markdown`: Markdown block conversion (`<markdown>...</markdown>`)
 
 use crate::rwe::model::{ReactiveWebDiagnostic, ReactiveWebOptions, StyleEngineMode};
-use markdown::process_markdown;
+use markdown::{process_markdown, process_rwe_md_placeholders};
 use tailwind::process_tailwind;
 
 pub mod markdown;
@@ -51,6 +51,9 @@ pub fn apply_compile_processors(
             }),
         }
     }
+    // Always process <Markdown> component placeholders (data-rwe-md attributes)
+    // regardless of explicit processor list — this is a core RWE feature.
+    out = process_rwe_md_placeholders(&out);
     out
 }
 

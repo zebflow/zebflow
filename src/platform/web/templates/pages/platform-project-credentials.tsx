@@ -1,10 +1,10 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
+import { initProjectCredentialsBehavior } from "@/components/behavior/project-credentials";
 
 export const page = {
   head: {
     title: "{{input.seo.title}}",
     description: "{{input.seo.description}}",
-    scripts: [{ type: "module", src: "/assets/platform/project-credentials.mjs" }],
   },
   html: {
     lang: "en",
@@ -18,14 +18,25 @@ export const page = {
 export const app = {};
 
 export default function Page(input) {
+  initProjectCredentialsBehavior();
+  const credentialsApi = input?.credentials?.api ?? {};
+  const credentialsRuntime = {
+    owner: input?.owner ?? "",
+    project: input?.project ?? "",
+    api: {
+      list: credentialsApi?.list ?? "",
+      item_base: credentialsApi?.item_base ?? "",
+    },
+  };
   return (
 <Page>
     <ProjectStudioShell
-      projectHref="{input.project_href}"
-      projectLabel="{input.title}"
+      projectHref={input.project_href}
+      projectLabel={input.title}
       currentMenu="Credentials"
-      owner="{input.owner}"
-      project="{input.project}"
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
     >
       <div className="project-workspace">
         <nav className="project-tab-strip">
@@ -43,12 +54,10 @@ export default function Page(input) {
               </div>
             </section>
 
-            <section className="project-content-section" data-project-credentials="true"
-              data-owner="{input.owner}"
-              data-project="{input.project}"
-              data-api-list="{input.credentials.api.list}"
-              data-api-item="{input.credentials.api.item_base}"
-            >
+            <section className="project-content-section" data-project-credentials="true">
+              <script id="project-credentials-runtime" type="application/json">
+                {JSON.stringify(credentialsRuntime)}
+              </script>
               <div className="project-content-body">
                 <table className="project-table">
                   <thead>

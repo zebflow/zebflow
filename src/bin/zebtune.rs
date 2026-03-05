@@ -3,7 +3,7 @@
 //! Set env (or .env) for real LLM:
 //!   ZEBTUNE_LLM_PROVIDER=openai|anthropic
 //!   OpenAI/OpenRouter: ZEBTUNE_OPENAI_API_KEY, ZEBTUNE_OPENAI_BASE_URL (default https://api.openai.com/v1), ZEBTUNE_OPENAI_MODEL (default gpt-4o-mini)
-//!   Anthropic: ZEBTUNE_ANTHROPIC_API_KEY, ZEBTUNE_ANTHROPIC_MODEL (default claude-3-5-haiku-20241022)
+//!   Anthropic: ZEBTUNE_ANTHROPIC_API_KEY, ZEBTUNE_ANTHROPIC_MODEL (default claude-3-5-sonnet-20241022)
 
 use std::sync::Arc;
 

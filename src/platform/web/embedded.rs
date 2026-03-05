@@ -12,16 +12,104 @@ pub const PLATFORM_TEMPLATE_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("templates/components/layout/project-studio-shell.tsx"),
     },
     EmbeddedAsset {
+        path: "components/behavior/project-shell.ts",
+        bytes: include_bytes!("templates/components/behavior/project-shell.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/pipeline-editor.ts",
+        bytes: include_bytes!("templates/components/behavior/pipeline-editor.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-credentials.ts",
+        bytes: include_bytes!("templates/components/behavior/project-credentials.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-db-connections.ts",
+        bytes: include_bytes!("templates/components/behavior/project-db-connections.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-db-suite.ts",
+        bytes: include_bytes!("templates/components/behavior/project-db-suite.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-db-suite-postgresql.ts",
+        bytes: include_bytes!("templates/components/behavior/project-db-suite-postgresql.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-db-suite-sjtable.ts",
+        bytes: include_bytes!("templates/components/behavior/project-db-suite-sjtable.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-settings.ts",
+        bytes: include_bytes!("templates/components/behavior/project-settings.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/template-editor.ts",
+        bytes: include_bytes!("templates/components/behavior/template-editor.ts"),
+    },
+    EmbeddedAsset {
+        path: "components/behavior/project-docs.ts",
+        bytes: include_bytes!("templates/components/behavior/project-docs.ts"),
+    },
+    EmbeddedAsset {
         path: "components/platform-sidebar.tsx",
         bytes: include_bytes!("templates/components/platform-sidebar.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/markdown.tsx",
+        bytes: include_bytes!("templates/components/ui/markdown.tsx"),
     },
     EmbeddedAsset {
         path: "components/ui/button.tsx",
         bytes: include_bytes!("templates/components/ui/button.tsx"),
     },
     EmbeddedAsset {
+        path: "components/ui/card.tsx",
+        bytes: include_bytes!("templates/components/ui/card.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/card-header.tsx",
+        bytes: include_bytes!("templates/components/ui/card-header.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/card-title.tsx",
+        bytes: include_bytes!("templates/components/ui/card-title.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/card-description.tsx",
+        bytes: include_bytes!("templates/components/ui/card-description.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/card-content.tsx",
+        bytes: include_bytes!("templates/components/ui/card-content.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/field.tsx",
+        bytes: include_bytes!("templates/components/ui/field.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/input.tsx",
+        bytes: include_bytes!("templates/components/ui/input.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/label.tsx",
+        bytes: include_bytes!("templates/components/ui/label.tsx"),
+    },
+    EmbeddedAsset {
         path: "components/ui/sonner.tsx",
         bytes: include_bytes!("templates/components/ui/sonner.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/hierarchy-tree.tsx",
+        bytes: include_bytes!("templates/components/ui/hierarchy-tree.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/template-folder-tree.tsx",
+        bytes: include_bytes!("templates/components/ui/template-folder-tree.tsx"),
+    },
+    EmbeddedAsset {
+        path: "components/ui/webhook-route-tree.tsx",
+        bytes: include_bytes!("templates/components/ui/webhook-route-tree.tsx"),
     },
     EmbeddedAsset {
         path: "pages/platform-home.tsx",
@@ -36,12 +124,20 @@ pub const PLATFORM_TEMPLATE_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("templates/pages/platform-project-build-templates.tsx"),
     },
     EmbeddedAsset {
+        path: "pages/platform-project-docs.tsx",
+        bytes: include_bytes!("templates/pages/platform-project-docs.tsx"),
+    },
+    EmbeddedAsset {
         path: "pages/platform-project-credentials.tsx",
         bytes: include_bytes!("templates/pages/platform-project-credentials.tsx"),
     },
     EmbeddedAsset {
         path: "pages/platform-project-pipelines.tsx",
         bytes: include_bytes!("templates/pages/platform-project-pipelines.tsx"),
+    },
+    EmbeddedAsset {
+        path: "pages/platform-project-pipelines-registry.tsx",
+        bytes: include_bytes!("templates/pages/platform-project-pipelines-registry.tsx"),
     },
     EmbeddedAsset {
         path: "pages/platform-project-section.tsx",
@@ -269,6 +365,28 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/threejs-vrm/0.1/wrappers/VrmViewer.tsx",
         bytes: include_bytes!("../../../libraries/zeb/threejs-vrm/0.1/wrappers/VrmViewer.tsx"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/library.json",
+        bytes: include_bytes!("../../../libraries/zeb/markdown/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/exports.json",
+        bytes: include_bytes!("../../../libraries/zeb/markdown/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/keywords.json",
+        bytes: include_bytes!("../../../libraries/zeb/markdown/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/runtime/markdown.bundle.mjs",
+        bytes: include_bytes!(
+            "../../../libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"
+        ),
+    },
+    EmbeddedAsset {
+        path: "zeb/markdown/0.1/wrappers/Markdown.tsx",
+        bytes: include_bytes!("../../../libraries/zeb/markdown/0.1/wrappers/Markdown.tsx"),
     },
 ];
 

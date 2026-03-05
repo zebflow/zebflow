@@ -10,8 +10,9 @@ use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateSimpleTableRequest, ProjectFileLayout, SimpleTableDefinition, SimpleTableQueryRequest,
-    SimpleTableQueryResult, UpsertSimpleTableRowRequest, now_ts, slug_segment,
+    CollectionAttribute, CreateSimpleTableRequest, ProjectFileLayout, SimpleTableDefinition,
+    SimpleTableQueryRequest, SimpleTableQueryResult, UpsertSimpleTableRowRequest, now_ts,
+    slug_segment,
 };
 
 const SIMPLE_TABLE_META_COLLECTION: &str = "sjtable_meta";
@@ -72,14 +73,15 @@ impl SimpleTableService {
         }
 
         let collection = simple_table_collection_name(&table);
-        let hash_indexed_fields = normalize_field_list(&req.hash_indexed_fields);
-        let range_indexed_fields = normalize_field_list(&req.range_indexed_fields);
+        let (hash_indexed_fields, range_indexed_fields, fulltext_fields, vector_fields, spatial_fields) =
+            derive_index_fields(&req.attributes, &req.hash_indexed_fields, &req.range_indexed_fields);
+        let attributes = &req.attributes;
         let schema = json!({
-            "vector_fields": [],
-            "spatial_fields": [],
-            "fulltext_fields": [],
             "hash_indexed_fields": hash_indexed_fields,
             "range_indexed_fields": range_indexed_fields,
+            "fulltext_fields": fulltext_fields,
+            "vector_fields": vector_fields,
+            "spatial_fields": spatial_fields,
         });
         db.schema()
             .define(&collection, &schema.to_string())
@@ -93,8 +95,12 @@ impl SimpleTableService {
             "table": table,
             "title": req.title.as_deref().unwrap_or_default(),
             "collection": collection,
+            "attributes": attributes,
             "hash_indexed_fields": hash_indexed_fields,
             "range_indexed_fields": range_indexed_fields,
+            "fulltext_fields": fulltext_fields,
+            "vector_fields": vector_fields,
+            "spatial_fields": spatial_fields,
             "created_at": now,
             "updated_at": now,
         });
@@ -341,8 +347,12 @@ fn simple_table_definition_from_meta(
             .unwrap_or(&table)
             .to_string(),
         collection,
+        attributes: attribute_vec(row.get("attributes")),
         hash_indexed_fields: string_vec(row.get("hash_indexed_fields")),
         range_indexed_fields: string_vec(row.get("range_indexed_fields")),
+        fulltext_fields: string_vec(row.get("fulltext_fields")),
+        vector_fields: string_vec(row.get("vector_fields")),
+        spatial_fields: string_vec(row.get("spatial_fields")),
         row_count,
         created_at: row.get("created_at").and_then(Value::as_i64).unwrap_or(0),
         updated_at: row.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
@@ -351,6 +361,49 @@ fn simple_table_definition_from_meta(
 
 fn simple_table_collection_name(table: &str) -> String {
     format!("{SIMPLE_TABLE_COLLECTION_PREFIX}{table}")
+}
+
+/// Derives the five Sekejap index field lists from the attribute schema.
+/// When attributes are empty falls back to the explicit hash/range lists.
+fn derive_index_fields(
+    attributes: &[CollectionAttribute],
+    fallback_hash: &[String],
+    fallback_range: &[String],
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    if attributes.is_empty() {
+        return (
+            normalize_field_list(fallback_hash),
+            normalize_field_list(fallback_range),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+    let mut hash: Vec<String> = Vec::new();
+    let mut range: Vec<String> = Vec::new();
+    let mut fulltext: Vec<String> = Vec::new();
+    let mut vector: Vec<String> = Vec::new();
+    let mut spatial: Vec<String> = Vec::new();
+    for attr in attributes {
+        let name = slug_segment(&attr.name);
+        if name.is_empty() {
+            continue;
+        }
+        for idx in &attr.index_types {
+            let target = match idx.as_str() {
+                "hash" => &mut hash,
+                "range" => &mut range,
+                "fulltext" => &mut fulltext,
+                "vector" => &mut vector,
+                "spatial" => &mut spatial,
+                _ => continue,
+            };
+            if !target.contains(&name) {
+                target.push(name.clone());
+            }
+        }
+    }
+    (hash, range, fulltext, vector, spatial)
 }
 
 fn normalize_field_list(input: &[String]) -> Vec<String> {
@@ -372,6 +425,28 @@ fn string_vec(value: Option<&Value>) -> Vec<String> {
         .iter()
         .filter_map(Value::as_str)
         .map(ToString::to_string)
+        .collect()
+}
+
+fn attribute_vec(value: Option<&Value>) -> Vec<CollectionAttribute> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            let kind = item
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("string")
+                .to_string();
+            let index_types = string_vec(item.get("index_types"));
+            Some(CollectionAttribute { name, kind, index_types })
+        })
         .collect()
 }
 

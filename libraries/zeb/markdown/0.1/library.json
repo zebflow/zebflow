@@ -1,0 +1,24 @@
+{
+  "name": "zeb/markdown",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "source": {
+    "provider": "zebflow",
+    "package": "marked+dompurify",
+    "package_version": "marked@15+dompurify@3",
+    "entry": "runtime/markdown.bundle.mjs"
+  },
+  "exports": {
+    "raw": ["renderMarkdown", "marked", "DOMPurify"],
+    "wrappers": ["Markdown"]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/markdown.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

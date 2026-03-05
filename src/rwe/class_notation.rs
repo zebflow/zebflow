@@ -18,12 +18,8 @@
 pub(crate) struct TypedClassSlot {
     /// Byte index right after the closing `}`.
     pub end: usize,
-    /// Placeholder path.
-    pub path: String,
-    /// Allowed option values.
+    /// Allowed option values (includes the default= value when present).
     pub options: Vec<String>,
-    /// Optional default option value.
-    pub default: Option<String>,
 }
 
 /// Parses a typed class slot starting at `start`.
@@ -46,7 +42,6 @@ pub(crate) fn parse_typed_class_slot(input: &str, start: usize) -> Option<TypedC
     }
 
     let mut options: Vec<String> = Vec::new();
-    let mut default = None::<String>;
     for segment in parts.iter().skip(1) {
         let seg = segment.trim();
         if seg.is_empty() {
@@ -54,7 +49,6 @@ pub(crate) fn parse_typed_class_slot(input: &str, start: usize) -> Option<TypedC
         }
         if let Some(rhs) = seg.strip_prefix("default=") {
             let value = parse_slot_option(rhs.trim())?;
-            default = Some(value.clone());
             if !options
                 .iter()
                 .any(|existing| normalize_value(existing) == normalize_value(&value))
@@ -72,9 +66,7 @@ pub(crate) fn parse_typed_class_slot(input: &str, start: usize) -> Option<TypedC
 
     Some(TypedClassSlot {
         end: body_end + 1,
-        path: path.to_string(),
         options,
-        default,
     })
 }
 
@@ -96,73 +88,6 @@ pub(crate) fn extract_tailwind_tokens_from_class_value(class_value: &str) -> Vec
         }
     }
     out
-}
-
-/// Collects unresolved (untyped) `{{...}}` placeholders from class attributes.
-pub(crate) fn collect_untyped_placeholders_from_class_value(class_value: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cursor = 0usize;
-    while cursor < class_value.len() {
-        if let Some(slot) = parse_typed_class_slot(class_value, cursor) {
-            cursor = slot.end;
-            continue;
-        }
-        if class_value[cursor..].starts_with("{{") {
-            let expr_start = cursor + 2;
-            let Some(end_rel) = class_value[expr_start..].find("}}") else {
-                break;
-            };
-            let expr_end = expr_start + end_rel;
-            let expr = class_value[expr_start..expr_end].trim();
-            if expr.is_empty() {
-                out.push("{{}}".to_string());
-            } else {
-                out.push(format!("{{{{{expr}}}}}"));
-            }
-            cursor = expr_end + 2;
-            continue;
-        }
-        let Some(ch) = class_value[cursor..].chars().next() else {
-            break;
-        };
-        cursor += ch.len_utf8();
-    }
-    out
-}
-
-/// Resolves typed class slots using caller-provided path lookup.
-pub(crate) fn resolve_typed_class_macros<F>(input: &str, mut resolve_path: F) -> String
-where
-    F: FnMut(&str) -> Option<String>,
-{
-    let mut out = String::with_capacity(input.len());
-    let mut cursor = 0usize;
-    while cursor < input.len() {
-        if let Some(slot) = parse_typed_class_slot(input, cursor) {
-            let selected = resolve_path(&slot.path)
-                .and_then(|value| select_slot_option(&slot, &value))
-                .or_else(|| slot.default.clone())
-                .unwrap_or_default();
-            out.push_str(&selected);
-            cursor = slot.end;
-            continue;
-        }
-        let Some(ch) = input[cursor..].chars().next() else {
-            break;
-        };
-        let next = cursor + ch.len_utf8();
-        out.push_str(&input[cursor..next]);
-        cursor = next;
-    }
-    out
-}
-
-fn select_slot_option(slot: &TypedClassSlot, value: &str) -> Option<String> {
-    let wanted = normalize_value(value);
-    slot.options
-        .iter()
-        .find(|option| normalize_value(option) == wanted)
-        .cloned()
 }
 
 fn expand_class_pattern(pattern: &str) -> Vec<String> {

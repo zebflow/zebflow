@@ -250,4 +250,21 @@ impl DataAdapter for SqliteDataAdapter {
             "sqlite adapter not implemented",
         ))
     }
+
+    fn list_all_mcp_sessions(
+        &self,
+    ) -> Result<Vec<crate::platform::model::McpSession>, PlatformError> {
+        Ok(vec![])
+    }
+
+    fn put_mcp_session(
+        &self,
+        _session: &crate::platform::model::McpSession,
+    ) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
+    fn delete_mcp_session(&self, _token: &str) -> Result<(), PlatformError> {
+        Ok(())
+    }
 }

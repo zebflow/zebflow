@@ -224,7 +224,7 @@ pub fn client_from_env() -> Option<Arc<dyn LlmClient>> {
     if provider == "anthropic" {
         let api_key = std::env::var("ZEBTUNE_ANTHROPIC_API_KEY").ok()?;
         let model = std::env::var("ZEBTUNE_ANTHROPIC_MODEL")
-            .unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string());
+            .unwrap_or_else(|_| "claude-3-5-sonnet-20241022".to_string());
         return Some(Arc::new(AnthropicClient {
             http,
             api_key,

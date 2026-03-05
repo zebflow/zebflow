@@ -17,20 +17,26 @@ export const page = {
 export const app = {};
 
 export default function Page(input) {
+  const navLinks = input?.nav?.links ?? {};
+  const navClasses = input?.nav?.classes ?? {};
+  const items = Array.isArray(input?.items) ? input.items : [];
+  const docs = input?.docs ?? {};
+  const docItems = Array.isArray(docs?.items) ? docs.items : [];
   return (
 <Page>
     <ProjectStudioShell
-      projectHref="{input.project_href}"
-      projectLabel="{input.title}"
-      currentMenu="{input.current_menu}"
-      owner="{input.owner}"
-      project="{input.project}"
+      projectHref={input.project_href}
+      projectLabel={input.title}
+      currentMenu={input.current_menu}
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
     >
       <div className="project-workspace">
         <nav className="project-tab-strip">
-          <a href="{input.nav.links.build_templates}" className="project-tab-link {input.nav.classes.build_templates}">Templates</a>
-          <a href="{input.nav.links.build_assets}" className="project-tab-link {input.nav.classes.build_assets}">Assets</a>
-          <a href="{input.nav.links.build_docs}" className="project-tab-link {input.nav.classes.build_docs}">Docs</a>
+          <a href={navLinks.build_templates ?? "#"} className={`project-tab-link ${navClasses.build_templates || ""}`}>Templates</a>
+          <a href={navLinks.build_assets ?? "#"} className={`project-tab-link ${navClasses.build_assets || ""}`}>Assets</a>
+          <a href={navLinks.build_docs ?? "#"} className={`project-tab-link ${navClasses.build_docs || ""}`}>Docs</a>
         </nav>
 
         <section className="project-workspace-body">
@@ -41,21 +47,24 @@ export default function Page(input) {
                   <p className="project-content-title">{input.page_title}</p>
                   <p className="project-content-copy">{input.page_subtitle}</p>
                 </div>
-                <a href="{input.primary_action.href}" className="project-inline-chip">{input.primary_action.label}</a>
+                <a href={input?.primary_action?.href ?? "#"} className="project-inline-chip">{input?.primary_action?.label}</a>
               </div>
             </section>
             <section className="project-content-section">
               <div className="project-content-body">
                 <div className="project-card-grid cols-3">
-                  <article zFor="item in input.items" className="project-card">
-                    <h3 className="project-card-title">{item.title}</h3>
-                    <p className="project-card-copy">{item.description}</p>
-                  </article>
+                  {items.map((item, index) => (
+                    <article key={`${item?.title ?? "item"}-${index}`} className="project-card">
+                      <h3 className="project-card-title">{item?.title}</h3>
+                      <p className="project-card-copy">{item?.description}</p>
+                    </article>
+                  ))}
                 </div>
               </div>
             </section>
 
-            <section zShow="input.docs.enabled" className="project-content-section">
+            {docs?.enabled ? (
+            <section className="project-content-section">
               <div className="project-content-head">
                 <div>
                   <p className="project-content-title">Project Docs</p>
@@ -67,25 +76,28 @@ export default function Page(input) {
                   <aside className="project-surface-panel">
                     <div className="project-surface-panel-head">Files</div>
                     <div className="project-list">
-                      <a zFor="doc in input.docs.items" href="{doc.href}" className="project-list-item">
-                        <p className="project-list-title">{doc.name}</p>
-                        <p className="project-card-meta">{doc.kind} • {doc.path}</p>
-                      </a>
+                      {docItems.map((doc, index) => (
+                        <a key={`${doc?.path ?? "doc"}-${index}`} href={doc?.href ?? "#"} className="project-list-item">
+                          <p className="project-list-title">{doc?.name}</p>
+                          <p className="project-card-meta">{doc?.kind} | {doc?.path}</p>
+                        </a>
+                      ))}
                     </div>
                   </aside>
                   <article className="project-surface-panel">
                     <div className="project-surface-panel-head">Context</div>
-                    <p className="project-card-meta">selected: {input.docs.selected_path}</p>
-                    <pre className="db-suite-pre">{input.docs.selected_content}</pre>
+                    <p className="project-card-meta">selected: {docs?.selected_path}</p>
+                    <pre className="db-suite-pre">{docs?.selected_content}</pre>
                   </article>
                 </div>
                 <article className="project-card">
                   <h3 className="project-card-title">Create Doc Operation</h3>
                   <p className="project-card-copy">Operation id: create_project_doc</p>
-                  <p className="project-card-meta">POST {input.docs.api.create} {"{ path, content }"}</p>
+                  <p className="project-card-meta">POST {docs?.api?.create} {"{ path, content }"}</p>
                 </article>
               </div>
             </section>
+            ) : null}
           </div>
         </section>
       </div>

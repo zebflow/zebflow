@@ -12,6 +12,7 @@ dist/
 .claude/
 .gemini/
 .playwright-mcp/
+.playwright*
 
 # env (API keys)
 .env
@@ -19,6 +20,7 @@ dist/
 
 # local runtime data
 .*platform-data/
+.zebflow-platform-data*
 *.cookies
 
 # logs / temp
@@ -34,3 +36,5 @@ integrations/website/index.html
 
 # local codex memory
 .codex-local/
+.disposed
+output

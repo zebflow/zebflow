@@ -81,7 +81,7 @@ impl PipelineHitsService {
 
     pub fn record_success(&self, owner: &str, project: &str, file_rel_path: &str) {
         let key = hit_key(owner, project, file_rel_path);
-        let mut rows = self.rows.write().expect("pipeline hits write lock");
+        let mut rows = self.rows.write().unwrap_or_else(|e| e.into_inner());
         let row = rows
             .entry(key)
             .or_insert_with(|| PipelineHitStatsRow::new(owner, project, file_rel_path));
@@ -99,7 +99,7 @@ impl PipelineHitsService {
         message: &str,
     ) {
         let key = hit_key(owner, project, file_rel_path);
-        let mut rows = self.rows.write().expect("pipeline hits write lock");
+        let mut rows = self.rows.write().unwrap_or_else(|e| e.into_inner());
         let row = rows
             .entry(key)
             .or_insert_with(|| PipelineHitStatsRow::new(owner, project, file_rel_path));
@@ -118,7 +118,7 @@ impl PipelineHitsService {
 
     pub fn get(&self, owner: &str, project: &str, file_rel_path: &str) -> PipelineHitStats {
         let key = hit_key(owner, project, file_rel_path);
-        let rows = self.rows.read().expect("pipeline hits read lock");
+        let rows = self.rows.read().unwrap_or_else(|e| e.into_inner());
         rows.get(&key)
             .cloned()
             .unwrap_or_else(|| PipelineHitStatsRow::new(owner, project, file_rel_path))
@@ -128,7 +128,7 @@ impl PipelineHitsService {
     pub fn list_project(&self, owner: &str, project: &str) -> Vec<PipelineHitStats> {
         let owner = crate::platform::model::slug_segment(owner);
         let project = crate::platform::model::slug_segment(project);
-        let rows = self.rows.read().expect("pipeline hits read lock");
+        let rows = self.rows.read().unwrap_or_else(|e| e.into_inner());
         let mut items = rows
             .values()
             .filter(|row| row.owner == owner && row.project == project)

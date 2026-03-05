@@ -18,7 +18,7 @@ use crate::framework::nodes::basic::{
 use crate::framework::nodes::{FrameworkNode, NodeExecutionInput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::{CredentialService, SimpleTableService};
-use crate::rwe::{NoopReactiveWebEngine, ReactiveWebEngine};
+use crate::rwe::{ReactiveWebEngine, resolve_engine_or_default};
 
 /// Main framework engine used for real pipeline execution.
 pub struct BasicFrameworkEngine {
@@ -30,9 +30,10 @@ pub struct BasicFrameworkEngine {
 
 impl Default for BasicFrameworkEngine {
     fn default() -> Self {
+        let rwe_engine_id = std::env::var("ZEBFLOW_RWE_ENGINE_ID").ok();
         Self {
             language: Arc::new(DenoSandboxEngine::default()),
-            rwe: Arc::new(NoopReactiveWebEngine),
+            rwe: resolve_engine_or_default(rwe_engine_id.as_deref()),
             credentials: None,
             simple_tables: None,
         }

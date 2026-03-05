@@ -87,6 +87,7 @@ impl FileAdapter for FilesystemFileAdapter {
         let app_templates_dir = app_dir.join("templates");
         let app_components_dir = app_dir.join("components");
         let app_docs_dir = app_dir.join("docs");
+        let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
         for dir in [
             &root,
@@ -101,6 +102,7 @@ impl FileAdapter for FilesystemFileAdapter {
             &app_templates_dir,
             &app_components_dir,
             &app_docs_dir,
+            &agent_docs_dir,
         ] {
             fs::create_dir_all(dir)?;
         }
@@ -129,6 +131,7 @@ impl FileAdapter for FilesystemFileAdapter {
             app_templates_dir,
             app_components_dir,
             app_docs_dir,
+            agent_docs_dir,
         })
     }
 }

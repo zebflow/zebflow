@@ -173,7 +173,7 @@ pub const OPERATIONS: &[OperationSpec] = &[
         capability: ProjectCapability::SettingsWrite,
         method: "PUT",
         path: "/api/projects/{owner}/{project}/assistant/config",
-        params_schema: r#"{"llm_high_credential_id":"string?","llm_general_credential_id":"string?","max_steps":"number?","max_replans":"number?","enabled":"bool?"}"#,
+        params_schema: r#"{"llm_high_credential_id":"string?","llm_general_credential_id":"string?","max_steps":"number?","max_replans":"number?","enabled":"bool?","chat_history_pairs":"number?"}"#,
     },
     OperationSpec {
         id: "project_assistant_chat",

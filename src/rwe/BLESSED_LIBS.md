@@ -51,7 +51,7 @@ catalog decisions and slows down.
    should not own a product-specific library catalog.
 
 3. **Runtime**  
-   After HTML is delivered, the RWE runtime (`rwe-runtime.js`) mounts the control script, binds `@click` / `z-text` / `z-model` etc., and discovers `[hydrate]` islands. There is no built-in “library init” hook; the only extension point is the page’s control script (state/actions/memo/effect).
+   After HTML is delivered, the RWE runtime mounts the control script from `export const app` and discovers `[hydrate]` islands. There is no built-in "library init" hook; the only extension point is the page's control script (state/actions/memo/effect).
 
 4. **Runtime bundle precedent**  
    The RWE runtime is injected as inline script via `RuntimeBundle { name,

@@ -17,14 +17,16 @@ export const page = {
 export const app = {};
 
 export default function Page(input) {
+  const cards = Array.isArray(input?.cards) ? input.cards : [];
   return (
 <Page>
     <ProjectStudioShell
-      projectHref="{input.project_href}"
-      projectLabel="{input.title}"
-      currentMenu="{input.current_menu}"
-      owner="{input.owner}"
-      project="{input.project}"
+      projectHref={input.project_href}
+      projectLabel={input.title}
+      currentMenu={input.current_menu}
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
     >
       <div className="project-workspace">
         <div className="project-tab-strip"></div>
@@ -41,15 +43,17 @@ export default function Page(input) {
             <section className="project-content-section">
               <div className="project-content-body">
                 <div className="project-card-grid cols-2">
-                  <a zFor="item in input.cards" href="{item.href}" className="project-card block">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="project-card-title">{item.title}</h3>
-                        <p className="project-card-copy">{item.description}</p>
+                  {cards.map((item, index) => (
+                    <a key={`${item?.href ?? "card"}-${index}`} href={item?.href ?? "#"} className="project-card block">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="project-card-title">{item?.title}</h3>
+                          <p className="project-card-copy">{item?.description}</p>
+                        </div>
+                        {item?.tag ? <span className="project-inline-chip">{item.tag}</span> : null}
                       </div>
-                      <span zShow="item.tag" className="project-inline-chip">{item.tag}</span>
-                    </div>
-                  </a>
+                    </a>
+                  ))}
                 </div>
               </div>
             </section>

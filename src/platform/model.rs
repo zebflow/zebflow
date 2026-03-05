@@ -202,6 +202,8 @@ pub struct ProjectAssistantConfig {
     pub max_replans: u32,
     /// Whether assistant is enabled for this project.
     pub enabled: bool,
+    /// Number of user+assistant pairs to persist as server-side chat history (default 10).
+    pub chat_history_pairs: u32,
     /// Unix timestamp seconds.
     pub updated_at: i64,
 }
@@ -440,6 +442,15 @@ pub struct ProjectDocItem {
     pub name: String,
     /// "file" or "folder".
     pub kind: String,
+}
+
+/// One agent doc entry (AGENTS.md, SOUL.md, MEMORY.md).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentDocItem {
+    /// File name (e.g. "AGENTS.md").
+    pub name: String,
+    /// Whether the user can edit this doc via REST (false for MEMORY.md — agent-only).
+    pub user_editable: bool,
 }
 
 /// One breadcrumb segment in pipeline registry.
@@ -692,6 +703,18 @@ pub struct TemplateCompileResponse {
     pub diagnostics: Vec<TemplateDiagnostic>,
 }
 
+/// One attribute definition in a Simple Table collection schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CollectionAttribute {
+    /// Field name (slug).
+    pub name: String,
+    /// Data kind: `string` | `number` | `boolean` | `text` | `json` | `vector` | `geo`.
+    pub kind: String,
+    /// Active index types: `hash` | `range` | `fulltext` | `vector` | `spatial`.
+    #[serde(default)]
+    pub index_types: Vec<String>,
+}
+
 /// One managed Simple Table definition stored inside the project runtime DB.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SimpleTableDefinition {
@@ -701,10 +724,24 @@ pub struct SimpleTableDefinition {
     pub title: String,
     /// Backing Sekejap collection name.
     pub collection: String,
-    /// Hash indexed payload fields.
+    /// Attribute schema definitions.
+    #[serde(default)]
+    pub attributes: Vec<CollectionAttribute>,
+    /// Hash indexed payload fields (exact equality).
+    #[serde(default)]
     pub hash_indexed_fields: Vec<String>,
-    /// Range indexed payload fields.
+    /// Range indexed payload fields (ordered scans).
+    #[serde(default)]
     pub range_indexed_fields: Vec<String>,
+    /// Full-text indexed payload fields.
+    #[serde(default)]
+    pub fulltext_fields: Vec<String>,
+    /// Vector indexed payload fields (semantic similarity).
+    #[serde(default)]
+    pub vector_fields: Vec<String>,
+    /// Spatial indexed payload fields (geo queries).
+    #[serde(default)]
+    pub spatial_fields: Vec<String>,
     /// Live row count.
     pub row_count: usize,
     /// Unix timestamp seconds.
@@ -759,6 +796,8 @@ pub struct UpsertProjectAssistantConfigRequest {
     pub max_replans: Option<u32>,
     /// Whether assistant is enabled for this project.
     pub enabled: Option<bool>,
+    /// Number of user+assistant pairs to persist as server-side chat history.
+    pub chat_history_pairs: Option<u32>,
 }
 
 /// Test payload for one project DB connection (existing or draft).
@@ -888,6 +927,9 @@ pub struct CreateSimpleTableRequest {
     pub table: String,
     /// Optional display title.
     pub title: Option<String>,
+    /// Attribute schema definitions.
+    #[serde(default)]
+    pub attributes: Vec<CollectionAttribute>,
     /// Hash indexed payload fields.
     #[serde(default)]
     pub hash_indexed_fields: Vec<String>,
@@ -964,6 +1006,8 @@ pub struct ProjectFileLayout {
     pub app_components_dir: PathBuf,
     /// `.../app/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
     pub app_docs_dir: PathBuf,
+    /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
+    pub agent_docs_dir: PathBuf,
 }
 
 /// Request payload for user creation.
@@ -1063,7 +1107,7 @@ pub fn normalize_virtual_path(raw: &str) -> String {
     }
 }
 
-/// MCP session record (in-memory, per-project).
+/// MCP session record (in-memory and persisted per-project).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpSession {
     /// Owner identifier.
@@ -1074,6 +1118,12 @@ pub struct McpSession {
     pub capabilities: Vec<ProjectCapability>,
     /// Opaque session token.
     pub token: String,
+    /// Unix timestamp seconds when session was created.
+    #[serde(default)]
+    pub created_at: i64,
+    /// Optional seconds after which this session auto-expires.
+    #[serde(default)]
+    pub auto_reset_seconds: Option<u64>,
 }
 
 /// Request to create an MCP session for a project.
@@ -1081,6 +1131,9 @@ pub struct McpSession {
 pub struct McpSessionCreateRequest {
     /// Capabilities to allow for this session (can be specified as strings or capability keys).
     pub capabilities: Vec<String>,
+    /// Optional seconds after which this session auto-expires (None = no expiry).
+    #[serde(default)]
+    pub auto_reset_seconds: Option<u64>,
 }
 
 /// Response after creating an MCP session.
@@ -1127,6 +1180,8 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "list_project_docs" => Some(ProjectCapability::ProjectRead),
         "read_project_doc" => Some(ProjectCapability::ProjectRead),
         "create_project_doc" => Some(ProjectCapability::FilesWrite),
+        "list_skills" => Some(ProjectCapability::ProjectRead),
+        "read_skill" => Some(ProjectCapability::ProjectRead),
         _ => None,
     }
 }

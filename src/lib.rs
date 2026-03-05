@@ -25,7 +25,7 @@ use framework::{
     BasicFrameworkEngine, FrameworkEngine, FrameworkEngineRegistry, NoopFrameworkEngine,
 };
 use language::{DenoSandboxEngine, LanguageEngine, LanguageEngineRegistry, NoopLanguageEngine};
-use rwe::{NoopReactiveWebEngine, ReactiveWebEngine, ReactiveWebEngineRegistry};
+use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
 
 /// Ready-to-use set of engine registries for framework/language/rwe modules.
 ///
@@ -50,7 +50,7 @@ impl ZebflowEngineKit {
     /// - `framework.noop`
     /// - `language.deno_sandbox`
     /// - `language.noop`
-    /// - `rwe.noop`
+    /// - `rwe`
     /// - `automaton.noop`
     pub fn with_defaults() -> Self {
         let mut automaton = AutomatonEngineRegistry::new();
@@ -65,7 +65,7 @@ impl ZebflowEngineKit {
         language.register(Arc::new(NoopLanguageEngine::default()));
 
         let mut rwe = ReactiveWebEngineRegistry::new();
-        rwe.register(Arc::new(NoopReactiveWebEngine::default()));
+        rwe.register(Arc::new(RweReactiveWebEngine::default()));
 
         Self {
             automaton,

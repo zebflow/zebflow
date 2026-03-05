@@ -22,6 +22,14 @@ impl UserService {
         self.data.list_users()
     }
 
+    /// Gets one user profile by owner id.
+    pub fn get_user(&self, owner: &str) -> Result<Option<PlatformUser>, PlatformError> {
+        Ok(self
+            .data
+            .get_user_auth(owner)?
+            .map(|stored| stored.profile))
+    }
+
     /// Creates or updates one user.
     pub fn create_or_update_user(
         &self,

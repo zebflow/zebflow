@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Router;
 use axum::extract::{Query, State};
@@ -16,8 +17,8 @@ use serde_json::{Value, json};
 
 use crate::language::{LanguageEngine, NoopLanguageEngine};
 use crate::rwe::{
-    CompiledTemplate, ComponentOptions, NoopReactiveWebEngine, ReactiveWebEngine,
-    ReactiveWebOptions, RenderContext, ResourceAllowList, TemplateSource,
+    CompiledTemplate, ComponentOptions, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
+    ResourceAllowList, TemplateSource, resolve_engine_or_default,
 };
 
 const LUCIDE_SCRIPT_URL: &str = "https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js";
@@ -28,6 +29,7 @@ pub struct DemoAppState {
     rwe: Arc<dyn ReactiveWebEngine>,
     language: Arc<dyn LanguageEngine>,
     pages: Arc<BTreeMap<&'static str, CompiledTemplate>>,
+    page_compile_us: Arc<BTreeMap<&'static str, u128>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +42,9 @@ pub fn build_demo_router() -> Result<Router, String> {
     let state = build_demo_state()?;
     Ok(Router::new()
         .route("/", get(route_home))
+        .route("/rwe/comprehensive", get(route_rwe_comprehensive))
+        .route("/rwe/dashboard", get(route_rwe_dashboard))
+        .route("/rwe/frontpage", get(route_rwe_frontpage))
         .route("/recycling", get(route_recycling))
         .route("/showcase", get(route_showcase))
         .route("/todo", get(route_todo))
@@ -48,110 +53,116 @@ pub fn build_demo_router() -> Result<Router, String> {
         .route("/blog", get(route_blog_home))
         .route("/blog/post-a", get(route_blog_post))
         .route("/blog/composed", get(route_blog_composed))
+        .route("/rwe/lab", get(route_rwe_lab))
         .with_state(state))
 }
 
 fn build_demo_state() -> Result<DemoAppState, String> {
-    let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(NoopReactiveWebEngine);
+    let rwe_engine_id = std::env::var("ZEBFLOW_RWE_DEMO_ENGINE_ID").ok();
+    let rwe: Arc<dyn ReactiveWebEngine> = resolve_engine_or_default(rwe_engine_id.as_deref());
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
 
     let options = options_with_components();
     let mut pages = BTreeMap::new();
-    pages.insert(
+    let mut page_compile_us = BTreeMap::new();
+    let mut insert_compiled_page = |key: &'static str,
+                                    page_id: &str,
+                                    markup: &str,
+                                    options: ReactiveWebOptions|
+     -> Result<(), String> {
+        let started = Instant::now();
+        let compiled = compile_page(rwe.as_ref(), language.as_ref(), page_id, markup, options)?;
+        page_compile_us.insert(key, started.elapsed().as_micros());
+        pages.insert(key, compiled);
+        Ok(())
+    };
+
+    insert_compiled_page(
         "home",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.home",
-            include_str!("../../docs/conventions/templates/pages/home.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.home",
+        include_str!("demo/templates/pages/rwe-counter.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "recycling-nature",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.recycling-nature",
-            include_str!("../../docs/conventions/templates/pages/recycling-nature.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.recycling-nature",
+        include_str!("demo/templates/pages/recycling-nature.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "zebflow-showcase",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.zebflow-showcase",
-            include_str!("../../docs/conventions/templates/pages/zebflow-showcase.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.zebflow-showcase",
+        include_str!("demo/templates/pages/zebflow-showcase.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "todo",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.todo",
-            include_str!("../../docs/conventions/templates/pages/todo.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.todo",
+        include_str!("demo/templates/pages/rwe-todo.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
+        "rwe-comprehensive",
+        "page.rwe-comprehensive",
+        include_str!("demo/templates/pages/rwe-comprehensive.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
+        "rwe-dashboard",
+        "page.rwe-dashboard",
+        include_str!("demo/templates/pages/rwe-dashboard.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
+        "rwe-frontpage",
+        "page.rwe-frontpage",
+        include_str!("demo/templates/pages/rwe-frontpage.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "list-hydration",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.list-hydration",
-            include_str!("../../docs/conventions/templates/pages/list-hydration.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.list-hydration",
+        include_str!("demo/templates/pages/list-hydration.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "state-sharing",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.state-sharing",
-            include_str!("../../docs/conventions/templates/pages/state-sharing-composed.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.state-sharing",
+        include_str!("demo/templates/pages/state-sharing-composed.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "blog-home",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.blog-home",
-            include_str!("../../docs/conventions/templates/pages/blog-home.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.blog-home",
+        include_str!("demo/templates/pages/blog-home.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "blog-post",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.blog-post",
-            include_str!("../../docs/conventions/templates/pages/blog-post.tsx"),
-            options.clone(),
-        )?,
-    );
-    pages.insert(
+        "page.blog-post",
+        include_str!("demo/templates/pages/blog-post.tsx"),
+        options.clone(),
+    )?;
+    insert_compiled_page(
         "blog-composed",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "page.blog-composed",
-            include_str!("../../docs/conventions/templates/pages/blog-home-composed.tsx"),
-            options,
-        )?,
-    );
+        "page.blog-composed",
+        include_str!("demo/templates/pages/blog-home-composed.tsx"),
+        options.clone(),
+    )?;
+    if let Err(err) = insert_compiled_page(
+        "rwe-lab",
+        "page.rwe-lab",
+        include_str!("demo/templates/pages/rwe-lab.tsx"),
+        options,
+    ) {
+        eprintln!("skip optional demo page 'rwe-lab': {err}");
+    }
 
     Ok(DemoAppState {
         rwe,
         language,
         pages: Arc::new(pages),
+        page_compile_us: Arc::new(page_compile_us),
     })
 }
 
@@ -159,31 +170,31 @@ fn options_with_components() -> ReactiveWebOptions {
     let mut registry = BTreeMap::new();
     registry.insert(
         "BlogHeader".to_string(),
-        include_str!("../../docs/conventions/templates/components/blog-header.tsx").to_string(),
+        include_str!("demo/templates/components/blog-header.tsx").to_string(),
     );
     registry.insert(
         "BlogHero".to_string(),
-        include_str!("../../docs/conventions/templates/components/blog-hero.tsx").to_string(),
+        include_str!("demo/templates/components/blog-hero.tsx").to_string(),
     );
     registry.insert(
         "TreeA".to_string(),
-        include_str!("../../docs/conventions/templates/components/tree-a.tsx").to_string(),
+        include_str!("demo/templates/components/tree-a.tsx").to_string(),
     );
     registry.insert(
         "TreeB".to_string(),
-        include_str!("../../docs/conventions/templates/components/tree-b.tsx").to_string(),
+        include_str!("demo/templates/components/tree-b.tsx").to_string(),
     );
     registry.insert(
         "TreeC".to_string(),
-        include_str!("../../docs/conventions/templates/components/tree-c.tsx").to_string(),
+        include_str!("demo/templates/components/tree-c.tsx").to_string(),
     );
     registry.insert(
         "TreeD".to_string(),
-        include_str!("../../docs/conventions/templates/components/tree-d.tsx").to_string(),
+        include_str!("demo/templates/components/tree-d.tsx").to_string(),
     );
     registry.insert(
         "TreeF".to_string(),
-        include_str!("../../docs/conventions/templates/components/tree-f.tsx").to_string(),
+        include_str!("demo/templates/components/tree-f.tsx").to_string(),
     );
 
     ReactiveWebOptions {
@@ -230,6 +241,8 @@ fn render_page(
         .pages
         .get(page)
         .ok_or_else(|| format!("compiled page '{page}' not found"))?;
+    let compile_us = *state.page_compile_us.get(page).unwrap_or(&0u128);
+    let render_started = Instant::now();
     let out = state
         .rwe
         .render(
@@ -243,7 +256,52 @@ fn render_page(
             },
         )
         .map_err(|e| format!("render failed for '{page}': {e}"))?;
-    Ok(out.html)
+    let render_us = render_started.elapsed().as_micros();
+    Ok(compose_demo_document(out, page, route, compile_us, render_us))
+}
+
+fn compose_demo_document(
+    out: crate::rwe::RenderOutput,
+    page: &str,
+    route: &str,
+    compile_us: u128,
+    render_us: u128,
+) -> String {
+    let mut html = String::new();
+    html.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+
+    if let Some(css) = out.hydration_payload.get("css").and_then(|v| v.as_str())
+        && !css.trim().is_empty()
+    {
+        html.push_str("<style>");
+        html.push_str(css);
+        html.push_str("</style>");
+    }
+
+    html.push_str("</head><body>");
+    html.push_str(&out.html);
+
+    for script in out.compiled_scripts {
+        if script.content.trim().is_empty() {
+            continue;
+        }
+        html.push_str("<script type=\"module\">");
+        html.push_str(&script.content.replace("</script>", "<\\/script>"));
+        html.push_str("</script>");
+    }
+
+    html.push_str(&format!(
+        "<aside id=\"rwe-demo-timing\" style=\"position:fixed;right:12px;bottom:12px;z-index:99999;padding:8px 10px;border:1px solid #3f3f46;border-radius:8px;background:rgba(9,9,11,.88);color:#d4d4d8;font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;max-width:360px\">\
+            <div style=\"color:#a1a1aa\">{}</div>\
+            <div style=\"margin-top:2px\">route: {}</div>\
+            <div style=\"margin-top:4px\">compile: <strong>{}us</strong></div>\
+            <div>render: <strong>{}us</strong></div>\
+        </aside>",
+        page, route, compile_us, render_us
+    ));
+
+    html.push_str("</body></html>");
+    html
 }
 
 async fn route_home(
@@ -254,9 +312,65 @@ async fn route_home(
         "home",
         "/",
         json!({
-            "home": {
-                "title": "Zebflow Home",
-                "description": "Axum demo page."
+            "initialCount": 0
+        }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+async fn route_rwe_comprehensive(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "rwe-comprehensive",
+        "/rwe/comprehensive",
+        json!({
+            "seedCount": 3
+        }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+async fn route_rwe_dashboard(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "rwe-dashboard",
+        "/rwe/dashboard",
+        json!({
+            "data": {
+                "users": 15240,
+                "revenue": 241820,
+                "failures": 5,
+                "latencyP95": 211,
+                "pipelines": [
+                    { "name": "ingest-users", "success": 99 },
+                    { "name": "build-marts", "success": 97 },
+                    { "name": "stream-events", "success": 94 },
+                    { "name": "sync-crm", "success": 89 }
+                ]
+            }
+        }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+async fn route_rwe_frontpage(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "rwe-frontpage",
+        "/rwe/frontpage",
+        json!({
+            "pricing": {
+                "monthly": 39,
+                "yearly": 390
             }
         }),
     )
@@ -267,7 +381,18 @@ async fn route_home(
 async fn route_todo(
     State(state): State<DemoAppState>,
 ) -> Result<Html<String>, (StatusCode, String)> {
-    render_page(&state, "todo", "/todo", json!({}))
+    render_page(
+        &state,
+        "todo",
+        "/todo",
+        json!({
+            "total": 2,
+            "items": [
+                { "title": "Review pipeline contracts" },
+                { "title": "Add regression tests" }
+            ]
+        }),
+    )
         .map(Html)
         .map_err(internal_error)
 }
@@ -435,6 +560,19 @@ async fn route_blog_composed(
             "hero": { "title": "Hero", "subtitle": "Sub" },
             "posts": [{ "title": "A" }]
         }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+async fn route_rwe_lab(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "rwe-lab",
+        "/rwe/lab",
+        json!({}),
     )
     .map(Html)
     .map_err(internal_error)

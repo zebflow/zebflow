@@ -35,4 +35,21 @@ impl ReactiveWebEngineRegistry {
         ids.sort();
         ids
     }
+
+    /// Resolves engine by id with fallback order:
+    ///
+    /// 1. requested id
+    /// 2. `rwe`
+    /// 3. first registered engine
+    pub fn resolve_or_default(&self, id: Option<&str>) -> Option<Arc<dyn ReactiveWebEngine>> {
+        if let Some(id) = id
+            && let Some(engine) = self.get(id)
+        {
+            return Some(engine);
+        }
+        if let Some(engine) = self.get("rwe") {
+            return Some(engine);
+        }
+        self.engines.values().next().map(Arc::clone)
+    }
 }
