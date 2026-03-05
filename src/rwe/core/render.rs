@@ -24,7 +24,7 @@ pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
 
 pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput, EngineError> {
     let started = Instant::now();
-    let ssr_html = deno_worker::render_ssr(
+    let ssr = deno_worker::render_ssr(
         &compiled.server_module_source,
         vars,
         compiled.deno_timeout_ms,
@@ -40,10 +40,13 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
         )
     })?;
 
-    let html = format!(
-        "<div id=\"{ROOT_ID}\">{ssr_html}</div><script type=\"application/json\" id=\"{PAYLOAD_ID}\">{}</script>",
+    let body_content = format!(
+        "<div id=\"{ROOT_ID}\">{}</div><script type=\"application/json\" id=\"{PAYLOAD_ID}\">{}</script>",
+        ssr.html,
         escape_json_script(&payload_json)
     );
+
+    let html = build_document_shell(&ssr.page_config, &body_content);
 
     let js = build_client_module(&transpiled_client);
 
@@ -58,7 +61,7 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
             "rootId": ROOT_ID,
         }),
         meta: RenderMeta {
-            html_bytes: ssr_html.len(),
+            html_bytes: ssr.html.len(),
             js_bytes: js.len(),
             css_bytes: 0,
             ssr_ms,
@@ -120,6 +123,7 @@ fn build_client_module(client_source: &str) -> String {
          globalThis.usePageState = __rweUsePageState;\n\
          const __payloadEl = document.getElementById('{PAYLOAD_ID}');\n\
          const __input = __payloadEl ? JSON.parse(__payloadEl.textContent || '{{}}') : {{}};\n\
+         globalThis.ctx = __input;\n\
          const __mod = await import('data:text/javascript;base64,{encoded}');\n\
          const __Page = __mod.default;\n\
          function __RweRoot(props) {{\n\
@@ -166,6 +170,66 @@ fn stable_hash_u64(input: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     input.hash(&mut hasher);
     hasher.finish()
+}
+
+/// Build a complete HTML document from the resolved `export const page` config.
+fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> String {
+    let pc = page_config.as_ref();
+
+    let lang = pc
+        .and_then(|p| p.get("html"))
+        .and_then(|h| h.get("lang"))
+        .and_then(Value::as_str)
+        .unwrap_or("en");
+
+    let title = pc
+        .and_then(|p| p.get("head"))
+        .and_then(|h| h.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let description = pc
+        .and_then(|p| p.get("head"))
+        .and_then(|h| h.get("description"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let body_class = pc
+        .and_then(|p| p.get("body"))
+        .and_then(|b| b.get("className"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+
+    let mut head = String::new();
+    head.push_str("<meta charset=\"utf-8\">");
+    head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+    if !title.is_empty() {
+        head.push_str(&format!("<title>{}</title>", escape_html(title)));
+    }
+    if !description.is_empty() {
+        head.push_str(&format!(
+            "<meta name=\"description\" content=\"{}\">",
+            escape_attr(description)
+        ));
+    }
+
+    let body_attr = if body_class.is_empty() {
+        String::new()
+    } else {
+        format!(" class=\"{}\"", escape_attr(body_class))
+    };
+
+    format!(
+        "<!DOCTYPE html><html lang=\"{lang}\"><head>{head}</head><body{body_attr}>{body_content}</body></html>"
+    )
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 fn escape_json_script(input: &str) -> String {

@@ -6561,6 +6561,22 @@ async fn public_webhook_ingress(
         .record_success(&owner, &project, &file_rel_path);
 
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
+        let mut html = html.to_string();
+        // Re-inject Tailwind CSS from hydration_payload (extracted by RWE engine).
+        if let Some(css) = output.value
+            .get("hydration_payload")
+            .and_then(|hp| hp.get("css"))
+            .and_then(Value::as_str)
+        {
+            if !css.trim().is_empty() {
+                let style_block = format!("<style data-rwe-tw>{css}</style>");
+                if let Some(pos) = html.find("</head>") {
+                    html.insert_str(pos, &style_block);
+                } else {
+                    html = format!("{style_block}{html}");
+                }
+            }
+        }
         let scripts = output
             .value
             .get("compiled_scripts")
@@ -6568,7 +6584,7 @@ async fn public_webhook_ingress(
             .and_then(|value| serde_json::from_value::<Vec<CompiledScript>>(value).ok())
             .unwrap_or_default();
         let externalized =
-            externalize_rwe_scripts(&state, html, &scripts, Some((&owner, &project)));
+            externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project)));
         return Html(externalized).into_response();
     }
 
@@ -6788,15 +6804,21 @@ fn split_webhook_segments(path: &str) -> Vec<&str> {
 }
 
 fn path_param_name(segment: &str) -> Option<&str> {
-    let name = segment.strip_prefix('{')?.strip_suffix('}')?;
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
+    // Support {name} style
+    if let Some(inner) = segment.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        let name = inner.trim();
+        if !name.is_empty() && !name.contains('/') && !name.contains('{') && !name.contains('}') {
+            return Some(name);
+        }
     }
-    if name.contains('/') || name.contains('{') || name.contains('}') {
-        return None;
+    // Support :name style
+    if let Some(name) = segment.strip_prefix(':') {
+        let name = name.trim();
+        if !name.is_empty() && !name.contains('/') && !name.contains(':') {
+            return Some(name);
+        }
     }
-    Some(name)
+    None
 }
 
 fn pipeline_path_matches(base_path: &str, candidate_path: &str, recursive: bool) -> bool {

@@ -8,8 +8,8 @@ import Input from "@/components/ui/input";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: "Login",
+    description: "Sign in to Zebflow",
   },
   html: {
     lang: "en",

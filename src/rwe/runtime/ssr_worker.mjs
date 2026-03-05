@@ -93,23 +93,28 @@ async function handleRender(req) {
     const source = String(req.module_source || "");
     await Deno.writeTextFile(tempFile, source);
     installGlobals();
+    // Expose server context as global `ctx` so `export const page` can use
+    // ctx.seo.title, ctx.anything — evaluated at module load time.
+    globalThis.ctx = req.ctx || {};
 
-    const html = await withTimeout(
+    const result = await withTimeout(
       (async () => {
         const mod = await import(`file://${tempFile}?v=${req.id}`);
         const Page = mod?.default;
         if (typeof Page !== "function") {
           throw new Error("default export is not a function component");
         }
-        return renderToString(wrapWithPageState(Page, req.ctx || {}));
+        const html = renderToString(wrapWithPageState(Page, req.ctx || {}));
+        const pageConfig = mod.page || null;
+        return { html, pageConfig };
       })(),
       req.timeout_ms,
       "RWE_DENO_TIMEOUT",
     );
-    if (enc.encode(html).length > MAX_HTML_BYTES) {
+    if (enc.encode(result.html).length > MAX_HTML_BYTES) {
       throw new Error("RWE_DENO_HTML_TOO_LARGE");
     }
-    writeLine({ id: req.id, ok: true, html });
+    writeLine({ id: req.id, ok: true, html: result.html, page_config: result.pageConfig });
   } catch (err) {
     writeLine({
       id: req.id,

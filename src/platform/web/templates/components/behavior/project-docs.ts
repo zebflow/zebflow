@@ -6,7 +6,7 @@ let createSplitPaneFn = null;
 let runtimePromise = null;
 
 async function ensureDocsEditorRuntime() {
-  if (editorViewCtor && basicSetupExt && markdownExt && oneDarkExt && createSplitPaneFn) {
+  if (editorViewCtor && basicSetupExt && oneDarkExt && createSplitPaneFn) {
     return;
   }
   if (runtimePromise) {
@@ -36,11 +36,15 @@ async function ensureDocsEditorRuntime() {
 let editorInstance = null;
 
 function createEditorView(host, content) {
-  if (!editorViewCtor || !basicSetupExt || !markdownExt || !oneDarkExt) return null;
-  const mdExt = typeof markdownExt === "function" ? markdownExt() : markdownExt;
+  if (!editorViewCtor || !basicSetupExt || !oneDarkExt) return null;
+  const exts = [basicSetupExt, oneDarkExt];
+  if (markdownExt) {
+    const mdExt = typeof markdownExt === "function" ? markdownExt() : markdownExt;
+    exts.push(mdExt);
+  }
   return new editorViewCtor({
     doc: content,
-    extensions: [basicSetupExt, mdExt, oneDarkExt],
+    extensions: exts,
     parent: host,
   });
 }

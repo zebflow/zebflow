@@ -29,7 +29,14 @@ struct WorkerResponse {
     ok: bool,
     html: Option<String>,
     js: Option<String>,
+    page_config: Option<Value>,
     error: Option<String>,
+}
+
+/// SSR result including rendered HTML and the resolved `export const page` config.
+pub struct SsrResult {
+    pub html: String,
+    pub page_config: Option<Value>,
 }
 
 struct DenoWorker {
@@ -153,7 +160,7 @@ impl DenoWorker {
     }
 }
 
-pub fn render_ssr(module_source: &str, ctx: &Value, timeout_ms: u64) -> Result<String, EngineError> {
+pub fn render_ssr(module_source: &str, ctx: &Value, timeout_ms: u64) -> Result<SsrResult, EngineError> {
     let req = WorkerRequest {
         id: REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         op: "render_ssr",
@@ -189,7 +196,10 @@ pub fn render_ssr(module_source: &str, ctx: &Value, timeout_ms: u64) -> Result<S
         ));
     }
 
-    Ok(response.html.take().unwrap_or_default())
+    Ok(SsrResult {
+        html: response.html.take().unwrap_or_default(),
+        page_config: response.page_config.take(),
+    })
 }
 
 pub fn transpile_client(module_source: &str, timeout_ms: u64) -> Result<String, EngineError> {
