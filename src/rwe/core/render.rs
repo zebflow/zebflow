@@ -46,7 +46,7 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
         escape_json_script(&payload_json)
     );
 
-    let html = build_document_shell(&ssr.page_config, &body_content);
+    let html = build_document_shell(&ssr.page_config, &body_content, vars);
 
     let js = build_client_module(&transpiled_client);
 
@@ -69,8 +69,25 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
     })
 }
 
+fn strip_rwe_client_imports(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| {
+            let t = line.trim();
+            if !t.starts_with("import ") {
+                return true;
+            }
+            !(t.contains("from \"rwe\"")
+                || t.contains("from 'rwe'")
+                || t.contains("from \"rwe-")
+                || t.contains("from 'rwe-"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn build_client_module(client_source: &str) -> String {
-    let runtime_ready_source = client_source
+    let runtime_ready_source = strip_rwe_client_imports(client_source)
         .replace(
             "from \"npm:preact/jsx-runtime\"",
             "from \"https://esm.sh/preact@10.28.4/jsx-runtime\"",
@@ -121,6 +138,108 @@ fn build_client_module(client_source: &str) -> String {
          globalThis.useRef = useRef;\n\
          globalThis.useMemo = useMemo;\n\
          globalThis.usePageState = __rweUsePageState;\n\
+         globalThis.useNavigate = function useNavigate() {{\n\
+           return function(href) {{\n\
+             if (typeof window.rweNavigate === 'function') {{\n\
+               window.rweNavigate(href);\n\
+             }} else {{\n\
+               window.location.href = href;\n\
+             }}\n\
+           }};\n\
+         }};\n\
+         globalThis.Link = function Link({{ href, children, className, ...props }}) {{\n\
+           return h('a', {{\n\
+             href,\n\
+             className,\n\
+             onClick: function(e) {{\n\
+               e.preventDefault();\n\
+               if (typeof window.rweNavigate === 'function') {{\n\
+                 window.rweNavigate(href);\n\
+               }} else {{\n\
+                 window.location.href = href;\n\
+               }}\n\
+             }},\n\
+             ...props\n\
+           }}, children);\n\
+         }};\n\
+         (function() {{\n\
+           if (typeof window.rweNavigate !== 'function') {{\n\
+             var __bar = document.createElement('div');\n\
+             __bar.id = '__rwe_nav_bar';\n\
+             __bar.style.cssText = 'position:fixed;top:0;left:0;height:2px;width:0%;background:var(--rwe-nav-color,#10b981);z-index:99999;opacity:0;pointer-events:none;transition:none';\n\
+             document.body.appendChild(__bar);\n\
+             var __bt = null;\n\
+             var __bStart = function() {{\n\
+               clearTimeout(__bt);\n\
+               __bar.style.transition = 'none';\n\
+               __bar.style.width = '0%';\n\
+               __bar.style.opacity = '1';\n\
+               __bar.offsetWidth;\n\
+               __bar.style.transition = 'width 0.25s ease';\n\
+               __bar.style.width = '30%';\n\
+               __bt = setTimeout(function() {{\n\
+                 __bar.style.transition = 'width 1.5s ease';\n\
+                 __bar.style.width = '70%';\n\
+               }}, 250);\n\
+             }};\n\
+             var __bDone = function() {{\n\
+               clearTimeout(__bt);\n\
+               __bar.style.transition = 'width 0.1s ease';\n\
+               __bar.style.width = '100%';\n\
+               __bt = setTimeout(function() {{\n\
+                 __bar.style.transition = 'opacity 0.2s ease';\n\
+                 __bar.style.opacity = '0';\n\
+               }}, 150);\n\
+             }};\n\
+             var __bFail = function() {{\n\
+               clearTimeout(__bt);\n\
+               __bar.style.transition = 'opacity 0.15s ease';\n\
+               __bar.style.opacity = '0';\n\
+             }};\n\
+             window.rweNavigate = function(href) {{\n\
+               __bStart();\n\
+               fetch(href, {{ credentials: 'same-origin' }})\n\
+                 .then(function(r) {{\n\
+                   if (!r.ok) {{ __bFail(); window.location.href = href; return null; }}\n\
+                   return r.text();\n\
+                 }})\n\
+                 .then(function(html) {{\n\
+                   if (!html) return;\n\
+                   var doc = new DOMParser().parseFromString(html, 'text/html');\n\
+                   var nRoot = doc.getElementById('{ROOT_ID}');\n\
+                   var nPay = doc.getElementById('{PAYLOAD_ID}');\n\
+                   var lRoot = document.getElementById('{ROOT_ID}');\n\
+                   var lPay = document.getElementById('{PAYLOAD_ID}');\n\
+                   if (nRoot && lRoot) {{\n\
+                     lRoot.innerHTML = nRoot.innerHTML;\n\
+                     if (nPay && lPay) lPay.textContent = nPay.textContent;\n\
+                   }}\n\
+                   document.querySelectorAll('style[data-rwe-page-css]').forEach(function(s) {{ s.remove(); }});\n\
+                   doc.querySelectorAll('style[data-rwe-page-css]').forEach(function(s) {{\n\
+                     var nc = document.createElement('style');\n\
+                     nc.setAttribute('data-rwe-page-css', '');\n\
+                     nc.textContent = s.textContent;\n\
+                     document.head.appendChild(nc);\n\
+                   }});\n\
+                   doc.querySelectorAll('script[type=\"module\"]').forEach(function(s) {{\n\
+                     var n = document.createElement('script');\n\
+                     n.type = 'module';\n\
+                     n.textContent = s.textContent;\n\
+                     document.head.appendChild(n);\n\
+                   }});\n\
+                   document.title = doc.title;\n\
+                   history.pushState(null, '', href);\n\
+                   window.scrollTo(0, 0);\n\
+                   window.dispatchEvent(new CustomEvent('rwe:nav', {{ detail: {{ url: href }} }}));\n\
+                   __bDone();\n\
+                 }})\n\
+                 .catch(function() {{ __bFail(); window.location.href = href; }});\n\
+             }};\n\
+             window.addEventListener('popstate', function() {{\n\
+               window.rweNavigate(window.location.pathname + window.location.search);\n\
+             }});\n\
+           }}\n\
+         }})();\n\
          const __payloadEl = document.getElementById('{PAYLOAD_ID}');\n\
          const __input = __payloadEl ? JSON.parse(__payloadEl.textContent || '{{}}') : {{}};\n\
          globalThis.ctx = __input;\n\
@@ -172,8 +291,48 @@ fn stable_hash_u64(input: &str) -> u64 {
     hasher.finish()
 }
 
+/// Resolve `{{input.x.y}}` placeholders in a string against the render input.
+fn interpolate_page_str(value: &str, input: &Value) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut s = value;
+    while let Some(open) = s.find("{{") {
+        out.push_str(&s[..open]);
+        s = &s[open + 2..];
+        if let Some(close) = s.find("}}") {
+            let expr = s[..close].trim();
+            out.push_str(&resolve_input_path(expr, input));
+            s = &s[close + 2..];
+        } else {
+            out.push_str("{{");
+        }
+    }
+    out.push_str(s);
+    out
+}
+
+fn resolve_input_path(path: &str, input: &Value) -> String {
+    // Accepts "input.seo.title", "input.title", etc.
+    let rest = match path.strip_prefix("input.") {
+        Some(r) => r,
+        None => return String::new(),
+    };
+    let mut cur = input;
+    for key in rest.split('.') {
+        match cur.get(key) {
+            Some(v) => cur = v,
+            None => return String::new(),
+        }
+    }
+    match cur {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// Build a complete HTML document from the resolved `export const page` config.
-fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> String {
+fn build_document_shell(page_config: &Option<Value>, body_content: &str, input: &Value) -> String {
     let pc = page_config.as_ref();
 
     let lang = pc
@@ -182,17 +341,19 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
         .and_then(Value::as_str)
         .unwrap_or("en");
 
-    let title = pc
+    let raw_title = pc
         .and_then(|p| p.get("head"))
         .and_then(|h| h.get("title"))
         .and_then(Value::as_str)
         .unwrap_or("");
+    let title = interpolate_page_str(raw_title, input);
 
-    let description = pc
+    let raw_description = pc
         .and_then(|p| p.get("head"))
         .and_then(|h| h.get("description"))
         .and_then(Value::as_str)
         .unwrap_or("");
+    let description = interpolate_page_str(raw_description, input);
 
     let body_class = pc
         .and_then(|p| p.get("body"))
@@ -204,12 +365,12 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     head.push_str("<meta charset=\"utf-8\">");
     head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     if !title.is_empty() {
-        head.push_str(&format!("<title>{}</title>", escape_html(title)));
+        head.push_str(&format!("<title>{}</title>", escape_html(&title)));
     }
     if !description.is_empty() {
         head.push_str(&format!(
             "<meta name=\"description\" content=\"{}\">",
-            escape_attr(description)
+            escape_attr(&description)
         ));
     }
 

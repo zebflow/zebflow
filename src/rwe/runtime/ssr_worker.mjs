@@ -10,8 +10,8 @@ import {
 } from "npm:preact/hooks";
 
 const enc = new TextEncoder();
-const MAX_HTML_BYTES = 2_000_000;
-const MAX_JS_BYTES = 2_000_000;
+const MAX_HTML_BYTES = 5_000_000;
+const MAX_JS_BYTES = 5_000_000;
 
 const PageStateContext = createContext(null);
 
@@ -46,6 +46,14 @@ function installGlobals() {
   globalThis.useRef = useRef;
   globalThis.useMemo = useMemo;
   globalThis.usePageState = createUsePageState();
+  globalThis.useNavigate = function useNavigate() {
+    // During SSR there is no navigation — return a no-op.
+    return function (_href) {};
+  };
+  globalThis.Link = function Link({ href, children, ...props }) {
+    // During SSR render as a plain anchor (SEO-friendly).
+    return h("a", { href, ...props }, children);
+  };
 }
 
 function wrapWithPageState(Page, input) {

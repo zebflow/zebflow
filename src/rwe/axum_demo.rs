@@ -18,7 +18,8 @@ use serde_json::{Value, json};
 use crate::language::{LanguageEngine, NoopLanguageEngine};
 use crate::rwe::{
     CompiledTemplate, ComponentOptions, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
-    ResourceAllowList, TemplateSource, resolve_engine_or_default,
+    ResourceAllowList, RweReactiveWebEngine, TemplateOptions, TemplateSource,
+    resolve_engine_or_default,
 };
 
 const LUCIDE_SCRIPT_URL: &str = "https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js";
@@ -273,7 +274,7 @@ fn compose_demo_document(
     if let Some(css) = out.hydration_payload.get("css").and_then(|v| v.as_str())
         && !css.trim().is_empty()
     {
-        html.push_str("<style>");
+        html.push_str("<style data-rwe-page-css>");
         html.push_str(css);
         html.push_str("</style>");
     }
@@ -580,4 +581,188 @@ async fn route_rwe_lab(
 
 fn internal_error(msg: String) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, msg)
+}
+
+// ── DX Foundation integration test router ────────────────────────────────────
+
+const DX_TEST_PAGE: &str =
+    include_str!("../../tests/rwe/fixtures/dx_test/page.tsx");
+const DX_TEST_NAVBAR: &str =
+    include_str!("../../tests/rwe/fixtures/dx_test/components/navbar.tsx");
+const DX_TEST_COUNTER: &str =
+    include_str!("../../tests/rwe/fixtures/dx_test/components/counter.tsx");
+
+/// Builds a router that serves a complex DX-test page from a real template root.
+///
+/// Used by `tests/rwe/dx_foundation.rs` to verify `prepare_template_root`,
+/// `@/` imports, and `from "rwe"` imports all work end-to-end via SSR.
+pub fn build_dx_test_router() -> Result<Router, String> {
+    use crate::rwe::core::prepare_template_root;
+    use std::fs;
+    use std::path::PathBuf;
+
+    // Stable temp dir — files are always identical so concurrent writes are safe.
+    let dir = PathBuf::from("/tmp/zebflow-rwe-dx-test");
+    let components_dir = dir.join("components");
+    fs::create_dir_all(&components_dir).map_err(|e| e.to_string())?;
+
+    // Write original fixture sources (with "rwe" and @/ imports intact).
+    fs::write(dir.join("page.tsx"), DX_TEST_PAGE).map_err(|e| e.to_string())?;
+    fs::write(components_dir.join("navbar.tsx"), DX_TEST_NAVBAR)
+        .map_err(|e| e.to_string())?;
+    fs::write(components_dir.join("counter.tsx"), DX_TEST_COUNTER)
+        .map_err(|e| e.to_string())?;
+
+    // Core magic: write rwe.ts shim + rewrite ALL "rwe" and "@/" imports.
+    prepare_template_root(&dir).map_err(|e| e.to_string())?;
+
+    // Read the rewritten entry page (imports now point to absolute disk paths).
+    let entry_source =
+        fs::read_to_string(dir.join("page.tsx")).map_err(|e| e.to_string())?;
+
+    let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(RweReactiveWebEngine);
+    let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
+
+    let options = ReactiveWebOptions {
+        templates: TemplateOptions {
+            template_root: Some(dir.clone()),
+            ..Default::default()
+        },
+        processors: vec!["tailwind".to_string()],
+        ..Default::default()
+    };
+
+    let compiled = rwe
+        .compile_template(
+            &TemplateSource {
+                id: "dx-test-page".to_string(),
+                source_path: Some(dir.join("page.tsx")),
+                markup: entry_source,
+            },
+            language.as_ref(),
+            &options,
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut pages = BTreeMap::new();
+    pages.insert("dx-test", compiled);
+
+    let state = DemoAppState {
+        rwe,
+        language,
+        pages: Arc::new(pages),
+        page_compile_us: Arc::new(BTreeMap::new()),
+    };
+
+    Ok(Router::new()
+        .route("/dx-test", get(route_dx_test))
+        .with_state(state))
+}
+
+async fn route_dx_test(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "dx-test",
+        "/dx-test",
+        json!({ "user": "tester", "visits": 0 }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+// ── Showcase router — 3 spec-demonstrating pages ─────────────────────────────
+
+/// Builds a clean showcase router serving `/`, `/blog`, `/todo`.
+///
+/// Each page is a self-contained TSX file demonstrating every RWE spec feature:
+/// useState, useEffect, useRef, useMemo, usePageState, useNavigate, Link.
+pub fn build_showcase_router() -> Result<Router, String> {
+    let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(RweReactiveWebEngine);
+    let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);
+
+    let opts = ReactiveWebOptions {
+        processors: vec!["tailwind".to_string()],
+        ..Default::default()
+    };
+
+    let mut pages = BTreeMap::new();
+    let mut page_compile_us = BTreeMap::new();
+
+    for (key, id, markup) in [
+        (
+            "showcase-home",
+            "page.showcase-home",
+            include_str!("demo/showcase/home.tsx"),
+        ),
+        (
+            "showcase-blog",
+            "page.showcase-blog",
+            include_str!("demo/showcase/blog.tsx"),
+        ),
+        (
+            "showcase-todo",
+            "page.showcase-todo",
+            include_str!("demo/showcase/todo.tsx"),
+        ),
+    ] {
+        let started = Instant::now();
+        let compiled = compile_page(rwe.as_ref(), language.as_ref(), id, markup, opts.clone())?;
+        page_compile_us.insert(key, started.elapsed().as_micros());
+        pages.insert(key, compiled);
+    }
+
+    let state = DemoAppState {
+        rwe,
+        language,
+        pages: Arc::new(pages),
+        page_compile_us: Arc::new(page_compile_us),
+    };
+
+    Ok(Router::new()
+        .route("/", get(route_showcase_home))
+        .route("/blog", get(route_showcase_blog))
+        .route("/todo", get(route_showcase_todo))
+        .with_state(state))
+}
+
+async fn route_showcase_home(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "showcase-home",
+        "/",
+        json!({ "count": 0, "name": "World" }),
+    )
+    .map(Html)
+    .map_err(internal_error)
+}
+
+async fn route_showcase_blog(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(&state, "showcase-blog", "/blog", json!({}))
+        .map(Html)
+        .map_err(internal_error)
+}
+
+async fn route_showcase_todo(
+    State(state): State<DemoAppState>,
+) -> Result<Html<String>, (StatusCode, String)> {
+    render_page(
+        &state,
+        "showcase-todo",
+        "/todo",
+        json!({
+            "items": [
+                { "title": "Review PR" },
+                { "title": "Write tests" },
+                { "title": "Update docs" }
+            ]
+        }),
+    )
+    .map(Html)
+    .map_err(internal_error)
 }

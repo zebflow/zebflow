@@ -49,7 +49,7 @@ pub struct ReactiveWebOptions {
     ///
     /// Behavior:
     ///
-    /// - empty list: legacy defaults apply (`style_engine` drives Tailwind-like processing)
+    /// - empty list: default behavior — `style_engine` drives Tailwind-like processing
     /// - non-empty list: only listed processors are executed, in listed order
     #[serde(default)]
     pub processors: Vec<String>,

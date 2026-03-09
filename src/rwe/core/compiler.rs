@@ -46,9 +46,8 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
     let raw_imports = collect_imports(&parsed.program);
     validate_import_allowlist(&raw_imports, &options)?;
 
-    let source_without_runtime_imports = strip_runtime_imports(source);
     let (rewritten_source, imports) =
-        rewrite_imports(&source_without_runtime_imports, &raw_imports, &options, &mut diagnostics)?;
+        rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
     let transformed_server = format!("{}{}", JSX_PRELUDE, normalized_page_source);
@@ -140,6 +139,7 @@ fn validate_import_allowlist(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn strip_runtime_imports(source: &str) -> String {
     source
         .lines()

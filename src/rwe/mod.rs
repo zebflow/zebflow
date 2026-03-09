@@ -8,7 +8,7 @@
 
 pub mod axum_demo;
 pub(crate) mod class_notation;
-pub(crate) mod core;
+pub mod core;
 pub mod engines;
 pub mod interface;
 pub mod model;

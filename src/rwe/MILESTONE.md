@@ -44,7 +44,7 @@ RWE should support:
 ## Current Baseline (Done)
 
 1. `.tsx` extraction (`template`, `style`, `script`)
-2. reactive bindings (`@click`, `z-text`, `z-model`, `z-attr:class`, `z-show`, `z-hide`)
+2. reactive bindings via `export const app` (state/actions/memo/effect) and `usePageState()` hook
 3. SSR placeholders (`{{input.*}}`, `{{ctx.*}}`)
 4. compile-time component registry (PascalCase component tags, e.g. `<PlatformSidebar />`)
 5. runtime bundle inject + control script mount
@@ -172,22 +172,17 @@ Why:
 
 ## M3 - SSR List/Branch Primitives
 
-Goal: lean server list rendering without heavy VDOM.
+Goal: lean server list rendering via standard TSX.
 
-Add template directives:
+Use standard JSX patterns:
 
-1. `z-for="item in input.posts"`
-2. `zIf="input.posts.0"`
-3. `zElse`
-
-Compile strategy:
-
-1. parse directives to lightweight IR
-2. SSR expand to static HTML string
-3. optional hydration markers only where client actions exist
+1. `{(input.posts || []).map((item) => <li key={item.id}>...</li>)}`
+2. `{condition && <element />}`
+3. `{condition ? <a /> : <b />}`
 
 Why:
 
+- standard React/Preact — no custom directives
 - supports blog list, dashboard table, catalog pages
 - SEO-friendly by default
 
@@ -250,7 +245,7 @@ Rules:
 1. implement file import resolver with cycle detection
 2. add component dependency graph cache
 3. implement `server/client` script contract
-4. add `z-for` SSR compile for server lists
+4. add fixture coverage for SSR list rendering via `.map()`
 5. add fixture set:
    - `sidebar.tsx` + nested `searchbar.tsx`
    - SSR blog list from server data

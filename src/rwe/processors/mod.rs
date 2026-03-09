@@ -19,8 +19,8 @@ pub mod tailwind;
 ///
 /// Resolution rules:
 ///
-/// - if `options.processors` is empty, use legacy behavior (Tailwind-like
-///   processing follows `options.style_engine`)
+/// - if `options.processors` is empty, default behavior applies: Tailwind-like
+///   processing is driven by `options.style_engine`
 /// - if `options.processors` is non-empty, only listed processors run, in the
 ///   listed order
 pub fn apply_compile_processors(

@@ -28,6 +28,8 @@ pub fn analyze(source: &str, policy: &SecurityPolicy) -> Result<Vec<Diagnostic>,
         }
     }
 
+    check_fetch_domain_allowlist(source, policy)?;
+
     for (idx, line) in source.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.starts_with("<script") {
@@ -40,6 +42,74 @@ pub fn analyze(source: &str, policy: &SecurityPolicy) -> Result<Vec<Diagnostic>,
     }
 
     Ok(diagnostics)
+}
+
+/// Check all `fetch("…")` / `fetch('…')` calls with static string literal URLs.
+///
+/// If `policy.network_allowlist` is empty, all `fetch()` calls are permitted.
+/// If it is non-empty, every statically-detectable URL must have its hostname
+/// listed in the allowlist (exact match or subdomain match).
+///
+/// Dynamic `fetch()` calls (e.g. `fetch(url)`) cannot be checked at compile
+/// time and are not flagged — runtime enforcement must complement this.
+fn check_fetch_domain_allowlist(
+    source: &str,
+    policy: &SecurityPolicy,
+) -> Result<(), EngineError> {
+    if policy.network_allowlist.is_empty() {
+        return Ok(()); // empty = no restriction
+    }
+
+    let bytes = source.as_bytes();
+    let pattern = b"fetch(";
+    let mut i = 0;
+
+    while i + pattern.len() <= bytes.len() {
+        if &bytes[i..i + pattern.len()] == pattern {
+            let mut j = i + pattern.len();
+            // Skip whitespace between `fetch(` and the argument.
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            // Only string literal arguments can be inspected statically.
+            if j < bytes.len() && (bytes[j] == b'"' || bytes[j] == b'\'') {
+                let quote = bytes[j];
+                j += 1;
+                let url_start = j;
+                while j < bytes.len() && bytes[j] != quote && bytes[j] != b'\n' {
+                    j += 1;
+                }
+                let url = std::str::from_utf8(&bytes[url_start..j]).unwrap_or("");
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    let domain = extract_fetch_domain(url);
+                    let allowed = policy.network_allowlist.iter().any(|a| {
+                        domain == a.as_str()
+                            || domain.ends_with(&format!(".{a}"))
+                    });
+                    if !allowed {
+                        return Err(EngineError::new(
+                            "RWE_SECURITY_FETCH",
+                            format!(
+                                "fetch() to '{domain}' is not in network_allowlist"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    Ok(())
+}
+
+fn extract_fetch_domain(url: &str) -> &str {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host = without_scheme.split('/').next().unwrap_or(without_scheme);
+    host.split(':').next().unwrap_or(host) // strip port if present
 }
 
 fn contains_blocked_global(source: &str, blocked: &str) -> bool {

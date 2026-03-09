@@ -34,7 +34,7 @@ impl Default for SecurityPolicy {
             ],
             allow_dynamic_import: false,
             allow_raw_html: false,
-            network_allowlist: vec!["registry.npmjs.org".to_string()],
+            network_allowlist: vec![], // empty = no restriction; populate to enforce domain allowlist
         }
     }
 }
