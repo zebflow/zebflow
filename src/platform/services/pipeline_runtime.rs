@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::framework::PipelineGraph;
+use crate::pipeline::PipelineGraph;
 use crate::platform::error::PlatformError;
 use crate::platform::model::PipelineMeta;
 use crate::platform::services::ProjectService;
@@ -193,6 +193,14 @@ impl PipelineRuntimeService {
     pub fn get(&self, owner: &str, project: &str, file_rel_path: &str) -> Option<CompiledPipeline> {
         let key = active_pipeline_key(owner, project, file_rel_path);
         self.inner.load().get(&key).cloned()
+    }
+
+    /// Removes one pipeline from the active runtime registry without refreshing from disk.
+    pub fn evict(&self, owner: &str, project: &str, file_rel_path: &str) {
+        let key = active_pipeline_key(owner, project, file_rel_path);
+        let mut next = (*self.inner.load_full()).clone();
+        next.remove(&key);
+        self.inner.store(Arc::new(next));
     }
 
     pub fn list_project(&self, owner: &str, project: &str) -> Vec<CompiledPipeline> {

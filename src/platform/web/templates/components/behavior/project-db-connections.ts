@@ -64,7 +64,7 @@ function dbKindIconClass(kind) {
   if (value === "qdrant") {
     return "devicon-vectorlogozone-plain";
   }
-  if (value === "sjtable" || value === "sekejap") {
+  if (value === "sekejap") {
     return "zf-icon-sjtable";
   }
   return "zf-icon-default-db";
@@ -184,7 +184,7 @@ function filteredCredentialsForKind(credentials, databaseKind) {
 }
 
 function renderCredentialSelect(state, preferredCredentialId = "") {
-  const dbKind = String(state.kindField.value || "sjtable").trim().toLowerCase();
+  const dbKind = String(state.kindField.value || "sekejap").trim().toLowerCase();
   const required = isCredentialRequired(dbKind);
   const compatible = filteredCredentialsForKind(state.credentials, dbKind);
   const previous = normalizeCredentialId(preferredCredentialId || state.credentialField.value || "");
@@ -223,7 +223,7 @@ function renderCredentialSelect(state, preferredCredentialId = "") {
     state.credentialField.value = "";
   }
 
-  const disableCredential = dbKind === "sjtable";
+  const disableCredential = dbKind === "sekejap";
   state.credentialField.disabled = disableCredential;
 
   if (disableCredential) {
@@ -400,7 +400,7 @@ async function initDbConnections(root) {
 
     state.items.forEach((item) => {
       const slug = String(item.connection_slug || "");
-      const kind = String(item.database_kind || "sjtable");
+      const kind = String(item.database_kind || "sekejap");
       const iconClass = dbKindIconClass(kind);
       const openPath = `/projects/${encodeURIComponent(owner)}/${encodeURIComponent(project)}/db/${encodeURIComponent(kind)}/${encodeURIComponent(slug)}/tables`;
       const tr = document.createElement("tr");
@@ -447,7 +447,7 @@ async function initDbConnections(root) {
     state.currentSlug = "";
     state.form.reset();
     state.slugField.disabled = false;
-    state.kindField.value = "sjtable";
+    state.kindField.value = "sekejap";
     state.configJsonField.value = "{}";
     state.titleEl.textContent = "Create Database Connection";
     state.deleteBtn.style.display = "none";
@@ -492,7 +492,7 @@ async function initDbConnections(root) {
   }
 
   function openCreateCredentialDialog() {
-    const dbKind = String(state.kindField.value || "sjtable").trim().toLowerCase();
+    const dbKind = String(state.kindField.value || "sekejap").trim().toLowerCase();
     const credentialKind = credentialKindForDatabaseKind(dbKind) || "custom";
 
     const generatedId = generateCredentialSlug(
@@ -634,7 +634,7 @@ async function initDbConnections(root) {
       return;
     }
 
-    const databaseKind = String(formData.get("database_kind") || "sjtable").trim();
+    const databaseKind = String(formData.get("database_kind") || "sekejap").trim();
     const credentialId = normalizeCredentialId(formData.get("credential_id"));
 
     if (isCredentialRequired(databaseKind) && !credentialId) {
@@ -693,7 +693,7 @@ async function initDbConnections(root) {
       return;
     }
 
-    const databaseKind = String(formData.get("database_kind") || "sjtable").trim();
+    const databaseKind = String(formData.get("database_kind") || "sekejap").trim();
     const credentialId = normalizeCredentialId(formData.get("credential_id"));
     if (isCredentialRequired(databaseKind) && !credentialId) {
       setStatus(state, `Credential is required for ${databaseKind}.`, "error");

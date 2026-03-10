@@ -3,6 +3,8 @@
 > **Design principle:** A developer who knows React should be able to open an RWE file and feel at home.
 > No new mental model. No custom directives. No magic strings. Just TSX, imports, and standard hooks.
 
+- from {bla, bla, bla} import "rwe" means this bla, bla, bla need to be added into the compiled
+
 ---
 
 ## Legend
@@ -102,12 +104,12 @@ RWE operates in two distinct worlds that must stay coherent:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  SERVER (Rust + Deno)                                        │
+│  SERVER (Rust + embedded deno_core)                          │
 │                                                              │
 │  Request → compile() → render_ssr() → HTML string           │
 │                                                              │
-│  Deno runs ssr_worker.mjs (persistent process)              │
-│  installGlobals() sets useState, useEffect, etc as globals  │
+│  Embedded V8 via deno_core (singleton JsRuntime thread)     │
+│  preact_ssr_init.js loaded ONCE — installs all globals      │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -125,7 +127,7 @@ RWE operates in two distinct worlds that must stay coherent:
 ### 1.2 Compile Pipeline
 
 ```
-Source .tsx file
+Source .tsx file (entry page)
         │
         ▼
 ┌──────────────────┐
@@ -147,35 +149,93 @@ Source .tsx file
          │
          ▼
 ┌──────────────────┐
-│ collect_imports  │  Gather all import sources from AST
+│ collect_imports  │  Gather all import sources from OXC AST
 │ validate_        │  Check against allowlist:
-│   allowlist()    │    "rwe", "npm:*", "node:*", "jsr:*", "@/*"
+│   allowlist()    │    "rwe", "npm:*", "node:*", "jsr:*", "@/*", "/*"
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│ strip_runtime_   │  Remove `import { ... } from "rwe"` lines
-│   imports()      │  ⚠️  Currently only runs on entry page source
+│ rewrite_imports  │  @/ → absolute filesystem path
+│ (alias rewrite)  │  Collects ImportEdge list (source + resolved)
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
-│ rewrite_imports  │  @/ → absolute temp dir path
-│ (alias rewrite)  │  Applies to ALL files in temp dir
+│ bundle_for_      │  Recursively inline ALL local component files
+│   client()       │  into ONE self-contained module.
+│                  │
+│                  │  Per-component text pipeline (each inlined file):
+│                  │
+│                  │  1. strip_local_imports()        ← runs on ORIGINAL content
+│                  │       Remove `from "rwe"` and filesystem imports.
+│                  │       Uses OXC AST byte spans — handles multi-line imports.
+│                  │       Must run first — import paths must be visible
+│                  │       (masking them would prevent correct filtering).
+│                  │
+│                  │  2. mask_string_literals()
+│                  │       Replace all string/template literal contents
+│                  │       with opaque placeholders __RWE_MASK_0__ etc.
+│                  │       Compresses multiline template literals to one line.
+│                  │       (e.g. `import x from y` inside a template is safe)
+│                  │
+│                  │  3. localize_exports()
+│                  │       `export default function X` → `function X`
+│                  │       `export default class X` → `class X`
+│                  │       `export default Select;` → `Select;` (bare re-export)
+│                  │       `export type/interface` → stripped (with multi-line
+│                  │         brace-depth tracking for multi-line type defs)
+│                  │       Safe: multiline template content is now masked.
+│                  │
+│                  │  4. prefix_module_locals()
+│                  │       Auto-prefix UPPER_SNAKE_CASE module-scope constants
+│                  │       with __c{n}_ per component — no collision in flat bundle
+│                  │       (e.g. VARIANT_CLASSES → __c0_VARIANT_CLASSES)
+│                  │       Safe: string contents are masked, so COLORS inside
+│                  │       a string literal is never wrongly prefixed.
+│                  │
+│                  │  5. unmask_string_literals()
+│                  │       Restore all __RWE_MASK_N__ → original content
+│                  │
+│                  │  Result: zero filesystem imports, zero "rwe" imports,
+│                  │  no naming collisions, user string content untouched
 └────────┬─────────┘
          │
          ▼
 ┌──────────────────┐
 │ JSX_PRELUDE      │  Prepend `/** @jsxImportSource npm:preact */`
-│  inject          │  Tells Deno to use preact for JSX transform
+│  inject          │
 └────────┬─────────┘
          │
          ▼
    CompiledTemplate
-   ├── server_module_source  (for Deno SSR)
-   ├── client_module_source  (for browser hydration)
+   ├── server_module_source  (fully bundled, for embedded deno_core SSR)
+   ├── client_module_source  (fully bundled, for browser hydration)
    └── imports, diagnostics, hydrate_mode
+
+BOTH server and client get the same fully-inlined bundle.
+At render time there are NO filesystem imports and NO "rwe" imports.
+Everything is compiled. Runtime globals handle the rest.
 ```
+
+#### String Masking — Why It Matters
+
+All text transforms (strip imports, localize exports, prefix constants) operate on raw
+text, not AST. Without masking, a string like:
+
+```ts
+const SNIPPET = `import Button from "@/components/ui/button"`;
+const SQL = "import xx from yy; select * from users";
+```
+
+would have its content incorrectly stripped or mutated by the line-based transforms.
+
+**Masking contract:**
+- Masks `"..."`, `'...'`, and `` `...` `` (template literals, including nested `${...}`)
+- Placeholders: `"__RWE_MASK_0__"`, `'__RWE_MASK_1__'`, `` `__RWE_MASK_2__` ``
+  (quotes preserved so surrounding syntax stays valid)
+- Restored verbatim after all transforms complete
+- Implementation status: ✅ implemented (`compiler.rs` — `mask_string_literals` / `unmask_string_literals`)
 
 ---
 
@@ -187,39 +247,49 @@ CompiledTemplate + vars (JSON)
         ├──► render_ssr(server_module_source, vars)
         │         │
         │         ▼
-        │    Deno persistent worker (ssr_worker.mjs)
-        │    ├── installGlobals() — useState, useEffect,
-        │    │                      useRef, useMemo,
-        │    │                      usePageState, h, Fragment
-        │    ├── dynamic import(server_module_source)
-        │    │   → imports cascade through @/ resolved paths
-        │    └── render Page component → HTML string
+        │    Embedded deno_core (singleton JsRuntime on dedicated thread)
+        │    ├── preact_ssr_init.js loaded ONCE at startup — installs globals:
+        │    │     h, Fragment, React, createElement,
+        │    │     useState, useEffect, useLayoutEffect, useInsertionEffect,
+        │    │     useRef, useMemo, useCallback, useContext, useReducer, useId,
+        │    │     useImperativeHandle, forwardRef, memo, createContext,
+        │    │     usePageState, useNavigate, Link, cx
+        │    │     __rweRenderToString, __rweWrapWithPageState
+        │    ├── transpile_tsx() — OXC strips TS/JSX → plain JS (h() calls)
+        │    ├── strip_rwe_imports() — remove any remaining "rwe" import lines
+        │    ├── inject_page_globals() — expose default export on globalThis
+        │    │     globalThis.__rwe_page = <default export name>
+        │    │     globalThis.__rwe_page_config = page config (if defined)
+        │    ├── globalThis.ctx = vars (inject render vars before module load)
+        │    ├── load_side_es_module() — load fully-bundled module (no ext. files)
+        │    │     (side module, not main — allows multiple pages per runtime)
+        │    └── execute render script → op_rwe_store_result(html+config JSON)
         │
         ├──► transpile_client_cached(client_module_source)
         │         │
         │         ▼
-        │    Deno worker transpiles TSX → JS
-        │    Result cached by source hash (in-memory, 256 cap)
+        │    OXC transpiles TSX → JS via deno_core transpile_client()
+        │    Result cached by source hash (in-memory, 256 cap LRU-ish)
         │
         └──► build_client_module(transpiled_js)
                   │
                   ▼
              Inline preamble injected (NO extra HTTP requests):
              ├── import preact + hooks from esm.sh (pinned 10.28.4)
-             ├── globalThis.useState = useState
-             ├── globalThis.useEffect = useEffect
-             ├── globalThis.useRef = useRef
-             ├── globalThis.useMemo = useMemo
+             ├── globalThis.h, Fragment, React, cx
+             ├── globalThis.useState, useEffect, useRef, useMemo
              ├── globalThis.usePageState = __rweUsePageState
-             ├── globalThis.useNavigate (checks window.rweNavigate)
+             ├── globalThis.useNavigate (calls window.rweNavigate)
              ├── globalThis.Link (intercepts click → window.rweNavigate)
-             ├── globalThis.h = h
-             ├── globalThis.React = { createElement: h, Fragment }
-             ├── window.rweNavigate — inline SPA router (if not already defined)
-             │     fetch → DOMParser → #__rwe_root swap + [data-rwe-page-css] swap
-             │     history.pushState, popstate handler, rwe:nav-start + rwe:nav events
+             ├── window.rweNavigate — inline SPA router (installed once per page load)
+             │     fetch → DOMParser → full DOM patch:
+             │       #__rwe_root innerHTML swap, #__rwe_payload swap
+             │       <style data-rwe-tw> swap (per-page Tailwind CSS)
+             │       <link rel="stylesheet"> sync (per-page extra sheets)
+             │       body.className swap, html.lang swap, document.title swap
+             │       old nav scripts removed, new module scripts executed
+             │     history.pushState, popstate handler, rwe:nav event
              │     Progress bar (#__rwe_nav_bar, --rwe-nav-color CSS variable)
-             │     Admin shell's rwe_router.js takes precedence when present
              ├── base64-encode page module → data: URL import
              └── hydrate(<Page>, #__rwe_root)
 ```
@@ -242,16 +312,26 @@ materialize_platform_template_root()
 
 ---
 
-### 1.5 Deno Worker
+### 1.5 Embedded JS Runtime
 
 ```
-static WORKER: LazyLock<Mutex<DenoWorker>>
+static JS_CHANNEL: LazyLock<UnboundedSender<JsRequest>>
 ```
 
-- **Single persistent process** — module cache lives for the server's lifetime
-- Restart server = clear module cache (important after file changes in dev)
-- Handles both SSR render and client transpile
-- Auto-respawns on crash
+- **Embedded deno_core** — V8 runs in-process, no external `deno` binary needed
+- **Single dedicated thread** — `JsRuntime` is `!Send`, lives on `rwe-js-runtime` thread
+- **Singleton runtime** — `preact_ssr_init.js` loaded once at startup; globals persist
+- **Side modules** — `load_side_es_module()` used (not main) so runtime can render multiple pages
+- **Custom op** — `op_rwe_store_result(json)` delivers rendered HTML from JS→Rust via thread-local slot
+- **Custom module loader** — `RweModuleLoader` resolves file:// URLs, transpiles TSX/TS on-the-fly via OXC
+- Restart server = fresh runtime (important after template changes in dev)
+- Client transpile: OXC in-process (Rust, no JS runtime needed)
+
+**Runtime files:**
+| File | Purpose | Used by |
+|------|---------|---------|
+| `runtime/preact_ssr_init.js` | Self-contained SSR globals + renderToString | Embedded deno_core (current) |
+| `runtime/ssr_worker.mjs` | External Deno subprocess worker (stdin/stdout JSON) | Legacy — not used by current engine |
 
 ---
 
@@ -282,14 +362,31 @@ This works in **every file** — pages, components, layouts, behaviors. No excep
 |--------|-------------|--------|
 | `useState` | Local component state | ✅ |
 | `useEffect` | Side effects after render | ✅ |
+| `useLayoutEffect` | Synchronous layout effects (SSR no-op) | ✅ |
 | `useRef` | Mutable ref to DOM element | ✅ |
 | `useMemo` | Memoized computed value | ✅ |
+| `useCallback` | Memoized callback function | ✅ |
+| `useContext` | Consume a React-style context | ✅ |
+| `useReducer` | Reducer-based state management | ✅ |
+| `useId` | Stable unique ID for SSR/client matching | ✅ |
+| `useImperativeHandle` | Customize ref handle (SSR no-op) | ✅ |
+| `createContext` | Create a React-style context | ✅ |
+| `forwardRef` | Forward refs through components | ✅ |
+| `memo` | Memoize component (identity passthrough in SSR) | ✅ |
 | `usePageState` | Shared state across all components on the same page | ✅ |
 | `useNavigate` | SPA navigation hook — `const nav = useNavigate(); nav("/path")` | ✅ |
 | `Link` | Router-aware anchor — `<Link href="/path">Go</Link>` | ✅ |
+| `cx` | Class name utility — `cx("base", condition && "extra", className)` | ✅ |
 
-**`"rwe"` import in component files — resolved:**
-`prepare_template_root()` in `src/rwe/core/mod.rs` writes `rwe.ts` shim and rewrites `from "rwe"` → absolute shim path in **every** `.tsx/.ts/.jsx/.js` file in the template root. The shim re-exports all globals from `globalThis`. Works in pages, components, layouts — everywhere.
+**How `"rwe"` imports work — compile-time signal:**
+
+`import { cx, useState } from "rwe"` is a **signal to the compiler**, not a real module import.
+
+- At **compile time**: `bundle_for_client()` calls `strip_local_imports()` which strips all `from "rwe"` lines from every inlined component. They never reach the runtime.
+- At **runtime**: all exported symbols are already installed as `globalThis.*` by the runtime — `preact_ssr_init.js` on the server, `build_client_module()` preamble on the client.
+- **Type definitions**: `rwe.d.ts` + `tsconfig.json` path mapping — planned, enables IDE autocomplete. Not required for runtime to work.
+
+This pattern works in **every file** — pages, components, layouts. No exceptions.
 
 ---
 
@@ -298,17 +395,19 @@ This works in **every file** — pages, components, layouts, behaviors. No excep
 | Rule | Detail | Status |
 |------|--------|--------|
 | SPA navigation via `useNavigate()` | `const nav = useNavigate(); nav("/projects/x")` | ✅ |
-| `<Link href="...">` component | Intercepts click, uses history API | ✅ |
-| Inline SPA router in every page | `window.rweNavigate` baked into `build_client_module()` — no extra file needed | ✅ |
+| `<Link href="...">` component | Intercepts click → `window.rweNavigate(href)` | ✅ |
+| Inline SPA router in every page | `window.rweNavigate` baked into `build_client_module()` — single source of truth, no extra files | ✅ |
 | `history.pushState` URL updates | Browser URL bar reflects current page without reload | ✅ |
-| Back/forward browser buttons | `popstate` handler re-runs `rweNavigate` | ✅ |
-| CSS swap on navigation | `[data-rwe-page-css]` style tag swapped alongside `#__rwe_root` | ✅ |
+| Back/forward browser buttons | `popstate` handler re-runs `window.rweNavigate` | ✅ |
+| Per-page Tailwind CSS swap | `<style data-rwe-tw>` removed/re-added on every navigation — selector matches server injection | ✅ |
+| `<link rel="stylesheet">` sync | Per-page extra sheets (db-suite, devicons) added/removed on navigation | ✅ |
+| `body.className` swap | Dark/light layout class updated on every navigation | ✅ |
+| `html.lang` swap | Language attribute updated on navigation | ✅ |
 | Page title update on navigation | `document.title` set from fetched page | ✅ |
-| `rwe:nav-start` event | Dispatched before fetch begins — for custom loading indicators | ✅ |
-| `rwe:nav` event | Dispatched after swap completes — for analytics, side effects | ✅ |
+| `rwe:nav` event | Dispatched after swap completes — for analytics, behavior re-init | ✅ |
 | Progress bar | Thin top bar, `#__rwe_nav_bar`, color via `--rwe-nav-color` CSS var | ✅ |
-| Admin shell takes precedence | `rwe_router.js` defines `window.rweNavigate` first — inline router skips itself | ✅ |
-| Direct `window.location.href` | ❌ Never — raw DOM access forbidden in components | ❌ omit |
+| `rwe_router.js` | ❌ Removed — was a legacy shell-specific router, fully replaced by inline system | ❌ deleted |
+| Direct `window.location.href` | ❌ Never — raw DOM access forbidden in TSX/TS source | ❌ omit |
 | `window.rweNavigate` in user code | ❌ Internal only — use `useNavigate()` or `<Link>` | ❌ omit |
 
 ---
@@ -370,7 +469,7 @@ Tells the compiler to include those classes even though they're assembled dynami
 
 | Rule | Detail | Status |
 |------|--------|--------|
-| `export const app = {}` | Marks entry page (required for layout components) | ✅ |
+| `export const page = {}` | Page config (head, body, navigation mode) | ✅ |
 | `export default function Page(props)` | Props come from server render vars | ✅ |
 | SSR-first — all pages render on server | First response is full HTML, SEO-friendly | ✅ |
 | Hydration payload via `#__rwe_payload` | JSON injected into page for client hydration | ✅ |
@@ -397,12 +496,23 @@ Tells the compiler to include those classes even though they're assembled dynami
 Defined by exporting from the page file:
 
 ```ts
-// Page navigation + render mode (future full support)
 export const page = {
+  head: {
+    title: ctx?.seo?.title ?? "",           // JS expression — resolved at module eval time
+    description: ctx?.seo?.description ?? "",
+  },
+  html: {
+    lang: "en",
+  },
+  body: {
+    className: "h-screen bg-slate-950 text-white font-sans",
+  },
   render: "ssr",        // "ssr" | "ssg" (future) | "client" (future)
   navigation: "history" // "history" (SPA) | "document" (full reload)
 };
 ```
+
+`globalThis.ctx` is injected by the RWE engine **before** the module loads, so `export const page` expressions can reference `ctx` directly as standard JavaScript. The `build_document_shell()` function in `render.rs` reads the already-resolved config and generates the full `<!DOCTYPE html>` wrapper with `<meta charset>`, viewport, title, description, body class, and lang attribute.
 
 | Config | Status |
 |--------|--------|
@@ -418,7 +528,7 @@ export const page = {
 
 | Rule | Detail | Status |
 |------|--------|--------|
-| Deno isolated worker | SSR runs in Deno, not Node — restricted by default | ✅ |
+| Embedded deno_core V8 | SSR runs in embedded V8, no external process — restricted by default | ✅ |
 | Per-render timeout | Configurable `deno_timeout_ms` | ✅ |
 | No arbitrary FS access in templates | Deno permissions restrict file system | ✅ |
 | No arbitrary net access in templates | fetch() to unlisted domains blocked at compile time | ✅ |
@@ -449,7 +559,8 @@ templates/
 | Layout components wrap pages | `project-studio-shell.tsx` wraps all admin pages |
 | Behavior files are pure `.ts` | No JSX, no render(). Wire DOM events, export init functions. |
 | Shared reactive state | Goes in layout (entry page context) via `usePageState` |
-| Components that need hooks | Can live anywhere — `"rwe"` import works in all files via `prepare_template_root()` shim |
+| Components that need hooks | Can live anywhere — `"rwe"` import is a compile-time signal, stripped during bundling |
+| Module-scope constants are auto-scoped | The bundler auto-prefixes `UPPER_SNAKE_CASE` constants per component (`__c0_VARIANT_CLASSES`, `__c1_VARIANT_CLASSES`) using word-boundary replacement. Developers write clean names — no manual prefixing needed. |
 
 ---
 

@@ -486,6 +486,12 @@ pub struct PipelineRegistryItem {
     pub trigger_kind: String,
     /// Source file path under `app/`.
     pub file_rel_path: String,
+    /// True when pipeline has an active hash matching current hash.
+    pub is_active: bool,
+    /// True when pipeline has an active hash but it differs from current hash (draft changes).
+    pub has_draft: bool,
+    /// Git status code (e.g. "M", "??", "D") if file is dirty, otherwise None.
+    pub git_status: Option<String>,
 }
 
 /// Pipeline registry listing payload for one project + folder path.
@@ -520,6 +526,25 @@ pub struct UpsertPipelineDefinitionRequest {
     pub trigger_kind: String,
     /// Full pipeline source (`*.zf.json`).
     pub source: String,
+}
+
+/// API payload used to delete one pipeline by its stable file_rel_path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeletePipelineRequest {
+    /// Relative path of the pipeline source file under `repo/`.
+    pub file_rel_path: String,
+}
+
+/// API payload for committing repo changes via git.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitCommitRequest {
+    /// File paths relative to `repo/` to stage and commit.
+    pub files: Vec<String>,
+    /// Commit message.
+    pub message: String,
+    /// Whether to push after committing.
+    #[serde(default)]
+    pub push: bool,
 }
 
 /// API payload used to target one pipeline by path and name.
@@ -988,24 +1013,24 @@ pub struct ProjectFileLayout {
     pub data_runtime_dir: PathBuf,
     /// `.../data/runtime/pipelines`
     pub data_runtime_pipelines_dir: PathBuf,
-    /// `.../data/sekejap` (project runtime db for SimpleTable node).
+    /// `.../data/sekejap` (project runtime db — general-purpose blank DB for user business data).
     pub data_sekejap_dir: PathBuf,
-    /// `.../data/sqlite/project.db` (project sqlite runtime db).
-    pub data_sqlite_file: PathBuf,
     /// `.../files`
     pub files_dir: PathBuf,
-    /// `.../app` (git-sync workspace root).
-    pub app_dir: PathBuf,
-    /// `.../app/.git`
-    pub app_git_dir: PathBuf,
-    /// `.../app/pipelines`
-    pub app_pipelines_dir: PathBuf,
-    /// `.../app/templates`
-    pub app_templates_dir: PathBuf,
-    /// `.../app/components`
-    pub app_components_dir: PathBuf,
-    /// `.../app/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
-    pub app_docs_dir: PathBuf,
+    /// `.../repo` (git-sync workspace root).
+    pub repo_dir: PathBuf,
+    /// `.../repo/.git`
+    pub repo_git_dir: PathBuf,
+    /// `.../repo/pipelines`
+    pub repo_pipelines_dir: PathBuf,
+    /// `.../repo/templates`
+    pub repo_templates_dir: PathBuf,
+    /// `.../repo/components`
+    pub repo_components_dir: PathBuf,
+    /// `.../repo/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
+    pub repo_docs_dir: PathBuf,
+    /// `.../repo/zebflow.json` (Layer 2 non-sensitive project config, git-synced).
+    pub zebflow_json_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
 }
@@ -1024,6 +1049,50 @@ pub struct CreateUserRequest {
 
 fn default_member_role() -> String {
     "member".to_string()
+}
+
+/// Layer 2 project config stored in `repo/zebflow.json` (git-synced, non-sensitive).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJson {
+    #[serde(default)]
+    pub project: ZebflowJsonProject,
+    #[serde(default)]
+    pub assistant: ZebflowJsonAssistant,
+    #[serde(default)]
+    pub ui: ZebflowJsonUi,
+}
+
+/// Project identity section of zebflow.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonProject {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+/// Assistant settings section of zebflow.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonAssistant {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high_model_credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub general_model_credential: Option<String>,
+    #[serde(default)]
+    pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub max_replans: Option<u32>,
+    #[serde(default)]
+    pub chat_history_pairs: Option<u32>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+/// UI preferences section of zebflow.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonUi {
+    #[serde(default)]
+    pub theme: String,
 }
 
 /// Request payload for project creation.
@@ -1182,6 +1251,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "create_project_doc" => Some(ProjectCapability::FilesWrite),
         "list_skills" => Some(ProjectCapability::ProjectRead),
         "read_skill" => Some(ProjectCapability::ProjectRead),
+        "execute_pipeline_dsl" => Some(ProjectCapability::PipelinesExecute),
         _ => None,
     }
 }

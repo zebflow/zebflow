@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export function Separator(props) {
   const orientation = props?.orientation === "vertical" ? "w-px h-full" : "h-px w-full";
   return (

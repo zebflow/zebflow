@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function TabsTrigger(props) {
   return (
     <button

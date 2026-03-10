@@ -368,6 +368,16 @@ pub const OPERATIONS: &[OperationSpec] = &[
         path: "/api/projects/{owner}/{project}/files/{path}",
         params_schema: r#"{"path":"string","contents":"string"}"#,
     },
+    // Pipeline DSL shell
+    OperationSpec {
+        id: "execute_pipeline_dsl",
+        category: "pipelines",
+        description: "Execute Pipeline DSL commands: get, describe, register, patch, activate, deactivate, execute, run, git, and more. Returns terminal-style line output.",
+        capability: ProjectCapability::PipelinesExecute,
+        method: "POST",
+        path: "/api/projects/{owner}/{project}/pipelines/dsl",
+        params_schema: r#"{"dsl":"string"}"#,
+    },
 ];
 
 /// REST channel contract for one operation.

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -50,8 +51,10 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let transformed_server = format!("{}{}", JSX_PRELUDE, normalized_page_source);
-    let transformed_client = transformed_server.clone();
+    let bundled_server = bundle_for_client(&normalized_page_source, &imports)?;
+    let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
+    let bundled_client = bundle_for_client(&normalized_page_source, &imports)?;
+    let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let hydrate_mode = detect_hydrate_mode(source);
 
     Ok(CompiledTemplate {
@@ -341,5 +344,358 @@ fn rewrite_page_root_tag(source: &str) -> String {
         .replace("<Page />", "<Fragment />")
         .replace("<Page/>", "<Fragment/>")
         .replace("<Page ", "<Fragment ")
+}
+
+/// At compile time, inline all filesystem-path imports into one self-contained
+/// module. The result has zero filesystem imports — only npm:/jsr:/https: imports
+/// (handled later by build_client_module in render.rs) and pure code.
+fn bundle_for_client(
+    page_source: &str,
+    imports: &[ImportEdge],
+) -> Result<String, EngineError> {
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut inlined_parts: Vec<String> = Vec::new();
+    let mut counter: usize = 0;
+    let mut rwe_names: HashSet<String> = HashSet::new();
+
+    // Collect rwe imports from the main page itself
+    rwe_names.extend(extract_rwe_import_names(page_source));
+
+    // Depth-first: inline all filesystem imports from the page.
+    // The resolved path is preferred, but when files on disk are already rewritten
+    // with absolute paths (by prepare_template_root), edge.source IS the absolute
+    // path and edge.resolved is None — so fall back to edge.source.
+    for edge in imports {
+        let path = edge
+            .resolved
+            .as_deref()
+            .unwrap_or(&edge.source);
+        if path.starts_with('/') && !is_rwe_runtime_path(path) {
+            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names)?;
+        }
+    }
+
+    // Strip filesystem imports + rwe imports from the main page source
+    let clean_main = strip_local_imports(page_source);
+
+    // Build: inlined components first, then main page
+    let mut result = inlined_parts.join("\n\n");
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    result.push_str(&clean_main);
+    Ok(result)
+}
+
+fn collect_inlined_module(
+    path: &str,
+    parts: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+    counter: &mut usize,
+    rwe_names: &mut HashSet<String>,
+) -> Result<(), EngineError> {
+    if visited.contains(path) {
+        return Ok(());
+    }
+    visited.insert(path.to_string());
+
+    let content = fs::read_to_string(path).map_err(|e| {
+        EngineError::new(
+            "RWE_BUNDLE_READ",
+            format!("cannot read '{path}': {e}"),
+        )
+    })?;
+
+    // Collect rwe imports from this file before stripping them
+    rwe_names.extend(extract_rwe_import_names(&content));
+
+    // Recursively inline this file's own filesystem imports first (depth-first)
+    let sub_paths = extract_filesystem_import_paths(&content);
+    for sub_path in &sub_paths {
+        collect_inlined_module(sub_path, parts, visited, counter, rwe_names)?;
+    }
+
+    // Strip import lines on original content (import paths must be visible to the filter).
+    let stripped = strip_local_imports(&content);
+
+    // Mask string/template literal contents before line-based transforms.
+    // This prevents code-like text inside strings (e.g. `import x from 'y'` inside a
+    // template literal, or `const FOO = ...` inside a string) from confusing
+    // export localization and constant prefixing.
+    let (masked, masks) = super::js_masker::mask(&stripped);
+
+    // Localize exports: "export default function X" → "function X" etc.
+    let localized = localize_exports(&masked);
+
+    // Auto-prefix module-scope UPPER_SNAKE_CASE constants to avoid name collisions
+    // in the flat inlined bundle.
+    let prefix = format!("__c{counter}_");
+    *counter += 1;
+    let prefixed = prefix_module_locals(&localized, &prefix);
+
+    // Restore original string contents.
+    let processed = super::js_masker::unmask(&prefixed, &masks);
+
+    parts.push(processed);
+    Ok(())
+}
+
+/// Auto-prefix all module-scope UPPER_SNAKE_CASE constants in a component
+/// with a unique per-component prefix so they don't collide when inlined
+/// into a single flat bundle. Developers write clean code; the bundler
+/// owns the scoping.
+fn prefix_module_locals(source: &str, prefix: &str) -> String {
+    // Collect UPPER_SNAKE_CASE names from top-level const/let/var declarations.
+    let local_names: Vec<String> = source
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            for kw in &["const ", "let ", "var "] {
+                if let Some(rest) = t.strip_prefix(kw) {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty()
+                        && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                        && name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
+                    {
+                        return Some(name);
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+
+    if local_names.is_empty() {
+        return source.to_string();
+    }
+
+    let mut result = source.to_string();
+    for name in &local_names {
+        result = replace_whole_word(&result, name, &format!("{prefix}{name}"));
+    }
+    result
+}
+
+/// Word-boundary string replacement — replaces `old` with `new` only when
+/// not adjacent to an identifier character (`[a-zA-Z0-9_$]`).
+fn replace_whole_word(source: &str, old: &str, new: &str) -> String {
+    let mut result = String::with_capacity(source.len() + new.len());
+    let mut i = 0;
+    while i < source.len() {
+        if source[i..].starts_with(old) {
+            let before_ok = i == 0
+                || !source[..i]
+                    .chars()
+                    .next_back()
+                    .map(is_ident_char)
+                    .unwrap_or(false);
+            let after_pos = i + old.len();
+            let after_ok = after_pos >= source.len()
+                || !source[after_pos..]
+                    .chars()
+                    .next()
+                    .map(is_ident_char)
+                    .unwrap_or(false);
+            if before_ok && after_ok {
+                result.push_str(new);
+                i += old.len();
+                continue;
+            }
+        }
+        let ch = source[i..].chars().next().unwrap();
+        result.push(ch);
+        i += ch.len_utf8();
+    }
+    result
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
+}
+
+/// Check if a path points to the RWE runtime shim (e.g. ".../rwe.ts").
+/// These should NOT be inlined — they are runtime globals.
+fn is_rwe_runtime_path(path: &str) -> bool {
+    let fname = path.rsplit('/').next().unwrap_or("");
+    fname == "rwe.ts" || fname == "rwe.js" || fname == "rwe.tsx"
+}
+
+/// Collect all named imports from `"rwe"` across a source file using OXC AST.
+/// e.g. `import { useState, cx } from "rwe"` → ["useState", "cx"]
+/// Handles multi-line imports correctly.
+fn extract_rwe_import_names(source: &str) -> Vec<String> {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let specifier = import.source.value.as_str();
+            if specifier == "rwe" || specifier.starts_with("rwe-") {
+                if let Some(ref specifiers) = import.specifiers {
+                    for s in specifiers {
+                        match s {
+                            oxc_ast::ast::ImportDeclarationSpecifier::ImportSpecifier(named) => {
+                                names.push(named.local.name.as_str().to_string());
+                            }
+                            oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(def) => {
+                                names.push(def.local.name.as_str().to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Extract absolute filesystem paths from import declarations using OXC AST.
+/// Handles multi-line imports correctly.
+fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return Vec::new();
+    }
+    parsed
+        .program
+        .body
+        .iter()
+        .filter_map(|stmt| {
+            if let Statement::ImportDeclaration(import) = stmt {
+                let path = import.source.value.as_str();
+                if path.starts_with('/') {
+                    return Some(path.to_string());
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+
+/// Remove all filesystem-path imports AND rwe imports from source using OXC AST.
+/// Handles multi-line imports correctly (OXC knows exact byte spans).
+/// Keeps: npm:, node:, jsr:, https: imports (handled by render.rs later).
+fn strip_local_imports(source: &str) -> String {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return source.to_string();
+    }
+
+    // Collect byte ranges of import declarations to remove.
+    let mut remove_ranges: Vec<(usize, usize)> = Vec::new();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let specifier = import.source.value.as_str();
+            let should_strip = specifier == "rwe"
+                || specifier.starts_with("rwe-")
+                || specifier.starts_with('/');
+            if should_strip {
+                let start = import.span.start as usize;
+                let mut end = import.span.end as usize;
+                // Consume trailing newline so we don't leave blank lines.
+                if end < source.len() && source.as_bytes()[end] == b'\n' {
+                    end += 1;
+                }
+                remove_ranges.push((start, end));
+            }
+        }
+    }
+
+    if remove_ranges.is_empty() {
+        return source.to_string();
+    }
+
+    // Build result by copying everything except the removed ranges.
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in &remove_ranges {
+        if *start > cursor {
+            result.push_str(&source[cursor..*start]);
+        }
+        cursor = *end;
+    }
+    if cursor < source.len() {
+        result.push_str(&source[cursor..]);
+    }
+    result
+}
+
+/// Convert exported declarations to local ones for inlined modules.
+/// Handles multi-line TypeScript type/interface declarations by tracking brace depth.
+fn localize_exports(source: &str) -> String {
+    let mut skip_depth: i32 = 0;
+    source
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+
+            // Inside a multi-line export type/interface block — track braces, skip all lines.
+            if skip_depth > 0 {
+                for ch in t.chars() {
+                    match ch {
+                        '{' => skip_depth += 1,
+                        '}' => skip_depth -= 1,
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+
+            // Start of a multi-line (or single-line) export type/interface declaration.
+            if t.starts_with("export type ") || t.starts_with("export interface ") {
+                let opens = t.chars().filter(|&c| c == '{').count() as i32;
+                let closes = t.chars().filter(|&c| c == '}').count() as i32;
+                skip_depth = opens - closes;
+                return None;
+            }
+
+            let mut s = line.to_string();
+            // Order matters: check "export default function/class" before "export default"
+            if t.starts_with("export default function ") {
+                s = s.replacen("export default function ", "function ", 1);
+            } else if t.starts_with("export default class ") {
+                s = s.replacen("export default class ", "class ", 1);
+            } else if t.starts_with("export default ") {
+                // Bare re-export: `export default Select;` → `Select;` (no-op expression)
+                s = s.replacen("export default ", "", 1);
+            } else if t.starts_with("export function ") {
+                s = s.replacen("export function ", "function ", 1);
+            } else if t.starts_with("export async function ") {
+                s = s.replacen("export async function ", "async function ", 1);
+            } else if t.starts_with("export class ") {
+                s = s.replacen("export class ", "class ", 1);
+            } else if t.starts_with("export const ") {
+                s = s.replacen("export const ", "const ", 1);
+            } else if t.starts_with("export let ") {
+                s = s.replacen("export let ", "let ", 1);
+            } else if t.starts_with("export var ") {
+                s = s.replacen("export var ", "var ", 1);
+            }
+            Some(s)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 

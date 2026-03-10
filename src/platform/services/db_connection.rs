@@ -12,7 +12,7 @@ use crate::platform::model::{
     TestProjectDbConnectionRequest, UpsertProjectDbConnectionRequest, now_ts, slug_segment,
 };
 
-const DB_KIND_SJTABLE: &str = "sjtable";
+const DB_KIND_SJTABLE: &str = "sekejap";
 
 /// Project-scoped DB connections stored in the metadata catalog.
 pub struct DbConnectionService {
@@ -352,7 +352,7 @@ impl DbConnectionService {
             project: project.to_string(),
             connection_id: generate_connection_id(),
             connection_slug: "default".to_string(),
-            connection_label: "Default SekejapDB".to_string(),
+            connection_label: "Default Data Store".to_string(),
             database_kind: DB_KIND_SJTABLE.to_string(),
             credential_id: None,
             config: json!({}),
@@ -373,7 +373,7 @@ impl DbConnectionService {
                 if credential_id.is_some() {
                     return Err(PlatformError::new(
                         "PLATFORM_DB_CONNECTION_INVALID",
-                        "sjtable connection must not bind credential_id",
+                        "sekejap connection must not bind credential_id",
                     ));
                 }
                 Ok(())
@@ -460,7 +460,7 @@ fn generate_connection_id() -> String {
 fn normalize_database_kind(raw: &str) -> Result<String, PlatformError> {
     let normalized = slug_segment(raw);
     let kind = match normalized.as_str() {
-        "sjtable" | "sekejap" | "simpletable" => DB_KIND_SJTABLE,
+        "sekejap" => DB_KIND_SJTABLE,
         "postgres" | "postgresql" | "pg" => "postgresql",
         "mysql" => "mysql",
         "sqlite" => "sqlite",

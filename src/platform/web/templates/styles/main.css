@@ -14,6 +14,7 @@
   --zf-font-mono:
     "Roboto Mono", "JetBrains Mono", "SFMono-Regular", monospace;
   --zf-radius-panel: 1.25rem;
+  --rwe-nav-color: var(--zf-color-brand-blue);
   --zebflow-font-sans: var(--zf-font-sans);
   --zebflow-font-mono: var(--zf-font-mono);
 }
@@ -59,13 +60,9 @@ select {
 }
 
 .project-studio-shell {
+  height: 100vh;
+  overflow: hidden;
   color: rgb(226 232 240);
-}
-
-.project-theme-toggle-input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
 }
 
 .project-studio-frame {
@@ -85,7 +82,7 @@ select {
   color: var(--studio-text);
 }
 
-.project-theme-toggle-input:checked + .project-studio-frame {
+.project-studio-frame[data-theme="light"] {
   --studio-bg: rgb(248 250 252);
   --studio-panel: rgb(255 255 255);
   --studio-panel-2: rgb(248 250 252);
@@ -533,11 +530,11 @@ select {
   display: none;
 }
 
-.project-theme-toggle-input:checked + .project-studio-frame .project-shell-theme-dark {
+.project-studio-frame[data-theme="light"] .project-shell-theme-dark {
   display: none;
 }
 
-.project-theme-toggle-input:checked + .project-studio-frame .project-shell-theme-light {
+.project-studio-frame[data-theme="light"] .project-shell-theme-light {
   display: inline-flex;
 }
 
@@ -884,6 +881,116 @@ select {
   cursor: not-allowed;
 }
 
+/* ── Unified command console ─────────────────────────────────────────────── */
+.project-shell-cmd {
+  position: relative;
+}
+
+.project-shell-cmd > summary {
+  list-style: none;
+}
+
+.project-shell-cmd > summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-shell-cmd-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  width: 38rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #080b10;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  z-index: 200;
+}
+
+.project-shell-cli-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.zf-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.zf-checkbox-input {
+  width: 0.75rem;
+  height: 0.75rem;
+  cursor: pointer;
+  accent-color: #22c55e;
+}
+
+.zf-checkbox-label {
+  font-size: 0.62rem;
+  font-family: var(--zf-font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #334155;
+}
+
+.zf-checkbox:hover .zf-checkbox-label {
+  color: #475569;
+}
+
+.cli-line.cli-ai {
+  color: #7dd3fc;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cli-line.cli-tool {
+  color: #818cf8;
+  font-style: italic;
+}
+
+.cli-line.cli-thinking {
+  color: #1e293b;
+  font-style: italic;
+}
+
+.cli-line.cli-nav a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+.cli-line.cli-nav a:hover {
+  text-decoration: underline;
+  color: #7dd3fc;
+}
+
+/* ── Bottom-docked console panel ─────────────────────────────────────────── */
+/* Position + slide animation only — inner layout is Tailwind in console-panel.tsx */
+.zf-console-panel {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 300;
+  background: #080b10;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.55);
+  transform: translateY(100%);
+  transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.zf-console-panel.is-open {
+  transform: translateY(0);
+}
+
+/* cli-code: used by emitHtml() in project-shell.ts for inline <code> elements */
+.cli-code {
+  color: #7dd3fc;
+  background: rgba(125, 211, 252, 0.08);
+  padding: 0 0.2em;
+  border-radius: 0.2em;
+}
+
 .project-shell-workspace {
   flex: 1;
   min-height: 0;
@@ -1050,6 +1157,178 @@ select {
   min-height: 100%;
   display: flex;
   flex-direction: column;
+}
+
+/* Node registry — Settings > Nodes */
+
+.node-registry-shell {
+  border: 1px solid var(--studio-border);
+  border-radius: 0.75rem;
+  background: var(--studio-panel);
+  overflow: hidden;
+}
+
+.node-registry-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.7rem 0.75rem 0.6rem;
+}
+
+.node-registry-tabs {
+  padding: 0 0.75rem 0.5rem;
+}
+
+.node-registry-summary {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.72rem;
+  color: var(--studio-text-soft);
+  border-bottom: 1px solid var(--studio-border-soft);
+}
+
+.node-registry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem 0.75rem;
+}
+
+.node-registry-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.node-registry-group-head:first-child {
+  margin-top: 0;
+}
+
+.node-registry-group-label {
+  font-size: 0.65rem;
+  font-family: var(--zebflow-font-mono, monospace);
+  color: var(--studio-text-soft);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.node-registry-group-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--studio-border-soft);
+}
+
+.node-registry-item {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--studio-border-soft);
+  border-radius: 0.5rem;
+  background: var(--studio-panel-2);
+  overflow: hidden;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.node-registry-item:hover {
+  border-color: var(--studio-border);
+  background: color-mix(in srgb, var(--studio-panel-3) 72%, transparent);
+}
+
+.node-registry-item-stripe {
+  width: 3px;
+  flex-shrink: 0;
+  background: var(--studio-border);
+}
+
+[data-node-group="n.trigger"] .node-registry-item-stripe { background: #3b82f6; }
+[data-node-group="n.script"]  .node-registry-item-stripe { background: #f59e0b; }
+[data-node-group="n.logic"]   .node-registry-item-stripe { background: #8b5cf6; }
+[data-node-group="n.ai"]      .node-registry-item-stripe { background: #a855f7; }
+[data-node-group=""]          .node-registry-item-stripe { background: #06b6d4; }
+
+.node-registry-item-body {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.node-registry-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.node-registry-item-title {
+  font-size: 0.83rem;
+  font-family: var(--zf-font-display);
+  font-weight: 700;
+  color: var(--studio-text);
+  line-height: 1.2;
+}
+
+.node-registry-item-kind {
+  font-size: 0.66rem;
+  font-family: var(--zebflow-font-mono, monospace);
+  color: var(--studio-text-soft);
+  margin-top: 0.15rem;
+  letter-spacing: 0.03em;
+}
+
+.node-registry-item-desc {
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--studio-text-soft);
+  margin-top: 0.3rem;
+}
+
+.node-registry-item-caps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  flex-shrink: 0;
+  padding-top: 0.1rem;
+}
+
+.node-badge-cap {
+  color: rgb(241 245 249) !important;
+  border-color: rgba(241, 245, 249, 0.25) !important;
+  background: transparent !important;
+  font-size: 0.65rem !important;
+}
+
+.node-badge-installed {
+  font-size: 0.65rem;
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.node-registry-empty {
+  padding: 2rem;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--studio-text-soft);
+}
+
+.node-registry-empty-panel {
+  padding: 1rem 0.75rem;
+}
+
+[data-node-tab-btn].node-tab-active {
+  background: color-mix(in srgb, var(--studio-accent) 14%, transparent) !important;
+  color: var(--studio-accent) !important;
+  border-color: color-mix(in srgb, var(--studio-accent) 40%, transparent) !important;
+}
+
+.project-inline-chip[data-active="true"] {
+  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
+  background: color-mix(in srgb, var(--studio-accent) 14%, transparent);
+  color: var(--studio-accent);
 }
 
 .project-surface-toolbar {
@@ -1912,6 +2191,37 @@ select {
   min-height: 5rem;
   resize: vertical;
   padding: 0.45rem 0.55rem;
+}
+
+.pipeline-editor-method-btns {
+  display: flex;
+  flex-direction: row;
+  gap: 0.25rem;
+}
+
+.pipeline-editor-method-btn {
+  flex: 1;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  font-family: var(--studio-font-mono, monospace);
+  border: 1px solid var(--studio-border-soft);
+  border-radius: 0.35rem;
+  background: var(--studio-panel-2);
+  color: var(--studio-text-muted);
+  cursor: pointer;
+  transition: border-color 0.1s, color 0.1s, background 0.1s;
+}
+
+.pipeline-editor-method-btn:hover {
+  border-color: var(--studio-border);
+  color: var(--studio-text);
+}
+
+.pipeline-editor-method-btn.is-active {
+  border-color: var(--studio-accent);
+  background: color-mix(in srgb, var(--studio-accent) 15%, var(--studio-panel-2));
+  color: var(--studio-accent);
 }
 
 .pipeline-editor-copy-row {
@@ -3098,4 +3408,625 @@ select {
 
 .docs-status-spacer {
   flex: 1;
+}
+
+/* ── Dashboard ── */
+.dash-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  flex-wrap: wrap;
+}
+.dash-meta-label {
+  font-size: 0.75rem;
+  color: var(--studio-text-muted);
+}
+.dash-meta-sep {
+  font-size: 0.75rem;
+  color: var(--studio-text-muted);
+}
+.dash-metric-value {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--studio-text);
+  margin-left: auto;
+}
+.dash-bar-track {
+  margin-top: 0.5rem;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--studio-border-soft);
+  overflow: hidden;
+}
+.dash-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--studio-accent, #6366f1);
+  width: 0%;
+  transition: width 0.4s ease;
+}
+.dash-stat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+.dash-stat-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.dash-stat-key {
+  font-size: 0.72rem;
+  color: var(--studio-text-muted);
+  min-width: 5rem;
+}
+.dash-stat-val {
+  font-size: 0.75rem;
+  color: var(--studio-text);
+}
+.dash-cap-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.dash-cap-section-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--studio-text-muted);
+  padding: 0.5rem 0 0.2rem;
+  margin: 0;
+}
+.dash-cap-section-label:first-child {
+  padding-top: 0;
+}
+.dash-cap-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0;
+}
+.dash-cap-dot-on,
+.dash-cap-dot-off {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dash-cap-dot-on  { background: #22c55e; }
+.dash-cap-dot-off { background: var(--studio-border); }
+.dash-cap-name {
+  font-size: 0.78rem;
+  color: var(--studio-text);
+  min-width: 7rem;
+}
+.dash-cap-status {
+  font-size: 0.72rem;
+  color: var(--studio-text-muted);
+}
+
+/* ─── Pipeline CLI ─────────────────────────────────────────────────────────── */
+.project-shell-cli {
+  position: relative;
+}
+.project-shell-cli > summary {
+  list-style: none;
+}
+.project-shell-cli > summary::-webkit-details-marker {
+  display: none;
+}
+.project-shell-cli-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  width: 38rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #080b10;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  z-index: 60;
+}
+.project-shell-cli-head {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.875rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.project-shell-cli-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #64748b;
+  font-family: var(--zf-font-mono);
+}
+.project-shell-cli-subtitle {
+  font-size: 0.72rem;
+  color: #334155;
+  font-family: var(--zf-font-mono);
+}
+.project-shell-cli-subtitle code {
+  color: #475569;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0 0.2rem;
+  border-radius: 0.2rem;
+}
+.project-shell-cli-output {
+  height: 13rem;
+  overflow-y: auto;
+  padding: 0.5rem 0.875rem 0.25rem;
+  font-family: var(--zf-font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+.project-shell-cli-output::-webkit-scrollbar {
+  width: 4px;
+}
+.project-shell-cli-output::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 2px;
+}
+.cli-line {
+  color: #94a3b8;
+  white-space: pre;
+  word-break: break-all;
+}
+.cli-line.cli-echo {
+  color: #475569;
+}
+.cli-line.cli-info {
+  color: #475569;
+  font-style: italic;
+}
+.cli-line.cli-error {
+  color: #f87171;
+}
+.cli-line.cli-success {
+  color: #4ade80;
+}
+.cli-line.cli-muted {
+  color: #334155;
+}
+.cli-line.cli-blank {
+  display: block;
+  height: 0.6em;
+}
+.project-shell-cli-form {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.875rem 0.5rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.project-shell-cli-prompt {
+  color: #22c55e;
+  font-family: var(--zf-font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  user-select: none;
+  flex-shrink: 0;
+}
+.project-shell-cli-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e2e8f0;
+  font-family: var(--zf-font-mono);
+  font-size: 0.8rem;
+  caret-color: #22c55e;
+}
+.project-shell-cli-input::placeholder {
+  color: #1e293b;
+}
+
+/* ── Pipeline Registry List View ─────────────────────────────────────────── */
+
+.pipeline-registry-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  gap: 0.25rem;
+}
+
+.pipeline-registry-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.4rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--studio-border-soft);
+  background: var(--studio-panel-2);
+  color: var(--studio-text);
+  text-decoration: none;
+  transition: border-color 0.1s;
+}
+
+.pipeline-registry-row:hover {
+  border-color: var(--studio-border);
+}
+
+.pipeline-registry-folder-row {
+  background: transparent;
+  border-style: dashed;
+  color: var(--studio-text-soft);
+  font-size: 0.75rem;
+  gap: 0.4rem;
+}
+
+.pipeline-registry-folder-row:hover {
+  color: var(--studio-text);
+}
+
+.pipeline-registry-row-icon {
+  flex-shrink: 0;
+  color: var(--studio-text-soft);
+  display: flex;
+  align-items: center;
+}
+
+.pipeline-registry-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.pipeline-registry-row-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--studio-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-registry-row-kind {
+  font-size: 0.68rem;
+  color: var(--studio-text-soft);
+  background: var(--studio-panel);
+  border: 1px solid var(--studio-border-soft);
+  border-radius: 0.3rem;
+  padding: 0.08rem 0.35rem;
+  flex-shrink: 0;
+}
+
+.pipeline-registry-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.pipeline-registry-delete-btn {
+  color: #ef4444 !important;
+  border-color: #ef4444 !important;
+}
+
+.pipeline-registry-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.08) !important;
+}
+
+.pipeline-registry-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--studio-border-soft);
+  flex-wrap: wrap;
+}
+
+.pipeline-registry-inline-input,
+.pipeline-registry-inline-select {
+  height: 1.9rem;
+  padding: 0 0.5rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  background: var(--studio-panel);
+  color: var(--studio-text);
+  font-size: 0.75rem;
+}
+
+.pipeline-registry-inline-input:focus,
+.pipeline-registry-inline-select:focus {
+  outline: none;
+  border-color: var(--studio-accent);
+}
+
+.pipeline-registry-empty {
+  padding: 1.5rem;
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--studio-text-soft);
+}
+
+/* ── Pipeline Status Dot ─────────────────────────────────────────────────── */
+
+.pipeline-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.pipeline-status-dot.dot-active {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+
+.pipeline-status-dot.dot-draft {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+}
+
+.pipeline-status-dot.dot-inactive {
+  background: transparent;
+  border: 1.5px solid #6b7280;
+}
+
+/* ── Pipeline Git Badge ──────────────────────────────────────────────────── */
+
+.pipeline-git-badge {
+  font-size: 0.62rem;
+  padding: 0.06rem 0.4rem;
+  border-radius: 0.25rem;
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  flex-shrink: 0;
+}
+
+/* ── Delete Pipeline Dialog ──────────────────────────────────────────────── */
+
+.pipeline-delete-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pipeline-delete-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.65);
+  cursor: pointer;
+}
+
+.pipeline-delete-box {
+  position: relative;
+  z-index: 1;
+  width: min(28rem, calc(100vw - 2rem));
+  background: var(--studio-panel);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.65rem;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-shadow: 0 20px 50px rgba(2, 6, 23, 0.4);
+}
+
+.pipeline-delete-title {
+  font-size: 0.95rem;
+  font-family: var(--zf-font-display);
+  font-weight: 700;
+  color: #ef4444;
+  margin: 0;
+}
+
+.pipeline-delete-name {
+  font-family: var(--zf-font-mono);
+  font-size: 0.82rem;
+  color: var(--studio-text);
+}
+
+.pipeline-delete-copy {
+  font-size: 0.78rem;
+  color: var(--studio-text-soft);
+  margin: 0;
+}
+
+.pipeline-delete-input {
+  width: 100%;
+  height: 2rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.4rem;
+  background: var(--studio-panel-2);
+  color: var(--studio-text);
+  font-family: var(--zf-font-mono);
+  font-size: 0.82rem;
+}
+
+.pipeline-delete-input:focus {
+  outline: none;
+  border-color: #ef4444;
+}
+
+.pipeline-delete-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.pipeline-delete-confirm-btn {
+  color: #ef4444 !important;
+  border-color: #ef4444 !important;
+}
+
+.pipeline-delete-confirm-btn:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.12) !important;
+}
+
+/* ── Git Commit Dialog ───────────────────────────────────────────────────── */
+
+.git-commit-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.git-commit-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.65);
+  cursor: pointer;
+}
+
+.git-commit-box {
+  position: relative;
+  z-index: 1;
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 4rem);
+  background: var(--studio-panel);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 24px 55px rgba(2, 6, 23, 0.4);
+  overflow: hidden;
+}
+
+.git-commit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.git-commit-title {
+  font-size: 0.95rem;
+  font-family: var(--zf-font-display);
+  font-weight: 700;
+  color: var(--studio-text);
+  margin: 0;
+}
+
+.git-commit-close {
+  background: transparent;
+  border: none;
+  color: var(--studio-text-soft);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.3rem;
+}
+
+.git-commit-close:hover {
+  color: var(--studio-text);
+  background: var(--studio-panel-2);
+}
+
+.git-commit-file-list {
+  flex: 1;
+  min-height: 4rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  border: 1px solid var(--studio-border-soft);
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  background: var(--studio-panel-2);
+}
+
+.git-commit-empty {
+  font-size: 0.78rem;
+  color: var(--studio-text-soft);
+  text-align: center;
+  padding: 0.75rem;
+  margin: 0;
+}
+
+.git-commit-file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  border-radius: 0.3rem;
+  font-size: 0.74rem;
+}
+
+.git-commit-file-row:hover {
+  background: var(--studio-panel);
+}
+
+.git-status-code {
+  font-family: var(--zf-font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  min-width: 1.6rem;
+  flex-shrink: 0;
+}
+
+.git-status-M { color: #f59e0b; }
+.git-status-D { color: #ef4444; }
+.git-status-A { color: #22c55e; }
+.git-status-untracked { color: #94a3b8; }
+
+.git-commit-file-path {
+  font-family: var(--zf-font-mono);
+  font-size: 0.72rem;
+  color: var(--studio-text-soft);
+  word-break: break-all;
+}
+
+.git-commit-message {
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.4rem;
+  background: var(--studio-panel-2);
+  color: var(--studio-text);
+  font-size: 0.78rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.git-commit-message:focus {
+  outline: none;
+  border-color: var(--studio-accent);
+}
+
+.git-commit-push-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: var(--studio-text-soft);
+  cursor: pointer;
+}
+
+.git-commit-error {
+  font-size: 0.74rem;
+  color: #ef4444;
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 0.35rem;
+}
+
+.git-commit-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
 }

@@ -10,7 +10,7 @@ use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformCo
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, CredentialService,
     DbConnectionService, DbRuntimeService, McpSessionService, PipelineHitsService,
-    PipelineRuntimeService, ProjectService, SimpleTableService, UserService,
+    PipelineRuntimeService, ProjectService, SimpleTableService, UserService, ZebflowJsonService,
 };
 
 /// Main platform service graph, created once per process.
@@ -34,6 +34,8 @@ pub struct PlatformService {
     pub credentials: Arc<CredentialService>,
     /// Project assistant config service.
     pub assistant_configs: Arc<AssistantConfigService>,
+    /// Layer 2 project config (zebflow.json) service.
+    pub zebflow_cfg: Arc<ZebflowJsonService>,
     /// Project DB connection management service.
     pub db_connections: Arc<DbConnectionService>,
     /// Project DB runtime service (kind-dispatched describe/query).
@@ -59,16 +61,18 @@ impl PlatformService {
         let project_data = build_project_data_factory(&config.data_root);
         file.initialize()?;
 
+        let zebflow_cfg = Arc::new(ZebflowJsonService::new(config.data_root.join("users")));
         let users = Arc::new(UserService::new(data.clone()));
         let projects = Arc::new(ProjectService::new(
             data.clone(),
             file.clone(),
             project_data.clone(),
+            zebflow_cfg.clone(),
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone()));
-        let assistant_configs = Arc::new(AssistantConfigService::new(data.clone()));
+        let assistant_configs = Arc::new(AssistantConfigService::new(data.clone(), zebflow_cfg.clone()));
         let db_connections = Arc::new(DbConnectionService::new(data.clone()));
         let simple_tables = Arc::new(SimpleTableService::new(file.clone(), project_data.clone()));
         let db_runtime = Arc::new(DbRuntimeService::new(
@@ -90,6 +94,7 @@ impl PlatformService {
             authz,
             credentials,
             assistant_configs,
+            zebflow_cfg,
             db_connections,
             db_runtime,
             projects,

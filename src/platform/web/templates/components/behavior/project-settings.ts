@@ -84,6 +84,62 @@ async function initAssistantSettings(root) {
   }
 }
 
+function initNodeRegistry(root) {
+  const searchInput = root.querySelector("[data-node-search]");
+  const tabBtns = root.querySelectorAll("[data-node-tab-btn]");
+  const panels = root.querySelectorAll("[data-node-tab-panel]");
+  const items = root.querySelectorAll("[data-node-item]");
+  const groups = root.querySelectorAll("[data-node-group]");
+  const summary = root.querySelector("[data-node-summary]");
+  const total = items.length;
+
+  let searchQuery = "";
+
+  // Tab switching
+  tabBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.getAttribute("data-node-tab-btn");
+      tabBtns.forEach((b) => b.classList.remove("node-tab-active"));
+      btn.classList.add("node-tab-active");
+      panels.forEach((panel) => {
+        panel.hidden = panel.getAttribute("data-node-tab-panel") !== target;
+      });
+    });
+  });
+
+  // Search filtering (applies to installed panel)
+  function updateSearch() {
+    let visible = 0;
+    items.forEach((item) => {
+      const text = item.getAttribute("data-search-text") || "";
+      const show = !searchQuery || text.includes(searchQuery);
+      item.style.display = show ? "" : "none";
+      if (show) visible++;
+    });
+    // Hide group containers when all their items are hidden
+    groups.forEach((group) => {
+      const groupItems = group.querySelectorAll("[data-node-item]");
+      const anyVisible = Array.from(groupItems).some(
+        (el) => (el as HTMLElement).style.display !== "none"
+      );
+      group.style.display = anyVisible ? "" : "none";
+    });
+    if (summary) {
+      summary.textContent =
+        visible === total
+          ? `${total} nodes · ${total} built-in`
+          : `${visible} of ${total} nodes · ${total} built-in`;
+    }
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener("input", () => {
+      searchQuery = (searchInput.value || "").toLowerCase().trim();
+      updateSearch();
+    });
+  }
+}
+
 const initializedRoots = new WeakSet();
 let scanScheduled = false;
 
@@ -96,6 +152,16 @@ function scanAssistantSettingsRoots() {
     initAssistantSettings(root).catch((err) => {
       console.error("assistant settings ui failed", err);
     });
+  });
+}
+
+function scanNodeRegistryRoots() {
+  document.querySelectorAll("[data-node-registry]").forEach((root) => {
+    if (initializedRoots.has(root)) {
+      return;
+    }
+    initializedRoots.add(root);
+    initNodeRegistry(root);
   });
 }
 
@@ -113,6 +179,7 @@ export function initProjectSettingsBehavior() {
   const run = () => {
     scanScheduled = false;
     scanAssistantSettingsRoots();
+    scanNodeRegistryRoots();
   };
   if (typeof requestAnimationFrame === "function") {
     requestAnimationFrame(run);

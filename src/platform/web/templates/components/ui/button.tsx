@@ -1,6 +1,4 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
+import { cx } from "rwe";
 
 const VARIANT_CLASSES = {
   primary: "bg-slate-900 text-white hover:opacity-90",

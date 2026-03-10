@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function DialogDescription(props) {
   return (
     <p className={cx("text-sm text-slate-500 dark:text-slate-400", props?.className)}>

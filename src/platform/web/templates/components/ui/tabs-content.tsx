@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function TabsContent(props) {
   if (!props?.active) return null;
   return (

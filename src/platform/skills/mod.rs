@@ -43,14 +43,19 @@ static SKILLS: &[Skill] = &[
         content: include_str!("rwe-templates.md"),
     },
     Skill {
-        name: "pipeline-authoring",
-        title: "Pipeline Authoring",
-        content: include_str!("pipeline-authoring.md"),
+        name: "pipeline-dsl",
+        title: "Pipeline DSL Reference",
+        content: include_str!("pipeline-dsl.md"),
     },
     Skill {
-        name: "pipeline-nodes",
-        title: "Pipeline Node Reference",
-        content: include_str!("pipeline-nodes.md"),
+        name: "pipeline-dsl-rwe",
+        title: "Pipeline DSL — RWE & web.render",
+        content: include_str!("pipeline-dsl-rwe.md"),
+    },
+    Skill {
+        name: "pipeline-dsl-web-auto",
+        title: "Pipeline DSL — web.auto Language",
+        content: include_str!("pipeline-dsl-web-auto.md"),
     },
     Skill {
         name: "api-reference",

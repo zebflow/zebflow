@@ -2,19 +2,18 @@ import ProjectStudioShell from "@/components/layout/project-studio-shell";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
   },
   html: {
     lang: "en",
   },
   body: {
-    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
+    className: "font-sans",
   },
   navigation: "history",
 };
 
-export const app = {};
 
 export default function Page(input) {
   return (

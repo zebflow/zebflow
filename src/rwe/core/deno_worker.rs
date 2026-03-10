@@ -154,17 +154,18 @@ async fn do_render_ssr(
     //    `globalThis.__rwe_page_config` ← the optional `export const page = { … }`.
     let js = inject_page_globals(&js);
 
-    // 2b. Inject ctx as globalThis.input so top-level IIFE code in templates can
-    //     reference `input` (e.g. `const seed = (input?.shared?.seed ?? 0)`).
-    //     This must run before the module is loaded so the variable is present
-    //     when the module's top-level statements execute.
+    // 2b. Inject render vars as globalThis.ctx (primary) and globalThis.input (compat).
+    //     `ctx` is the canonical name — used in `export const page` config and top-level code.
+    //     `input` is kept for backward compat (component function parameter convention).
+    //     Must run before the module loads so variables are present during top-level eval.
+    let ctx_json = serde_json::to_string(ctx)
+        .map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
     let input_init_code = format!(
-        "globalThis.input = {};",
-        serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?
+        "globalThis.ctx = {ctx_json}; globalThis.input = globalThis.ctx;",
     );
     js_rt
-        .execute_script("<rwe_input_init>", input_init_code)
-        .map_err(|e| EngineError::new("RWE_INPUT_INIT", e.to_string()))?;
+        .execute_script("<rwe_ctx_init>", input_init_code)
+        .map_err(|e| EngineError::new("RWE_CTX_INIT", e.to_string()))?;
 
     // 3. Write to a temp file so deno_core can load it as a file:// module.
     //    All component imports inside have already been resolved to absolute

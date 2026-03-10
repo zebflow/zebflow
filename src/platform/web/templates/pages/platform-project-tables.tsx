@@ -3,8 +3,8 @@ import { initProjectDbConnectionsBehavior } from "@/components/behavior/project-
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
@@ -14,12 +14,11 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
+    className: "font-sans",
   },
   navigation: "history",
 };
 
-export const app = {};
 
 export default function Page(input) {
   initProjectDbConnectionsBehavior();
@@ -120,7 +119,7 @@ export default function Page(input) {
                   <label className="pipeline-editor-field">
                     <span>Database Kind</span>
                     <select name="database_kind" data-db-connection-kind="true" required>
-                      <option value="sjtable">sjtable (sekejap)</option>
+                      <option value="sekejap">sekejap</option>
                       <option value="postgresql">postgresql</option>
                       <option value="mysql">mysql</option>
                       <option value="sqlite">sqlite</option>

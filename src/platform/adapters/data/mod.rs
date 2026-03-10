@@ -10,9 +10,8 @@ use std::sync::Arc;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, McpSession, PipelineMeta, PlatformProject, PlatformUser,
-    ProjectAssistantConfig, ProjectCredential, ProjectDbConnection, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
+    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -84,19 +83,16 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         connection_slug: &str,
     ) -> Result<(), PlatformError>;
-    /// Load one project assistant config.
-    fn get_project_assistant_config(
+    /// Upsert one pipeline metadata row.
+    fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
+    /// Delete one pipeline metadata row by owner/project/virtual_path/name.
+    fn delete_pipeline_meta(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Option<ProjectAssistantConfig>, PlatformError>;
-    /// Upsert one project assistant config.
-    fn put_project_assistant_config(
-        &self,
-        config: &ProjectAssistantConfig,
+        virtual_path: &str,
+        name: &str,
     ) -> Result<(), PlatformError>;
-    /// Upsert one pipeline metadata row.
-    fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
     /// List pipeline metadata rows by owner/project.
     fn list_pipeline_meta(
         &self,

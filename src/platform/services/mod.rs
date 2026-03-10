@@ -12,6 +12,7 @@ pub mod pipeline_hits;
 pub mod pipeline_runtime;
 pub mod platform;
 pub mod project;
+pub mod project_config;
 pub mod simple_table;
 pub mod user;
 
@@ -27,5 +28,6 @@ pub use pipeline_hits::PipelineHitsService;
 pub use pipeline_runtime::PipelineRuntimeService;
 pub use platform::PlatformService;
 pub use project::ProjectService;
+pub use project_config::ZebflowJsonService;
 pub use simple_table::SimpleTableService;
 pub use user::UserService;

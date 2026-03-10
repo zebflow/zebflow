@@ -1,24 +1,21 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
-
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
+import { cx, Link } from "rwe";
+import Badge from "@/components/ui/badge";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
   },
   html: {
     lang: "en",
   },
   body: {
-    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
+    className: "font-sans",
   },
   navigation: "history",
 };
 
-export const app = {};
 
 export default function Page(input) {
   const navLinks = input?.nav?.links ?? {};
@@ -40,11 +37,11 @@ export default function Page(input) {
       >
         <div className="project-workspace">
           <nav className="project-tab-strip">
-            <a href={navLinks.pipelines_registry ?? "#"} className={cx("project-tab-link", navClasses.pipeline_registry)}>Registry</a>
-            <a href={navLinks.pipelines_webhooks ?? "#"} className={cx("project-tab-link", navClasses.pipeline_webhooks)}>Webhooks</a>
-            <a href={navLinks.pipelines_schedules ?? "#"} className={cx("project-tab-link", navClasses.pipeline_schedules)}>Schedules</a>
-            <a href={navLinks.pipelines_manual ?? "#"} className={cx("project-tab-link", navClasses.pipeline_manual)}>Manual</a>
-            <a href={navLinks.pipelines_functions ?? "#"} className={cx("project-tab-link", navClasses.pipeline_functions)}>Functions</a>
+            <Link href={navLinks.pipelines_registry ?? "#"} className={cx("project-tab-link", navClasses.pipeline_registry)}>Registry</Link>
+            <Link href={navLinks.pipelines_webhooks ?? "#"} className={cx("project-tab-link", navClasses.pipeline_webhooks)}>Webhooks</Link>
+            <Link href={navLinks.pipelines_schedules ?? "#"} className={cx("project-tab-link", navClasses.pipeline_schedules)}>Schedules</Link>
+            <Link href={navLinks.pipelines_manual ?? "#"} className={cx("project-tab-link", navClasses.pipeline_manual)}>Manual</Link>
+            <Link href={navLinks.pipelines_functions ?? "#"} className={cx("project-tab-link", navClasses.pipeline_functions)}>Functions</Link>
           </nav>
 
           <section className="project-workspace-body">
@@ -55,11 +52,11 @@ export default function Page(input) {
                   {breadcrumbs.map((crumb, index) => (
                     <span key={`${crumb?.path ?? "root"}-${index}`} className="project-inline-path-item">
                       {crumb?.show_divider ? <span className="project-inline-path-divider">/</span> : null}
-                      <a href={crumb?.path ?? "#"} className="project-inline-path-link">{crumb?.name ?? "/"}</a>
+                      <Link href={crumb?.path ?? "#"} className="project-inline-path-link">{crumb?.name ?? "/"}</Link>
                     </span>
                   ))}
                 </div>
-                <a href={registry?.editor_href ?? "#"} className="project-inline-chip project-inline-chip-accent">Open Editor</a>
+                <Link href={registry?.editor_href ?? "#"} className="project-inline-chip project-inline-chip-accent">Open Editor</Link>
               </div>
 
               <section className="project-content-section">
@@ -72,7 +69,7 @@ export default function Page(input) {
                 <div className="project-content-body">
                   <div className="project-entry-grid">
                     {folders.map((folder, index) => (
-                      <a key={`${folder?.path ?? "folder"}-${index}`} href={folder?.path ?? "#"} className="project-entry-card">
+                      <Link key={`${folder?.path ?? "folder"}-${index}`} href={folder?.path ?? "#"} className="project-entry-card">
                         <span className="project-entry-icon">
                           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
                             <path d="M3 7.5A1.5 1.5 0 014.5 6h4l1.5 2h9A1.5 1.5 0 0120.5 9.5v7A1.5 1.5 0 0119 18H4.5A1.5 1.5 0 013 16.5v-9z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
@@ -82,11 +79,11 @@ export default function Page(input) {
                           <span className="project-list-title">{folder?.name}</span>
                           <p className="project-card-meta">Folder</p>
                         </div>
-                      </a>
+                      </Link>
                     ))}
 
                     {pipelines.map((item, index) => (
-                      <a key={`${item?.id ?? item?.name ?? "pipeline"}-${index}`} href={item?.edit_href ?? "#"} className="project-entry-card">
+                      <Link key={`${item?.id ?? item?.name ?? "pipeline"}-${index}`} href={item?.edit_href ?? "#"} className="project-entry-card">
                         <span className="project-entry-icon">
                           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
                             <circle cx="6" cy="12" r="2" stroke="currentColor" strokeWidth="1.7"/>
@@ -101,12 +98,12 @@ export default function Page(input) {
                               <p className="project-list-title">{item?.title}</p>
                               <p className="project-card-meta">{item?.name}</p>
                             </div>
-                            <span className="project-inline-chip">{item?.trigger_kind}</span>
+                            <Badge variant="secondary">{item?.trigger_kind}</Badge>
                           </div>
                           <p className="project-card-copy">{item?.description}</p>
                           <p className="project-card-meta">{item?.file_rel_path}</p>
                         </div>
-                      </a>
+                      </Link>
                     ))}
                   </div>
                 </div>

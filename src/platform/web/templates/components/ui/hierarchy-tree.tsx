@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 function toAttrProps(attrs) {
   const out = {};
   if (!attrs || typeof attrs !== "object") {

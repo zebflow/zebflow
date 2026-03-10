@@ -230,6 +230,25 @@ impl SimpleTableService {
         Ok(SimpleTableQueryResult { table, rows })
     }
 
+    /// Executes a raw SekejapQL text DSL query against the project DB and returns rows.
+    ///
+    /// Uses the same text DSL format as sekejap directly:
+    /// ```text
+    /// collection "sjtable__contacts"
+    /// where_eq "email" "alice@example.com"
+    /// take 20
+    /// ```
+    pub fn query_text_rows(
+        &self,
+        owner: &str,
+        project: &str,
+        dsl: &str,
+    ) -> Result<Vec<Value>, PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        let db = self.open_db(&layout)?;
+        query_skql_rows(&db, dsl)
+    }
+
     /// Executes one native Sekejap query payload against project DB and returns payload rows.
     ///
     /// Expected payload shape follows Sekejap query API, usually:
@@ -308,8 +327,12 @@ fn query_payload_rows(db: &SekejapDB, pipeline: Vec<Value>) -> Result<Vec<Value>
 fn query_json_rows(db: &SekejapDB, payload: &Value) -> Result<Vec<Value>, PlatformError> {
     let raw_payload = serde_json::to_string(payload)
         .map_err(|err| PlatformError::new("PLATFORM_SIMPLE_TABLE_QUERY", err.to_string()))?;
+    query_skql_rows(db, &raw_payload)
+}
+
+fn query_skql_rows(db: &SekejapDB, dsl: &str) -> Result<Vec<Value>, PlatformError> {
     let out = db
-        .query(&raw_payload)
+        .query(dsl)
         .map_err(|e| PlatformError::new("PLATFORM_SIMPLE_TABLE_QUERY", e.to_string()))?;
     let mut rows = Vec::new();
     for hit in out.data {

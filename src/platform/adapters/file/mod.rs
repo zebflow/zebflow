@@ -38,14 +38,14 @@ impl FilesystemFileAdapter {
             .join(slug_segment(project))
     }
 
-    fn ensure_git_repo(app_dir: &PathBuf, git_dir: &PathBuf) -> Result<(), PlatformError> {
+    fn ensure_git_repo(repo_dir: &PathBuf, git_dir: &PathBuf) -> Result<(), PlatformError> {
         if git_dir.exists() {
             return Ok(());
         }
         let status = Command::new("git")
             .arg("init")
             .arg("-q")
-            .current_dir(app_dir)
+            .current_dir(repo_dir)
             .status()
             .map_err(|e| PlatformError::new("PLATFORM_GIT_INIT", e.to_string()))?;
         if status.success() {
@@ -78,15 +78,14 @@ impl FileAdapter for FilesystemFileAdapter {
         let data_runtime_dir = data_dir.join("runtime");
         let data_runtime_pipelines_dir = data_runtime_dir.join("pipelines");
         let data_sekejap_dir = data_dir.join("sekejap");
-        let data_sqlite_dir = data_dir.join("sqlite");
-        let data_sqlite_file = data_sqlite_dir.join("project.db");
         let files_dir = root.join("files");
-        let app_dir = root.join("app");
-        let app_git_dir = app_dir.join(".git");
-        let app_pipelines_dir = app_dir.join("pipelines");
-        let app_templates_dir = app_dir.join("templates");
-        let app_components_dir = app_dir.join("components");
-        let app_docs_dir = app_dir.join("docs");
+        let repo_dir = root.join("repo");
+        let repo_git_dir = repo_dir.join(".git");
+        let repo_pipelines_dir = repo_dir.join("pipelines");
+        let repo_templates_dir = repo_dir.join("templates");
+        let repo_components_dir = repo_dir.join("components");
+        let repo_docs_dir = repo_dir.join("docs");
+        let zebflow_json_file = repo_dir.join("zebflow.json");
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
         for dir in [
@@ -95,27 +94,18 @@ impl FileAdapter for FilesystemFileAdapter {
             &data_runtime_dir,
             &data_runtime_pipelines_dir,
             &data_sekejap_dir,
-            &data_sqlite_dir,
             &files_dir,
-            &app_dir,
-            &app_pipelines_dir,
-            &app_templates_dir,
-            &app_components_dir,
-            &app_docs_dir,
+            &repo_dir,
+            &repo_pipelines_dir,
+            &repo_templates_dir,
+            &repo_components_dir,
+            &repo_docs_dir,
             &agent_docs_dir,
         ] {
             fs::create_dir_all(dir)?;
         }
 
-        if !data_sqlite_file.exists() {
-            let _ = fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&data_sqlite_file)?;
-        }
-
-        Self::ensure_git_repo(&app_dir, &app_git_dir)?;
+        Self::ensure_git_repo(&repo_dir, &repo_git_dir)?;
 
         Ok(ProjectFileLayout {
             root,
@@ -123,14 +113,14 @@ impl FileAdapter for FilesystemFileAdapter {
             data_runtime_dir,
             data_runtime_pipelines_dir,
             data_sekejap_dir,
-            data_sqlite_file,
             files_dir,
-            app_dir,
-            app_git_dir,
-            app_pipelines_dir,
-            app_templates_dir,
-            app_components_dir,
-            app_docs_dir,
+            repo_dir,
+            repo_git_dir,
+            repo_pipelines_dir,
+            repo_templates_dir,
+            repo_components_dir,
+            repo_docs_dir,
+            zebflow_json_file,
             agent_docs_dir,
         })
     }

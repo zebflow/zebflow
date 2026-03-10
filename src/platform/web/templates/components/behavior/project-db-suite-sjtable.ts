@@ -372,7 +372,7 @@ async function runQuery(state) {
     return;
   }
   const raw = state.queryEditor.state.doc.toString().trim();
-  const isSjtable = state.dbKind === "sjtable";
+  const isSjtable = state.dbKind === "sekejap";
 
   let payloadBody = {
     sql: raw,
@@ -611,12 +611,7 @@ async function initQueryEditor(state) {
     return;
   }
   await ensureCodeMirrorRuntime();
-  const initial = (state.queryEditorHost.textContent || "").trim() || `{
-  "pipeline": [
-    { "op": "collection", "name": "sjtable__your_table" },
-    { "op": "take", "n": 200 }
-  ]
-}`;
+  const initial = (state.queryEditorHost.textContent || "").trim() || `collection "sjtable__your_table"\ntake 200`;
   state.queryEditorHost.textContent = "";
   if (!editorViewCtor) return;
   state.queryEditor = new editorViewCtor({

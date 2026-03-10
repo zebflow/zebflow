@@ -17,12 +17,14 @@ use crate::platform::model::{
     TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
     TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
 };
+use crate::platform::services::project_config::ZebflowJsonService;
 
 /// Project service backed by swappable data + file adapters.
 pub struct ProjectService {
     data: Arc<dyn DataAdapter>,
     file: Arc<dyn FileAdapter>,
     project_data: Arc<dyn ProjectDataFactory>,
+    zebflow_cfg: Arc<ZebflowJsonService>,
 }
 
 impl ProjectService {
@@ -31,26 +33,36 @@ impl ProjectService {
         data: Arc<dyn DataAdapter>,
         file: Arc<dyn FileAdapter>,
         project_data: Arc<dyn ProjectDataFactory>,
+        zebflow_cfg: Arc<ZebflowJsonService>,
     ) -> Self {
         Self {
             data,
             file,
             project_data,
+            zebflow_cfg,
         }
     }
 
-    /// Lists projects by owner.
+    /// Lists projects by owner, populating title from zebflow.json.
     pub fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
-        self.data.list_projects(owner)
+        let mut projects = self.data.list_projects(owner)?;
+        for p in &mut projects {
+            p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project);
+        }
+        Ok(projects)
     }
 
-    /// Gets one project by owner/slug.
+    /// Gets one project by owner/slug, populating title from zebflow.json.
     pub fn get_project(
         &self,
         owner: &str,
         project: &str,
     ) -> Result<Option<PlatformProject>, PlatformError> {
-        self.data.get_project(owner, project)
+        let Some(mut p) = self.data.get_project(owner, project)? else {
+            return Ok(None);
+        };
+        p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project);
+        Ok(Some(p))
     }
 
     /// Creates or updates project metadata + required folder layout.
@@ -79,18 +91,27 @@ impl ProjectService {
         let created_at = existing.as_ref().map(|p| p.created_at).unwrap_or(now);
         let title = req
             .title
-            .clone()
-            .unwrap_or_else(|| project.replace('-', " "));
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let title = if title.is_empty() {
+            project.replace('-', " ")
+        } else {
+            title
+        };
 
         let record = PlatformProject {
             owner: owner.clone(),
             project: project.clone(),
-            title,
+            title: title.clone(),
             created_at,
             updated_at: now,
         };
         self.data.put_project(&record)?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
+        // Write title to zebflow.json (Layer 2)
+        self.zebflow_cfg.ensure_initialized(&owner, &project, &title)?;
         self.project_data.initialize_project(&layout)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -238,8 +259,8 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let abs = layout.app_dir.join(file_rel_path);
-        if !abs.starts_with(&layout.app_dir) {
+        let abs = layout.repo_dir.join(file_rel_path);
+        if !abs.starts_with(&layout.repo_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
                 "resolved pipeline path escaped app root",
@@ -396,12 +417,17 @@ impl ProjectService {
         for m in rows {
             let vp = normalize_virtual_path(&m.virtual_path);
             if vp == current_path {
+                let is_active = m.active_hash.as_deref().map(|h| !h.is_empty() && h == m.hash).unwrap_or(false);
+                let has_draft = m.active_hash.as_deref().map(|h| !h.is_empty() && h != m.hash).unwrap_or(false);
                 pipelines.push(PipelineRegistryItem {
                     name: m.name,
                     title: m.title,
                     description: m.description,
                     trigger_kind: m.trigger_kind,
                     file_rel_path: m.file_rel_path,
+                    is_active,
+                    has_draft,
+                    git_status: None,
                 });
                 continue;
             }
@@ -474,8 +500,8 @@ impl ProjectService {
         let mut items = Vec::new();
         let mut default_file = None;
         walk_template_tree(
-            &layout.app_templates_dir,
-            &layout.app_templates_dir,
+            &layout.repo_templates_dir,
+            &layout.repo_templates_dir,
             0,
             &mut items,
             &mut default_file,
@@ -499,7 +525,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.app_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -521,7 +547,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.app_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -544,7 +570,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.app_templates_dir, &req.rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, &req.rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -570,8 +596,8 @@ impl ProjectService {
         let parent_rel =
             normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
         let parent_rel = default_template_parent(&req.kind, &parent_rel);
-        let parent_abs = layout.app_templates_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.app_templates_dir) {
+        let parent_abs = layout.repo_templates_dir.join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_templates_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template parent escaped template root",
@@ -592,7 +618,7 @@ impl ProjectService {
             } else {
                 format!("{parent_rel}/{folder_name}")
             };
-            let abs = layout.app_templates_dir.join(&rel);
+            let abs = layout.repo_templates_dir.join(&rel);
             if abs.exists() {
                 return Err(PlatformError::new(
                     "PLATFORM_TEMPLATE_CREATE",
@@ -616,8 +642,8 @@ impl ProjectService {
         } else {
             format!("{parent_rel}/{filename}")
         };
-        let abs = layout.app_templates_dir.join(&rel);
-        if !abs.starts_with(&layout.app_templates_dir) {
+        let abs = layout.repo_templates_dir.join(&rel);
+        if !abs.starts_with(&layout.repo_templates_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template path escaped template root",
@@ -648,7 +674,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.app_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
         if !abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -682,7 +708,7 @@ impl ProjectService {
         self.ensure_default_template_workspace(&layout)?;
 
         let (from_rel, from_abs) =
-            resolve_template_entry(&layout.app_templates_dir, &req.from_rel_path)?;
+            resolve_template_entry(&layout.repo_templates_dir, &req.from_rel_path)?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -690,8 +716,8 @@ impl ProjectService {
             ));
         }
         let parent_rel = normalize_template_folder_rel_path(&req.to_parent_rel_path);
-        let parent_abs = layout.app_templates_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.app_templates_dir) {
+        let parent_abs = layout.repo_templates_dir.join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_templates_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved move target escaped template root",
@@ -740,7 +766,7 @@ impl ProjectService {
 
         let output = Command::new("git")
             .arg("-C")
-            .arg(&layout.app_dir)
+            .arg(&layout.repo_dir)
             .arg("status")
             .arg("--porcelain=v1")
             .arg("--untracked-files=all")
@@ -787,6 +813,102 @@ impl ProjectService {
         }
         items.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(items)
+    }
+
+    /// Returns git status rows for files under `repo/` (covers pipelines, templates, etc.).
+    pub fn list_repo_git_status(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<TemplateGitStatusItem>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("status")
+            .arg("--porcelain=v1")
+            .arg("--untracked-files=all")
+            .output()
+            .map_err(|err| PlatformError::new("PLATFORM_REPO_GIT", err.to_string()))?;
+        if !output.status.success() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_GIT",
+                format!("git status failed with status {}", output.status),
+            ));
+        }
+
+        let mut items = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.len() < 4 {
+                continue;
+            }
+            let xy = &line[..2];
+            let raw_path = line[3..].trim();
+            let rel = if let Some((_, dest)) = raw_path.split_once(" -> ") {
+                dest.trim().to_string()
+            } else {
+                raw_path.to_string()
+            };
+            let code = if xy == "??" {
+                "??".to_string()
+            } else {
+                let trimmed = xy.trim().replace(' ', "");
+                if trimmed.is_empty() {
+                    "M".to_string()
+                } else {
+                    trimmed
+                }
+            };
+            if !rel.is_empty() {
+                items.push(TemplateGitStatusItem {
+                    rel_path: rel,
+                    code,
+                });
+            }
+        }
+        items.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        Ok(items)
+    }
+
+    /// Deletes one pipeline — removes the source file, platform metadata, and any active runtime snapshot.
+    pub fn delete_pipeline(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let wanted = file_rel_path.trim().replace('\\', "/");
+
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let abs = layout.repo_dir.join(&wanted);
+        if !abs.starts_with(&layout.repo_dir) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_PATH",
+                "resolved pipeline path escaped repo root",
+            ));
+        }
+
+        // Remove source file from disk.
+        if abs.is_file() {
+            fs::remove_file(&abs).map_err(|e| PlatformError::new("PLATFORM_PIPELINE_DELETE", e.to_string()))?;
+        }
+
+        // Find and remove metadata from platform catalog.
+        let meta = self
+            .data
+            .list_pipeline_meta(&owner, &project)?
+            .into_iter()
+            .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
+        if let Some(m) = meta {
+            self.data.delete_pipeline_meta(&m.owner, &m.project, &m.virtual_path, &m.name)?;
+        }
+
+        Ok(())
     }
 
     fn seed_default_pipelines(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
@@ -936,10 +1058,10 @@ impl ProjectService {
         &self,
         layout: &ProjectFileLayout,
     ) -> Result<(), PlatformError> {
-        let pages_dir = layout.app_templates_dir.join("pages");
-        let components_dir = layout.app_templates_dir.join("components");
-        let styles_dir = layout.app_templates_dir.join("styles");
-        let scripts_dir = layout.app_templates_dir.join("scripts");
+        let pages_dir = layout.repo_templates_dir.join("pages");
+        let components_dir = layout.repo_templates_dir.join("components");
+        let styles_dir = layout.repo_templates_dir.join("styles");
+        let scripts_dir = layout.repo_templates_dir.join("scripts");
 
         for dir in [&pages_dir, &components_dir, &styles_dir, &scripts_dir] {
             fs::create_dir_all(dir)?;
@@ -1009,8 +1131,8 @@ export default function Page(input) {
         } else {
             format!("pipelines/{}/{}", vpath.trim_start_matches('/'), filename)
         };
-        let abs = layout.app_dir.join(&rel);
-        if !abs.starts_with(&layout.app_dir) {
+        let abs = layout.repo_dir.join(&rel);
+        if !abs.starts_with(&layout.repo_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
                 "resolved path escaped app root",
@@ -1053,7 +1175,7 @@ export default function Page(input) {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let mut items = Vec::new();
-        walk_docs_tree(&layout.app_docs_dir, &layout.app_docs_dir, &mut items)?;
+        walk_docs_tree(&layout.repo_docs_dir, &layout.repo_docs_dir, &mut items)?;
         Ok(items)
     }
 
@@ -1067,7 +1189,7 @@ export default function Page(input) {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (_rel, abs) = resolve_doc_path(&layout.app_docs_dir, rel_path)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_DOC_MISSING",
@@ -1088,7 +1210,7 @@ export default function Page(input) {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let (rel, abs) = resolve_doc_path(&layout.app_docs_dir, rel_path)?;
+        let (rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
 
         if rel.ends_with('/') {
             return Err(PlatformError::new(

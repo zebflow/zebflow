@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function ZCodeTab(props) {
   const activeClass = props?.active ? "bg-white text-slate-950 font-medium dark:bg-slate-950 dark:text-slate-50" : "text-slate-500";
   return (

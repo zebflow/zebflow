@@ -1,25 +1,28 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { initProjectSettingsBehavior } from "@/components/behavior/project-settings";
+import Input from "@/components/ui/input";
+import Badge from "@/components/ui/badge";
+import Separator from "@/components/ui/separator";
+import TabsList from "@/components/ui/tabs-list";
+import Button from "@/components/ui/button";
+import Card from "@/components/ui/card";
+import CardContent from "@/components/ui/card-content";
+import CardDescription from "@/components/ui/card-description";
+import { cx, Link } from "rwe";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
   },
   html: {
     lang: "en",
   },
   body: {
-    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
+    className: "font-sans",
   },
   navigation: "history",
 };
-
-export const app = {};
-
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
 
 function renderCardGrid(items) {
   const rows = Array.isArray(items) ? items : [];
@@ -44,6 +47,8 @@ export default function Page(input) {
   const assistantCredentials = Array.isArray(assistant?.credentials) ? assistant.credentials : [];
   const assistantConfig = assistant?.config ?? {};
   const mcpCapabilities = Array.isArray(input?.mcp?.capabilities) ? input.mcp.capabilities : [];
+  const nodeGroups = Array.isArray(input?.node_groups) ? input.node_groups : [];
+  const nodeCount = input?.node_count ?? 0;
 
   return (
 <Page>
@@ -58,7 +63,7 @@ export default function Page(input) {
       <div className="project-workspace">
         <nav className="project-tab-strip">
           {settingsTabs.map((item, index) => (
-            <a key={`${item?.href ?? "tab"}-${index}`} href={item?.href ?? "#"} className={cx("project-tab-link", item?.classes)}>{item?.label}</a>
+            <Link key={`${item?.href ?? "tab"}-${index}`} href={item?.href ?? "#"} className={cx("project-tab-link", item?.classes)}>{item?.label}</Link>
           ))}
         </nav>
 
@@ -84,7 +89,20 @@ export default function Page(input) {
             {tabFlags?.policy ? (
               <section className="project-content-section">
                 <div className="project-content-body">
-                  <div className="project-card-grid cols-2">{renderCardGrid(input?.cards_policy)}</div>
+
+                  <article className="project-settings-panel">
+                    <header className="project-settings-panel-head">
+                      <div>
+                        <h3 className="project-card-title">Reactive Web Engine</h3>
+                        <p className="project-card-copy">No configuration available yet.</p>
+                      </div>
+                      <span className="project-inline-chip">RWE</span>
+                    </header>
+                  </article>
+
+                  <div className="project-card-grid cols-2">
+                    {renderCardGrid(input?.cards_policy)}
+                  </div>
                 </div>
               </section>
             ) : null}
@@ -188,7 +206,91 @@ export default function Page(input) {
             {tabFlags?.nodes ? (
               <section className="project-content-section">
                 <div className="project-content-body">
-                  <div className="project-card-grid cols-2">{renderCardGrid(input?.cards_nodes)}</div>
+                  <div className="node-registry-shell" data-node-registry="true">
+
+                    {/* Toolbar: search + install */}
+                    <div className="node-registry-toolbar">
+                      <Input placeholder="Search nodes by name or kind..." data-node-search="true" />
+                      <Button variant="outline" size="sm" label="+ Install" data-node-install-btn="true" />
+                    </div>
+
+                    {/* Tab bar */}
+                    <div className="node-registry-tabs">
+                      <TabsList>
+                        <Button variant="ghost" size="sm" data-node-tab-btn="installed" className="node-tab-active"
+                                label={`Installed · ${nodeCount}`} />
+                        <Button variant="ghost" size="sm" data-node-tab-btn="discover" label="Discover" />
+                        <Button variant="ghost" size="sm" data-node-tab-btn="updates" label="Updates" />
+                      </TabsList>
+                    </div>
+
+                    <Separator />
+
+                    {/* Installed panel */}
+                    <div data-node-tab-panel="installed">
+                      <p className="node-registry-summary" data-node-summary="true">
+                        {nodeCount} nodes · {nodeCount} built-in
+                      </p>
+                      <div className="node-registry-list">
+                        {nodeGroups.length === 0 ? (
+                          <p className="node-registry-empty">No nodes installed.</p>
+                        ) : nodeGroups.map((group, gi) => (
+                          <div key={`grp-${gi}`} data-node-group={group?.prefix ?? ""}>
+                            <div className="node-registry-group-head">
+                              {group?.prefix ? <span className="node-registry-group-label">{group.prefix}</span> : null}
+                              <div className="node-registry-group-rule" />
+                            </div>
+                            {(Array.isArray(group?.nodes) ? group.nodes : []).map((node, ni) => (
+                              <div
+                                key={`${node?.kind ?? "node"}-${ni}`}
+                                className="node-registry-item"
+                                data-node-item="true"
+                                data-search-text={`${node?.title ?? ""} ${node?.kind ?? ""} ${node?.description ?? ""}`.toLowerCase()}
+                              >
+                                <div className="node-registry-item-stripe" />
+                                <div className="node-registry-item-body">
+                                  <div className="node-registry-item-main">
+                                    <div className="node-registry-item-title">{node?.title}</div>
+                                    <div className="node-registry-item-kind">{node?.kind}</div>
+                                    <div className="node-registry-item-desc">{node?.description}</div>
+                                  </div>
+                                  <div className="node-registry-item-caps">
+                                    {node?.script_available ? <Badge label="n.script access" variant="outline" className="node-badge-cap" /> : null}
+                                    {node?.ai_registered ? <Badge label="agent tool" variant="outline" className="node-badge-cap" /> : null}
+                                    <span className="project-inline-chip node-badge-installed">● installed</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Discover panel */}
+                    <div data-node-tab-panel="discover" hidden={true}>
+                      <div className="node-registry-empty-panel">
+                        <Card>
+                          <CardContent>
+                            <CardDescription label="Community registry — coming soon." className="node-registry-empty-text" />
+                            <CardDescription label="Install custom nodes from a Git URL using + Install above." className="node-registry-empty-sub" />
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </div>
+
+                    {/* Updates panel */}
+                    <div data-node-tab-panel="updates" hidden={true}>
+                      <div className="node-registry-empty-panel">
+                        <Card>
+                          <CardContent>
+                            <CardDescription label={`All ${nodeCount} built-in nodes are current.`} className="node-registry-empty-text" />
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </div>
+
+                  </div>
                 </div>
               </section>
             ) : null}

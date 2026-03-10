@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function TreeItem(props) {
   const isFolder = Boolean(props?.isFolder);
   const isExpanded = props?.expanded !== false;

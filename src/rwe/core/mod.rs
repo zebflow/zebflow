@@ -2,6 +2,7 @@ pub mod compiler;
 pub mod config;
 pub mod deno_worker;
 pub mod error;
+pub mod js_masker;
 pub mod model;
 pub mod render;
 pub mod security;

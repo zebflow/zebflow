@@ -323,6 +323,13 @@
   globalThis.usePageState = createUsePageState();
   globalThis.useNavigate = useNavigate;
   globalThis.Link = Link;
+  globalThis.cx = function cx() {
+    var out = [];
+    for (var i = 0; i < arguments.length; i++) {
+      if (arguments[i]) out.push(arguments[i]);
+    }
+    return out.join(" ");
+  };
 
   // Internal helpers called by Rust after loading each page module.
   globalThis.__rweRenderToString = renderToString;

@@ -2,7 +2,7 @@
 //!
 //! This crate is intentionally split into independent subsystems:
 //!
-//! 1. [`framework`] for pipeline orchestration
+//! 1. [`pipeline`] for pipeline orchestration
 //! 2. [`language`] for sandboxed script execution
 //! 3. [`rwe`] for reactive web template compile/render
 //! 4. [`automaton`] for autonomous objective planning/execution + interactive REPL (Zebtune)
@@ -12,7 +12,7 @@
 //! can keep `main.rs` thin and delegate all behavior to library modules.
 
 pub mod automaton;
-pub mod framework;
+pub mod pipeline;
 pub mod language;
 pub mod llm;
 pub mod platform;
@@ -21,13 +21,13 @@ pub mod rwe;
 use std::sync::Arc;
 
 use automaton::{AutomatonEngine, AutomatonEngineRegistry, NoopAutomatonEngine};
-use framework::{
+use pipeline::{
     BasicFrameworkEngine, FrameworkEngine, FrameworkEngineRegistry, NoopFrameworkEngine,
 };
 use language::{DenoSandboxEngine, LanguageEngine, LanguageEngineRegistry, NoopLanguageEngine};
 use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
 
-/// Ready-to-use set of engine registries for framework/language/rwe modules.
+/// Ready-to-use set of engine registries for pipeline/language/rwe modules.
 ///
 /// This is the main composition root used by hosts (CLI, server, tests) to
 /// lookup engine implementations by id.
@@ -35,8 +35,8 @@ use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
 pub struct ZebflowEngineKit {
     /// Automaton engines.
     pub automaton: AutomatonEngineRegistry,
-    /// Pipeline orchestration engines.
-    pub framework: FrameworkEngineRegistry,
+    /// Pipeline execution engines.
+    pub pipeline: FrameworkEngineRegistry,
     /// Script/runtime engines.
     pub language: LanguageEngineRegistry,
     /// Reactive web engines.
@@ -46,8 +46,8 @@ pub struct ZebflowEngineKit {
 impl ZebflowEngineKit {
     /// Builds a kit with default engines registered:
     ///
-    /// - `framework.basic`
-    /// - `framework.noop`
+    /// - `pipeline.basic`
+    /// - `pipeline.noop`
     /// - `language.deno_sandbox`
     /// - `language.noop`
     /// - `rwe`
@@ -56,9 +56,9 @@ impl ZebflowEngineKit {
         let mut automaton = AutomatonEngineRegistry::new();
         automaton.register(Arc::new(NoopAutomatonEngine));
 
-        let mut framework = FrameworkEngineRegistry::new();
-        framework.register(Arc::new(BasicFrameworkEngine::default()));
-        framework.register(Arc::new(NoopFrameworkEngine::default()));
+        let mut pipeline = FrameworkEngineRegistry::new();
+        pipeline.register(Arc::new(BasicFrameworkEngine::default()));
+        pipeline.register(Arc::new(NoopFrameworkEngine::default()));
 
         let mut language = LanguageEngineRegistry::new();
         language.register(Arc::new(DenoSandboxEngine::default()));
@@ -69,7 +69,7 @@ impl ZebflowEngineKit {
 
         Self {
             automaton,
-            framework,
+            pipeline,
             language,
             rwe,
         }
@@ -80,9 +80,9 @@ impl ZebflowEngineKit {
         self.automaton.get(id)
     }
 
-    /// Returns a framework engine by id.
-    pub fn framework_engine(&self, id: &str) -> Option<Arc<dyn FrameworkEngine>> {
-        self.framework.get(id)
+    /// Returns a pipeline execution engine by id.
+    pub fn pipeline_engine(&self, id: &str) -> Option<Arc<dyn FrameworkEngine>> {
+        self.pipeline.get(id)
     }
 
     /// Returns a language engine by id.

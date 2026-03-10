@@ -54,6 +54,9 @@ function installGlobals() {
     // During SSR render as a plain anchor (SEO-friendly).
     return h("a", { href, ...props }, children);
   };
+  globalThis.cx = function cx(...parts) {
+    return parts.filter(Boolean).join(" ");
+  };
 }
 
 function wrapWithPageState(Page, input) {

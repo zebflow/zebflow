@@ -26,18 +26,19 @@ use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::assistant_config::load_project_assistant_llm;
-use crate::framework::{BasicFrameworkEngine, FrameworkContext, FrameworkEngine, PipelineGraph};
+use crate::pipeline::{BasicFrameworkEngine, FrameworkContext, FrameworkEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest,
-    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, LoginRequest,
-    McpSessionCreateRequest, PipelineExecuteTrigger, PipelineLocateRequest, ProjectAccessSubject,
-    ProjectCapability, QueryProjectDbConnectionRequest, SimpleTableQueryRequest,
-    TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic,
-    TemplateMoveRequest, TemplateSaveRequest, TestProjectDbConnectionRequest,
-    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
-    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    DeletePipelineRequest, DescribeProjectDbConnectionRequest, ExecutePipelineRequest,
+    GitCommitRequest, LoginRequest, McpSessionCreateRequest, PipelineExecuteTrigger,
+    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
+    QueryProjectDbConnectionRequest, SimpleTableQueryRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest, TestProjectDbConnectionRequest, UpsertPipelineDefinitionRequest,
+    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
+    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
     UpsertSimpleTableRowRequest,
 };
 use crate::platform::services::PlatformService;
@@ -50,7 +51,6 @@ use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
-const RWE_ROUTER_JS: &str = include_str!("rwe_router.js");
 const PLATFORM_MAIN_CSS: &str = include_str!("templates/styles/main.css");
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
@@ -70,6 +70,9 @@ pub struct PlatformAppState {
     pub platform: Arc<PlatformService>,
     frontend: PlatformFrontend,
     render_script_cache: Option<Arc<RenderScriptCache>>,
+    /// Shared compile cache for `n.web.render` pipeline nodes.
+    /// Keyed by markup content hash — reused across every webhook request.
+    web_render_cache: crate::pipeline::engines::basic::WebRenderCache,
 }
 
 /// Builds Zebflow platform router.
@@ -84,7 +87,6 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
     Router::new()
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
-        .route("/assets/platform/rwe-router.js", get(rwe_router_js_handler))
         .route("/assets/platform/{asset}", get(platform_asset))
         .route("/assets/rwe/scripts/{hash}", get(rwe_script_asset))
         .route(
@@ -96,6 +98,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
+        .route("/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
         .route("/home/projects/create", post(home_create_project_submit))
@@ -144,14 +147,6 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab}",
             get(project_db_suite_page),
         )
-        .route(
-            "/projects/{owner}/{project}/tables/connections",
-            get(project_tables_connections_legacy_redirect_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/tables/connections/{connection}",
-            get(project_table_connection_legacy_redirect_page),
-        )
         .route("/projects/{owner}/{project}/files", get(project_files_page))
         .route("/projects/{owner}/{project}/todo", get(project_todo_page))
         .route(
@@ -162,11 +157,8 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/projects/{owner}/{project}/settings/{tab}",
             get(project_settings_tab_page),
         )
-        .route(
-            "/projects/{owner}/{project}/settings/web-libraries",
-            get(project_settings_web_libraries_legacy_redirect_page),
-        )
         .route("/api/meta", get(api_meta))
+        .route("/api/system/info", get(api_system_info))
         .route("/api/admin/db/collections", get(api_admin_db_list_collections))
         .route("/api/admin/db/query", post(api_admin_db_query))
         .route("/api/admin/db/node/{slug}", get(api_admin_db_get_node).delete(api_admin_db_delete_node))
@@ -193,7 +185,11 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/pipelines/definition",
-            post(api_upsert_pipeline_definition),
+            post(api_upsert_pipeline_definition).delete(api_delete_pipeline_definition),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/git/commit",
+            post(api_git_commit),
         )
         .route(
             "/api/projects/{owner}/{project}/pipelines/activate",
@@ -206,6 +202,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/pipelines/execute",
             post(api_execute_pipeline),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/pipelines/dsl",
+            post(api_execute_pipeline_dsl),
         )
         .route(
             "/api/projects/{owner}/{project}/pipelines/hits",
@@ -342,6 +342,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             platform,
             frontend,
             render_script_cache,
+            web_render_cache: crate::pipeline::engines::basic::new_web_render_cache(),
         })
 }
 
@@ -435,6 +436,18 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             "platform.project.section",
             &template_root,
             "pages/platform-project-section.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-project-dashboard",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.project.dashboard",
+            &template_root,
+            "pages/platform-project-dashboard.tsx",
             options.clone(),
         )?,
     );
@@ -547,6 +560,18 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
         )?,
     );
 
+    pages.insert(
+        "platform-design-system",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.design_system",
+            &template_root,
+            "pages/platform-design-system.tsx",
+            options.clone(),
+        )?,
+    );
+
     Ok(PlatformFrontend {
         rwe,
         language,
@@ -581,210 +606,54 @@ fn compile_page(
     .map_err(|e| PlatformError::new("PLATFORM_RWE_COMPILE", e.to_string()))
 }
 
-fn materialize_platform_template_root(data_root: &FsPath) -> Result<PathBuf, PlatformError> {
-    let root = data_root
-        .join("platform")
-        .join("embedded")
-        .join("templates");
-    for asset in PLATFORM_TEMPLATE_ASSETS {
-        let full = root.join(asset.path);
-        if let Some(parent) = full.parent() {
-            fs::create_dir_all(parent)?;
+fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, PlatformError> {
+    // Write to the OS temp dir under a version-scoped subdirectory.
+    // This keeps embedded platform templates out of the user-visible data directory.
+    // Debug builds always re-extract so template changes are picked up by cargo watch.
+    // Release builds skip extraction when sentinel exists (same version = same bytes).
+    let root = std::env::temp_dir()
+        .join("zebflow-platform")
+        .join(env!("CARGO_PKG_VERSION"));
+    let sentinel = root.join(".materialized");
+    let needs_extract = cfg!(debug_assertions) || !sentinel.exists();
+    if needs_extract {
+        // Build set of asset paths that belong to the current binary.
+        let asset_paths: std::collections::HashSet<PathBuf> =
+            PLATFORM_TEMPLATE_ASSETS.iter().map(|a| root.join(a.path)).collect();
+
+        // In debug mode, remove any existing files that are no longer embedded
+        // (e.g. stale files left by a previous binary build).
+        if cfg!(debug_assertions) && root.exists() {
+            fn collect_files(dir: &FsPath, out: &mut Vec<PathBuf>) {
+                let Ok(rd) = fs::read_dir(dir) else { return };
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() { collect_files(&p, out); } else { out.push(p); }
+                }
+            }
+            let mut existing = Vec::new();
+            collect_files(&root, &mut existing);
+            for stale in existing.into_iter().filter(|p| !asset_paths.contains(p)) {
+                let _ = fs::remove_file(&stale);
+            }
         }
-        fs::write(full, asset.bytes)?;
+
+        for asset in PLATFORM_TEMPLATE_ASSETS {
+            let full = root.join(asset.path);
+            if let Some(parent) = full.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&full, asset.bytes)?;
+        }
+        crate::rwe::core::prepare_template_root(&root)
+            .map_err(|e| PlatformError::new("PLATFORM_TEMPLATE_REWRITE", e.message))?;
+        if !cfg!(debug_assertions) {
+            fs::write(&sentinel, b"").map_err(|e| {
+                PlatformError::new("PLATFORM_TEMPLATE_SENTINEL", e.to_string())
+            })?;
+        }
     }
-    rewrite_platform_template_alias_imports(&root)?;
     Ok(root)
-}
-
-fn rewrite_platform_template_alias_imports(root: &FsPath) -> Result<(), PlatformError> {
-    fn visit(dir: &FsPath, out: &mut Vec<PathBuf>) -> Result<(), PlatformError> {
-        for entry in fs::read_dir(dir).map_err(|e| {
-            PlatformError::new(
-                "PLATFORM_TEMPLATE_READ_DIR",
-                format!("failed reading '{}': {e}", dir.display()),
-            )
-        })? {
-            let entry = entry.map_err(|e| {
-                PlatformError::new(
-                    "PLATFORM_TEMPLATE_READ_DIR",
-                    format!("failed reading dir entry in '{}': {e}", dir.display()),
-                )
-            })?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, out)?;
-                continue;
-            }
-            if let Some(ext) = path.extension().and_then(|v| v.to_str())
-                && matches!(ext, "tsx" | "ts" | "jsx" | "js")
-            {
-                out.push(path);
-            }
-        }
-        Ok(())
-    }
-
-    let mut files = Vec::new();
-    visit(root, &mut files)?;
-
-    for file in files {
-        let source = fs::read_to_string(&file).map_err(|e| {
-            PlatformError::new(
-                "PLATFORM_TEMPLATE_READ",
-                format!("failed reading '{}': {e}", file.display()),
-            )
-        })?;
-        let normalized = normalize_legacy_attr_values_in_source(&source);
-        let rewritten = rewrite_alias_imports_for_source(&normalized, root)?;
-        if rewritten != source {
-            fs::write(&file, rewritten).map_err(|e| {
-                PlatformError::new(
-                    "PLATFORM_TEMPLATE_WRITE",
-                    format!("failed writing '{}': {e}", file.display()),
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn normalize_legacy_attr_values_in_source(source: &str) -> String {
-    let bytes = source.as_bytes();
-    let mut i = 0usize;
-    let mut out = String::with_capacity(source.len());
-    while i < bytes.len() {
-        if bytes[i] == b'<' {
-            let Some(tag_end) = find_tag_end_for_rewrite(source, i) else {
-                out.push_str(&source[i..]);
-                break;
-            };
-            let tag_src = &source[i..=tag_end];
-            out.push_str(&convert_legacy_attr_expr_in_tag_source(tag_src));
-            i = tag_end + 1;
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-fn find_tag_end_for_rewrite(source: &str, tag_start: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut i = tag_start;
-    let mut in_quote: Option<u8> = None;
-    while i < bytes.len() {
-        let b = bytes[i];
-        match in_quote {
-            Some(q) if b == q => in_quote = None,
-            None if b == b'\'' || b == b'"' => in_quote = Some(b),
-            None if b == b'>' => return Some(i),
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-fn convert_legacy_attr_expr_in_tag_source(tag_source: &str) -> String {
-    if tag_source.starts_with("</") || tag_source.starts_with("<!") || tag_source.starts_with("<?")
-    {
-        return tag_source.to_string();
-    }
-    let bytes = tag_source.as_bytes();
-    let mut i = 0usize;
-    let mut out = String::with_capacity(tag_source.len());
-
-    while i < bytes.len() {
-        if bytes[i] == b'=' && i + 1 < bytes.len() && bytes[i + 1] == b'"' {
-            let value_start = i + 2;
-            let mut j = value_start;
-            while j < bytes.len() && bytes[j] != b'"' {
-                j += 1;
-            }
-            if j >= bytes.len() {
-                out.push_str(&tag_source[i..]);
-                break;
-            }
-            let value = &tag_source[value_start..j];
-            let trimmed = value.trim();
-            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
-                let inner = trimmed[1..trimmed.len() - 1].trim();
-                out.push('=');
-                out.push('{');
-                out.push_str(inner);
-                out.push('}');
-            } else {
-                out.push('=');
-                out.push('"');
-                out.push_str(value);
-                out.push('"');
-            }
-            i = j + 1;
-            continue;
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
-}
-
-fn rewrite_alias_imports_for_source(source: &str, root: &FsPath) -> Result<String, PlatformError> {
-    let mut out = source.to_string();
-    out = rewrite_alias_import_variant(&out, root, '"')?;
-    out = rewrite_alias_import_variant(&out, root, '\'')?;
-    Ok(out)
-}
-
-fn rewrite_alias_import_variant(
-    source: &str,
-    root: &FsPath,
-    quote: char,
-) -> Result<String, PlatformError> {
-    let marker = format!("from {}", quote);
-    let mut out = source.to_string();
-    let mut cursor = 0usize;
-    while let Some(rel_idx) = out[cursor..].find(marker.as_str()) {
-        let idx = cursor + rel_idx;
-        let spec_start = idx + marker.len();
-        let Some(end_rel) = out[spec_start..].find(quote) else {
-            break;
-        };
-        let spec_end = spec_start + end_rel;
-        let rel = &out[spec_start..spec_end];
-        if !rel.starts_with("@/") {
-            cursor = spec_end + 1;
-            continue;
-        }
-        let resolved = resolve_platform_alias_import(root, rel.trim_start_matches("@/"))?;
-        out.replace_range(spec_start..spec_end, &resolved);
-        cursor = spec_start + resolved.len();
-    }
-    Ok(out)
-}
-
-fn resolve_platform_alias_import(root: &FsPath, rel: &str) -> Result<String, PlatformError> {
-    let base = root.join(rel);
-    if base.exists() {
-        let abs = fs::canonicalize(&base).unwrap_or(base);
-        return Ok(abs.to_string_lossy().to_string());
-    }
-    for ext in [".tsx", ".ts", ".jsx", ".js"] {
-        let candidate = PathBuf::from(format!("{}{}", base.display(), ext));
-        if candidate.exists() {
-            let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
-            return Ok(abs.to_string_lossy().to_string());
-        }
-    }
-    for index in ["index.tsx", "index.ts", "index.jsx", "index.js"] {
-        let candidate = base.join(index);
-        if candidate.exists() {
-            let abs = fs::canonicalize(&candidate).unwrap_or(candidate);
-            return Ok(abs.to_string_lossy().to_string());
-        }
-    }
-    Ok(base.to_string_lossy().to_string())
 }
 
 fn render_page(
@@ -831,10 +700,8 @@ fn render_page(
         }
     }
 
-    // All project workspace pages depend on shared shell/design CSS.
-    if route.starts_with("/projects/") {
-        html = ensure_stylesheet_link(html, "/assets/platform/main.css");
-    }
+    // All platform pages depend on shared design tokens and reset CSS.
+    html = ensure_stylesheet_link(html, "/assets/platform/main.css");
     // DB suite pages require dedicated layout rules + devicons.
     if html.contains("data-db-suite=\"true\"") {
         html = ensure_stylesheet_link(html, "/assets/platform/db-suite.css");
@@ -1119,10 +986,6 @@ async fn branding_asset(Path(asset): Path<String>) -> Response {
     }
 }
 
-async fn rwe_router_js_handler() -> Response {
-    asset_response("application/javascript; charset=utf-8", RWE_ROUTER_JS.as_bytes())
-}
-
 async fn platform_asset(Path(asset): Path<String>) -> Response {
     match asset.as_str() {
         "main.css" => {
@@ -1387,6 +1250,29 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     }
 }
 
+async fn design_system_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(_owner) = session_owner(&headers) else {
+        return Redirect::to("/login").into_response();
+    };
+    match render_page(
+        &state,
+        "platform-design-system",
+        "/design-system",
+        json!({
+            "seo": {
+                "title": "Design System · Zebflow",
+                "description": "Platform UI reference for platform developers and agents",
+            },
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn home_create_project_submit(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -1581,6 +1467,15 @@ async fn render_project_pipelines_with_tab(
                 }
             };
 
+            let registry_git_map: std::collections::HashMap<String, String> = state
+                .platform
+                .projects
+                .list_repo_git_status(&owner, &project)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| (item.rel_path, item.code))
+                .collect();
+
             let registry = if is_registry {
                 let current_registry_path = registry_path.unwrap_or("/");
                 match state.platform.projects.list_pipeline_registry(
@@ -1589,7 +1484,10 @@ async fn render_project_pipelines_with_tab(
                     current_registry_path,
                     &route_base,
                 ) {
-                    Ok(listing) => {
+                    Ok(mut listing) => {
+                        for item in &mut listing.pipelines {
+                            item.git_status = registry_git_map.get(&item.file_rel_path).cloned();
+                        }
                         let current_path = listing.current_path;
                         let breadcrumbs = listing.breadcrumbs;
                         let folders = listing.folders;
@@ -1604,6 +1502,9 @@ async fn render_project_pipelines_with_tab(
                                     "description": item.description,
                                     "trigger_kind": item.trigger_kind,
                                     "file_rel_path": item.file_rel_path,
+                                    "is_active": item.is_active,
+                                    "has_draft": item.has_draft,
+                                    "git_status": item.git_status,
                                     "edit_href": format!("{editor_base}?path={current_path}&id={file_id}")
                                 })
                             })
@@ -1618,6 +1519,11 @@ async fn render_project_pipelines_with_tab(
                             "pipelines": pipelines,
                             "has_folders": has_folders,
                             "has_pipelines": has_pipelines,
+                            "api": {
+                                "delete": format!("/api/projects/{owner}/{project}/pipelines/definition"),
+                                "git_status": format!("/api/projects/{owner}/{project}/templates/git-status"),
+                                "git_commit": format!("/api/projects/{owner}/{project}/git/commit"),
+                            }
                         })
                     }
                     Err(err) => return internal_error(err),
@@ -1738,7 +1644,7 @@ async fn render_project_pipelines_with_tab(
                         )
                     };
 
-                let node_catalog = crate::framework::nodes::builtin_node_definitions()
+                let node_catalog = crate::pipeline::nodes::builtin_node_definitions()
                     .into_iter()
                     .map(|def| {
                         json!({
@@ -2218,21 +2124,41 @@ async fn project_dashboard_page(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    render_section_page(
-        state,
-        headers,
-        owner,
-        project,
-        "dashboard",
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
         ProjectCapability::ProjectRead,
-        "Dashboard",
-        "Observe runtime health, pipeline throughput, and execution traces.",
-        vec![
-            json!({"title":"Pipeline Throughput","description":"Run volume and status in real-time."}),
-            json!({"title":"Execution Latency","description":"P50/P95 duration across workflows."}),
-        ],
-    )
-    .await
+    ) {
+        return response;
+    }
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let nav = nav_classes(&owner, &project, "dashboard", None);
+            let route = format!("/projects/{owner}/{project}/dashboard");
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - Dashboard", info.title),
+                    "description": "Runtime health, resource usage, and installed capabilities."
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "nav": nav,
+                "api": {
+                    "system_info": "/api/system/info"
+                }
+            });
+            match render_page(&state, "platform-project-dashboard", &route, input) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn project_credentials_page(
@@ -2319,7 +2245,7 @@ async fn project_db_connections_page(
                         "icon_class": db_connection_icon_class(&item.database_kind),
                         "credential_id": item.credential_id,
                         "updated_at": item.updated_at,
-                        "description": if item.database_kind == "sjtable" {
+                        "description": if item.database_kind == "sekejap" {
                             "Project-local SekejapDB used by Simple Tables and runtime data."
                         } else {
                             "Credential-backed external database connection."
@@ -2427,7 +2353,7 @@ async fn project_db_suite_page(
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
             let table_page_key = match connection_info.database_kind.as_str() {
                 "postgresql" => "platform-project-table-connection-postgresql",
-                "sjtable" => "platform-project-table-connection-sjtable",
+                "sekejap" => "platform-project-table-connection-sjtable",
                 _ => "platform-project-table-connection",
             };
 
@@ -2436,11 +2362,9 @@ async fn project_db_suite_page(
                 |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.',
                 "-",
             );
-            let query_example = if connection_info.database_kind == "sjtable" {
-                format!(
-                    "{{\n  \"pipeline\": [\n    {{ \"op\": \"collection\", \"name\": \"sjtable__{}\" }},\n    {{ \"op\": \"take\", \"n\": 200 }}\n  ]\n}}",
-                    selected_table.split('.').next_back().unwrap_or("your_table")
-                )
+            let query_example = if connection_info.database_kind == "sekejap" {
+                let tname = selected_table.split('.').next_back().unwrap_or("your_table");
+                format!("collection \"sjtable__{tname}\"\ntake 200")
             } else {
                 "-- Write SQL and click Run Query.".to_string()
             };
@@ -2528,21 +2452,6 @@ async fn project_db_suite_page(
     }
 }
 
-async fn project_tables_connections_legacy_redirect_page(
-    Path((owner, project)): Path<(String, String)>,
-) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/db/connections")).into_response()
-}
-
-async fn project_table_connection_legacy_redirect_page(
-    Path((owner, project, connection)): Path<(String, String, String)>,
-) -> Response {
-    Redirect::to(&format!(
-        "/projects/{owner}/{project}/db/sjtable/{connection}/tables"
-    ))
-    .into_response()
-}
-
 async fn project_files_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -2603,12 +2512,6 @@ async fn project_settings_tab_page(
     render_settings_tab_page(state, headers, owner, project, tab).await
 }
 
-async fn project_settings_web_libraries_legacy_redirect_page(
-    Path((owner, project)): Path<(String, String)>,
-) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/settings/libraries")).into_response()
-}
-
 async fn render_settings_tab_page(
     state: PlatformAppState,
     headers: HeaderMap,
@@ -2643,7 +2546,7 @@ async fn render_settings_tab_page(
             let general_cards = settings_general_cards(&owner, &project);
             let policy_cards = settings_policy_cards();
             let library_cards = settings_library_cards();
-            let node_cards = settings_node_cards();
+            let (node_count, node_groups) = settings_nodes();
 
             let assistant_config = match state
                 .platform
@@ -2702,7 +2605,8 @@ async fn render_settings_tab_page(
                 "cards_general": general_cards,
                 "cards_policy": policy_cards,
                 "cards_libraries": library_cards,
-                "cards_nodes": node_cards,
+                "node_count": node_count,
+                "node_groups": node_groups,
                 "assistant": {
                     "api": {
                         "config": format!("/api/projects/{owner}/{project}/assistant/config")
@@ -2858,37 +2762,55 @@ fn settings_library_cards() -> Vec<Value> {
     ]
 }
 
-fn settings_node_cards() -> Vec<Value> {
-    let mut cards = crate::framework::nodes::builtin_node_definitions()
-        .into_iter()
-        .map(|def| {
-            let script_tag = if def.script_available {
-                "script:on"
-            } else {
-                "script:off"
-            };
-            let ai_tag = if def.ai_tool.registered {
-                "ai:tool"
-            } else {
-                "ai:off"
-            };
-            json!({
-                "title": format!("{} ({})", def.title, def.kind),
-                "description": def.description,
-                "href":"#",
-                "tag": format!("{script_tag} · {ai_tag}")
-            })
-        })
-        .collect::<Vec<_>>();
-    if cards.is_empty() {
-        cards.push(json!({
-            "title":"No registered nodes",
-            "description":"Node registry is empty.",
-            "href":"#",
-            "tag":"runtime"
+fn node_group_rank(kind: &str) -> u8 {
+    if kind.starts_with("n.trigger.") { 0 }
+    else if kind == "n.script" || kind.starts_with("n.script.") { 1 }
+    else if kind.starts_with("n.logic.") { 2 }
+    else if kind.starts_with("n.ai.") { 3 }
+    else { 4 }
+}
+
+fn node_group_prefix(kind: &str) -> &'static str {
+    if kind.starts_with("n.trigger.") { "n.trigger" }
+    else if kind == "n.script" || kind.starts_with("n.script.") { "n.script" }
+    else if kind.starts_with("n.logic.") { "n.logic" }
+    else if kind.starts_with("n.ai.") { "n.ai" }
+    else { "" }
+}
+
+fn settings_nodes() -> (usize, Vec<Value>) {
+    let mut defs = crate::pipeline::nodes::builtin_node_definitions();
+    defs.sort_by(|a, b| {
+        node_group_rank(&a.kind)
+            .cmp(&node_group_rank(&b.kind))
+            .then_with(|| a.kind.cmp(&b.kind))
+    });
+    let total = defs.len();
+    let mut groups: Vec<Value> = Vec::new();
+    let mut current_prefix = String::new();
+    let mut current_nodes: Vec<Value> = Vec::new();
+    for def in defs {
+        let prefix = node_group_prefix(&def.kind).to_string();
+        if prefix != current_prefix && !current_nodes.is_empty() {
+            groups.push(json!({
+                "prefix": current_prefix,
+                "nodes": current_nodes.drain(..).collect::<Vec<_>>()
+            }));
+        }
+        current_prefix = prefix;
+        current_nodes.push(json!({
+            "kind": def.kind,
+            "title": def.title,
+            "description": def.description,
+            "script_available": def.script_available,
+            "ai_registered": def.ai_tool.registered,
+            "source": "built-in"
         }));
     }
-    cards
+    if !current_nodes.is_empty() {
+        groups.push(json!({ "prefix": current_prefix, "nodes": current_nodes }));
+    }
+    (total, groups)
 }
 
 async fn render_section_page(
@@ -3111,7 +3033,7 @@ fn db_connection_icon_class(database_kind: &str) -> &'static str {
         "redis" => "devicon-redis-plain colored",
         "mongodb" => "devicon-mongodb-plain colored",
         "qdrant" => "devicon-vectorlogozone-plain",
-        "sjtable" => "zf-icon-sjtable",
+        "sekejap" => "zf-icon-sjtable",
         _ => "zf-icon-default-db",
     }
 }
@@ -3132,7 +3054,7 @@ struct ProjectAssetLibrarySpec {
 
 impl ProjectAssetLibrarySpec {
     fn library_root(self, layout: &crate::platform::model::ProjectFileLayout) -> PathBuf {
-        let mut root = layout.app_dir.join("libraries");
+        let mut root = layout.repo_dir.join("libraries");
         for segment in self.library.split('/') {
             root = root.join(segment);
         }
@@ -3559,7 +3481,7 @@ fn link_dependency_into_project_node_modules(
     package: &str,
     package_dir: &FsPath,
 ) -> Result<PathBuf, PlatformError> {
-    let node_modules = layout.app_dir.join("node_modules");
+    let node_modules = layout.repo_dir.join("node_modules");
     std::fs::create_dir_all(&node_modules)?;
     let mut dest = node_modules.clone();
     for segment in package.split('/') {
@@ -3602,7 +3524,7 @@ fn update_project_libraries_lock(
     spec: ProjectAssetLibrarySpec,
     installed_deps: &[InstalledNpmDependency],
 ) -> Result<(), PlatformError> {
-    let lock_path = layout.app_dir.join("libraries.lock.json");
+    let lock_path = layout.repo_dir.join("libraries.lock.json");
     let mut root = if lock_path.is_file() {
         let raw = std::fs::read_to_string(&lock_path).unwrap_or_default();
         serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| json!({}))
@@ -3716,7 +3638,7 @@ fn trigger_project_asset_prepare_on_template_save(
     project: &str,
     layout: &crate::platform::model::ProjectFileLayout,
 ) -> Result<(), PlatformError> {
-    let detected_specs = detect_required_project_library_specs(&layout.app_templates_dir)?;
+    let detected_specs = detect_required_project_library_specs(&layout.repo_templates_dir)?;
     for spec in detected_specs {
         let _ = prepare_project_assets_manifest(
             owner,
@@ -4061,16 +3983,305 @@ async fn api_meta(State(state): State<PlatformAppState>) -> Response {
     .into_response()
 }
 
+// ── System info endpoint ─────────────────────────────────────────────────────
+
+async fn api_system_info(
+    _state: State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    // Require a logged-in session (not necessarily superadmin)
+    if session_owner(&headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let info = tokio::task::spawn_blocking(collect_system_info)
+        .await
+        .unwrap_or_else(|_| json!({"ok": false, "error": "collection failed"}));
+
+    Json(info).into_response()
+}
+
+fn collect_system_info() -> serde_json::Value {
+    use sysinfo::{Disks, Pid, System};
+
+    let mut sys = System::new_all();
+    sys.refresh_all();
+
+    // Two-pass CPU sampling for accurate usage (sysinfo requirement)
+    sys.refresh_cpu_usage();
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    sys.refresh_cpu_usage();
+
+    // ── OS ──
+    let os_name    = System::name().unwrap_or_else(|| "Unknown".into());
+    let os_version = System::os_version().unwrap_or_default();
+    let kernel     = System::kernel_version().unwrap_or_default();
+    let hostname   = System::host_name().unwrap_or_default();
+    let arch       = std::env::consts::ARCH;
+
+    // Detect environment variant (Raspberry Pi, WSL, etc.)
+    let os_variant = detect_os_variant();
+
+    // ── CPU ──
+    let cpu_count = sys.cpus().len();
+    let cpu_brand = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+    let cpu_usage = sys.global_cpu_usage();
+
+    // ── Memory ──
+    let total_mem = sys.total_memory();
+    let used_mem  = sys.used_memory();
+    let avail_mem = sys.available_memory();
+    let mem_pct   = if total_mem > 0 { used_mem as f64 / total_mem as f64 * 100.0 } else { 0.0 };
+
+    // ── Disk (aggregate all mounts) ──
+    let disks = Disks::new_with_refreshed_list();
+    let (total_disk, avail_disk) = disks
+        .iter()
+        .fold((0u64, 0u64), |(t, a), d| (t + d.total_space(), a + d.available_space()));
+    let used_disk = total_disk.saturating_sub(avail_disk);
+    let disk_pct  = if total_disk > 0 { used_disk as f64 / total_disk as f64 * 100.0 } else { 0.0 };
+
+    // ── Current process ──
+    let pid = Pid::from_u32(std::process::id());
+    let (proc_cpu, proc_mem, proc_virt, proc_threads) = sys
+        .process(pid)
+        .map(|p| (p.cpu_usage(), p.memory(), p.virtual_memory(), p.tasks().map(|t| t.len()).unwrap_or(0)))
+        .unwrap_or((0.0, 0, 0, 0));
+
+    // Process uptime via process start_time vs system boot
+    let proc_uptime = sys
+        .process(pid)
+        .map(|p| p.run_time())
+        .unwrap_or(0);
+
+    // ── Capabilities ──
+    let caps = collect_capabilities();
+
+    json!({
+        "ok": true,
+        "system": {
+            "os": {
+                "name": os_name,
+                "version": os_version,
+                "kernel": kernel,
+                "arch": arch,
+                "hostname": hostname,
+                "variant": os_variant,
+                "container": detect_container_context(),
+            },
+            "cpu": {
+                "cores": cpu_count,
+                "brand": cpu_brand,
+                "usage_pct": (cpu_usage * 10.0).round() / 10.0,
+            },
+            "memory": {
+                "total_bytes": total_mem,
+                "used_bytes": used_mem,
+                "available_bytes": avail_mem,
+                "usage_pct": (mem_pct * 10.0).round() / 10.0,
+            },
+            "disk": {
+                "total_bytes": total_disk,
+                "used_bytes": used_disk,
+                "available_bytes": avail_disk,
+                "usage_pct": (disk_pct * 10.0).round() / 10.0,
+            }
+        },
+        "process": {
+            "pid": std::process::id(),
+            "cpu_pct": (proc_cpu * 10.0).round() / 10.0,
+            "memory_bytes": proc_mem,
+            "virtual_memory_bytes": proc_virt,
+            "threads": proc_threads,
+            "uptime_seconds": proc_uptime,
+        },
+        "capabilities": caps,
+    })
+}
+
+fn detect_os_variant() -> &'static str {
+    // Raspberry Pi: /proc/cpuinfo contains "Raspberry Pi"
+    #[cfg(target_os = "linux")]
+    if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
+        if info.contains("Raspberry Pi") || info.contains("BCM") {
+            return "raspberry-pi";
+        }
+    }
+
+    // WSL: /proc/version contains "microsoft" or "WSL"
+    #[cfg(target_os = "linux")]
+    if let Ok(ver) = std::fs::read_to_string("/proc/version") {
+        let lower = ver.to_lowercase();
+        if lower.contains("microsoft") || lower.contains("wsl") {
+            return "wsl";
+        }
+    }
+
+    #[cfg(target_os = "macos")]   { "macos" }
+    #[cfg(target_os = "windows")] { "windows" }
+    #[cfg(target_os = "linux")]   { "linux" }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))] { "unknown" }
+}
+
+fn collect_capabilities() -> serde_json::Value {
+    let home = dirs_next::home_dir().unwrap_or_default();
+    let zf_base = home.join(".zebflow");
+
+    // Python (system)
+    let python_info = probe_python_system();
+
+    // Python (managed by zebflow)
+    let managed_python = zf_base.join("engines").join("python").join("bin").join("python3");
+    let python_managed_available = managed_python.exists();
+
+    // Lightpanda
+    let lp_path = zf_base.join("browsers").join("lightpanda");
+    let lp_installed = lp_path.exists();
+    let lp_version = if lp_installed {
+        probe_binary_version(&lp_path, "--version")
+    } else {
+        None
+    };
+
+    // Chromium (chromiumoxide fetcher puts it in a subdirectory)
+    let chromium_dir = zf_base.join("browsers").join("chromium");
+    let chromium_installed = chromium_dir.exists() && chromium_dir.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false);
+
+    // Ollama (managed)
+    let ollama_path = zf_base.join("engines").join("ollama");
+    let ollama_installed = ollama_path.exists();
+    let ollama_version = if ollama_installed {
+        probe_binary_version(&ollama_path, "--version")
+    } else {
+        // Also check system PATH
+        probe_binary_version(std::path::Path::new("ollama"), "--version")
+    };
+
+    // SearXNG: check if running on default port
+    let searxng_installed = std::net::TcpStream::connect("127.0.0.1:8888").is_ok();
+
+    // vips (libvips CLI)
+    let vips_version = probe_binary_version(std::path::Path::new("vips"), "--version");
+
+    // Security / pentest tools (system PATH only — no managed path)
+    let nmap_version    = probe_binary_version(std::path::Path::new("nmap"),    "--version");
+    let nuclei_version  = probe_binary_version(std::path::Path::new("nuclei"),  "-version");
+    let httpx_version   = probe_binary_version(std::path::Path::new("httpx"),   "-version");
+    let trivy_version   = probe_binary_version(std::path::Path::new("trivy"),   "--version");
+    let masscan_version = probe_binary_version(std::path::Path::new("masscan"), "--version");
+    let ffuf_version    = probe_binary_version(std::path::Path::new("ffuf"),    "-V");
+    let sqlmap_version  = probe_binary_version(std::path::Path::new("sqlmap"),  "--version");
+    let nikto_version   = probe_binary_version(std::path::Path::new("nikto"),   "--version");
+
+    json!({
+        "python": python_info,
+        "python_managed": {
+            "available": python_managed_available,
+            "path": if python_managed_available { Some(managed_python.to_string_lossy().to_string()) } else { None },
+        },
+        "lightpanda": {
+            "installed": lp_installed,
+            "version": lp_version,
+        },
+        "chromium": {
+            "installed": chromium_installed,
+        },
+        "ollama": {
+            "installed": ollama_installed || ollama_version.is_some(),
+            "version": ollama_version,
+        },
+        "searxng": {
+            "installed": searxng_installed,
+        },
+        "vips": {
+            "installed": vips_version.is_some(),
+            "version": vips_version,
+        },
+        "security": {
+            "nmap":    { "installed": nmap_version.is_some(),    "version": nmap_version    },
+            "nuclei":  { "installed": nuclei_version.is_some(),  "version": nuclei_version  },
+            "httpx":   { "installed": httpx_version.is_some(),   "version": httpx_version   },
+            "trivy":   { "installed": trivy_version.is_some(),   "version": trivy_version   },
+            "masscan": { "installed": masscan_version.is_some(), "version": masscan_version },
+            "ffuf":    { "installed": ffuf_version.is_some(),    "version": ffuf_version    },
+            "sqlmap":  { "installed": sqlmap_version.is_some(),  "version": sqlmap_version  },
+            "nikto":   { "installed": nikto_version.is_some(),   "version": nikto_version   },
+        },
+    })
+}
+
+fn detect_container_context() -> serde_json::Value {
+    let in_docker = std::path::Path::new("/.dockerenv").exists();
+
+    #[cfg(target_os = "linux")]
+    let host_gateway: Option<String> = std::fs::read_to_string("/proc/net/route").ok().and_then(|content| {
+        content.lines().skip(1).find_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // Default route: Destination == 00000000
+            if cols.len() >= 3 && cols[1] == "00000000" {
+                u32::from_str_radix(cols[2], 16).ok().map(|hex| {
+                    let b = hex.to_le_bytes();
+                    format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+                })
+            } else {
+                None
+            }
+        })
+    });
+
+    #[cfg(not(target_os = "linux"))]
+    let host_gateway: Option<String> = None;
+
+    json!({
+        "in_docker": in_docker,
+        "host_gateway": host_gateway,
+    })
+}
+
+fn probe_python_system() -> serde_json::Value {
+    // Try python3 first, then python
+    for cmd in &["python3", "python"] {
+        if let Ok(out) = std::process::Command::new(cmd).arg("--version").output() {
+            if out.status.success() {
+                let raw = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let version = raw.trim().trim_start_matches("Python ").to_string();
+                return json!({ "available": true, "version": version, "cmd": cmd });
+            }
+        }
+    }
+    json!({ "available": false })
+}
+
+fn probe_binary_version(path: &std::path::Path, flag: &str) -> Option<String> {
+    std::process::Command::new(path)
+        .arg(flag)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let raw = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            raw.lines().next().unwrap_or("").trim().to_string()
+        })
+}
+
 /// Public, machine-readable node contract extracted from built-in node registry.
 async fn docs_node_contract() -> Response {
-    let items = crate::framework::nodes::builtin_node_definitions()
+    let items = crate::pipeline::nodes::builtin_node_definitions()
         .into_iter()
-        .map(crate::framework::NodeContractItem::from)
+        .map(crate::pipeline::NodeContractItem::from)
         .collect::<Vec<_>>();
-    Json(crate::framework::NodeContractDocument {
+    Json(crate::pipeline::NodeContractDocument {
         ok: true,
         schema_version: "0.1",
-        source: "framework::nodes::builtin_node_definitions",
+        source: "pipeline::nodes::builtin_node_definitions",
         items,
     })
     .into_response()
@@ -4103,7 +4314,7 @@ async fn api_list_node_definitions(
     }
     Json(json!({
         "ok": true,
-        "items": crate::framework::nodes::builtin_node_definitions()
+        "items": crate::pipeline::nodes::builtin_node_definitions()
     }))
     .into_response()
 }
@@ -4325,6 +4536,15 @@ async fn api_pipeline_registry(
         Err(response) => return response,
     };
     let base_route = format!("/projects/{owner}/{project}/pipelines/registry");
+    // Build git status map keyed by file_rel_path (relative to repo/).
+    let git_map: std::collections::HashMap<String, String> = state
+        .platform
+        .projects
+        .list_repo_git_status(&owner, &project)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| (item.rel_path, item.code))
+        .collect();
     match scope {
         PipelineRegistryScope::Path => {
             let current_path = query.path.as_deref().unwrap_or("/");
@@ -4334,7 +4554,10 @@ async fn api_pipeline_registry(
                 current_path,
                 &base_route,
             ) {
-                Ok(listing) => {
+                Ok(mut listing) => {
+                    for item in &mut listing.pipelines {
+                        item.git_status = git_map.get(&item.file_rel_path).cloned();
+                    }
                     Json(json!({"ok": true, "scope": "path", "listing": listing})).into_response()
                 }
                 Err(err) => internal_error(err),
@@ -4349,6 +4572,9 @@ async fn api_pipeline_registry(
                 let items = rows
                     .into_iter()
                     .map(|meta| {
+                        let is_active = meta.active_hash.as_deref().map(|h| !h.is_empty() && h == meta.hash).unwrap_or(false);
+                        let has_draft = meta.active_hash.as_deref().map(|h| !h.is_empty() && h != meta.hash).unwrap_or(false);
+                        let git_status = git_map.get(&meta.file_rel_path).cloned();
                         let file_rel_path = meta.file_rel_path.clone();
                         json!({
                             "id": file_rel_path,
@@ -4357,7 +4583,10 @@ async fn api_pipeline_registry(
                             "description": meta.description,
                             "trigger_kind": meta.trigger_kind,
                             "virtual_path": meta.virtual_path,
-                            "file_rel_path": meta.file_rel_path
+                            "file_rel_path": meta.file_rel_path,
+                            "is_active": is_active,
+                            "has_draft": has_draft,
+                            "git_status": git_status,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -4591,6 +4820,155 @@ async fn api_upsert_pipeline_definition(
     }
 }
 
+async fn api_delete_pipeline_definition(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<DeletePipelineRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .projects
+        .delete_pipeline(&owner, &project, &req.file_rel_path)
+    {
+        Ok(()) => {
+            state
+                .platform
+                .pipeline_runtime
+                .evict(&owner, &project, &req.file_rel_path);
+            Json(json!({"ok": true})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_git_commit(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<GitCommitRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if req.files.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "no files specified"})),
+        )
+            .into_response();
+    }
+    if req.message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "commit message is required"})),
+        )
+            .into_response();
+    }
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+    // git add <files>
+    let mut add_cmd = std::process::Command::new("git");
+    add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--");
+    for f in &req.files {
+        add_cmd.arg(f);
+    }
+    let add_out = match add_cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    if !add_out.status.success() {
+        let stderr = String::from_utf8_lossy(&add_out.stderr).to_string();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": stderr})),
+        )
+            .into_response();
+    }
+    // git commit -m <message>
+    let commit_out = match std::process::Command::new("git")
+        .arg("-C")
+        .arg(&layout.repo_dir)
+        .arg("commit")
+        .arg("-m")
+        .arg(req.message.trim())
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response()
+        }
+    };
+    if !commit_out.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_out.stderr).to_string();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": stderr})),
+        )
+            .into_response();
+    }
+    // optional push
+    if req.push {
+        let push_out = match std::process::Command::new("git")
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("push")
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": e.to_string()})),
+                )
+                    .into_response()
+            }
+        };
+        if !push_out.status.success() {
+            let stderr = String::from_utf8_lossy(&push_out.stderr).to_string();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": stderr})),
+            )
+                .into_response();
+        }
+    }
+    Json(json!({"ok": true})).into_response()
+}
+
 async fn api_activate_pipeline_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -4803,7 +5181,8 @@ async fn api_execute_pipeline(
         state.frontend.rwe.clone(),
         Some(credentials),
         Some(simple_tables),
-    );
+    )
+    .with_web_render_cache(state.web_render_cache.clone());
     match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => {
             state
@@ -4834,6 +5213,34 @@ async fn api_execute_pipeline(
                 .into_response()
         }
     }
+}
+
+/// POST /api/projects/{owner}/{project}/pipelines/dsl
+async fn api_execute_pipeline_dsl(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<crate::platform::shell::DslRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesExecute,
+    ) {
+        return response;
+    }
+
+    let executor = crate::platform::shell::executor::DslExecutor::new(
+        state.platform.clone(),
+        &owner,
+        &project,
+    );
+    let output = executor.execute_dsl(&req.dsl).await;
+    let navigate = crate::platform::interaction::InteractionEngine::new(&owner, &project)
+        .match_dsl(&req.dsl, output.ok);
+    Json(json!({ "ok": output.ok, "lines": output.lines, "navigate": navigate })).into_response()
 }
 
 async fn api_pipeline_hits(
@@ -5115,7 +5522,7 @@ async fn api_template_diagnostics(
         Err(err) => return internal_error(err),
     };
 
-    let response = compile_template_buffer(&state, &layout.app_templates_dir, &req);
+    let response = compile_template_buffer(&state, &layout.repo_templates_dir, &req);
     Json(response).into_response()
 }
 
@@ -5357,7 +5764,7 @@ async fn api_project_assistant_chat(
             .into_response();
     }
 
-    let bundle = match load_project_assistant_llm(state.platform.data.as_ref(), &owner, &project) {
+    let bundle = match load_project_assistant_llm(state.platform.data.as_ref(), state.platform.assistant_configs.as_ref(), &owner, &project) {
         Ok(bundle) => bundle,
         Err(err) => {
             let status = match err.code {
@@ -5421,20 +5828,17 @@ async fn api_project_assistant_chat(
              ## Your Memory\n{memory}\n\n\
              ## Your Soul\n{soul}\n\n\
              ## Project Context\n{agents}{readme_section}\n\n\
-             ## Behavior\n\
-             When you discover important project information (architecture, decisions, patterns, \
-             data models), check Your Memory above. If it is not already recorded, call \
-             `update_memory` with the full updated MEMORY.md content.\n\n\
-             ## Navigation Rules\n\
-             Use `navigate_to` with these exact URLs.\n\
-             ALWAYS navigate first — never use tools to fetch data that a page already shows.\n\
-             \n\
-             For database queries:\n\
-             - Always call `describe_db_connection` first to see the schema tree.\n\
-             - Then call `get_table_columns` for EACH table you will touch — NEVER guess column names.\n\
-             - Use `run_db_query` to execute SQL and get results (also shows in the browser UI for the user).\n\
-             Do NOT use `query_table` for interactive queries — use `run_db_query` instead.\n\
-             \n\
+             ## Your Only Tool: execute_pipeline_dsl\n\
+             You have exactly one tool: `execute_pipeline_dsl`. It runs any Pipeline DSL command.\n\
+             All actions — creating pipelines, querying databases, reading files, git, tables — go through this tool.\n\n\
+             ## How to Do Things\n\
+             - **Pipelines**: `register`, `describe pipeline`, `activate`, `execute pipeline`, `run`\n\
+             - **DB queries**: `run | pg.query --credential <slug> -- \"SELECT ...\"` or SekejapQL via `run | n.sjtable.query`\n\
+             - **Explore DB schema**: `describe connection <slug>` before writing any SQL\n\
+             - **Tables**: `get tables`, `create table`, `run | n.sjtable.query --op upsert`\n\
+             - **Files / docs**: `get files`, `read doc README.md`, `write doc AGENTS.md -- \"...\"`\n\
+             - **Git**: `git status`, `git add`, `git commit -- \"message\"`\n\
+             After DSL executes the browser navigates automatically to the relevant page.\n\n\
              Available pages:\n\
              {nav_map}\n\n\
              ## Zebflow Knowledge\n\n{skills_text}"
@@ -5537,11 +5941,6 @@ async fn api_project_assistant_chat(
                         json!({ "url": url, "label": label }).to_string()
                     ));
                 }
-                Some(AssistantStepEvent::FillInput { selector, value, submit }) => {
-                    yield Ok(Event::default().event("fill_input").data(
-                        json!({ "selector": selector, "value": value, "submit": submit }).to_string()
-                    ));
-                }
                 Some(AssistantStepEvent::InteractionSequence { id, label, steps }) => {
                     yield Ok(Event::default().event("interaction_sequence").data(
                         json!({ "id": id, "label": label, "steps": steps }).to_string()
@@ -5612,11 +6011,6 @@ enum AssistantStepEvent {
         url: String,
         label: String,
     },
-    FillInput {
-        selector: String,
-        value: String,
-        submit: bool,
-    },
     InteractionSequence {
         id: String,
         label: String,
@@ -5686,7 +6080,6 @@ async fn run_assistant_loop(
 
                     // Side-effect events for interactive tools
                     if let Some(seq) = tool_result.interaction {
-                        // Interaction sequence takes priority over navigate/fill events
                         let id = seq["id"].as_str().unwrap_or(&tc.id).to_string();
                         let label = seq["label"].as_str().unwrap_or(&tc.name).to_string();
                         let steps = seq["steps"].clone();
@@ -5695,24 +6088,11 @@ async fn run_assistant_loop(
                             label,
                             steps,
                         });
-                    } else if tc.name == "navigate_to" {
-                        if let Some(url) = args["url"].as_str() {
-                            let label = args["label"].as_str().unwrap_or(url).to_string();
-                            let _ = step_tx.send(AssistantStepEvent::Navigate {
-                                url: url.to_string(),
-                                label,
-                            });
-                        }
-                    } else if tc.name == "fill_input" {
-                        if let Some(selector) = args["selector"].as_str() {
-                            let value = args["value"].as_str().unwrap_or("").to_string();
-                            let submit = args["submit"].as_bool().unwrap_or(false);
-                            let _ = step_tx.send(AssistantStepEvent::FillInput {
-                                selector: selector.to_string(),
-                                value,
-                                submit,
-                            });
-                        }
+                    } else if let Some(url) = tool_result.navigate {
+                        let _ = step_tx.send(AssistantStepEvent::Navigate {
+                            label: url.clone(),
+                            url,
+                        });
                     }
 
                     let result_preview = result_str.chars().take(500).collect::<String>();
@@ -6536,7 +6916,8 @@ async fn public_webhook_ingress(
         state.frontend.rwe.clone(),
         Some(credentials),
         Some(simple_tables),
-    );
+    )
+    .with_web_render_cache(state.web_render_cache.clone());
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
         Err(err) => {

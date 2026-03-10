@@ -1,8 +1,5 @@
+import { cx } from "rwe";
 import Label from "@/components/ui/label";
-
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
 
 export default function Field(props) {
   return (

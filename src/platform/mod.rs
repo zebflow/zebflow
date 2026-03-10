@@ -10,10 +10,12 @@
 pub mod adapters;
 pub mod db;
 pub mod error;
+pub mod interaction;
 pub mod mcp;
 pub mod model;
 pub mod operations;
 pub mod services;
+pub mod shell;
 pub mod skills;
 pub mod web;
 

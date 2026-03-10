@@ -1,10 +1,6 @@
 import HierarchyTree, { HierarchyTreeItem } from "@/components/ui/hierarchy-tree";
 
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
-function dirname(relPath) {
+function getParentDir(relPath) {
   if (!relPath || !String(relPath).includes("/")) {
     return "";
   }
@@ -60,7 +56,7 @@ function iconForTemplateItem(item) {
   return <i className="zf-devicon zf-icon-file" aria-hidden="true"></i>;
 }
 
-function toTemplateHierarchy(items, selectedFile, selectedFolder) {
+function toTemplateHierarchy(items, selectedFile, selectedFolder, onSelectFile) {
   const safeItems = Array.isArray(items) ? items : [];
   const byPath = new Map();
   const roots = [];
@@ -93,25 +89,38 @@ function toTemplateHierarchy(items, selectedFile, selectedFolder) {
       icon: <span className="template-tree-icon">{iconForTemplateItem(item)}</span>,
       label: <span className="template-tree-label">{item?.name || "item"}</span>,
       badge: <span className="template-tree-git"></span>,
-      href: !isFolder ? item?.href || "#" : undefined,
       className: rowClassName,
       rowClassName,
       expanded: isFolder,
-      attrs: {
-        "data-template-rel-path": relPath,
-        "data-template-protected": item?.is_protected ? "true" : "false",
-        ...(isFolder ? { "data-template-folder-item": "true" } : { "data-template-file-item": "true" }),
-        draggable: "true",
-      },
       children: [],
     };
+
+    if (!isFolder) {
+      node.content = (
+        <div
+          className={cx("project-tree-leaf-link", rowClassName)}
+          onClick={() => onSelectFile(relPath)}
+        >
+          <span className="template-tree-icon">{iconForTemplateItem(item)}</span>
+          <span className="template-tree-label">{item?.name || "item"}</span>
+          {item?.is_protected ? (
+            <span className="template-tree-lock" title="Protected">
+              <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5">
+                <path d="M8 11V8a4 4 0 118 0v3M7 11h10v9H7z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+              </svg>
+            </span>
+          ) : null}
+          <span className="template-tree-git"></span>
+        </div>
+      );
+    }
 
     byPath.set(relPath, node);
   });
 
   sorted.forEach((item) => {
     const relPath = String(item?.rel_path || "");
-    const parentPath = dirname(relPath);
+    const parentPath = getParentDir(relPath);
     const node = byPath.get(relPath);
     if (!node) return;
     if (parentPath && byPath.has(parentPath)) {
@@ -146,13 +155,15 @@ interface TemplateFolderTreeProps {
   items?: any[];
   selectedFile?: string;
   selectedFolder?: string;
+  onSelectFile?: (relPath: string) => void;
 }
 
 export default function TemplateFolderTree(props: TemplateFolderTreeProps) {
   const nodes = toTemplateHierarchy(
     props?.items || [],
     props?.selectedFile || "",
-    props?.selectedFolder || ""
+    props?.selectedFolder || "",
+    props?.onSelectFile || (() => {})
   );
   return (
     <HierarchyTree

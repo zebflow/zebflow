@@ -1,10 +1,15 @@
+import { Link } from "rwe";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
+import Card from "@/components/ui/card";
+import CardContent from "@/components/ui/card-content";
+import CardTitle from "@/components/ui/card-title";
+import CardDescription from "@/components/ui/card-description";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
   },
   html: {
     lang: "en",
@@ -14,8 +19,6 @@ export const page = {
   },
   navigation: "history",
 };
-
-export const app = {};
 
 export default function Page(input) {
   const projects = Array.isArray(input?.projects) ? input.projects : [];
@@ -45,36 +48,42 @@ export default function Page(input) {
           </header>
 
           <section className="mb-8 bg-white border border-slate-200 rounded-xl p-5">
-            <form method="post" action="/home/projects/create" className="grid md:grid-cols-3 gap-3">
+            <form method="post" action="/home/projects/create" className="grid md:grid-cols-4 gap-3">
               <Input
                 type="text"
                 name="project"
                 placeholder="project slug"
                 required
-                className="h-10"
               />
               <Input
                 type="text"
                 name="title"
                 placeholder="project title"
-                className="h-10"
               />
-              <Button type="submit" variant="primary" className="h-10 font-bold uppercase tracking-widest">
+              <Button type="submit" variant="primary" className="font-bold uppercase tracking-widest">
                 Create Project
+              </Button>
+
+              <Button variant="outline" className="font-bold uppercase tracking-widest">
+                See Templates
               </Button>
             </form>
           </section>
 
           <section className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
             {projects.map((item, index) => (
-              <a
+              <Link
                 key={`${item?.project ?? "project"}-${index}`}
                 href={item?.path ?? "#"}
-                className="block bg-white border border-slate-200 rounded-xl p-5 hover:border-slate-400 hover:shadow-lg transition-all"
+                className="block hover:no-underline"
               >
-                <h3 className="text-lg font-bold text-slate-900 tracking-tight">{item?.title}</h3>
-                <p className="text-sm text-slate-600 mt-2">{item?.project}</p>
-              </a>
+                <Card className="hover:shadow-md hover:border-slate-300 transition-all cursor-pointer">
+                  <CardContent className="py-5">
+                    <CardTitle className="text-lg">{item?.title}</CardTitle>
+                    <CardDescription className="mt-1">{item?.project}</CardDescription>
+                  </CardContent>
+                </Card>
+              </Link>
             ))}
           </section>
         </section>

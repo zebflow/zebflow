@@ -18,7 +18,7 @@ pub struct SjtableDbDriver;
 #[async_trait]
 impl DbDriver for SjtableDbDriver {
     fn kind(&self) -> &'static str {
-        "sjtable"
+        "sekejap"
     }
 
     async fn describe(
@@ -86,6 +86,13 @@ impl DbDriver for SjtableDbDriver {
         let started = Instant::now();
         let sql = req.sql.trim();
 
+        if looks_like_sekejapql(sql) {
+            let rows = ctx
+                .simple_tables
+                .query_text_rows(&ctx.owner, &ctx.project, sql)?;
+            return Ok(rows_to_result(ctx, rows, started.elapsed().as_millis() as u64));
+        }
+
         if looks_like_json_query(sql) {
             let payload: Value = serde_json::from_str(sql).map_err(|err| {
                 PlatformError::new("PLATFORM_DB_QUERY_INVALID", format!("invalid JSON query: {err}"))
@@ -101,7 +108,7 @@ impl DbDriver for SjtableDbDriver {
         if table.is_empty() {
             return Err(PlatformError::new(
                 "PLATFORM_DB_QUERY_INVALID",
-                "sjtable query requires request.table, SQL SELECT ... FROM <table>, or a JSON query payload",
+                "sjtable query requires a SekejapQL query (e.g. 'collection \"sjtable__contacts\" | take 50') or SELECT ... FROM <table>",
             ));
         }
 
@@ -199,6 +206,11 @@ fn parse_table_from_sql(sql: &str) -> String {
         }
     }
     String::new()
+}
+
+fn looks_like_sekejapql(raw: &str) -> bool {
+    let first = raw.split_whitespace().next().unwrap_or("").to_lowercase();
+    matches!(first.as_str(), "collection" | "one" | "many" | "all")
 }
 
 fn looks_like_json_query(raw: &str) -> bool {

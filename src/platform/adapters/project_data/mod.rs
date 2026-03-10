@@ -47,7 +47,7 @@ impl ProjectDataEngine for ProjectSekejapEngine {
     }
 }
 
-/// Project SQLite runtime DB engine.
+/// Project SQLite runtime DB engine — halted, not implemented.
 #[derive(Default)]
 pub struct ProjectSqliteEngine;
 
@@ -56,21 +56,7 @@ impl ProjectDataEngine for ProjectSqliteEngine {
         "project_data.sqlite"
     }
 
-    fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
-        let Some(parent) = layout.data_sqlite_file.parent() else {
-            return Err(PlatformError::new(
-                "PROJECT_DATA_SQLITE_INIT",
-                "invalid sqlite file path",
-            ));
-        };
-        std::fs::create_dir_all(parent)?;
-        if !layout.data_sqlite_file.exists() {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&layout.data_sqlite_file)?;
-        }
+    fn initialize(&self, _layout: &ProjectFileLayout) -> Result<(), PlatformError> {
         Ok(())
     }
 }
@@ -97,10 +83,7 @@ pub struct DefaultProjectDataFactory {
 impl Default for DefaultProjectDataFactory {
     fn default() -> Self {
         Self {
-            engines: vec![
-                Arc::new(ProjectSekejapEngine),
-                Arc::new(ProjectSqliteEngine),
-            ],
+            engines: vec![Arc::new(ProjectSekejapEngine)],
         }
     }
 }

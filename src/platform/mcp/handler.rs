@@ -37,6 +37,14 @@ struct ReadSkillParams {
     name: String,
 }
 
+#[derive(serde::Deserialize, JsonSchema)]
+struct ExecutePipelineDslParams {
+    /// Pipeline DSL string. Supports: get, describe, register, patch, activate,
+    /// deactivate, execute, run, git, delete. Use && to chain commands and \ for line
+    /// continuations. See the pipeline-dsl skill for full reference.
+    dsl: String,
+}
+
 /// Zebflow MCP handler with project-scoped tools.
 ///
 /// Sessions are injected via HTTP request extensions by the middleware layer.
@@ -266,6 +274,34 @@ impl ZebflowMcpHandler {
                 None,
             )),
         }
+    }
+
+    #[tool(
+        description = "Execute Pipeline DSL commands (get, describe, register, patch, activate, \
+                       deactivate, execute, run, git). Returns terminal-style line output. \
+                       Supports && chaining. See pipeline-dsl skill for full syntax reference."
+    )]
+    async fn execute_pipeline_dsl(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ExecutePipelineDslParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "execute_pipeline_dsl")?;
+
+        let executor = crate::platform::shell::executor::DslExecutor::new(
+            self.platform.clone(),
+            &session.owner,
+            &session.project,
+        );
+        let output = executor.execute_dsl(&params.dsl).await;
+        let formatted = output
+            .lines
+            .iter()
+            .map(|l| l.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(CallToolResult::success(vec![Content::text(formatted)]))
     }
 
     fn get_session_from_http_parts(

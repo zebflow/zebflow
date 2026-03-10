@@ -1,6 +1,4 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
+import { cx } from "rwe";
 
 export default function CardDescription(props) {
   return (

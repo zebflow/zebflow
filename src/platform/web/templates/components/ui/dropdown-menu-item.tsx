@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export default function DropdownMenuItem(props) {
   const isDestructive = props?.variant === "destructive";
   return (

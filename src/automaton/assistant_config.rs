@@ -9,6 +9,7 @@ use crate::automaton::http_client::OpenAiHttpClient;
 use crate::automaton::llm_interface::LlmCall;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
+use crate::platform::services::AssistantConfigService;
 
 /// Dual LLM pair loaded from project credentials.
 pub struct ProjectAssistantLlm {
@@ -26,22 +27,24 @@ pub struct ProjectAssistantLlm {
 /// Falls back to `general` for `high` when only one credential is configured.
 pub fn load_project_assistant_llm(
     data: &dyn DataAdapter,
+    assistant_configs: &AssistantConfigService,
     owner: &str,
     project: &str,
 ) -> Result<ProjectAssistantLlm, PlatformError> {
-    let config = data
-        .get_project_assistant_config(owner, project)?
-        .ok_or_else(|| {
-            PlatformError::new(
-                "ASSISTANT_NOT_CONFIGURED",
-                format!("no assistant config for '{owner}/{project}'"),
-            )
-        })?;
+    let config = assistant_configs
+        .get_project_assistant_config(owner, project)?;
 
     if !config.enabled {
         return Err(PlatformError::new(
             "ASSISTANT_DISABLED",
             format!("assistant is disabled for '{owner}/{project}'"),
+        ));
+    }
+
+    if config.llm_general_credential_id.is_none() {
+        return Err(PlatformError::new(
+            "ASSISTANT_NOT_CONFIGURED",
+            format!("no assistant config for '{owner}/{project}'"),
         ));
     }
 

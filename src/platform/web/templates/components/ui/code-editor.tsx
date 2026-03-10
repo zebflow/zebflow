@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 const HEIGHT_CLASSES = {
   sm: "h-40",
   md: "h-60",

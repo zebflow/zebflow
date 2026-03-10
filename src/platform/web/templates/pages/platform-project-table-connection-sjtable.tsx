@@ -1,10 +1,11 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { initProjectDbSuiteSjtableBehavior } from "@/components/behavior/project-db-suite-sjtable";
+import { cx } from "rwe";
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-suite.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
@@ -14,16 +15,10 @@ export const page = {
     lang: "en",
   },
   body: {
-    className: "h-screen overflow-hidden bg-slate-950 text-slate-100 font-sans",
+    className: "font-sans",
   },
   navigation: "history",
 };
-
-export const app = {};
-
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
 
 export default function Page(input) {
   initProjectDbSuiteSjtableBehavior();

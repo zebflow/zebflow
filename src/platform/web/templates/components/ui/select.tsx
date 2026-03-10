@@ -1,7 +1,3 @@
-function cx(...parts) {
-  return parts.filter(Boolean).join(" ");
-}
-
 export function Select(props) {
   return (
     <div className={cx("relative group", props?.className)}>

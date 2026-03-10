@@ -46,7 +46,7 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
         escape_json_script(&payload_json)
     );
 
-    let html = build_document_shell(&ssr.page_config, &body_content, vars);
+    let html = build_document_shell(&ssr.page_config, &body_content);
 
     let js = build_client_module(&transpiled_client);
 
@@ -162,11 +162,12 @@ fn build_client_module(client_source: &str) -> String {
              ...props\n\
            }}, children);\n\
          }};\n\
+         globalThis.cx = function cx(...parts) {{ return parts.filter(Boolean).join(' '); }};\n\
          (function() {{\n\
            if (typeof window.rweNavigate !== 'function') {{\n\
              var __bar = document.createElement('div');\n\
              __bar.id = '__rwe_nav_bar';\n\
-             __bar.style.cssText = 'position:fixed;top:0;left:0;height:2px;width:0%;background:var(--rwe-nav-color,#10b981);z-index:99999;opacity:0;pointer-events:none;transition:none';\n\
+             __bar.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0%;background:var(--rwe-nav-color,#005b9a);z-index:99999;opacity:0;pointer-events:none;transition:none';\n\
              document.body.appendChild(__bar);\n\
              var __bt = null;\n\
              var __bStart = function() {{\n\
@@ -214,23 +215,47 @@ fn build_client_module(client_source: &str) -> String {
                      lRoot.innerHTML = nRoot.innerHTML;\n\
                      if (nPay && lPay) lPay.textContent = nPay.textContent;\n\
                    }}\n\
-                   document.querySelectorAll('style[data-rwe-page-css]').forEach(function(s) {{ s.remove(); }});\n\
-                   doc.querySelectorAll('style[data-rwe-page-css]').forEach(function(s) {{\n\
+                   document.querySelectorAll('style[data-rwe-tw]').forEach(function(s) {{ s.remove(); }});\n\
+                   doc.querySelectorAll('style[data-rwe-tw]').forEach(function(s) {{\n\
                      var nc = document.createElement('style');\n\
-                     nc.setAttribute('data-rwe-page-css', '');\n\
+                     nc.setAttribute('data-rwe-tw', '');\n\
                      nc.textContent = s.textContent;\n\
                      document.head.appendChild(nc);\n\
                    }});\n\
+                   var __newLinks = Array.from(doc.querySelectorAll('head link[rel=\"stylesheet\"]')).map(function(l) {{ return l.getAttribute('href'); }});\n\
+                   Array.from(document.querySelectorAll('head link[rel=\"stylesheet\"]')).forEach(function(l) {{ if (__newLinks.indexOf(l.getAttribute('href')) === -1) l.parentNode.removeChild(l); }});\n\
+                   var __curLinks = Array.from(document.querySelectorAll('head link[rel=\"stylesheet\"]')).map(function(l) {{ return l.getAttribute('href'); }});\n\
+                   __newLinks.forEach(function(h) {{ if (!h || __curLinks.indexOf(h) !== -1) return; var el = document.createElement('link'); el.rel = 'stylesheet'; el.href = h; document.head.appendChild(el); }});\n\
+                   document.body.className = doc.body.className;\n\
+                   if (doc.documentElement.lang) document.documentElement.lang = doc.documentElement.lang;\n\
+                   document.querySelectorAll('script[data-rwe-nav-script]').forEach(function(s) {{ s.remove(); }});\n\
+                   var __scriptPromises = [];\n\
                    doc.querySelectorAll('script[type=\"module\"]').forEach(function(s) {{\n\
-                     var n = document.createElement('script');\n\
-                     n.type = 'module';\n\
-                     n.textContent = s.textContent;\n\
-                     document.head.appendChild(n);\n\
+                     var src = s.getAttribute('src');\n\
+                     if (src) {{\n\
+                       __scriptPromises.push(\n\
+                         fetch(src, {{ credentials: 'same-origin' }}).then(function(r) {{ return r.text(); }}).then(function(code) {{\n\
+                           var n = document.createElement('script');\n\
+                           n.type = 'module';\n\
+                           n.setAttribute('data-rwe-nav-script', '');\n\
+                           n.textContent = code;\n\
+                           document.head.appendChild(n);\n\
+                         }})\n\
+                       );\n\
+                     }} else if (s.textContent) {{\n\
+                       var n = document.createElement('script');\n\
+                       n.type = 'module';\n\
+                       n.setAttribute('data-rwe-nav-script', '');\n\
+                       n.textContent = s.textContent;\n\
+                       document.head.appendChild(n);\n\
+                     }}\n\
                    }});\n\
                    document.title = doc.title;\n\
                    history.pushState(null, '', href);\n\
                    window.scrollTo(0, 0);\n\
-                   window.dispatchEvent(new CustomEvent('rwe:nav', {{ detail: {{ url: href }} }}));\n\
+                   Promise.all(__scriptPromises).then(function() {{\n\
+                     window.dispatchEvent(new CustomEvent('rwe:nav', {{ detail: {{ url: href }} }}));\n\
+                   }});\n\
                    __bDone();\n\
                  }})\n\
                  .catch(function() {{ __bFail(); window.location.href = href; }});\n\
@@ -265,14 +290,17 @@ fn build_client_module(client_source: &str) -> String {
 }
 
 fn transpile_client_cached(source: &str, timeout_ms: u64) -> Result<String, EngineError> {
-    let key = stable_hash_u64(source);
+    // Strip "rwe" imports BEFORE passing to the Deno bundler. If stripped after,
+    // the bundler resolves "rwe" → absolute filesystem path which the browser can't load.
+    let stripped = strip_rwe_client_imports(source);
+    let key = stable_hash_u64(&stripped);
     if let Ok(cache) = CLIENT_TRANSPILE_CACHE.lock()
         && let Some(cached) = cache.get(&key)
     {
         return Ok(cached.clone());
     }
 
-    let transpiled = deno_worker::transpile_client(source, timeout_ms)?;
+    let transpiled = deno_worker::transpile_client(&stripped, timeout_ms)?;
 
     if let Ok(mut cache) = CLIENT_TRANSPILE_CACHE.lock() {
         // keep cache lean by bounding entries; new entries overwrite oldest key eviction by clear.
@@ -291,48 +319,10 @@ fn stable_hash_u64(input: &str) -> u64 {
     hasher.finish()
 }
 
-/// Resolve `{{input.x.y}}` placeholders in a string against the render input.
-fn interpolate_page_str(value: &str, input: &Value) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut s = value;
-    while let Some(open) = s.find("{{") {
-        out.push_str(&s[..open]);
-        s = &s[open + 2..];
-        if let Some(close) = s.find("}}") {
-            let expr = s[..close].trim();
-            out.push_str(&resolve_input_path(expr, input));
-            s = &s[close + 2..];
-        } else {
-            out.push_str("{{");
-        }
-    }
-    out.push_str(s);
-    out
-}
-
-fn resolve_input_path(path: &str, input: &Value) -> String {
-    // Accepts "input.seo.title", "input.title", etc.
-    let rest = match path.strip_prefix("input.") {
-        Some(r) => r,
-        None => return String::new(),
-    };
-    let mut cur = input;
-    for key in rest.split('.') {
-        match cur.get(key) {
-            Some(v) => cur = v,
-            None => return String::new(),
-        }
-    }
-    match cur {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        _ => String::new(),
-    }
-}
-
 /// Build a complete HTML document from the resolved `export const page` config.
-fn build_document_shell(page_config: &Option<Value>, body_content: &str, input: &Value) -> String {
+/// Page config values (title, description, etc.) are already resolved by JS at module eval time
+/// via `globalThis.ctx` — no Rust-side interpolation needed.
+fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> String {
     let pc = page_config.as_ref();
 
     let lang = pc
@@ -341,19 +331,17 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str, input: 
         .and_then(Value::as_str)
         .unwrap_or("en");
 
-    let raw_title = pc
+    let title = pc
         .and_then(|p| p.get("head"))
         .and_then(|h| h.get("title"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    let title = interpolate_page_str(raw_title, input);
 
-    let raw_description = pc
+    let description = pc
         .and_then(|p| p.get("head"))
         .and_then(|h| h.get("description"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    let description = interpolate_page_str(raw_description, input);
 
     let body_class = pc
         .and_then(|p| p.get("body"))

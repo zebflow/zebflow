@@ -289,7 +289,7 @@ function emptyPipelineGraph(name, triggerKind) {
           kind: "n.trigger.webhook",
           input_pins: [],
           output_pins: ["out"],
-          config: { path: `/${id}`, method: "POST" },
+          config: { path: `/${id}`, method: "GET" },
         },
     ],
     edges: [],
@@ -319,6 +319,9 @@ function toInputType(field) {
   }
   if (field.type === "copy_url") {
     return "copy_url";
+  }
+  if (field.type === "method_buttons") {
+    return "method_buttons";
   }
   if (field.type === "section") {
     return "section";
@@ -376,19 +379,19 @@ function buildNodeFields(kind, config, state) {
   if (canonicalKind === "n.trigger.webhook") {
     return base.concat([
       {
+        name: "method",
+        label: "Method",
+        type: "method_buttons",
+        value: config?.method || "GET",
+        options: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+        help: "HTTP method accepted by webhook trigger.",
+      },
+      {
         name: "path",
         label: "Path",
         type: "text",
         value: config?.path || "/",
         help: "Webhook relative path under /wh/{owner}/{project}. Supports dynamic segments.",
-      },
-      {
-        name: "method",
-        label: "Method",
-        type: "select",
-        value: config?.method || "POST",
-        options: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-        help: "HTTP method accepted by webhook trigger.",
       },
       {
         name: "__webhook_public_url",
@@ -993,6 +996,38 @@ function renderNodeFormFields(fieldsContainer, fields) {
       wrap.appendChild(copyBtn);
       row.appendChild(wrap);
       input = readonlyInput;
+    } else if (type === "method_buttons") {
+      const current = String(field.value || "GET").toUpperCase();
+      const wrap = document.createElement("div");
+      wrap.className = "pipeline-editor-method-btns";
+      // Hidden input carries the real value for node field reading
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.value = current;
+      hidden.setAttribute("data-node-field", field.name);
+      wrap.appendChild(hidden);
+      (field.options || ["GET", "POST", "PUT", "PATCH", "DELETE"]).forEach((m) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = String(m);
+        btn.className = "pipeline-editor-method-btn" + (String(m).toUpperCase() === current ? " is-active" : "");
+        btn.addEventListener("click", () => {
+          wrap.querySelectorAll(".pipeline-editor-method-btn").forEach((b) => b.classList.remove("is-active"));
+          btn.classList.add("is-active");
+          hidden.value = String(m).toUpperCase();
+          hidden.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        wrap.appendChild(btn);
+      });
+      row.appendChild(wrap);
+      if (field.help) {
+        const hint = document.createElement("small");
+        hint.className = "pipeline-editor-field-help";
+        hint.textContent = field.help;
+        row.appendChild(hint);
+      }
+      fieldsContainer.appendChild(row);
+      return;
     } else if (type === "textarea") {
       input = document.createElement("textarea");
       input.rows = Number(field.rows || 5);

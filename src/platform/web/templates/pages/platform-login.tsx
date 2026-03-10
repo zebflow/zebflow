@@ -1,9 +1,11 @@
+import Alert from "@/components/ui/alert";
 import Button from "@/components/ui/button";
 import Card from "@/components/ui/card";
 import CardHeader from "@/components/ui/card-header";
 import CardTitle from "@/components/ui/card-title";
 import CardDescription from "@/components/ui/card-description";
 import CardContent from "@/components/ui/card-content";
+import Field from "@/components/ui/field";
 import Input from "@/components/ui/input";
 
 export const page = {
@@ -19,8 +21,6 @@ export const page = {
   },
   navigation: "history",
 };
-
-export const app = {};
 
 export default function Page(input) {
   return (
@@ -67,43 +67,32 @@ export default function Page(input) {
 
             <CardContent>
               {input?.error ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-4">
-                  <span>{input.error}</span>
-                </div>
+                <Alert variant="error" className="mb-4">{input.error}</Alert>
               ) : null}
 
               <form method="post" action="/login" className="space-y-4">
-                <div>
-                  <label className="block text-xs font-mono uppercase tracking-widest text-slate-500 mb-2">
-                    Identifier
-                  </label>
+                <Field label="Identifier" id="identifier">
                   <Input
                     type="text"
                     name="identifier"
+                    id="identifier"
                     defaultValue={input?.default_identifier ?? ""}
                     required
                     autoComplete="username"
                   />
-                </div>
+                </Field>
 
-                <div>
-                  <label className="block text-xs font-mono uppercase tracking-widest text-slate-500 mb-2">
-                    Password
-                  </label>
+                <Field label="Password" id="password">
                   <Input
                     type="password"
                     name="password"
+                    id="password"
                     required
                     autoComplete="current-password"
                   />
-                </div>
+                </Field>
 
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="md"
-                  className="w-full mt-2"
-                >
+                <Button type="submit" variant="primary" size="lg" className="w-full mt-2">
                   Login
                 </Button>
               </form>
