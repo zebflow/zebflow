@@ -13,14 +13,15 @@ use crate::pipeline::model::{
     ExecuteOptions, FrameworkContext, FrameworkError, FrameworkOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
-    http_request, logic, pg_query, script, sjtable_query,
-    trigger::{manual, schedule, webhook},
-    web_render, zebtune,
+    auth_token_create, crypto, http_request, logic, pg_query, script, sjtable_query,
+    trigger::{manual, schedule, webhook, weberror},
+    web_render, ws_emit, ws_sync_state, ws_trigger, zebtune,
 };
 use crate::pipeline::nodes::{FrameworkNode, NodeExecutionInput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::{CredentialService, SimpleTableService};
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
+use crate::ws::WsHub;
 
 /// In-memory compile cache for `n.web.render` nodes.
 ///
@@ -49,6 +50,7 @@ pub struct BasicFrameworkEngine {
     credentials: Option<Arc<CredentialService>>,
     simple_tables: Option<Arc<SimpleTableService>>,
     web_render_cache: Option<WebRenderCache>,
+    ws_hub: Option<Arc<WsHub>>,
 }
 
 impl Default for BasicFrameworkEngine {
@@ -60,6 +62,7 @@ impl Default for BasicFrameworkEngine {
             credentials: None,
             simple_tables: None,
             web_render_cache: None,
+            ws_hub: None,
         }
     }
 }
@@ -77,6 +80,7 @@ impl BasicFrameworkEngine {
             credentials,
             simple_tables,
             web_render_cache: None,
+            ws_hub: None,
         }
     }
 
@@ -84,6 +88,12 @@ impl BasicFrameworkEngine {
     /// Same cache instance should be passed on every request so hits accumulate.
     pub fn with_web_render_cache(mut self, cache: WebRenderCache) -> Self {
         self.web_render_cache = Some(cache);
+        self
+    }
+
+    /// Attach the WS hub so ws_sync_state and ws_emit nodes can access rooms.
+    pub fn with_ws_hub(mut self, hub: Arc<WsHub>) -> Self {
+        self.ws_hub = Some(hub);
         self
     }
 
@@ -182,6 +192,62 @@ impl BasicFrameworkEngine {
                 serde_json::from_value(node.config.clone())
                     .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_MERGE_CONFIG", e.to_string()))?,
             ))),
+            auth_token_create::NODE_KIND => {
+                let Some(credentials) = &self.credentials else {
+                    return Err(FrameworkError::new(
+                        "FW_NODE_AUTH_TOKEN_UNAVAILABLE",
+                        "credential service is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::AuthTokenCreate(auth_token_create::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        FrameworkError::new("FW_NODE_AUTH_TOKEN_CONFIG", err.to_string())
+                    })?,
+                    credentials.clone(),
+                )?))
+            }
+            weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    FrameworkError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
+                })?,
+            ))),
+            ws_trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws_trigger::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    FrameworkError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
+                })?,
+            ))),
+            ws_sync_state::NODE_KIND => {
+                let Some(ws_hub) = &self.ws_hub else {
+                    return Err(FrameworkError::new(
+                        "FW_NODE_WS_SYNC_STATE_UNAVAILABLE",
+                        "ws hub is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::WsSyncState(ws_sync_state::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        FrameworkError::new("FW_NODE_WS_SYNC_STATE_CONFIG", err.to_string())
+                    })?,
+                    ws_hub.clone(),
+                )?))
+            }
+            ws_emit::NODE_KIND => {
+                let Some(ws_hub) = &self.ws_hub else {
+                    return Err(FrameworkError::new(
+                        "FW_NODE_WS_EMIT_UNAVAILABLE",
+                        "ws hub is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::WsEmit(ws_emit::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        FrameworkError::new("FW_NODE_WS_EMIT_CONFIG", err.to_string())
+                    })?,
+                    ws_hub.clone(),
+                )?))
+            }
+            crypto::NODE_KIND => Ok(NodeDispatch::Crypto(crypto::Node::new(
+                serde_json::from_value(node.config.clone())
+                    .map_err(|err| FrameworkError::new("FW_NODE_CRYPTO_CONFIG", err.to_string()))?,
+            )?)),
             other => Err(FrameworkError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -380,6 +446,12 @@ impl FrameworkEngine for BasicFrameworkEngine {
                 NodeDispatch::LogicSwitch(node) => node.execute_async(input).await?,
                 NodeDispatch::LogicBranch(node) => node.execute_async(input).await?,
                 NodeDispatch::LogicMerge(node) => node.execute_async(input).await?,
+                NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await?,
+                NodeDispatch::WebError(node) => node.execute_async(input).await?,
+                NodeDispatch::WsTrigger(node) => node.execute_async(input).await?,
+                NodeDispatch::WsSyncState(node) => node.execute_async(input).await?,
+                NodeDispatch::WsEmit(node) => node.execute_async(input).await?,
+                NodeDispatch::Crypto(node) => node.execute_async(input).await?,
             };
             trace.extend(output.trace.clone());
             last_value = output.payload.clone();
@@ -475,6 +547,12 @@ enum NodeDispatch {
     LogicSwitch(logic::switch::Node),
     LogicBranch(logic::branch::Node),
     LogicMerge(logic::merge::Node),
+    AuthTokenCreate(auth_token_create::Node),
+    WebError(weberror::Node),
+    WsTrigger(ws_trigger::Node),
+    WsSyncState(ws_sync_state::Node),
+    WsEmit(ws_emit::Node),
+    Crypto(crypto::Node),
 }
 
 enum MergeStrategy {

@@ -136,6 +136,84 @@ Queries or mutates a Simple Table (Sekejap-backed).
 }
 ```
 
+### `trigger_ws`
+Entry point for WebSocket pipelines. Receives client events from a WS room.
+
+```json
+{
+  "kind": "n.trigger.ws",
+  "config": {
+    "room": "",
+    "event": "chat"
+  }
+}
+```
+
+**DSL flags:** `--event <name> --room <room-id>`
+
+- `event` — event name to match (empty = match all events)
+- `room` — room id pattern to match (empty = match any room)
+
+Output payload contains: `room_id`, `session_id`, `event`, `payload` (the client's message body).
+
+**DSL name:** `trigger.ws`
+
+---
+
+### `ws_emit`
+Broadcasts an event to connected clients in a WS room.
+
+```json
+{
+  "kind": "n.ws.emit",
+  "config": {
+    "event": "chat",
+    "to": "all",
+    "payload_path": "/payload",
+    "room": ""
+  }
+}
+```
+
+**DSL flags:** `--event <name> --to <all|session|others> --payload-path <json-pointer> --room <id>`
+
+- `event` — event name sent to clients
+- `to` — `"all"` (default), `"session"` (only triggering client), `"others"` (everyone except trigger)
+- `payload_path` — JSON pointer into the upstream payload to extract as the event body (empty = whole payload)
+- `room` — static room override (required for non-WS-triggered pipelines)
+
+**DSL name:** `ws.emit`
+
+---
+
+### `ws_sync_state`
+Mutates the shared room state and broadcasts a `state_patch` to all clients.
+
+```json
+{
+  "kind": "n.ws.sync_state",
+  "config": {
+    "op": "merge",
+    "path": "/players/{session_id}",
+    "value_path": "/payload",
+    "room": "",
+    "silent": false
+  }
+}
+```
+
+**DSL flags:** `--op <set|merge|delete> --path <json-pointer> --value-path <json-pointer> --room <id> --silent`
+
+- `op` — `"set"` (replace), `"merge"` (shallow merge), `"delete"` (remove key)
+- `path` — JSON pointer destination; supports `{session_id}`, `{room_id}` placeholders
+- `value_path` — pointer into the payload for the value to write (empty = entire payload)
+- `room` — static room override
+- `silent` — batch mutations for high-frequency streams (≥10 Hz)
+
+**DSL name:** `ws.sync_state`
+
+---
+
 ### `pg_query`
 Executes a SQL query against a PostgreSQL DB connection.
 

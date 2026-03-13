@@ -31,7 +31,7 @@ Covers ~80% of pipelines: webhooks, scheduled jobs, simple data flows.
 register blog-home --path /pages \
   | trigger.webhook --path /blog --method GET \
   | pg.query --credential main-db -- "SELECT * FROM posts ORDER BY created_at DESC" \
-  | web.render --template blog-home --route /blog
+  | web.render --template-path pages/blog-home.tsx --route /blog
 ```
 
 ### Graph mode (branching, fan-out, fan-in, loops)
@@ -267,11 +267,14 @@ n.logic.switch --help           # same
 | `trigger.schedule` | `n.trigger.schedule` | `--cron <expr> --timezone <tz>` |
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|py\|...>` or `-- <code>` |
-| `web.render` | `n.web.render` | `--template <id> --route <path>` |
+| `web.render` | `n.web.render` | `--template-path <pages/name.tsx> --route <path>` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST>` |
 | `sjtable.query` | `n.sjtable.query` | `--table <name> --op <query\|upsert>` |
 | `pg.query` | `n.pg.query` | `--credential <slug>` + `-- <sql>` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
+| `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
+| `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
+| `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
 
 ### Logic / control-flow nodes (graph mode only)
 

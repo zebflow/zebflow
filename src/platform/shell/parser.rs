@@ -118,6 +118,9 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
         "logic.switch" | "n.logic.switch" => Some("n.logic.switch"),
         "logic.merge" | "n.logic.merge" => Some("n.logic.merge"),
+        "trigger.ws" | "n.trigger.ws" => Some("n.trigger.ws"),
+        "ws.emit" | "n.ws.emit" => Some("n.ws.emit"),
+        "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
         _ => None,
     }
 }
@@ -134,6 +137,8 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             (vec!["in".to_string()], vec!["out".to_string()])
         }
         "n.web.render" => (vec!["in".to_string()], vec![]),
+        "n.trigger.ws" => (vec![], vec!["out".to_string()]),
+        "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
         _ => (vec!["in".to_string()], vec!["out".to_string()]),
     }
 }

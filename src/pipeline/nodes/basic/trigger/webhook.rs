@@ -15,7 +15,10 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Webhook Trigger".to_string(),
-        description: "Start pipeline run from inbound HTTP path + method.".to_string(),
+        description: "Start pipeline run from inbound HTTP path + method. \
+            Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
+            JWT claims are injected into payload.auth. \
+            Output with _status sets the HTTP response status code.".to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Request payload forwarded from webhook ingress."
@@ -37,6 +40,18 @@ pub struct Config {
     pub path: String,
     #[serde(default = "default_method")]
     pub method: String,
+    /// Auth type: `"none"` (default), `"jwt"`, `"hmac"`, `"api_key"`.
+    ///
+    /// - `jwt`     — verifies `Authorization: Bearer <token>` against a `jwt_signing_key` credential.
+    ///               Verified claims are injected into `payload.auth`.
+    /// - `hmac`    — verifies `X-Hub-Signature-256: sha256=<hex>` (GitHub-style) against a credential.
+    /// - `api_key` — verifies `X-API-Key: <key>` or `Authorization: ApiKey <key>` against a credential.
+    /// - `none`    — no authentication (default).
+    #[serde(default)]
+    pub auth_type: String,
+    /// Credential ID to use for auth verification (required when `auth_type != "none"`).
+    #[serde(default)]
+    pub auth_credential: String,
 }
 
 fn default_method() -> String {
