@@ -66,10 +66,20 @@ Renders a TSX template with the upstream data as state. Returns HTML.
 {
   "kind": "web_render",
   "config": {
-    "template": "pages/blog-home.tsx"
+    "template_id": "pages/blog-home",
+    "route": "/blog"
   }
 }
 ```
+
+**DSL flags:** `--template-id pages/blog-home --route /blog`
+
+**CRITICAL:** The field is `template_id`, NOT `template`. Using `--template` will cause `missing field 'template_id'` at runtime.
+
+Fields:
+- `template_id` (**required**) — path to template file without `.tsx` extension, e.g. `pages/blog-home`
+- `route` (**required**) — URL route passed to the render context, e.g. `/blog`
+- `markup` (optional) — inline TSX string, used for direct graph execution only
 
 When the terminal node is `web_render`, the webhook response is HTML with `Content-Type: text/html`.
 
