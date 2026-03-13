@@ -72,12 +72,13 @@ Renders a TSX template with the upstream data as state. Returns HTML.
 }
 ```
 
-**DSL flags:** `--template-path pages/blog-home.tsx --route /blog`
+**DSL flags:** `--template-id pages/blog-home.tsx --template-path pages/blog-home.tsx --route /blog`
 
-**CRITICAL:** The field is `template_path` (full path **with** `.tsx` extension). Do NOT use `--template` or `--template-id` — both silently store a wrong field and the node will fail at runtime.
+**CRITICAL:** BOTH `template_id` AND `template_path` must be set to the same value. Missing either causes a runtime error. Always set both in every `web.render` DSL node or patch.
 
 Fields:
-- `template_path` (**required**) — full path to template file **including** `.tsx`, e.g. `pages/blog-home.tsx`
+- `template_id` (**required**) — used by the framework engine to identify the template
+- `template_path` (**required**) — used by the platform to find the template file; same value as `template_id`
 - `route` (**required**) — URL route passed to the render context, e.g. `/blog`
 
 When the terminal node is `web_render`, the webhook response is HTML with `Content-Type: text/html`.
