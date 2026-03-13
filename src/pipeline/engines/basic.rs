@@ -8,20 +8,20 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::pipeline::interface::FrameworkEngine;
+use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{
-    ExecuteOptions, FrameworkContext, FrameworkError, FrameworkOutput, PipelineGraph, PipelineNode,
+    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
     auth_token_create, crypto, http_request, logic, pg_query, script, sjtable_query,
     trigger::{manual, schedule, webhook, weberror},
     web_render, ws_emit, ws_sync_state, ws_trigger, zebtune,
 };
-use crate::pipeline::nodes::{FrameworkNode, NodeExecutionInput};
+use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::{CredentialService, SimpleTableService};
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
-use crate::ws::WsHub;
+use crate::infra::transport::ws::WsHub;
 
 /// In-memory compile cache for `n.web.render` nodes.
 ///
@@ -44,7 +44,7 @@ fn hash_markup(s: &str) -> u64 {
 }
 
 /// Main framework engine used for real pipeline execution.
-pub struct BasicFrameworkEngine {
+pub struct BasicPipelineEngine {
     language: Arc<dyn LanguageEngine>,
     rwe: Arc<dyn ReactiveWebEngine>,
     credentials: Option<Arc<CredentialService>>,
@@ -53,7 +53,7 @@ pub struct BasicFrameworkEngine {
     ws_hub: Option<Arc<WsHub>>,
 }
 
-impl Default for BasicFrameworkEngine {
+impl Default for BasicPipelineEngine {
     fn default() -> Self {
         let rwe_engine_id = std::env::var("ZEBFLOW_RWE_ENGINE_ID").ok();
         Self {
@@ -67,7 +67,7 @@ impl Default for BasicFrameworkEngine {
     }
 }
 
-impl BasicFrameworkEngine {
+impl BasicPipelineEngine {
     pub fn new(
         language: Arc<dyn LanguageEngine>,
         rwe: Arc<dyn ReactiveWebEngine>,
@@ -97,44 +97,44 @@ impl BasicFrameworkEngine {
         self
     }
 
-    fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, FrameworkError> {
+    fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, PipelineError> {
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_WEBHOOK_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_WEBHOOK_CONFIG", err.to_string())
                 })?,
             ))),
             schedule::NODE_KIND => Ok(NodeDispatch::Schedule(schedule::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_SCHEDULE_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_SCHEDULE_CONFIG", err.to_string())
                 })?,
             ))),
             manual::NODE_KIND => Ok(NodeDispatch::Manual(manual::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|err| FrameworkError::new("FW_NODE_MANUAL_CONFIG", err.to_string()))?,
+                    .map_err(|err| PipelineError::new("FW_NODE_MANUAL_CONFIG", err.to_string()))?,
             ))),
             script::NODE_KIND => Ok(NodeDispatch::Script(script::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
-                    .map_err(|err| FrameworkError::new("FW_NODE_SCRIPT_CONFIG", err.to_string()))?,
+                    .map_err(|err| PipelineError::new("FW_NODE_SCRIPT_CONFIG", err.to_string()))?,
                 self.language.clone(),
             )?)),
             http_request::NODE_KIND => Ok(NodeDispatch::HttpRequest(http_request::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_HTTP_REQUEST_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_HTTP_REQUEST_CONFIG", err.to_string())
                 })?,
                 self.language.clone(),
             )?)),
             sjtable_query::NODE_KIND => {
                 let Some(simple_tables) = &self.simple_tables else {
-                    return Err(FrameworkError::new(
+                    return Err(PipelineError::new(
                         "FW_NODE_SJTABLE_UNAVAILABLE",
                         "simple table service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::SimpleTable(sjtable_query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        FrameworkError::new("FW_NODE_SJTABLE_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_SJTABLE_CONFIG", err.to_string())
                     })?,
                     simple_tables.clone(),
                     self.language.clone(),
@@ -142,23 +142,27 @@ impl BasicFrameworkEngine {
             }
             pg_query::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
-                    return Err(FrameworkError::new(
+                    return Err(PipelineError::new(
                         "FW_NODE_PG_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::Postgres(pg_query::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|err| FrameworkError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
+                        .map_err(|err| PipelineError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
                     credentials.clone(),
                     self.language.clone(),
                 )?))
             }
             web_render::NODE_KIND => {
-                let config: web_render::Config = serde_json::from_value(node.config.clone())
+                let mut config: web_render::Config = serde_json::from_value(node.config.clone())
                     .map_err(|err| {
-                        FrameworkError::new("FW_NODE_WEB_RENDER_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_WEB_RENDER_CONFIG", err.to_string())
                     })?;
+                // Derive template_id from template_path when not explicitly set.
+                if config.template_id.is_empty() && !config.template_path.is_empty() {
+                    config.template_id = config.template_path.clone();
+                }
                 Ok(NodeDispatch::InlineWebRender {
                     node_id: node.id.clone(),
                     config,
@@ -167,88 +171,88 @@ impl BasicFrameworkEngine {
             zebtune::NODE_KIND | "n.zebtune" => {
                 let config: zebtune::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
-                let llm = crate::llm::client_from_env();
+                let llm = crate::automaton::llm::client_from_env();
                 Ok(NodeDispatch::Zebtune(zebtune::Node::new(config, llm)))
             }
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
-                    .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_IF_CONFIG", e.to_string()))?,
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_IF_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
             logic::switch::NODE_KIND => Ok(NodeDispatch::LogicSwitch(logic::switch::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
-                    .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_SWITCH_CONFIG", e.to_string()))?,
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_SWITCH_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
             logic::branch::NODE_KIND => Ok(NodeDispatch::LogicBranch(logic::branch::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
-                    .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_BRANCH_CONFIG", e.to_string()))?,
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_BRANCH_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
             logic::merge::NODE_KIND => Ok(NodeDispatch::LogicMerge(logic::merge::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_MERGE_CONFIG", e.to_string()))?,
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_MERGE_CONFIG", e.to_string()))?,
             ))),
             auth_token_create::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
-                    return Err(FrameworkError::new(
+                    return Err(PipelineError::new(
                         "FW_NODE_AUTH_TOKEN_UNAVAILABLE",
                         "credential service is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::AuthTokenCreate(auth_token_create::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        FrameworkError::new("FW_NODE_AUTH_TOKEN_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_AUTH_TOKEN_CONFIG", err.to_string())
                     })?,
                     credentials.clone(),
                 )?))
             }
             weberror::NODE_KIND => Ok(NodeDispatch::WebError(weberror::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_WEBERROR_CONFIG", err.to_string())
                 })?,
             ))),
             ws_trigger::NODE_KIND => Ok(NodeDispatch::WsTrigger(ws_trigger::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
+                    PipelineError::new("FW_NODE_WS_TRIGGER_CONFIG", err.to_string())
                 })?,
             ))),
             ws_sync_state::NODE_KIND => {
                 let Some(ws_hub) = &self.ws_hub else {
-                    return Err(FrameworkError::new(
+                    return Err(PipelineError::new(
                         "FW_NODE_WS_SYNC_STATE_UNAVAILABLE",
                         "ws hub is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::WsSyncState(ws_sync_state::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        FrameworkError::new("FW_NODE_WS_SYNC_STATE_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_WS_SYNC_STATE_CONFIG", err.to_string())
                     })?,
                     ws_hub.clone(),
                 )?))
             }
             ws_emit::NODE_KIND => {
                 let Some(ws_hub) = &self.ws_hub else {
-                    return Err(FrameworkError::new(
+                    return Err(PipelineError::new(
                         "FW_NODE_WS_EMIT_UNAVAILABLE",
                         "ws hub is not configured on this framework engine",
                     ));
                 };
                 Ok(NodeDispatch::WsEmit(ws_emit::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        FrameworkError::new("FW_NODE_WS_EMIT_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_WS_EMIT_CONFIG", err.to_string())
                     })?,
                     ws_hub.clone(),
                 )?))
             }
             crypto::NODE_KIND => Ok(NodeDispatch::Crypto(crypto::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|err| FrameworkError::new("FW_NODE_CRYPTO_CONFIG", err.to_string()))?,
+                    .map_err(|err| PipelineError::new("FW_NODE_CRYPTO_CONFIG", err.to_string()))?,
             )?)),
-            other => Err(FrameworkError::new(
+            other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
             )),
@@ -257,14 +261,14 @@ impl BasicFrameworkEngine {
 }
 
 #[async_trait]
-impl FrameworkEngine for BasicFrameworkEngine {
+impl PipelineEngine for BasicPipelineEngine {
     fn id(&self) -> &'static str {
         "pipeline.basic"
     }
 
-    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), FrameworkError> {
+    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), PipelineError> {
         if graph.nodes.is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_EMPTY_GRAPH",
                 format!("pipeline '{}' has no nodes", graph.id),
             ));
@@ -272,7 +276,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
         let node_map: HashMap<&str, _> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         for entry in &graph.entry_nodes {
             if !node_map.contains_key(entry.as_str()) {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_ENTRY_NODE",
                     format!("unknown entry node '{}'", entry),
                 ));
@@ -280,19 +284,19 @@ impl FrameworkEngine for BasicFrameworkEngine {
         }
         for (idx, edge) in graph.edges.iter().enumerate() {
             let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_EDGE_FROM_NODE",
                     format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
                 )
             })?;
             let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_EDGE_TO_NODE",
                     format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
                 )
             })?;
             if !from.output_pins.iter().any(|p| p == &edge.from_pin) {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_EDGE_FROM_PIN",
                     format!(
                         "edge[{idx}] invalid from_pin '{}' for node '{}'",
@@ -301,7 +305,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                 ));
             }
             if !to.input_pins.iter().any(|p| p == &edge.to_pin) {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_EDGE_TO_PIN",
                     format!(
                         "edge[{idx}] invalid to_pin '{}' for node '{}'",
@@ -319,9 +323,9 @@ impl FrameworkEngine for BasicFrameworkEngine {
     async fn execute_with_options_async(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
+        ctx: &PipelineContext,
         options: &ExecuteOptions,
-    ) -> Result<FrameworkOutput, FrameworkError> {
+    ) -> Result<PipelineOutput, PipelineError> {
         self.validate_graph(graph)?;
 
         let node_map: HashMap<&str, &PipelineNode> = graph
@@ -348,7 +352,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
         for node_id in start_nodes {
             let node = node_map
                 .get(node_id.as_str())
-                .ok_or_else(|| FrameworkError::new("FW_ENTRY_NODE", "entry node missing"))?;
+                .ok_or_else(|| PipelineError::new("FW_ENTRY_NODE", "entry node missing"))?;
             let first_pin = node.input_pins.first().cloned().unwrap_or_default();
             queue.push_back(NodeExecutionInput {
                 node_id: node.id.clone(),
@@ -359,6 +363,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                     "project": ctx.project,
                     "pipeline": ctx.pipeline,
                     "request_id": ctx.request_id,
+                    "route": ctx.route,
                 }),
                 step_tx: step_tx.clone(),
             });
@@ -373,7 +378,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
 
         while let Some(input) = queue.pop_front() {
             let node = node_map.get(input.node_id.as_str()).ok_or_else(|| {
-                FrameworkError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
+                PipelineError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
             })?;
             let dispatch = self.build_node(node)?;
             let output = match dispatch {
@@ -388,7 +393,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                     // Require markup — same contract as render_from_config.
                     let markup = config.markup.as_deref().unwrap_or("").trim();
                     if markup.is_empty() {
-                        return Err(FrameworkError::new(
+                        return Err(PipelineError::new(
                             "FW_NODE_WEB_RENDER_CONFIG",
                             format!("node '{node_id}' requires config.markup for inline execution"),
                         ));
@@ -417,7 +422,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                                 self.language.as_ref(),
                             )
                             .map_err(|e| {
-                                FrameworkError::new(
+                                PipelineError::new(
                                     "FW_NODE_WEB_RENDER_COMPILE",
                                     e.to_string(),
                                 )
@@ -460,7 +465,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                 if let Some(next_edges) = outgoing.get(&(node.id.as_str(), emitted_pin.as_str())) {
                     for (to_node, to_pin) in next_edges {
                         let target = node_map.get(to_node).ok_or_else(|| {
-                            FrameworkError::new("FW_EXEC_EDGE", format!("target node '{}' missing", to_node))
+                            PipelineError::new("FW_EXEC_EDGE", format!("target node '{}' missing", to_node))
                         })?;
                         let merge_strategy = logic_merge_strategy(target);
                         match merge_strategy {
@@ -482,6 +487,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                                             "project": ctx.project,
                                             "pipeline": ctx.pipeline,
                                             "request_id": ctx.request_id,
+                                            "route": ctx.route,
                                         }),
                                         step_tx: step_tx.clone(),
                                     });
@@ -498,6 +504,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                                             "project": ctx.project,
                                             "pipeline": ctx.pipeline,
                                             "request_id": ctx.request_id,
+                                            "route": ctx.route,
                                         }),
                                         step_tx: step_tx.clone(),
                                     });
@@ -513,6 +520,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
                                         "project": ctx.project,
                                         "pipeline": ctx.pipeline,
                                         "request_id": ctx.request_id,
+                                        "route": ctx.route,
                                     }),
                                     step_tx: step_tx.clone(),
                                 });
@@ -523,7 +531,7 @@ impl FrameworkEngine for BasicFrameworkEngine {
             }
         }
 
-        Ok(FrameworkOutput {
+        Ok(PipelineOutput {
             value: last_value,
             trace,
         })

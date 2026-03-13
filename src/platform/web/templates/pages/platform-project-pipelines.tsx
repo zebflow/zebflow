@@ -1,8 +1,8 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
-import { initPipelineEditorBehavior } from "@/components/behavior/pipeline-editor";
+import { initPipelineEditorBehavior, registerPipelineLoadedCallback } from "@/components/behavior/pipeline-editor";
 import { initPipelineRegistryBehavior } from "@/components/behavior/project-pipelines";
 import WebhookRouteTree from "@/components/ui/webhook-route-tree";
-import { cx, Link } from "rwe";
+import { cx, Link, usePageState, useEffect } from "rwe";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -13,6 +13,9 @@ export const page = {
   head: {
     title: ctx?.seo?.title ?? "",
     description: ctx?.seo?.description ?? "",
+    links: [
+      { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
+    ],
   },
   html: {
     lang: "en",
@@ -22,6 +25,52 @@ export const page = {
   },
   navigation: "history",
 };
+
+function LucideFolderIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="pipeline-editor-nav-icon" aria-hidden="true">
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  );
+}
+
+function pipelineNavLastSegment(virtualPath) {
+  const parts = String(virtualPath || "").split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : "/";
+}
+
+function expandFolderPaths(scopeFolders, editorBase) {
+  const pathMap = new Map();
+  for (const f of scopeFolders) {
+    const vp = String(f?.virtual_path ?? "");
+    if (!vp || vp === "/") continue;
+    if (!pathMap.has(vp)) {
+      pathMap.set(vp, { virtual_path: vp, count: 0, href: f?.href ?? `${editorBase}?path=${vp}` });
+    }
+    pathMap.get(vp).count += (f?.count ?? 0);
+    // Derive all intermediate ancestor paths and accumulate counts
+    const parts = vp.split("/").filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      const ancestor = "/" + parts.slice(0, i).join("/");
+      if (!pathMap.has(ancestor)) {
+        pathMap.set(ancestor, { virtual_path: ancestor, count: 0, href: `${editorBase}?path=${ancestor}` });
+      }
+      pathMap.get(ancestor).count += (f?.count ?? 0);
+    }
+  }
+  return Array.from(pathMap.values()).sort((a, b) => a.virtual_path.localeCompare(b.virtual_path));
+}
+
+function getDirectChildFolders(allFolders, currentPath) {
+  const normalized = String(currentPath || "/");
+  return allFolders.filter((f) => {
+    const vp = String(f?.virtual_path ?? "");
+    if (vp === normalized) return false;
+    const lastSlash = vp.lastIndexOf("/");
+    const parent = lastSlash <= 0 ? "/" : vp.slice(0, lastSlash);
+    return parent === normalized;
+  });
+}
 
 function StatusDot({ isActive, hasDraft }) {
   const cls = isActive && !hasDraft
@@ -41,6 +90,12 @@ export default function Page(input) {
   const registry = input?.registry ?? {};
   const registryApi = registry?.api ?? {};
   const editor = input?.editor ?? {};
+
+  const [pipelineLoaded, setPipelineLoaded] = usePageState("pe_pipeline_loaded", !!(editor?.selected_id));
+  useEffect(() => {
+    registerPipelineLoadedCallback(setPipelineLoaded);
+    return () => registerPipelineLoadedCallback(null);
+  }, []);
   const editorApi = editor?.api ?? {};
   const registryBreadcrumbs = Array.isArray(registry?.breadcrumbs) ? registry.breadcrumbs : [];
   const registryFolders = Array.isArray(registry?.folders) ? registry.folders : [];
@@ -48,6 +103,10 @@ export default function Page(input) {
   const scopeHierarchy = Array.isArray(editor?.scope_hierarchy) ? editor.scope_hierarchy : [];
   const scopeFolders = Array.isArray(editor?.scope_folders) ? editor.scope_folders : [];
   const editorPipelines = Array.isArray(editor?.pipelines) ? editor.pipelines : [];
+  const currentPath = String(editor?.scope_path ?? "/");
+  const editorBase = String(scopeHierarchy[0]?.href ?? "").replace(/\?path=.*$/, "");
+  const expandedFolders = expandFolderPaths(scopeFolders, editorBase);
+  const directChildFolders = getDirectChildFolders(expandedFolders, currentPath);
   const pipelineItems = Array.isArray(input?.pipeline_items) ? input.pipeline_items : [];
 
   return (
@@ -239,27 +298,35 @@ export default function Page(input) {
                   <Button size="xs" data-editor-new-open="true">+ New</Button>
                 </div>
 
-                <details className="pipeline-editor-folder-explorer">
-                  <summary className="pipeline-editor-folder-summary">
-                    Folder: <span>{editor?.scope_path ?? "/"}</span>
-                  </summary>
-                  <div className="pipeline-editor-folder-panel">
-                    <p className="pipeline-editor-folder-label">Parents</p>
-                    {scopeHierarchy.map((item, index) => (
-                      <Link key={`${item?.href ?? "parent"}-${index}`} href={item?.href ?? "#"} className="pipeline-editor-folder-link">{item?.virtual_path}</Link>
-                    ))}
-                    <p className="pipeline-editor-folder-label">Folders</p>
-                    {scopeFolders.map((item, index) => (
-                      <Link key={`${item?.href ?? "folder"}-${index}`} href={item?.href ?? "#"} className="pipeline-editor-folder-link">{item?.virtual_path} ({item?.count ?? 0})</Link>
+                {/* ── Folder navigator ─────────────────────────────── */}
+                <div className="pipeline-editor-folder-nav">
+                  <div className="pipeline-editor-folder-crumbs">
+                    {scopeHierarchy.map((seg, index) => (
+                      <span key={`crumb-${index}`} className="pipeline-editor-folder-crumb">
+                        {index > 0 ? <span className="pipeline-editor-crumb-sep">/</span> : null}
+                        <Link href={seg?.href ?? "#"} className="pipeline-editor-crumb-link">{seg?.name}</Link>
+                      </span>
                     ))}
                   </div>
-                </details>
+                  {directChildFolders.map((folder, index) => (
+                    <Link
+                      key={`child-folder-${index}`}
+                      href={folder?.href ?? "#"}
+                      className="pipeline-editor-nav-row"
+                    >
+                      <LucideFolderIcon />
+                      <span className="pipeline-editor-nav-label">{pipelineNavLastSegment(folder?.virtual_path)}/</span>
+                      <span className="pipeline-editor-nav-count">{folder?.count ?? 0}</span>
+                    </Link>
+                  ))}
+                </div>
 
                 <div className="pipeline-editor-list" data-editor-pipeline-list="true">
                   {editorPipelines.map((item, index) => (
                     <Link key={`${item?.id ?? "pipeline"}-${index}`} href={item?.editor_href ?? "#"} className="pipeline-editor-item" data-editor-pipeline-id={item?.id ?? ""}>
                       <div className="pipeline-editor-item-head">
                         <div className="flex items-center gap-1.5">
+                          <i className="devicon-yaml-plain colored text-xs" aria-hidden="true" />
                           <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
                           <span className="pipeline-editor-item-name">{item?.name}</span>
                         </div>
@@ -273,7 +340,21 @@ export default function Page(input) {
                 </div>
               </aside>
 
-              <section className="pipeline-editor-main">
+              <section className="pipeline-editor-main relative">
+                {!pipelineLoaded && (
+                  <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--studio-bg)] text-[var(--studio-muted)]">
+                    <svg viewBox="0 0 24 24" fill="none" className="w-10 h-10 opacity-30" aria-hidden="true">
+                      <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+                      <path d="M3 9h18" stroke="currentColor" strokeWidth="1.5"/>
+                      <circle cx="7" cy="6" r="1" fill="currentColor"/>
+                      <circle cx="10" cy="6" r="1" fill="currentColor"/>
+                      <circle cx="13" cy="6" r="1" fill="currentColor"/>
+                      <path d="M8 14h8M8 17h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                    <p className="text-sm font-medium text-[var(--studio-text)]">No pipeline selected</p>
+                    <p className="text-xs opacity-60">Select a pipeline from the sidebar to start editing.</p>
+                  </div>
+                )}
                 <div className="pipeline-editor-toolbar">
                   <div className="pipeline-editor-toolbar-main">
                     <p className="pipeline-editor-title" data-editor-selected-name="true">No pipeline selected</p>
@@ -300,8 +381,11 @@ export default function Page(input) {
                     <button type="button" className="pipeline-editor-cat" data-editor-cat="logic" title="Logic">
                       <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><circle cx="7" cy="7" r="2" stroke="currentColor" strokeWidth="1.7"/><circle cx="17" cy="17" r="2" stroke="currentColor" strokeWidth="1.7"/><path d="M9 7h3a4 4 0 014 4v4" stroke="currentColor" strokeWidth="1.7"/></svg>
                     </button>
-                    <button type="button" className="pipeline-editor-cat" data-editor-cat="render" title="Render">
-                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M4 5h16v10H4z" stroke="currentColor" strokeWidth="1.7"/><path d="M9 19h6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                    <button type="button" className="pipeline-editor-cat" data-editor-cat="web" title="Web">
+                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7"/><path d="M12 3c-2.5 3-4 5.5-4 9s1.5 6 4 9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M12 3c2.5 3 4 5.5 4 9s-1.5 6-4 9" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/><path d="M3 12h18" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/></svg>
+                    </button>
+                    <button type="button" className="pipeline-editor-cat" data-editor-cat="security" title="Security">
+                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4"><path d="M12 2l7 4v6c0 4.42-3.13 8.56-7 9.93C8.13 20.56 5 16.42 5 12V6l7-4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/></svg>
                     </button>
                     <div className="pipeline-editor-cat-menu" data-editor-cat-menu="true"></div>
                   </div>
@@ -315,6 +399,32 @@ export default function Page(input) {
                   <span className="pipeline-editor-foot-item" data-editor-hit-error="true">Latest error: -</span>
                 </div>
               </section>
+
+              {/* ── Git commit dialog (shown after pipeline save) ─────── */}
+              <div hidden data-editor-git-commit-dialog="true" className="git-commit-overlay">
+                <div className="git-commit-backdrop" data-editor-git-commit-close="true" />
+                <div className="git-commit-box">
+                  <div className="git-commit-header">
+                    <h3 className="git-commit-title">Commit Pipeline Changes</h3>
+                    <Button variant="ghost" size="icon" className="git-commit-close" data-editor-git-commit-close="true" aria-label="Close">✕</Button>
+                  </div>
+                  <div className="git-commit-file-list" data-editor-git-commit-file-list="true">
+                    {/* populated by pipeline-editor.ts after save */}
+                  </div>
+                  <textarea
+                    className="git-commit-message"
+                    data-editor-git-commit-message="true"
+                    placeholder="Commit message…"
+                    rows={3}
+                  />
+                  <Checkbox label="Push after commit" data-editor-git-commit-push="true" className="git-commit-push-row" />
+                  <p hidden data-editor-git-commit-error="true" className="git-commit-error" />
+                  <div className="git-commit-actions">
+                    <Button size="xs" data-editor-git-commit-submit="true" disabled>Commit</Button>
+                    <Button variant="outline" size="xs" data-editor-git-commit-close="true">Skip</Button>
+                  </div>
+                </div>
+              </div>
 
               <dialog className="pipeline-editor-dialog" data-editor-new-dialog="true">
                 <form method="dialog" className="pipeline-editor-dialog-form" data-editor-new-form="true">

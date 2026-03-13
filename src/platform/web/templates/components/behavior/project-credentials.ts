@@ -22,28 +22,62 @@ function requestJson(url, options = {}) {
 
 const SECRET_SCHEMAS = {
   postgres: [
-    { key: "host", label: "Host", help: "Hostname or IP of PostgreSQL server." },
-    { key: "port", label: "Port", placeholder: "5432", help: "TCP port for PostgreSQL." },
+    { key: "host",     label: "Host",     help: "Hostname or IP of PostgreSQL server." },
+    { key: "port",     label: "Port",     placeholder: "5432", help: "TCP port for PostgreSQL." },
     { key: "database", label: "Database", help: "Database name." },
-    { key: "user", label: "User", help: "Login username." },
+    { key: "user",     label: "User",     help: "Login username." },
     { key: "password", label: "Password", type: "password", help: "Login password." },
-    { key: "sslmode", label: "SSL Mode", placeholder: "prefer", help: "disable, prefer, require, verify-ca, verify-full." },
+    { key: "sslmode",  label: "SSL Mode", placeholder: "prefer", help: "disable, prefer, require, verify-ca, verify-full." },
   ],
   mysql: [
-    { key: "host", label: "Host", help: "Hostname or IP of MySQL server." },
-    { key: "port", label: "Port", placeholder: "3306", help: "TCP port for MySQL." },
+    { key: "host",     label: "Host",     help: "Hostname or IP of MySQL server." },
+    { key: "port",     label: "Port",     placeholder: "3306", help: "TCP port for MySQL." },
     { key: "database", label: "Database", help: "Database name." },
-    { key: "user", label: "User", help: "Login username." },
-    { key: "password", label: "Password", type: "password", help: "Login password." },
+    { key: "user",     label: "User",     help: "Login username." },
+    { key: "password", label: "Password", type: "password", fullWidth: true, help: "Login password." },
   ],
   openai: [
-    { key: "api_key", label: "API Key", type: "password", help: "Provider API token." },
-    { key: "base_url", label: "Base URL", placeholder: "https://api.openai.com/v1", help: "Custom endpoint if needed." },
-    { key: "model", label: "Default Model", help: "Fallback model id for requests." },
+    { key: "api_key",  label: "API Key",       type: "password", fullWidth: true, help: "Provider API token." },
+    { key: "base_url", label: "Base URL",       placeholder: "https://api.openai.com/v1", help: "Custom endpoint if needed." },
+    { key: "model",    label: "Default Model",  help: "Fallback model id for requests." },
   ],
   http: [
     { key: "base_url", label: "Base URL", help: "Service root URL." },
-    { key: "token", label: "Token", type: "password", help: "Bearer token or API key." },
+    { key: "token",    label: "Token",    type: "password", help: "Bearer token or API key." },
+  ],
+  github: [
+    { key: "username",  label: "GitHub Username", help: "Your GitHub username for API auth and git push." },
+    { key: "token",     label: "Personal Access Token", type: "password", fullWidth: true, help: "PAT with repo scope. Starts with ghp_ or github_pat_." },
+    { key: "git_name",  label: "Git Name",  help: "Full name for git commits (git config user.name)." },
+    { key: "git_email", label: "Git Email", help: "Email for git commits (git config user.email). Must match GitHub account." },
+  ],
+  gitlab: [
+    { key: "url",       label: "Instance URL", placeholder: "https://gitlab.com", fullWidth: true, help: "GitLab instance URL. Use https://gitlab.com for SaaS." },
+    { key: "username",  label: "GitLab Username", help: "Your GitLab username for API auth and git push." },
+    { key: "token",     label: "Personal Access Token", type: "password", fullWidth: true, help: "PAT with read_repository and write_repository scope." },
+    { key: "git_name",  label: "Git Name",  help: "Full name for git commits (git config user.name)." },
+    { key: "git_email", label: "Git Email", help: "Email for git commits (git config user.email)." },
+  ],
+  jwt_signing_key: [
+    {
+      key: "algorithm",
+      label: "Algorithm",
+      type: "select",
+      options: [
+        { value: "HS256", label: "HS256 — HMAC-SHA256 (symmetric)" },
+        { value: "HS384", label: "HS384 — HMAC-SHA384 (symmetric)" },
+        { value: "HS512", label: "HS512 — HMAC-SHA512 (symmetric)" },
+        { value: "RS256", label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)" },
+        { value: "RS384", label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)" },
+        { value: "RS512", label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)" },
+        { value: "ES256", label: "ES256 — ECDSA P-256 (asymmetric)" },
+        { value: "ES384", label: "ES384 — ECDSA P-384 (asymmetric)" },
+      ],
+      default: "HS256",
+      help: "JWT signing algorithm. HS* uses a shared secret; RS*/ES* use a private key.",
+    },
+    { key: "secret", label: "HMAC Secret", type: "password", fullWidth: true, generate: "random_hex_32", help: "Secret for HS* algorithms. Click Generate for a secure 256-bit random value." },
+    { key: "private_key", label: "Private Key (PEM)", type: "textarea", rows: 6, fullWidth: true, help: "PEM private key for RS*/ES* algorithms. Leave blank for HS*." },
   ],
   custom: [
     {
@@ -51,6 +85,7 @@ const SECRET_SCHEMAS = {
       label: "Secret JSON",
       type: "textarea",
       rows: 10,
+      fullWidth: true,
       placeholder: "{\n  \"key\": \"value\"\n}",
       help: "Stored as raw JSON object for custom nodes.",
     },
@@ -104,6 +139,20 @@ function setBusy(state, isBusy) {
   });
 }
 
+function generateValue(type) {
+  if (type === "random_hex_32") {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  if (type === "random_hex_16") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return "";
+}
+
 function renderSecretFields(container, kind, secret = {}) {
   const schema = SECRET_SCHEMAS[kind] || SECRET_SCHEMAS.custom;
   const payload = toSecretRecord(secret);
@@ -111,14 +160,24 @@ function renderSecretFields(container, kind, secret = {}) {
 
   schema.forEach((field) => {
     const row = document.createElement("label");
-    row.className = "pipeline-editor-field";
+    row.className = field.fullWidth ? "pipeline-editor-field is-full-width" : "pipeline-editor-field";
 
     const label = document.createElement("span");
     label.textContent = field.label;
     row.appendChild(label);
 
     let input;
-    if (field.type === "textarea") {
+    if (field.type === "select") {
+      input = document.createElement("select");
+      const currentVal = typeof payload[field.key] === "string" ? payload[field.key] : (field.default || "");
+      (field.options || []).forEach((opt) => {
+        const option = document.createElement("option");
+        option.value = opt.value;
+        option.textContent = opt.label;
+        if (opt.value === currentVal) option.selected = true;
+        input.appendChild(option);
+      });
+    } else if (field.type === "textarea") {
       input = document.createElement("textarea");
       input.rows = Number(field.rows || 6);
       input.value = typeof payload[field.key] === "string" ? payload[field.key] : "";
@@ -128,10 +187,29 @@ function renderSecretFields(container, kind, secret = {}) {
       input.value = typeof payload[field.key] === "string" ? payload[field.key] : "";
     }
     input.setAttribute("data-secret-key", field.key);
-    if (field.placeholder) {
+    if (field.placeholder && field.type !== "select") {
       input.placeholder = field.placeholder;
     }
-    row.appendChild(input);
+
+    if (field.generate) {
+      const wrap = document.createElement("div");
+      wrap.className = "credential-gen-wrap";
+      wrap.appendChild(input);
+      const genBtn = document.createElement("button");
+      genBtn.type = "button";
+      genBtn.className = "credential-gen-btn";
+      genBtn.textContent = "Generate";
+      genBtn.title = "Generate a secure random value";
+      genBtn.addEventListener("click", () => {
+        input.value = generateValue(field.generate);
+        input.type = "text";
+        genBtn.textContent = "Regenerate";
+      });
+      wrap.appendChild(genBtn);
+      row.appendChild(wrap);
+    } else {
+      row.appendChild(input);
+    }
 
     if (field.help) {
       const hint = document.createElement("small");

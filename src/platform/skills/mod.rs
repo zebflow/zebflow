@@ -28,9 +28,39 @@ impl Skill {
 
 static SKILLS: &[Skill] = &[
     Skill {
+        name: "agent-core",
+        title: "Zebflow Agent Quick Start",
+        content: include_str!("agent-core.md"),
+    },
+    Skill {
         name: "zebflow-overview",
         title: "Zebflow Platform Overview",
         content: include_str!("zebflow-overview.md"),
+    },
+    Skill {
+        name: "pipeline-dsl",
+        title: "Pipeline DSL Reference",
+        content: include_str!("pipeline-dsl.md"),
+    },
+    Skill {
+        name: "pipeline-authoring",
+        title: "Pipeline Authoring Patterns",
+        content: include_str!("pipeline-authoring.md"),
+    },
+    Skill {
+        name: "pipeline-nodes",
+        title: "Pipeline Node Catalog",
+        content: include_str!("pipeline-nodes.md"),
+    },
+    Skill {
+        name: "pipeline-dsl-rwe",
+        title: "Pipeline DSL — RWE & web.render",
+        content: include_str!("pipeline-dsl-rwe.md"),
+    },
+    Skill {
+        name: "pipeline-dsl-web-auto",
+        title: "Pipeline DSL — web.auto Language",
+        content: include_str!("pipeline-dsl-web-auto.md"),
     },
     Skill {
         name: "sekejapql",
@@ -43,19 +73,14 @@ static SKILLS: &[Skill] = &[
         content: include_str!("rwe-templates.md"),
     },
     Skill {
-        name: "pipeline-dsl",
-        title: "Pipeline DSL Reference",
-        content: include_str!("pipeline-dsl.md"),
+        name: "project-operations",
+        title: "Project Operations Guide",
+        content: include_str!("project-operations.md"),
     },
     Skill {
-        name: "pipeline-dsl-rwe",
-        title: "Pipeline DSL — RWE & web.render",
-        content: include_str!("pipeline-dsl-rwe.md"),
-    },
-    Skill {
-        name: "pipeline-dsl-web-auto",
-        title: "Pipeline DSL — web.auto Language",
-        content: include_str!("pipeline-dsl-web-auto.md"),
+        name: "full-project-workflow",
+        title: "Full Project Workflow — Concept to Live Website",
+        content: include_str!("full-project-workflow.md"),
     },
     Skill {
         name: "api-reference",

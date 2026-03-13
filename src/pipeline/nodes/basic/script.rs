@@ -1,8 +1,8 @@
 //! Script execution node backed by the language engine.
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, ExecutionContext, LanguageEngine,
@@ -35,6 +35,8 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -58,9 +60,9 @@ impl Node {
         node_id: &str,
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
-    ) -> Result<Self, FrameworkError> {
+    ) -> Result<Self, PipelineError> {
         if config.source.trim().is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_SCRIPT_CONFIG",
                 format!("node '{}' requires config.source", node_id),
             ));
@@ -72,7 +74,7 @@ impl Node {
             code: config.source,
         };
         let ir = language.parse(&module).map_err(|err| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_SCRIPT_PARSE",
                 format!("node '{}': {}", node_id, err),
             )
@@ -87,7 +89,7 @@ impl Node {
                 },
             )
             .map_err(|err| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_NODE_SCRIPT_COMPILE",
                     format!("node '{}': {}", node_id, err),
                 )
@@ -101,7 +103,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -115,9 +117,9 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         if input.input_pin != INPUT_PIN_IN {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_SCRIPT_INPUT_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
@@ -149,7 +151,7 @@ impl FrameworkNode for Node {
             .language
             .run(&self.compiled, input.payload, &ctx)
             .map_err(|err| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_NODE_SCRIPT_RUN",
                     format!("node '{}': {}", self.node_id, err),
                 )

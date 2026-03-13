@@ -117,10 +117,24 @@ fn build_client_module(client_source: &str) -> String {
         "import {{ h, Fragment, hydrate, createContext }} from 'https://esm.sh/preact@10.28.4';\n\
          import {{ useContext, useEffect, useMemo, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
          const __RwePageStateContext = createContext(null);\n\
-         function __rweUsePageState(initial={{}}) {{\n\
+         function __rweUsePageState(keyOrInitial, defaultValue) {{\n\
+           const isKeyed = typeof keyOrInitial === 'string';\n\
            const ctx = useContext(__RwePageStateContext);\n\
+           const [state, setState] = useState(\n\
+             isKeyed ? {{ [keyOrInitial]: defaultValue }} : (keyOrInitial || {{}})\n\
+           );\n\
+           if (isKeyed) {{\n\
+             const key = keyOrInitial;\n\
+             if (ctx) {{\n\
+               const value = key in ctx ? ctx[key] : defaultValue;\n\
+               const setter = (v) => ctx.setPageState({{ [key]: v }});\n\
+               return [value, setter];\n\
+             }}\n\
+             const value = state[key] !== undefined ? state[key] : defaultValue;\n\
+             const setter = (v) => setState((prev) => ({{ ...prev, [key]: v }}));\n\
+             return [value, setter];\n\
+           }}\n\
            if (ctx) return ctx;\n\
-           const [state, setState] = useState(initial || {{}});\n\
            const setPageState = (patch) => {{\n\
              if (typeof patch === 'function') {{\n\
                setState((prev) => ({{ ...(prev || {{}}), ...((patch(prev || {{}})) || {{}}) }}));\n\

@@ -260,11 +260,21 @@
   var PageStateContext = createContext(null);
 
   function createUsePageState() {
-    return function usePageState(initial) {
-      initial = initial || {};
+    return function usePageState(keyOrInitial, defaultValue) {
+      var isKeyed = typeof keyOrInitial === "string";
       var ctx = useContext(PageStateContext);
+      if (isKeyed) {
+        var key = keyOrInitial;
+        if (ctx && typeof ctx === "object") {
+          var value = key in ctx ? ctx[key] : defaultValue;
+          var setter = function (v) { if (ctx.setPageState) ctx.setPageState(function (p) { var o = {}; o[key] = v; return o; }); };
+          return [value, setter];
+        }
+        // SSR root: no-op setter, just return default
+        return [defaultValue, function () {}];
+      }
       if (ctx && typeof ctx === "object") return ctx;
-      return Object.assign({}, initial, { setPageState: function () {} });
+      return Object.assign({}, keyOrInitial || {}, { setPageState: function () {} });
     };
   }
 

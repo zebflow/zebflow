@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::pipeline::FrameworkError;
+use crate::pipeline::PipelineError;
 use crate::pipeline::model::StepEvent;
 
 /// Input envelope received by a node when it is triggered by an incoming edge.
@@ -35,7 +35,7 @@ pub struct NodeExecutionOutput {
 
 /// Node interface implemented by every framework node kind.
 #[async_trait]
-pub trait FrameworkNode: Send + Sync {
+pub trait NodeHandler: Send + Sync {
     /// Stable node kind id (for example `n.web.render`).
     fn kind(&self) -> &'static str;
     /// Supported input pin names.
@@ -47,20 +47,20 @@ pub trait FrameworkNode: Send + Sync {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError>;
+    ) -> Result<NodeExecutionOutput, PipelineError>;
 
     /// Blocking wrapper for non-async call sites.
-    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
+    fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         if tokio::runtime::Handle::try_current().is_ok() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_SYNC_IN_ASYNC",
-                "synchronous FrameworkNode::execute used inside async runtime; call execute_async instead",
+                "synchronous NodeHandler::execute used inside async runtime; call execute_async instead",
             ));
         }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| FrameworkError::new("FW_NODE_RUNTIME", err.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_NODE_RUNTIME", err.to_string()))?;
         runtime.block_on(self.execute_async(input))
     }
 }

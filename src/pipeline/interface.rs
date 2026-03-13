@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use super::model::{
-    ExecuteOptions, FrameworkContext, FrameworkError, FrameworkOutput, PipelineGraph,
+    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, PipelineGraph,
 };
 
 /// Framework-level execution interface.
@@ -10,27 +10,27 @@ use super::model::{
 /// merging, retries, observability envelopes) and delegates script/render work
 /// into language and RWE engines.
 #[async_trait]
-pub trait FrameworkEngine: Send + Sync {
+pub trait PipelineEngine: Send + Sync {
     /// Stable engine id used by registries.
     fn id(&self) -> &'static str;
 
     /// Validates structural constraints for a pipeline graph.
-    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), FrameworkError>;
+    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), PipelineError>;
 
     /// Executes with optional step stream (e.g. for SSE).
     async fn execute_with_options_async(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
+        ctx: &PipelineContext,
         options: &ExecuteOptions,
-    ) -> Result<FrameworkOutput, FrameworkError>;
+    ) -> Result<PipelineOutput, PipelineError>;
 
     /// Executes a pipeline graph for a single request context asynchronously.
     async fn execute_async(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
-    ) -> Result<FrameworkOutput, FrameworkError> {
+        ctx: &PipelineContext,
+    ) -> Result<PipelineOutput, PipelineError> {
         self.execute_with_options_async(graph, ctx, &ExecuteOptions::default())
             .await
     }
@@ -39,19 +39,19 @@ pub trait FrameworkEngine: Send + Sync {
     fn execute_with_options(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
+        ctx: &PipelineContext,
         options: &ExecuteOptions,
-    ) -> Result<FrameworkOutput, FrameworkError> {
+    ) -> Result<PipelineOutput, PipelineError> {
         if tokio::runtime::Handle::try_current().is_ok() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_ENGINE_SYNC_IN_ASYNC",
-                "synchronous FrameworkEngine::execute_with_options used inside async runtime; call execute_with_options_async instead",
+                "synchronous PipelineEngine::execute_with_options used inside async runtime; call execute_with_options_async instead",
             ));
         }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|err| FrameworkError::new("FW_ENGINE_RUNTIME", err.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_ENGINE_RUNTIME", err.to_string()))?;
         runtime.block_on(self.execute_with_options_async(graph, ctx, options))
     }
 
@@ -59,8 +59,8 @@ pub trait FrameworkEngine: Send + Sync {
     fn execute(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
-    ) -> Result<FrameworkOutput, FrameworkError> {
+        ctx: &PipelineContext,
+    ) -> Result<PipelineOutput, PipelineError> {
         self.execute_with_options(graph, ctx, &ExecuteOptions::default())
     }
 }

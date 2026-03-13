@@ -7,8 +7,8 @@ use serde_json::{Map, Value, json};
 use sqlx::{Column, Row, postgres::PgConnectOptions, postgres::PgRow};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::language::LanguageEngine;
 use crate::platform::services::CredentialService;
@@ -43,6 +43,8 @@ pub fn definition() -> NodeDefinition {
             name: "n.pg.query".to_string(),
             enabled: false,
         }),
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -72,7 +74,7 @@ impl Node {
         config: Config,
         credentials: Arc<CredentialService>,
         language: Arc<dyn LanguageEngine>,
-    ) -> Result<Self, FrameworkError> {
+    ) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty()
             && config
                 .credential_id_expr
@@ -81,7 +83,7 @@ impl Node {
                 .unwrap_or_default()
                 .is_empty()
         {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_PG_CONFIG",
                 "config.credential_id must not be empty",
             ));
@@ -94,7 +96,7 @@ impl Node {
                 .unwrap_or_default()
                 .is_empty()
         {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_PG_CONFIG",
                 "config.query must not be empty",
             ));
@@ -108,7 +110,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -122,7 +124,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
         let credential_id = resolve_string_binding(
             &self.language,
@@ -143,15 +145,15 @@ impl FrameworkNode for Node {
         let credential = self
             .credentials
             .get_project_credential(owner, project, &credential_id)
-            .map_err(|err| FrameworkError::new("FW_NODE_PG_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_PG_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_NODE_PG_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", credential_id),
                 )
             })?;
         if credential.kind != "postgres" {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_PG_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' is '{}' not 'postgres'",
@@ -180,7 +182,7 @@ impl FrameworkNode for Node {
             .max_connections(1)
             .connect_with(connect_options)
             .await
-            .map_err(|err| FrameworkError::new("FW_NODE_PG_CONNECT", err.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_NODE_PG_CONNECT", err.to_string()))?;
 
         let lower = query.trim_start().to_ascii_lowercase();
         let payload = if lower.starts_with("select") || lower.starts_with("with") {
@@ -191,7 +193,7 @@ impl FrameworkNode for Node {
             let rows = sql_query
                 .fetch_all(&pool)
                 .await
-                .map_err(|err| FrameworkError::new("FW_NODE_PG_QUERY", err.to_string()))?;
+                .map_err(|err| PipelineError::new("FW_NODE_PG_QUERY", err.to_string()))?;
             let json_rows = rows
                 .into_iter()
                 .map(row_to_json)
@@ -205,7 +207,7 @@ impl FrameworkNode for Node {
             let result = sql_query
                 .execute(&pool)
                 .await
-                .map_err(|err| FrameworkError::new("FW_NODE_PG_QUERY", err.to_string()))?;
+                .map_err(|err| PipelineError::new("FW_NODE_PG_QUERY", err.to_string()))?;
             json!({ "affected_rows": result.rows_affected() })
         };
 
@@ -224,11 +226,11 @@ fn resolve_string_binding(
     expr: Option<&str>,
     fallback: &str,
     field: &str,
-) -> Result<String, FrameworkError> {
+) -> Result<String, PipelineError> {
     if let Some(expr) = expr {
         let value = eval_deno_expr(language.as_ref(), expr, input, metadata)?;
         return value.as_str().map(ToString::to_string).ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_PG_BINDING",
                 format!("binding expression for '{field}' must return string"),
             )
@@ -236,7 +238,7 @@ fn resolve_string_binding(
     }
     let out = fallback.trim();
     if out.is_empty() {
-        return Err(FrameworkError::new(
+        return Err(PipelineError::new(
             "FW_NODE_PG_BINDING",
             format!("resolved '{field}' must not be empty"),
         ));
@@ -244,11 +246,11 @@ fn resolve_string_binding(
     Ok(out.to_string())
 }
 
-fn build_postgres_connect_options(secret: &Value) -> Result<PgConnectOptions, FrameworkError> {
+fn build_postgres_connect_options(secret: &Value) -> Result<PgConnectOptions, PipelineError> {
     let host = secret
         .get("host")
         .and_then(Value::as_str)
-        .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.host is required"))?;
+        .ok_or_else(|| PipelineError::new("FW_NODE_PG_SECRET", "secret.host is required"))?;
     let port = secret
         .get("port")
         .and_then(|value| {
@@ -260,20 +262,20 @@ fn build_postgres_connect_options(secret: &Value) -> Result<PgConnectOptions, Fr
         })
         .unwrap_or(5432);
     let port = u16::try_from(port).map_err(|_| {
-        FrameworkError::new("FW_NODE_PG_SECRET", "secret.port must be in 0..=65535")
+        PipelineError::new("FW_NODE_PG_SECRET", "secret.port must be in 0..=65535")
     })?;
     let database = secret
         .get("database")
         .and_then(Value::as_str)
-        .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.database is required"))?;
+        .ok_or_else(|| PipelineError::new("FW_NODE_PG_SECRET", "secret.database is required"))?;
     let user = secret
         .get("user")
         .and_then(Value::as_str)
-        .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.user is required"))?;
+        .ok_or_else(|| PipelineError::new("FW_NODE_PG_SECRET", "secret.user is required"))?;
     let password = secret
         .get("password")
         .and_then(Value::as_str)
-        .ok_or_else(|| FrameworkError::new("FW_NODE_PG_SECRET", "secret.password is required"))?;
+        .ok_or_else(|| PipelineError::new("FW_NODE_PG_SECRET", "secret.password is required"))?;
     Ok(PgConnectOptions::new()
         .host(host)
         .port(port)
@@ -296,7 +298,7 @@ fn bind_json_param<'q>(
     }
 }
 
-fn row_to_json(row: PgRow) -> Result<Value, FrameworkError> {
+fn row_to_json(row: PgRow) -> Result<Value, PipelineError> {
     let mut map = Map::new();
     let columns = row.columns();
 

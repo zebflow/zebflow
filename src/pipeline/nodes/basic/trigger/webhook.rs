@@ -1,9 +1,22 @@
 //! Webhook trigger node.
+//!
+//! # Pipeline position
+//!
+//! Always the first node in a webhook-triggered pipeline. Owns the HTTP route.
+//! The request path flows as `PipelineContext.route` → node metadata `"route"` to
+//! downstream nodes (specifically `n.web.render`).
+//!
+//! ```text
+//! | n.trigger.webhook --path /blog --method GET
+//! | pg.query --credential main-db -- "SELECT ..."
+//! | n.web.render --template-path pages/blog-home
+//! ```
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::{DslFlag, DslFlagKind};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +44,60 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: serde_json::json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "HTTP path this webhook listens on, e.g. '/blog' or '/api/users/:id'. Must start with /."
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                    "description": "HTTP method. Defaults to GET."
+                },
+                "auth_type": {
+                    "type": "string",
+                    "enum": ["none", "jwt", "hmac", "api_key"],
+                    "description": "Authentication mode. none = open (default). jwt/hmac/api_key require auth_credential."
+                },
+                "auth_credential": {
+                    "type": "string",
+                    "description": "Credential ID used for auth verification. Required when auth_type is not none."
+                }
+            }
+        }),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "HTTP path this webhook listens on. Must start with /. Examples: /blog, /api/users/:id.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: true,
+            },
+            DslFlag {
+                flag: "--method".to_string(),
+                config_key: "method".to_string(),
+                description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--auth-type".to_string(),
+                config_key: "auth_type".to_string(),
+                description: "Authentication mode: none (default), jwt, hmac, api_key.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--auth-credential".to_string(),
+                config_key: "auth_credential".to_string(),
+                description: "Credential ID for auth verification. Required when auth_type != none.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
         ai_tool: Default::default(),
     }
 }
@@ -69,7 +136,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -83,7 +150,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,

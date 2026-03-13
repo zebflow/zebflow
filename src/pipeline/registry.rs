@@ -3,15 +3,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::interface::FrameworkEngine;
+use super::interface::PipelineEngine;
 
 /// In-memory registry mapping framework engine id to implementation.
 #[derive(Clone, Default)]
-pub struct FrameworkEngineRegistry {
-    engines: HashMap<String, Arc<dyn FrameworkEngine>>,
+pub struct PipelineEngineRegistry {
+    engines: HashMap<String, Arc<dyn PipelineEngine>>,
 }
 
-impl FrameworkEngineRegistry {
+impl PipelineEngineRegistry {
     /// Creates an empty framework registry.
     pub fn new() -> Self {
         Self {
@@ -19,13 +19,13 @@ impl FrameworkEngineRegistry {
         }
     }
 
-    /// Registers/overwrites a framework engine by its [`FrameworkEngine::id`].
-    pub fn register(&mut self, engine: Arc<dyn FrameworkEngine>) {
+    /// Registers/overwrites a framework engine by its [`PipelineEngine::id`].
+    pub fn register(&mut self, engine: Arc<dyn PipelineEngine>) {
         self.engines.insert(engine.id().to_string(), engine);
     }
 
     /// Retrieves a framework engine by id.
-    pub fn get(&self, id: &str) -> Option<Arc<dyn FrameworkEngine>> {
+    pub fn get(&self, id: &str) -> Option<Arc<dyn PipelineEngine>> {
         self.engines.get(id).map(Arc::clone)
     }
 

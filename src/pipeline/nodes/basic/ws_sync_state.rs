@@ -24,7 +24,7 @@
 //! --path /rooms/{room_type}/npcs/{id}  → /rooms/arena/npcs/boss1
 //! ```
 //!
-//! See [`crate::ws::path::interpolate_path`] for full semantics.
+//! See [`crate::infra::transport::ws::path::interpolate_path`] for full semantics.
 //!
 //! # Choosing `--silent`
 //!
@@ -77,10 +77,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::ws::{RoomCmd, StateOp, WsHub, interpolate_path};
+use crate::pipeline::model::{DslFlag, DslFlagKind};
+use crate::infra::transport::ws::{RoomCmd, StateOp, WsHub, interpolate_path};
 
 pub const NODE_KIND: &str = "n.ws.sync_state";
 const INPUT_PIN_IN: &str = "in";
@@ -103,6 +104,69 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: json!({
+            "type": "object",
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": ["set", "merge", "delete"],
+                    "description": "State mutation type. set = replace value at path. merge = shallow-merge object. delete = remove key. Default: set."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "JSON-pointer destination path. Supports {key} placeholders resolved from payload. Examples: /counter, /players/{session_id}. Empty = root."
+                },
+                "value_path": {
+                    "type": "string",
+                    "description": "JSON pointer into the incoming payload to extract the value to write. Empty = use the whole payload (or payload.payload if present)."
+                },
+                "room": {
+                    "type": "string",
+                    "description": "Static room id override. Required for server-initiated pipelines (scheduled jobs, webhooks) where no WS client is the trigger."
+                },
+                "silent": {
+                    "type": "boolean",
+                    "description": "If true, accumulate via the 33ms tick loop instead of broadcasting immediately. Use for high-frequency streams (>=10 Hz). Default: false."
+                }
+            }
+        }),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--op".to_string(),
+                config_key: "op".to_string(),
+                description: "State mutation: set (replace), merge (shallow-merge), delete. Default: set.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description: "JSON-pointer destination. Supports {key} placeholders from payload. Example: /players/{session_id}.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--value-path".to_string(),
+                config_key: "value_path".to_string(),
+                description: "JSON pointer into the payload to extract the value. Empty = whole payload.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--room".to_string(),
+                config_key: "room".to_string(),
+                description: "Static room id for server-initiated pipelines without a WS trigger.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--silent".to_string(),
+                config_key: "silent".to_string(),
+                description: "Batch via 33ms tick loop instead of immediate broadcast. Recommended for >=10 Hz update streams.".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
+        ],
         ai_tool: Default::default(),
     }
 }
@@ -161,13 +225,13 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config, ws_hub: Arc<WsHub>) -> Result<Self, FrameworkError> {
+    pub fn new(config: Config, ws_hub: Arc<WsHub>) -> Result<Self, PipelineError> {
         Ok(Self { config, ws_hub })
     }
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -181,7 +245,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let owner = input
             .metadata
             .get("owner")
@@ -206,7 +270,7 @@ impl FrameworkNode for Node {
         };
 
         if room_id.is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_WS_SYNC_STATE_NO_ROOM",
                 "n.ws.sync_state: room_id missing — set --room or ensure n.trigger.ws is upstream",
             ));

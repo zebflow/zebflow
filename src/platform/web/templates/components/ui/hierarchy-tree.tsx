@@ -25,6 +25,7 @@ export interface HierarchyTreeItem {
   rowAttrs?: Record<string, string | number | boolean>;
   children?: HierarchyTreeItem[];
   content?: ReactNode;
+  onClick?: () => void;
 }
 
 interface HierarchyTreeProps {
@@ -52,7 +53,7 @@ function renderTreeNode(node, depth, defaultExpandedDepth) {
         {node?.badge ? <span className="project-tree-meta">{node.badge}</span> : null}
       </a>
     ) : (
-      <div className={leafClass} {...rowAttrs}>
+      <div className={leafClass} onClick={node?.onClick} {...rowAttrs}>
         {node?.icon ? <span className="project-tree-icon">{node.icon}</span> : null}
         <span className="project-tree-segment">{node?.label}</span>
         {node?.badge ? <span className="project-tree-meta">{node.badge}</span> : null}
@@ -69,7 +70,7 @@ function renderTreeNode(node, depth, defaultExpandedDepth) {
   return (
     <li key={node?.id ?? `${depth}:${String(node?.label ?? "")}`} className={cx("project-tree-branch", node?.className)} {...liAttrs}>
       <details className="project-tree-details" open={open}>
-        <summary className={cx("project-tree-summary", node?.rowClassName)} {...rowAttrs}>
+        <summary className={cx("project-tree-summary", node?.rowClassName)} onClick={node?.onClick} {...rowAttrs}>
           <span className="project-tree-caret">
             <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
               <path d="M7 10l5 5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />

@@ -1,28 +1,28 @@
 //! Minimal framework engine used as a reference implementation.
 //!
-//! `NoopFrameworkEngine` validates node/pin wiring and returns a synthetic
+//! `NoopPipelineEngine` validates node/pin wiring and returns a synthetic
 //! payload instead of performing real graph traversal.
 
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::pipeline::interface::FrameworkEngine;
-use crate::pipeline::model::{FrameworkContext, FrameworkError, FrameworkOutput, PipelineGraph};
+use crate::pipeline::interface::PipelineEngine;
+use crate::pipeline::model::{PipelineContext, PipelineError, PipelineOutput, PipelineGraph};
 
 /// Reference framework engine with strict pin validation and mock execution.
 #[derive(Default)]
-pub struct NoopFrameworkEngine;
+pub struct NoopPipelineEngine;
 
 #[async_trait]
-impl FrameworkEngine for NoopFrameworkEngine {
+impl PipelineEngine for NoopPipelineEngine {
     fn id(&self) -> &'static str {
         "pipeline.noop"
     }
 
-    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), FrameworkError> {
+    fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), PipelineError> {
         if graph.nodes.is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_EMPTY_GRAPH",
                 format!("pipeline '{}' has no nodes", graph.id),
             ));
@@ -30,20 +30,20 @@ impl FrameworkEngine for NoopFrameworkEngine {
         let node_map: HashMap<&str, _> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         for (idx, edge) in graph.edges.iter().enumerate() {
             let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_EDGE_FROM_NODE",
                     format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
                 )
             })?;
             let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_EDGE_TO_NODE",
                     format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
                 )
             })?;
 
             if !from.output_pins.iter().any(|p| p == &edge.from_pin) {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_EDGE_FROM_PIN",
                     format!(
                         "edge[{idx}] invalid from_pin '{}' for node '{}' (allowed: {:?})",
@@ -52,7 +52,7 @@ impl FrameworkEngine for NoopFrameworkEngine {
                 ));
             }
             if !to.input_pins.iter().any(|p| p == &edge.to_pin) {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_EDGE_TO_PIN",
                     format!(
                         "edge[{idx}] invalid to_pin '{}' for node '{}' (allowed: {:?})",
@@ -67,11 +67,11 @@ impl FrameworkEngine for NoopFrameworkEngine {
     async fn execute_with_options_async(
         &self,
         graph: &PipelineGraph,
-        ctx: &FrameworkContext,
+        ctx: &PipelineContext,
         _options: &crate::pipeline::ExecuteOptions,
-    ) -> Result<FrameworkOutput, FrameworkError> {
+    ) -> Result<PipelineOutput, PipelineError> {
         self.validate_graph(graph)?;
-        Ok(FrameworkOutput {
+        Ok(PipelineOutput {
             value: json!({
                 "pipeline_id": graph.id,
                 "node_count": graph.nodes.len(),

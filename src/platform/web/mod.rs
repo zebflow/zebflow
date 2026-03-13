@@ -17,6 +17,7 @@ use axum::http::{
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -26,19 +27,21 @@ use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::assistant_config::load_project_assistant_llm;
-use crate::pipeline::{BasicFrameworkEngine, FrameworkContext, FrameworkEngine, PipelineGraph};
+use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest,
     DeletePipelineRequest, DescribeProjectDbConnectionRequest, ExecutePipelineRequest,
-    GitCommitRequest, LoginRequest, McpSessionCreateRequest, PipelineExecuteTrigger,
+    GitCommitRequest, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
+    PipelineExecuteTrigger, PipelineInvocationEntry,
     PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
     QueryProjectDbConnectionRequest, SimpleTableQueryRequest, TemplateCompileRequest,
     TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
     TemplateSaveRequest, TestProjectDbConnectionRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    UpdateSettingsSectionRequest,
     UpsertSimpleTableRowRequest,
 };
 use crate::platform::services::PlatformService;
@@ -188,6 +191,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             post(api_upsert_pipeline_definition).delete(api_delete_pipeline_definition),
         )
         .route(
+            "/api/projects/{owner}/{project}/git/status",
+            get(api_repo_git_status),
+        )
+        .route(
             "/api/projects/{owner}/{project}/git/commit",
             post(api_git_commit),
         )
@@ -210,6 +217,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/pipelines/hits",
             get(api_pipeline_hits),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/pipelines/invocations",
+            get(api_pipeline_invocations),
         )
         .route(
             "/api/projects/{owner}/{project}/templates/workspace",
@@ -250,6 +261,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/assistant/config",
             get(api_get_project_assistant_config).put(api_upsert_project_assistant_config),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/settings/{section}",
+            get(api_get_settings_section).put(api_upsert_settings_section),
         )
         .route(
             "/api/projects/{owner}/{project}/assistant/chat",
@@ -329,7 +344,12 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/mcp/session",
             get(api_get_mcp_session)
                 .post(api_create_mcp_session)
+                .put(api_toggle_mcp_session)
                 .delete(api_revoke_mcp_session),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/mcp/session/reset-token",
+            post(api_reset_mcp_session_token),
         )
         .route(
             "/api/projects/{owner}/{project}/assets/prepare",
@@ -338,6 +358,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/{*tail}", any(public_webhook_ingress))
+        .route(
+            "/ws/{owner}/{project}/rooms/{room_id}",
+            get(ws_room_handler),
+        )
         .with_state(PlatformAppState {
             platform,
             frontend,
@@ -2581,6 +2605,8 @@ async fn render_settings_tab_page(
                 .mcp_sessions
                 .get_for_project(&owner, &project);
 
+            let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+
             let input = json!({
                 "seo": {
                     "title": format!("{} - Settings / {}", info.title, tab_title),
@@ -2613,6 +2639,10 @@ async fn render_settings_tab_page(
                     },
                     "config": assistant_config,
                     "credentials": assistant_credentials
+                },
+                "rwe": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/rwe"),
+                    "config": zebflow_cfg.rwe
                 },
                 "mcp": {
                     "active": mcp_session.is_some(),
@@ -4851,6 +4881,30 @@ async fn api_delete_pipeline_definition(
     }
 }
 
+async fn api_repo_git_status(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .projects
+        .list_repo_git_status(&owner, &project)
+    {
+        Ok(items) => Json(items).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_git_commit(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -5058,6 +5112,13 @@ async fn api_execute_pipeline(
     ) {
         return response;
     }
+    let exec_start = std::time::Instant::now();
+    let log_max_n = state
+        .platform
+        .zebflow_cfg
+        .read_or_default(&owner, &project)
+        .logging
+        .effective_max_invocations();
 
     let meta = match state.platform.projects.get_pipeline_meta(
         &owner,
@@ -5093,6 +5154,17 @@ async fn api_execute_pipeline(
                 err.code,
                 "pipeline must be activated before execution",
             );
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner, &project, &meta.file_rel_path,
+                &PipelineInvocationEntry {
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "manual".to_string(),
+                    error: Some("pipeline must be activated before execution".to_string()),
+                },
+                log_max_n,
+            );
             return (
                 StatusCode::CONFLICT,
                 Json(
@@ -5115,6 +5187,17 @@ async fn api_execute_pipeline(
                 "PLATFORM_PIPELINE_PARSE",
                 &err.to_string(),
             );
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner, &project, &meta.file_rel_path,
+                &PipelineInvocationEntry {
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "manual".to_string(),
+                    error: Some(err.to_string()),
+                },
+                log_max_n,
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(
@@ -5134,12 +5217,24 @@ async fn api_execute_pipeline(
             err.code,
             &err.message,
         );
+        let _ = state.platform.data.log_pipeline_invocation(
+            &owner, &project, &meta.file_rel_path,
+            &PipelineInvocationEntry {
+                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                duration_ms: exec_start.elapsed().as_millis() as u64,
+                status: "error".to_string(),
+                trigger: "manual".to_string(),
+                error: Some(err.message.clone()),
+            },
+            log_max_n,
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
         )
             .into_response();
     }
+    apply_rwe_project_options(&state, &owner, &project, &mut graph);
 
     if let Err(message) = validate_execute_trigger(&graph, &req) {
         state.platform.pipeline_hits.record_failure(
@@ -5149,6 +5244,17 @@ async fn api_execute_pipeline(
             "api.execute",
             "PLATFORM_PIPELINE_TRIGGER_MISMATCH",
             &message,
+        );
+        let _ = state.platform.data.log_pipeline_invocation(
+            &owner, &project, &meta.file_rel_path,
+            &PipelineInvocationEntry {
+                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                duration_ms: exec_start.elapsed().as_millis() as u64,
+                status: "error".to_string(),
+                trigger: "manual".to_string(),
+                error: Some(message.clone()),
+            },
+            log_max_n,
         );
         return (
             StatusCode::BAD_REQUEST,
@@ -5169,14 +5275,15 @@ async fn api_execute_pipeline(
     let credentials = state.platform.credentials.clone();
     let simple_tables = state.platform.simple_tables.clone();
     let graph_for_run = graph.clone();
-    let ctx = FrameworkContext {
+    let ctx = PipelineContext {
         owner: owner.clone(),
         project: project.clone(),
         pipeline: graph.id.clone(),
         request_id: request_id.clone(),
+        route: Default::default(),
         input: req.input.clone(),
     };
-    let engine = BasicFrameworkEngine::new(
+    let engine = BasicPipelineEngine::new(
         Arc::new(DenoSandboxEngine::default()),
         state.frontend.rwe.clone(),
         Some(credentials),
@@ -5189,6 +5296,17 @@ async fn api_execute_pipeline(
                 .platform
                 .pipeline_hits
                 .record_success(&owner, &project, &meta.file_rel_path);
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner, &project, &meta.file_rel_path,
+                &PipelineInvocationEntry {
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "ok".to_string(),
+                    trigger: "manual".to_string(),
+                    error: None,
+                },
+                log_max_n,
+            );
             Json(json!({
                 "ok": true,
                 "meta": meta,
@@ -5205,6 +5323,17 @@ async fn api_execute_pipeline(
                 "api.execute",
                 err.code,
                 &err.message,
+            );
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner, &project, &meta.file_rel_path,
+                &PipelineInvocationEntry {
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "manual".to_string(),
+                    error: Some(err.message.clone()),
+                },
+                log_max_n,
             );
             (
                 StatusCode::BAD_REQUEST,
@@ -5287,6 +5416,47 @@ async fn api_pipeline_hits(
             }))
             .into_response()
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+/// GET /api/projects/{owner}/{project}/pipelines/invocations?pipeline=<file_rel_path>
+async fn api_pipeline_invocations(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+
+    let Some(file_rel_path) = params.get("pipeline") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code": "MISSING_PARAM", "message": "missing ?pipeline= query parameter"}})),
+        )
+            .into_response();
+    };
+
+    match state
+        .platform
+        .data
+        .get_pipeline_invocations(&owner, &project, file_rel_path)
+    {
+        Ok(entries) => Json(json!({
+            "ok": true,
+            "file_rel_path": file_rel_path,
+            "entries": entries,
+            "count": entries.len(),
+        }))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -5680,6 +5850,220 @@ async fn api_upsert_project_assistant_config(
     {
         Ok(config) => Json(json!({"ok": true, "config": config})).into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+/// `GET /api/projects/{owner}/{project}/settings/{section}` — read one zebflow.json section.
+///
+/// Supported sections: `rwe`.
+async fn api_get_settings_section(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, section)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    match section.as_str() {
+        "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.rwe})).into_response(),
+        _ => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /api/projects/{owner}/{project}/settings/{section}` — write one zebflow.json section
+/// and commit the change.
+///
+/// Body: `{ "commit_message": "...", "data": { ...section fields } }`.
+/// After writing, stages `zebflow.json` and runs `git commit` in the project repo.
+/// Returns `{ ok, section, data, committed, git_error? }`.
+async fn api_upsert_settings_section(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, section)): Path<(String, String, String)>,
+    Json(req): Json<UpdateSettingsSectionRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+
+    if req.commit_message.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "commit_message must not be empty"})),
+        )
+            .into_response();
+    }
+
+    let mut cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+
+    let section_data = match section.as_str() {
+        "rwe" => {
+            #[derive(serde::Deserialize)]
+            struct RwePayload {
+                #[serde(default)]
+                allow_list: Vec<String>,
+                #[serde(default)]
+                minify_html: bool,
+                #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
+                strict_mode: bool,
+            }
+            let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"ok": false, "error": e.to_string()})),
+                    )
+                        .into_response()
+                }
+            };
+            cfg.rwe.allow_list = payload.allow_list;
+            cfg.rwe.minify_html = payload.minify_html;
+            cfg.rwe.strict_mode = payload.strict_mode;
+            json!(cfg.rwe)
+        }
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
+            )
+                .into_response()
+        }
+    };
+
+    if let Err(err) = state.platform.zebflow_cfg.write(&owner, &project, &cfg) {
+        return internal_error(err);
+    }
+
+    // Git: stage zebflow.json and commit with the user-provided message.
+    // Failure is non-fatal — settings are already saved; we report the git outcome.
+    let (committed, git_error) = {
+        let owner_slug = crate::platform::model::slug_segment(&owner);
+        let project_slug = crate::platform::model::slug_segment(&project);
+        match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+            Err(_) => (false, Some("could not resolve project layout".to_string())),
+            Ok(layout) => {
+                let add_ok = std::process::Command::new("git")
+                    .arg("-C").arg(&layout.repo_dir)
+                    .arg("add").arg("zebflow.json")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+
+                if !add_ok {
+                    (false, Some("git add failed".to_string()))
+                } else {
+                    let commit_out = std::process::Command::new("git")
+                        .arg("-C").arg(&layout.repo_dir)
+                        .arg("commit").arg("-m").arg(req.commit_message.trim())
+                        .output();
+                    match commit_out {
+                        Err(e) => (false, Some(e.to_string())),
+                        Ok(o) => {
+                            if o.status.success() {
+                                (true, None)
+                            } else {
+                                let msg = String::from_utf8_lossy(&o.stderr).to_string();
+                                // "nothing to commit" is not an error — settings were already saved.
+                                if msg.contains("nothing to commit") {
+                                    (false, None)
+                                } else {
+                                    (false, Some(msg.trim().to_string()))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    let mut resp = json!({
+        "ok": true,
+        "section": section,
+        "data": section_data,
+        "committed": committed
+    });
+    if let Some(err) = git_error {
+        resp["git_error"] = json!(err);
+    }
+    Json(resp).into_response()
+}
+
+/// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.render`
+/// node's `config.options` before pipeline execution.
+///
+/// Also parses the node-level `--load-scripts` comma-separated string and injects it
+/// as a proper `Vec<String>` into `options.load_scripts`.  Called immediately after
+/// `hydrate_web_render_markup_from_templates` in the webhook and manual-execute paths.
+fn apply_rwe_project_options(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    graph: &mut PipelineGraph,
+) {
+    let cfg = state.platform.zebflow_cfg.read_or_default(owner, project);
+    let rwe = &cfg.rwe;
+
+    // Resolve template root so @/ alias imports work in user project templates.
+    let template_root_str = state
+        .platform
+        .projects
+        .get_project_template_root(owner, project)
+        .ok()
+        .map(|p| p.display().to_string());
+
+    for node in &mut graph.nodes {
+        if node.kind != "n.web.render" {
+            continue;
+        }
+
+        // Parse node-level load_scripts (comma-separated string from DSL flag).
+        let node_load_scripts: Vec<String> = node
+            .config
+            .get("load_scripts")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+
+        let options = json!({
+            "minify_html": rwe.minify_html,
+            "strict_mode": rwe.strict_mode,
+            "allow_list": {
+                "urls": rwe.allow_list,
+                "scripts": [],
+                "css": []
+            },
+            "load_scripts": node_load_scripts,
+            "templates": {
+                "template_root": template_root_str
+            }
+        });
+
+        if let Some(map) = node.config.as_object_mut() {
+            map.insert("options".to_string(), options);
+        }
     }
 }
 
@@ -6817,6 +7201,288 @@ async fn api_query_simple_table_rows(
     }
 }
 
+// ── Webhook auth helper ──────────────────────────────────────────────────────
+
+/// Verifies the auth requirement of a webhook trigger spec.
+///
+/// Returns:
+/// - `Ok(Some(claims))` — JWT auth passed; claims to inject as `payload.auth`
+/// - `Ok(None)` — HMAC / API key auth passed; no claims to inject
+/// - `Err((status, message))` — auth failed
+fn verify_webhook_auth(
+    headers: &HeaderMap,
+    body: &Bytes,
+    auth_type: &str,
+    auth_credential: &str,
+    credentials: &crate::platform::services::CredentialService,
+    owner: &str,
+    project: &str,
+) -> Result<Option<Value>, (StatusCode, String)> {
+    if auth_type.is_empty() || auth_type == "none" {
+        return Ok(None);
+    }
+    if auth_credential.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "auth_type set but auth_credential is empty".to_string(),
+        ));
+    }
+
+    let credential = credentials
+        .get_project_credential(owner, project, auth_credential)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("auth credential '{auth_credential}' not found"),
+            )
+        })?;
+
+    match auth_type {
+        "jwt" => {
+            use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+
+            let token = headers
+                .get("Authorization")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer "))
+                .ok_or_else(|| {
+                    (StatusCode::UNAUTHORIZED, "missing Authorization: Bearer <token>".to_string())
+                })?;
+
+            let algo_str = credential
+                .secret
+                .get("algorithm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("HS256");
+            let algorithm = match algo_str.to_ascii_uppercase().as_str() {
+                "HS256" => Algorithm::HS256,
+                "HS384" => Algorithm::HS384,
+                "HS512" => Algorithm::HS512,
+                "RS256" => Algorithm::RS256,
+                "RS384" => Algorithm::RS384,
+                "RS512" => Algorithm::RS512,
+                other => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("unsupported JWT algorithm '{other}'"),
+                    ));
+                }
+            };
+
+            let decoding_key = match algorithm {
+                Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
+                    let secret = credential
+                        .secret
+                        .get("secret")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "jwt_signing_key credential missing 'secret' field".to_string(),
+                            )
+                        })?;
+                    DecodingKey::from_secret(secret.as_bytes())
+                }
+                _ => {
+                    let pem = credential
+                        .secret
+                        .get("public_key")
+                        .or_else(|| credential.secret.get("private_key"))
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "jwt_signing_key credential missing 'public_key'".to_string(),
+                            )
+                        })?;
+                    DecodingKey::from_rsa_pem(pem.as_bytes())
+                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                }
+            };
+
+            let mut validation = Validation::new(algorithm);
+            validation.validate_exp = true;
+
+            let token_data = decode::<Value>(token, &decoding_key, &validation)
+                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("JWT invalid: {e}")))?;
+
+            Ok(Some(token_data.claims))
+        }
+
+        "hmac" => {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            type HmacSha256 = Hmac<Sha256>;
+
+            let sig_header = headers
+                .get("X-Hub-Signature-256")
+                .or_else(|| headers.get("x-hub-signature-256"))
+                .or_else(|| headers.get("X-Signature"))
+                .and_then(|h| h.to_str().ok())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
+                    )
+                })?;
+            let expected = sig_header.trim_start_matches("sha256=");
+
+            let secret = credential
+                .secret
+                .get("secret")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "hmac credential missing 'secret' field".to_string(),
+                    )
+                })?;
+
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            mac.update(body.as_ref());
+            let computed = hex::encode(mac.finalize().into_bytes());
+
+            if computed != expected {
+                return Err((StatusCode::UNAUTHORIZED, "HMAC signature mismatch".to_string()));
+            }
+
+            Ok(None)
+        }
+
+        "api_key" => {
+            let provided = headers
+                .get("X-API-Key")
+                .or_else(|| headers.get("x-api-key"))
+                .and_then(|h| h.to_str().ok())
+                .or_else(|| {
+                    headers
+                        .get("Authorization")
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(|h| h.strip_prefix("ApiKey "))
+                })
+                .ok_or_else(|| {
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        "missing API key (X-API-Key or Authorization: ApiKey <key>)".to_string(),
+                    )
+                })?;
+
+            let stored = credential
+                .secret
+                .get("key")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "api_key credential missing 'key' field".to_string(),
+                    )
+                })?;
+
+            if provided != stored {
+                return Err((StatusCode::UNAUTHORIZED, "invalid API key".to_string()));
+            }
+
+            Ok(None)
+        }
+
+        other => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("unknown auth_type '{other}'. Valid: jwt, hmac, api_key, none"),
+        )),
+    }
+}
+
+// ── Weberror dispatch helper ─────────────────────────────────────────────────
+
+/// Finds and runs the best matching weberror pipeline.
+///
+/// Returns a rendered response (HTML or JSON with the error status code) if a
+/// matching pipeline is found and executes successfully, `None` otherwise.
+async fn dispatch_weberror(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    error_code: u16,
+    error_payload: Value,
+) -> Option<Response> {
+    use crate::pipeline::nodes::basic::trigger::weberror::match_specificity;
+
+    // Find the most specific matching weberror pipeline.
+    let mut best: Option<(u8, crate::platform::services::pipeline_runtime::CompiledPipeline)> =
+        None;
+    for compiled in state.platform.pipeline_runtime.list_project(owner, project) {
+        for trigger in &compiled.weberror_triggers {
+            if let Some(spec) = match_specificity(&trigger.code, error_code) {
+                if best.as_ref().map_or(true, |(s, _)| spec > *s) {
+                    best = Some((spec, compiled.clone()));
+                    break;
+                }
+            }
+        }
+    }
+    let (_, compiled) = best?;
+
+    let credentials = state.platform.credentials.clone();
+    let simple_tables = state.platform.simple_tables.clone();
+    let engine = BasicPipelineEngine::new(
+        Arc::new(DenoSandboxEngine::default()),
+        state.frontend.rwe.clone(),
+        Some(credentials),
+        Some(simple_tables),
+    )
+    .with_web_render_cache(state.web_render_cache.clone());
+
+    let ctx = PipelineContext {
+        owner: owner.to_string(),
+        project: project.to_string(),
+        pipeline: compiled.graph.id.clone(),
+        request_id: format!("weberror-{error_code}"),
+        route: Default::default(),
+        input: error_payload,
+    };
+
+    let output = engine.execute_async(&compiled.graph, &ctx).await.ok()?;
+
+    let status =
+        StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+    // Prefer HTML output from n.web.render.
+    if let Some(html) = output.value.get("html").and_then(Value::as_str) {
+        let mut html = html.to_string();
+        if let Some(css) = output
+            .value
+            .get("hydration_payload")
+            .and_then(|hp| hp.get("css"))
+            .and_then(Value::as_str)
+        {
+            if !css.trim().is_empty() {
+                let style_block = format!("<style data-rwe-tw>{css}</style>");
+                if let Some(pos) = html.find("</head>") {
+                    html.insert_str(pos, &style_block);
+                } else {
+                    html = format!("{style_block}{html}");
+                }
+            }
+        }
+        let scripts = output
+            .value
+            .get("compiled_scripts")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
+            .unwrap_or_default();
+        let externalized =
+            externalize_rwe_scripts(state, &html, &scripts, Some((owner, project)));
+        return Some((status, Html(externalized)).into_response());
+    }
+
+    // JSON fallback.
+    Some((status, Json(output.value)).into_response())
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 async fn public_webhook_ingress(
     State(state): State<PlatformAppState>,
     Path((owner, project, tail)): Path<(String, String, String)>,
@@ -6829,6 +7495,13 @@ async fn public_webhook_ingress(
     let project = crate::platform::model::slug_segment(&project);
     let path = format!("/{}", tail.trim_start_matches('/'));
     let method_key = method.as_str().to_ascii_uppercase();
+    let exec_start = std::time::Instant::now();
+    let log_max_n = state
+        .platform
+        .zebflow_cfg
+        .read_or_default(&owner, &project)
+        .logging
+        .effective_max_invocations();
 
     struct Candidate {
         compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
@@ -6836,6 +7509,8 @@ async fn public_webhook_ingress(
         static_segments: usize,
         dynamic_segments: usize,
         total_segments: usize,
+        auth_type: String,
+        auth_credential: String,
     }
 
     let mut candidates = Vec::<Candidate>::new();
@@ -6852,6 +7527,8 @@ async fn public_webhook_ingress(
                 continue;
             };
             candidates.push(Candidate {
+                auth_type: trigger.auth_type.clone(),
+                auth_credential: trigger.auth_credential.clone(),
                 compiled: compiled.clone(),
                 path_params: path_match.params,
                 static_segments: path_match.static_segments,
@@ -6870,8 +7547,46 @@ async fn public_webhook_ingress(
     });
 
     let Some(selected) = candidates.into_iter().next() else {
-        return (StatusCode::NOT_FOUND, Html("not found".to_string())).into_response();
+        if let Some(err_resp) = dispatch_weberror(
+            &state,
+            &owner,
+            &project,
+            404,
+            json!({"error": "not found", "path": path, "method": method_key}),
+        )
+        .await
+        {
+            return err_resp;
+        }
+        return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "not found"}))).into_response();
     };
+    // Verify trigger-level auth before executing the pipeline.
+    let auth_claims = match verify_webhook_auth(
+        &headers,
+        &body,
+        &selected.auth_type,
+        &selected.auth_credential,
+        &state.platform.credentials,
+        &owner,
+        &project,
+    ) {
+        Ok(claims) => claims,
+        Err((status, msg)) => {
+            if let Some(err_resp) = dispatch_weberror(
+                &state,
+                &owner,
+                &project,
+                status.as_u16(),
+                json!({"error": msg, "path": path, "method": method_key}),
+            )
+            .await
+            {
+                return err_resp;
+            }
+            return (status, Json(json!({"ok": false, "error": msg}))).into_response();
+        }
+    };
+
     let mut graph = selected.compiled.graph.clone();
     if let Err(err) = hydrate_web_render_markup_from_templates(&state, &owner, &project, &mut graph)
     {
@@ -6883,12 +7598,24 @@ async fn public_webhook_ingress(
             err.code,
             &err.message,
         );
+        let _ = state.platform.data.log_pipeline_invocation(
+            &owner, &project, &selected.compiled.file_rel_path,
+            &PipelineInvocationEntry {
+                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                duration_ms: exec_start.elapsed().as_millis() as u64,
+                status: "error".to_string(),
+                trigger: "webhook".to_string(),
+                error: Some(err.message.clone()),
+            },
+            log_max_n,
+        );
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
         )
             .into_response();
     }
+    apply_rwe_project_options(&state, &owner, &project, &mut graph);
 
     let request_id = format!(
         "webhook-{}",
@@ -6897,21 +7624,28 @@ async fn public_webhook_ingress(
             .unwrap_or_default()
             .as_millis()
     );
-    let input =
+    let mut input =
         build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params);
+    // Inject JWT claims as `auth` field when auth_type == "jwt".
+    if let Some(claims) = auth_claims {
+        if let Value::Object(ref mut map) = input {
+            map.insert("auth".to_string(), claims);
+        }
+    }
 
     let credentials = state.platform.credentials.clone();
     let simple_tables = state.platform.simple_tables.clone();
     let graph_for_run = graph.clone();
-    let ctx = FrameworkContext {
+    let ctx = PipelineContext {
         owner: owner.clone(),
         project: project.clone(),
         pipeline: graph.id.clone(),
         request_id: request_id.clone(),
+        route: path.clone(),
         input: input.clone(),
     };
     let file_rel_path = selected.compiled.file_rel_path.clone();
-    let engine = BasicFrameworkEngine::new(
+    let engine = BasicPipelineEngine::new(
         Arc::new(DenoSandboxEngine::default()),
         state.frontend.rwe.clone(),
         Some(credentials),
@@ -6929,8 +7663,30 @@ async fn public_webhook_ingress(
                 err.code,
                 &err.message,
             );
+            let _ = state.platform.data.log_pipeline_invocation(
+                &owner, &project, &file_rel_path,
+                &PipelineInvocationEntry {
+                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    duration_ms: exec_start.elapsed().as_millis() as u64,
+                    status: "error".to_string(),
+                    trigger: "webhook".to_string(),
+                    error: Some(err.message.clone()),
+                },
+                log_max_n,
+            );
+            if let Some(err_resp) = dispatch_weberror(
+                &state,
+                &owner,
+                &project,
+                500,
+                json!({"error": err.message, "code": err.code}),
+            )
+            .await
+            {
+                return err_resp;
+            }
             return (
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
             )
                 .into_response();
@@ -6940,7 +7696,19 @@ async fn public_webhook_ingress(
         .platform
         .pipeline_hits
         .record_success(&owner, &project, &file_rel_path);
+    let _ = state.platform.data.log_pipeline_invocation(
+        &owner, &project, &file_rel_path,
+        &PipelineInvocationEntry {
+            at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            duration_ms: exec_start.elapsed().as_millis() as u64,
+            status: "ok".to_string(),
+            trigger: "webhook".to_string(),
+            error: None,
+        },
+        log_max_n,
+    );
 
+    // ── HTML response (n.web.render output) ──────────────────────────────────
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
         let mut html = html.to_string();
         // Re-inject Tailwind CSS from hydration_payload (extracted by RWE engine).
@@ -6969,15 +7737,29 @@ async fn public_webhook_ingress(
         return Html(externalized).into_response();
     }
 
-    if let Some(code) = output.value.get("status").and_then(Value::as_u64) {
-        let status = StatusCode::from_u16(code as u16).unwrap_or(StatusCode::OK);
-        if let Some(body_value) = output.value.get("body") {
-            if let Some(text) = body_value.as_str() {
-                return (status, text.to_string()).into_response();
+    // ── _status convention ────────────────────────────────────────────────────
+    // If the pipeline output contains `_status`, use it as the HTTP status code.
+    // For 4xx/5xx codes, try dispatching a weberror pipeline for a custom error page.
+    if let Some(code) = output.value.get("_status").and_then(Value::as_u64) {
+        let status = StatusCode::from_u16(code as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        if code >= 400 {
+            // Build error payload — strip _status from body before forwarding.
+            let mut error_body = output.value.clone();
+            if let Value::Object(ref mut map) = error_body {
+                map.remove("_status");
             }
-            return (status, Json(body_value.clone())).into_response();
+            if let Some(err_resp) =
+                dispatch_weberror(&state, &owner, &project, code as u16, error_body.clone()).await
+            {
+                return err_resp;
+            }
+            return (status, Json(error_body)).into_response();
         }
-        return (status, Json(json!({"ok": true}))).into_response();
+        let mut body = output.value.clone();
+        if let Value::Object(ref mut map) = body {
+            map.remove("_status");
+        }
+        return (status, Json(body)).into_response();
     }
 
     Json(json!({"ok": true, "output": output.value, "trace": output.trace})).into_response()
@@ -7576,23 +8358,40 @@ async fn api_get_mcp_session(
         return resp;
     }
 
+    let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:10610".to_string());
+
     match state
         .platform
         .mcp_sessions
         .get_for_project(&owner, &project)
     {
-        Some(session) => Json(json!({
-            "ok": true,
-            "session": {
-                "active": true,
-                "capabilities": session.capabilities.iter().map(|c| c.key()).collect::<Vec<_>>(),
-            }
-        }))
-        .into_response(),
+        Some(session) => {
+            let mcp_url = format!(
+                "{}/api/projects/{}/{}/mcp",
+                base_url.trim_end_matches('/'),
+                owner,
+                project
+            );
+            Json(json!({
+                "ok": true,
+                "session": {
+                    "active": session.enabled,
+                    "enabled": session.enabled,
+                    "token": session.token,
+                    "mcp_url": mcp_url,
+                    "capabilities": session.capabilities.iter().map(|c| c.key()).collect::<Vec<_>>(),
+                }
+            }))
+            .into_response()
+        }
         None => Json(json!({
             "ok": true,
             "session": {
                 "active": false,
+                "enabled": false,
+                "token": null,
+                "mcp_url": null,
                 "capabilities": Vec::<String>::new(),
             }
         }))
@@ -7646,6 +8445,60 @@ async fn api_create_mcp_session(
     }
 }
 
+async fn api_toggle_mcp_session(
+    State(state): State<PlatformAppState>,
+    Path((owner, project)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(req): Json<McpSessionToggleRequest>,
+) -> Response {
+    if let Err(resp) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::McpSessionCreate,
+    ) {
+        return resp;
+    }
+
+    match state
+        .platform
+        .mcp_sessions
+        .set_enabled(&owner, &project, req.enabled)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_reset_mcp_session_token(
+    State(state): State<PlatformAppState>,
+    Path((owner, project)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(resp) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::McpSessionCreate,
+    ) {
+        return resp;
+    }
+
+    let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:10610".to_string());
+
+    match state
+        .platform
+        .mcp_sessions
+        .reset_token(&owner, &project, &base_url)
+    {
+        Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_revoke_mcp_session(
     State(state): State<PlatformAppState>,
     Path((owner, project)): Path<(String, String)>,
@@ -7677,4 +8530,178 @@ fn internal_error(err: PlatformError) -> Response {
         Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
     )
         .into_response()
+}
+
+// ---- WebSocket handlers ---------------------------------------------------
+
+/// Upgrade handler for application room WebSocket connections.
+///
+/// URL: `GET /ws/{owner}/{project}/rooms/{room_id}`
+///
+/// After upgrade, the handler:
+/// 1. Subscribes to the room broadcast channel
+/// 2. Sends an initial `joined` message with current room state
+/// 3. Forwards broadcasts from the room to the client
+/// 4. Dispatches inbound `{event, payload}` messages to matching WS pipelines
+async fn ws_room_handler(
+    ws: WebSocketUpgrade,
+    Path((owner, project, room_id)): Path<(String, String, String)>,
+    State(state): State<PlatformAppState>,
+) -> impl IntoResponse {
+    let session_id = format!(
+        "ws-{:016x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    ws.on_upgrade(move |socket| {
+        handle_ws_room(socket, owner, project, room_id, session_id, state)
+    })
+}
+
+async fn handle_ws_room(
+    mut socket: WebSocket,
+    owner: String,
+    project: String,
+    room_id: String,
+    session_id: String,
+    state: PlatformAppState,
+) {
+    let room_key = format!("{}/{}/{}", owner, project, room_id);
+    let room = state.platform.ws_hub.get_or_create_room(&room_key);
+
+    // Subscribe BEFORE reading state — avoids missing a patch that arrives between the two.
+    let mut broadcast_rx = room.subscribe();
+
+    // Join session (auto-decrements count on drop).
+    let _guard = room.join_session();
+
+    // Snapshot current state for the initial message.
+    let current_state = room.get_state();
+
+    // Send joined message.
+    let joined = serde_json::json!({
+        "type": "joined",
+        "session_id": session_id,
+        "room": room_id,
+        "state": current_state,
+    })
+    .to_string();
+    if socket.send(Message::Text(joined.into())).await.is_err() {
+        return;
+    }
+
+    // Main loop: interleave incoming WS messages and room broadcasts.
+    loop {
+        tokio::select! {
+            // Forward room broadcasts to this client.
+            broadcast = broadcast_rx.recv() => {
+                match broadcast {
+                    Ok(msg) => {
+                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Fell behind — skip missed messages and continue.
+                        continue;
+                    }
+                }
+            }
+
+            // Process messages from this client.
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        let text_str = text.as_str();
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(text_str) {
+                            let event = val
+                                .get("event")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("message")
+                                .to_string();
+                            let payload = val
+                                .get("payload")
+                                .cloned()
+                                .unwrap_or(serde_json::json!({}));
+                            // Dispatch to matching WS pipelines (non-blocking — fires in background).
+                            ws_dispatch_event(
+                                &owner, &project, &room_id, &session_id,
+                                &event, payload, &state,
+                            ).await;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Clean up room if now empty.
+    state.platform.ws_hub.remove_room(&room_key);
+}
+
+/// Dispatch an incoming WS event to all matching `n.trigger.ws` pipelines.
+async fn ws_dispatch_event(
+    owner: &str,
+    project: &str,
+    room_id: &str,
+    session_id: &str,
+    event: &str,
+    payload: Value,
+    state: &PlatformAppState,
+) {
+    let pipelines = state.platform.pipeline_runtime.list_project(owner, project);
+    let matching: Vec<_> = pipelines
+        .into_iter()
+        .filter(|p| {
+            p.ws_triggers.iter().any(|t| {
+                let room_match = t.room.is_empty() || t.room == room_id;
+                let event_match = t.event.is_empty() || t.event == event;
+                room_match && event_match
+            })
+        })
+        .collect();
+
+    for compiled in matching {
+        let input = json!({
+            "room_id": room_id,
+            "session_id": session_id,
+            "event": event,
+            "payload": payload,
+        });
+        let ctx = PipelineContext {
+            owner: owner.to_string(),
+            project: project.to_string(),
+            pipeline: compiled.graph.id.clone(),
+            request_id: format!(
+                "ws-{}-{}",
+                session_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
+            route: Default::default(),
+            input,
+        };
+        let graph = compiled.graph.clone();
+        let credentials = state.platform.credentials.clone();
+        let simple_tables = state.platform.simple_tables.clone();
+        let rwe = state.frontend.rwe.clone();
+        let ws_hub = state.platform.ws_hub.clone();
+        tokio::spawn(async move {
+            let engine = crate::pipeline::BasicPipelineEngine::new(
+                std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+                rwe,
+                Some(credentials),
+                Some(simple_tables),
+            )
+            .with_ws_hub(ws_hub);
+            let _ = engine.execute_async(&graph, &ctx).await;
+        });
+    }
 }

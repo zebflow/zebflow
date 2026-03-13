@@ -70,9 +70,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::{DslFlag, DslFlagKind};
 
 pub const NODE_KIND: &str = "n.trigger.ws";
 const INPUT_PIN_IN: &str = "in";
@@ -122,6 +123,35 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: json!({
+            "type": "object",
+            "properties": {
+                "room": {
+                    "type": "string",
+                    "description": "Room id to match. Empty string (default) matches any room. Exact string equality — no wildcards."
+                },
+                "event": {
+                    "type": "string",
+                    "description": "Event name to match. Empty string (default) matches any event sent by the client. Exact string equality."
+                }
+            }
+        }),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--room".to_string(),
+                config_key: "room".to_string(),
+                description: "Room id to scope this trigger to. Omit to match any room.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--event".to_string(),
+                config_key: "event".to_string(),
+                description: "Event name to match. Omit to match any event from connected clients.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
         ai_tool: Default::default(),
     }
 }
@@ -158,7 +188,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -172,7 +202,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         // Passthrough — the WS context (room_id, session_id, event, payload)
         // was injected into the payload by the WS route handler before
         // dispatch.  Downstream nodes consume those fields directly.

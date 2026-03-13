@@ -15,10 +15,10 @@ use crate::automaton::tools;
 use crate::automaton::{parse_tool_request, strip_thinking};
 use crate::pipeline::model::StepEvent;
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::llm::{LlmClient, LlmMessage, LlmRole};
+use crate::automaton::llm::{LlmClient, LlmMessage, LlmRole};
 
 pub const NODE_KIND: &str = "n.ai.zebtune";
 pub const INPUT_PIN_IN: &str = "in";
@@ -96,6 +96,8 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -153,7 +155,7 @@ fn goal_from_payload(payload: &Value) -> Option<String> {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -167,16 +169,16 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         if input.input_pin != INPUT_PIN_IN {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_ZEBTUNE_INPUT_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
         }
 
         let goal = goal_from_payload(&input.payload).ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_ZEBTUNE_GOAL",
                 "payload must contain message, body, text, query (string), or be a string",
             )

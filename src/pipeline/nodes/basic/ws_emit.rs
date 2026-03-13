@@ -80,10 +80,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::ws::{EmitTarget, RoomCmd, WsHub};
+use crate::pipeline::model::{DslFlag, DslFlagKind};
+use crate::infra::transport::ws::{EmitTarget, RoomCmd, WsHub};
 
 pub const NODE_KIND: &str = "n.ws.emit";
 const INPUT_PIN_IN: &str = "in";
@@ -106,6 +107,58 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: json!({
+            "type": "object",
+            "properties": {
+                "event": {
+                    "type": "string",
+                    "description": "Application-level event name sent to clients. Examples: chat, player_shot, door_opened. Default: 'event'."
+                },
+                "to": {
+                    "type": "string",
+                    "enum": ["all", "session", "others"],
+                    "description": "Recipient targeting. all = everyone, session = sender only, others = all except sender. Default: all."
+                },
+                "payload_path": {
+                    "type": "string",
+                    "description": "JSON pointer into the payload to extract the emit body. Empty = whole payload (or payload.payload if present)."
+                },
+                "room": {
+                    "type": "string",
+                    "description": "Static room id override. Required for server-initiated pipelines (AI agents, scheduled jobs, webhooks) without a WS trigger."
+                }
+            }
+        }),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--event".to_string(),
+                config_key: "event".to_string(),
+                description: "Event name clients receive. Examples: chat, player_shot. Default: event.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--to".to_string(),
+                config_key: "to".to_string(),
+                description: "Recipient: all (broadcast), session (sender only), others (all except sender). Default: all.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--payload-path".to_string(),
+                config_key: "payload_path".to_string(),
+                description: "JSON pointer into payload to extract the emit body. Empty = whole payload.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--room".to_string(),
+                config_key: "room".to_string(),
+                description: "Static room id for server-initiated pipelines without a WS trigger.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
         ai_tool: Default::default(),
     }
 }
@@ -154,13 +207,13 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config, ws_hub: Arc<WsHub>) -> Result<Self, FrameworkError> {
+    pub fn new(config: Config, ws_hub: Arc<WsHub>) -> Result<Self, PipelineError> {
         Ok(Self { config, ws_hub })
     }
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -174,7 +227,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let owner = input
             .metadata
             .get("owner")
@@ -199,7 +252,7 @@ impl FrameworkNode for Node {
         };
 
         if room_id.is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_WS_EMIT_NO_ROOM",
                 "n.ws.emit: room_id missing — set --room or ensure n.trigger.ws is upstream",
             ));

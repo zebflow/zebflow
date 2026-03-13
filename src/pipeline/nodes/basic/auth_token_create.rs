@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::platform::services::CredentialService;
 
@@ -41,6 +41,8 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -69,9 +71,9 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, FrameworkError> {
+    pub fn new(config: Config, credentials: Arc<CredentialService>) -> Result<Self, PipelineError> {
         if config.credential_id.trim().is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_AUTH_TOKEN_CONFIG",
                 "config.credential_id must not be empty",
             ));
@@ -100,7 +102,7 @@ fn now_unix() -> i64 {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -114,23 +116,23 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
 
         // --- Credential ---
         let credential = self
             .credentials
             .get_project_credential(owner, project, &self.config.credential_id)
-            .map_err(|err| FrameworkError::new("FW_NODE_AUTH_TOKEN_CREDENTIAL", err.to_string()))?
+            .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_CREDENTIAL", err.to_string()))?
             .ok_or_else(|| {
-                FrameworkError::new(
+                PipelineError::new(
                     "FW_NODE_AUTH_TOKEN_CREDENTIAL_MISSING",
                     format!("credential '{}' not found", self.config.credential_id),
                 )
             })?;
 
         if credential.kind != "jwt_signing_key" {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_AUTH_TOKEN_CREDENTIAL_KIND",
                 format!(
                     "credential '{}' is kind '{}', expected 'jwt_signing_key'",
@@ -153,7 +155,7 @@ impl FrameworkNode for Node {
             "RS384" | "rs384" => Algorithm::RS384,
             "RS512" | "rs512" => Algorithm::RS512,
             other => {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_NODE_AUTH_TOKEN_ALGORITHM",
                     format!("unsupported JWT algorithm '{}'", other),
                 ))
@@ -192,7 +194,7 @@ impl FrameworkNode for Node {
                     .get("secret")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
-                        FrameworkError::new(
+                        PipelineError::new(
                             "FW_NODE_AUTH_TOKEN_SECRET_MISSING",
                             "jwt_signing_key credential missing 'secret' field",
                         )
@@ -203,7 +205,7 @@ impl FrameworkNode for Node {
                     &EncodingKey::from_secret(secret.as_bytes()),
                 )
                 .map_err(|err| {
-                    FrameworkError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
+                    PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
                 })?
             }
             Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
@@ -212,20 +214,20 @@ impl FrameworkNode for Node {
                     .get("private_key")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| {
-                        FrameworkError::new(
+                        PipelineError::new(
                             "FW_NODE_AUTH_TOKEN_KEY_MISSING",
                             "jwt_signing_key credential missing 'private_key' field",
                         )
                     })?;
                 let key = EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
-                    FrameworkError::new("FW_NODE_AUTH_TOKEN_KEY_INVALID", err.to_string())
+                    PipelineError::new("FW_NODE_AUTH_TOKEN_KEY_INVALID", err.to_string())
                 })?;
                 jsonwebtoken::encode(&header, &claims_val, &key).map_err(|err| {
-                    FrameworkError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
+                    PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
                 })?
             }
             _ => {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_NODE_AUTH_TOKEN_ALGORITHM",
                     "unsupported JWT algorithm variant",
                 ))

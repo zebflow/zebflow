@@ -2,6 +2,12 @@ let graphUiRuntime = null;
 let codeMirrorRuntime = null;
 let runtimeLoadPromise = null;
 
+// React bridge: page registers a state setter; behavior calls it on load/clear
+let _pipelineLoadedCb: ((loaded: boolean) => void) | null = null;
+export function registerPipelineLoadedCallback(cb: ((loaded: boolean) => void) | null) {
+  _pipelineLoadedCb = cb;
+}
+
 async function ensurePipelineEditorRuntime() {
   if (graphUiRuntime && codeMirrorRuntime) {
     return;
@@ -44,10 +50,24 @@ function requireCodeMirrorRuntime() {
 }
 
 const NODE_CATEGORIES = {
-  trigger: ["n.trigger.webhook", "n.trigger.schedule", "n.trigger.manual"],
-  data: ["n.sjtable.query", "n.pg.query", "n.http.request"],
-  logic: ["n.script", "n.ai.zebtune"],
-  render: ["n.web.render"],
+  trigger: [
+    "n.trigger.webhook",
+    "n.trigger.schedule",
+    "n.trigger.manual",
+    "n.trigger.ws",
+    "n.trigger.weberror",
+  ],
+  data: ["n.sjtable.query", "n.pg.query"],
+  logic: [
+    "n.script",
+    "n.logic.if",
+    "n.logic.switch",
+    "n.logic.branch",
+    "n.logic.merge",
+    "n.ai.zebtune",
+  ],
+  web: ["n.http.request", "n.web.render", "n.ws.sync_state", "n.ws.emit"],
+  security: ["n.auth.token.create", "n.crypto"],
 };
 
 function canonicalNodeKind(kind) {
@@ -346,6 +366,22 @@ function normalizeCredentialOption(item) {
   };
 }
 
+/// Builds a select options array from a credential list, ensuring the currently
+/// selected value is always present (even if it's no longer in the filtered list).
+function buildCredentialOptions(credentialList, selectedId) {
+  const options = (Array.isArray(credentialList) ? credentialList : [])
+    .map(normalizeCredentialOption)
+    .filter(Boolean);
+  const selected = String(selectedId || "");
+  if (selected && !options.some((o) => o.value === selected)) {
+    options.unshift({ value: selected, label: `${selected} (not listed)` });
+  }
+  if (options.length === 0) {
+    options.push({ value: "", label: "No credential available" });
+  }
+  return options;
+}
+
 function normalizeTemplateOption(item) {
   const relPath = String(item?.rel_path || "").trim();
   if (!relPath) {
@@ -377,6 +413,7 @@ function buildNodeFields(kind, config, state) {
     },
   ];
   if (canonicalKind === "n.trigger.webhook") {
+    const jwtCredOptions = buildCredentialOptions(state?.jwtCredentials, config?.auth_credential);
     return base.concat([
       {
         name: "method",
@@ -399,6 +436,62 @@ function buildNodeFields(kind, config, state) {
         type: "copy_url",
         value: webhookPublicUrlFor(state, config?.path || "/"),
         help: "Copy-ready URL for this trigger.",
+      },
+      {
+        name: "auth_type",
+        label: "Auth Type",
+        type: "select",
+        value: config?.auth_type || "none",
+        options: [
+          { value: "none", label: "None (public)" },
+          { value: "jwt", label: "JWT Bearer" },
+          { value: "hmac", label: "HMAC-SHA256 (X-Hub-Signature-256)" },
+          { value: "api_key", label: "API Key (X-API-Key)" },
+        ],
+        help: "Trigger-level auth. On failure returns 401 (or dispatch weberror 4xx pipeline).",
+      },
+      {
+        name: "auth_credential",
+        label: "Auth Credential",
+        type: "select",
+        value: config?.auth_credential || "",
+        options: jwtCredOptions,
+        help: "Credential holding the signing key / secret / api_key. Required when auth type is not None.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.trigger.weberror") {
+    return base.concat([
+      {
+        name: "code",
+        label: "Error Code Pattern",
+        type: "select",
+        value: config?.code || "404",
+        options: [
+          { value: "404", label: "404 — Not Found" },
+          { value: "4xx", label: "4xx — Any Client Error" },
+          { value: "5xx", label: "5xx — Any Server Error" },
+          { value: "*", label: "* — All errors (catch-all)" },
+        ],
+        help: "Which HTTP error code(s) this pipeline handles. More specific patterns take priority.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.trigger.ws") {
+    return base.concat([
+      {
+        name: "room",
+        label: "Room",
+        type: "text",
+        value: config?.room || "",
+        help: "Room name pattern to listen on. Leave empty to match any room.",
+      },
+      {
+        name: "event",
+        label: "Event",
+        type: "text",
+        value: config?.event || "",
+        help: "WebSocket event name to listen for. Leave empty to match any event.",
       },
     ]);
   }
@@ -601,6 +694,290 @@ function buildNodeFields(kind, config, state) {
       },
     ]);
   }
+  if (canonicalKind === "n.logic.if") {
+    return base.concat([
+      {
+        name: "expression",
+        label: "Condition",
+        type: "textarea",
+        rows: 5,
+        value: config?.expression || "",
+        help: "JS expression evaluated against pipeline payload. Must return truthy/falsy. Routes to 'true' or 'false' output pin.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.logic.switch") {
+    return base.concat([
+      {
+        name: "expression",
+        label: "Expression",
+        type: "textarea",
+        rows: 4,
+        value: config?.expression || "",
+        help: "JS expression returning a string value to match against cases.",
+      },
+      {
+        name: "cases",
+        label: "Cases (one per line)",
+        type: "textarea",
+        rows: 5,
+        value: (Array.isArray(config?.cases) ? config.cases : []).join("\n"),
+        help: "Each case becomes an output pin. Payload routes to matching pin name.",
+      },
+      {
+        name: "default",
+        label: "Default Pin",
+        type: "text",
+        value: config?.default || "default",
+        help: "Output pin used when no case matches.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.logic.branch") {
+    return base.concat([
+      {
+        name: "mode",
+        label: "Mode",
+        type: "select",
+        value: config?.mode || "expression",
+        options: [
+          { value: "expression", label: "Expression — route to one branch" },
+          { value: "parallel", label: "Parallel — route to all branches" },
+        ],
+        help: "Expression evaluates a JS condition to pick one branch. Parallel emits to all branches simultaneously.",
+      },
+      {
+        name: "branches",
+        label: "Branches (one per line)",
+        type: "textarea",
+        rows: 5,
+        value: (Array.isArray(config?.branches) ? config.branches : []).join("\n"),
+        help: "Each branch name becomes an output pin.",
+      },
+      {
+        name: "expression",
+        label: "Expression",
+        type: "textarea",
+        rows: 4,
+        value: config?.expression || "",
+        help: "JS expression returning branch name to activate. Only used in Expression mode.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.logic.merge") {
+    return base.concat([
+      {
+        name: "strategy",
+        label: "Merge Strategy",
+        type: "select",
+        value: config?.strategy || "first",
+        options: [
+          { value: "first", label: "First — pass through first arriving payload" },
+          { value: "all", label: "All — wait for all inputs, emit array" },
+          { value: "merge", label: "Merge — deep-merge all arriving objects" },
+        ],
+        help: "How to combine payloads arriving on multiple input pins.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.ws.sync_state") {
+    return base.concat([
+      {
+        name: "room",
+        label: "Room",
+        type: "text",
+        value: config?.room || "",
+        help: "WebSocket room to sync state into. Leave empty to use payload.room.",
+      },
+      {
+        name: "op",
+        label: "Operation",
+        type: "select",
+        value: config?.op || "patch",
+        options: [
+          { value: "set", label: "Set — replace entire state" },
+          { value: "patch", label: "Patch — deep-merge into state" },
+          { value: "delete", label: "Delete — remove key from state" },
+          { value: "clear", label: "Clear — wipe entire state" },
+        ],
+        help: "How to update the room's shared state.",
+      },
+      {
+        name: "path",
+        label: "State Path",
+        type: "text",
+        value: config?.path || "",
+        help: "Dot-separated key path in shared state to target (e.g. 'user.settings'). Empty = root.",
+      },
+      {
+        name: "value_path",
+        label: "Value Path",
+        type: "text",
+        value: config?.value_path || "",
+        help: "Payload path to read the value from. Empty = use whole payload.",
+      },
+      {
+        name: "silent",
+        label: "Silent (no broadcast)",
+        type: "checkbox",
+        value: config?.silent || false,
+        help: "If checked, state is updated server-side without broadcasting to room members.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.ws.emit") {
+    return base.concat([
+      {
+        name: "event",
+        label: "Event",
+        type: "text",
+        value: config?.event || "message",
+        help: "WebSocket event name to emit.",
+      },
+      {
+        name: "room",
+        label: "Room",
+        type: "text",
+        value: config?.room || "",
+        help: "Target room. Leave empty to use payload.room.",
+      },
+      {
+        name: "to",
+        label: "To",
+        type: "select",
+        value: config?.to || "room",
+        options: [
+          { value: "room", label: "Room — broadcast to all members" },
+          { value: "sender", label: "Sender — reply to triggering socket only" },
+        ],
+        help: "Who to deliver the event to.",
+      },
+      {
+        name: "payload_path",
+        label: "Payload Path",
+        type: "text",
+        value: config?.payload_path || "",
+        help: "Dot-path to extract from pipeline payload as event data. Empty = whole payload.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.auth.token.create") {
+    const jwtCredOptions = buildCredentialOptions(state?.jwtCredentials, config?.credential_id);
+    return base.concat([
+      {
+        name: "credential_id",
+        label: "Signing Credential",
+        type: "select",
+        value: config?.credential_id || "",
+        options: jwtCredOptions,
+        help: "JWT signing key credential (kind: jwt_signing_key).",
+      },
+      {
+        name: "algorithm",
+        label: "Algorithm",
+        type: "select",
+        value: config?.algorithm || "HS256",
+        options: [
+          { value: "HS256", label: "HS256 — HMAC-SHA256 (symmetric)" },
+          { value: "HS384", label: "HS384 — HMAC-SHA384 (symmetric)" },
+          { value: "HS512", label: "HS512 — HMAC-SHA512 (symmetric)" },
+          { value: "RS256", label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)" },
+          { value: "RS384", label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)" },
+          { value: "RS512", label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)" },
+          { value: "ES256", label: "ES256 — ECDSA P-256 (asymmetric)" },
+          { value: "ES384", label: "ES384 — ECDSA P-384 (asymmetric)" },
+        ],
+        help: "JWT signing algorithm. HS* uses a shared secret; RS*/ES* use a private key.",
+      },
+      {
+        name: "expires_in",
+        label: "Expires In (seconds)",
+        type: "text",
+        value: config?.expires_in == null ? "" : String(config.expires_in),
+        help: "Token lifetime in seconds. Leave empty for no expiry.",
+      },
+      {
+        name: "claims",
+        label: "Static Claims (JSON)",
+        type: "textarea",
+        rows: 5,
+        value: JSON.stringify(config?.claims || {}, null, 2),
+        help: "JSON object merged into token claims alongside pipeline payload fields.",
+      },
+      {
+        name: "issuer",
+        label: "Issuer (iss)",
+        type: "text",
+        value: config?.issuer || "",
+        help: "Optional JWT issuer claim.",
+      },
+      {
+        name: "audience",
+        label: "Audience (aud)",
+        type: "text",
+        value: config?.audience || "",
+        help: "Optional JWT audience claim.",
+      },
+    ]);
+  }
+  if (canonicalKind === "n.crypto") {
+    return base.concat([
+      {
+        name: "op",
+        label: "Operation",
+        type: "select",
+        value: config?.op || "sha256",
+        options: [
+          { value: "sha256", label: "SHA-256 hash" },
+          { value: "sha512", label: "SHA-512 hash" },
+          { value: "bcrypt_hash", label: "bcrypt hash" },
+          { value: "bcrypt_verify", label: "bcrypt verify → true/false pin" },
+          { value: "argon2_hash", label: "Argon2id hash" },
+          { value: "argon2_verify", label: "Argon2id verify → true/false pin" },
+          { value: "hmac_sha256", label: "HMAC-SHA256" },
+          { value: "base64_encode", label: "Base64 encode" },
+          { value: "base64_decode", label: "Base64 decode" },
+          { value: "random_hex", label: "Random hex token" },
+        ],
+        help: "Verify ops route payload to 'true' or 'false' output pin.",
+      },
+      {
+        name: "input_path",
+        label: "Input Path",
+        type: "text",
+        value: config?.input_path || "",
+        help: "Payload path to the value to hash/encode. Empty = whole payload.",
+      },
+      {
+        name: "hash_path",
+        label: "Hash Path (verify)",
+        type: "text",
+        value: config?.hash_path || "",
+        help: "Payload path to the stored hash for verify operations.",
+      },
+      {
+        name: "key_path",
+        label: "Key Path (HMAC)",
+        type: "text",
+        value: config?.key_path || "",
+        help: "Payload path to the HMAC secret key for hmac_sha256.",
+      },
+      {
+        name: "cost",
+        label: "Cost (bcrypt)",
+        type: "text",
+        value: config?.cost == null ? "" : String(config.cost),
+        help: "bcrypt cost factor (4–31). Default: 12.",
+      },
+      {
+        name: "length",
+        label: "Length (random_hex)",
+        type: "text",
+        value: config?.length == null ? "" : String(config.length),
+        help: "Byte length for random_hex output (output is 2× this in hex chars). Default: 16.",
+      },
+    ]);
+  }
   return base.concat([
     {
       name: "config_json",
@@ -657,9 +1034,27 @@ function extractNodeConfig(kind, fieldsContainer) {
       next.template_id = deriveTemplateIdFromPath(selected);
       return;
     }
-    if ((key === "limit" || key === "timeout_ms" || key === "step_budget") && value !== "") {
+    if (
+      (key === "limit" || key === "timeout_ms" || key === "step_budget" ||
+       key === "expires_in" || key === "cost" || key === "length") &&
+      value !== ""
+    ) {
       const asNum = Number(value);
       next[key] = Number.isFinite(asNum) ? asNum : value;
+      return;
+    }
+    // Textarea fields that store arrays (one item per line).
+    if (key === "cases" || key === "branches") {
+      next[key] = String(value || "").split("\n").map((s) => s.trim()).filter(Boolean);
+      return;
+    }
+    // JSON fields (static claims object for auth.token.create).
+    if (key === "claims") {
+      try {
+        next[key] = JSON.parse(value || "{}");
+      } catch (_err) {
+        next[key] = {};
+      }
       return;
     }
     if (value === "") {
@@ -1532,6 +1927,7 @@ async function loadPipeline(state, id) {
   state.selectedId = id;
   state.currentMeta = payload.meta || null;
   state.currentLocked = !!payload.locked;
+  _pipelineLoadedCb?.(!!state.currentMeta);
   state.scopePath = state.currentMeta?.virtual_path || state.scopePath || "/";
   state.currentGraph = graph;
   state.currentSource = source;
@@ -1672,6 +2068,100 @@ function bindDialogs(state) {
   }
 }
 
+function showEditorGitCommitDialog(state, files, redirectUrl) {
+  const dialog = state.root.querySelector("[data-editor-git-commit-dialog]");
+  const fileList = state.root.querySelector("[data-editor-git-commit-file-list]");
+  const messageEl = state.root.querySelector("[data-editor-git-commit-message]");
+  const pushEl = state.root.querySelector("[data-editor-git-commit-push]");
+  const errorEl = state.root.querySelector("[data-editor-git-commit-error]");
+  const submitEl = state.root.querySelector("[data-editor-git-commit-submit]");
+  const closeBtns = state.root.querySelectorAll("[data-editor-git-commit-close]");
+
+  if (!dialog || !fileList) {
+    // No dialog available — just dispatch and redirect
+    window.dispatchEvent(new CustomEvent("zf:repo:changed"));
+    window.location.href = redirectUrl;
+    return;
+  }
+
+  fileList.innerHTML = "";
+  for (const f of files) {
+    const label = document.createElement("label");
+    label.className = "git-commit-file-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.value = f.rel_path;
+    cb.name = "commit-file";
+    cb.className = "git-commit-file-cb";
+    const code = document.createElement("code");
+    code.className = `git-status-code ${f.code === "??" ? "git-status-untracked" : `git-status-${String(f.code).trim()}`}`;
+    code.textContent = f.code;
+    const path = document.createElement("span");
+    path.className = "git-commit-file-path";
+    path.textContent = f.rel_path;
+    label.append(cb, code, path);
+    fileList.appendChild(label);
+  }
+
+  if (messageEl) { messageEl.value = ""; }
+  if (pushEl) { pushEl.checked = false; }
+  if (errorEl) { errorEl.textContent = ""; errorEl.hidden = true; }
+
+  function updateSubmit() {
+    if (!submitEl) return;
+    const hasFiles = !!fileList.querySelector("input[type=checkbox]:checked");
+    const hasMsg = (messageEl?.value.trim().length ?? 0) > 0;
+    submitEl.disabled = !hasFiles || !hasMsg;
+  }
+
+  messageEl?.addEventListener("input", updateSubmit);
+  fileList.addEventListener("change", updateSubmit);
+  updateSubmit();
+
+  function closeAndRedirect() {
+    dialog.hidden = true;
+    window.dispatchEvent(new CustomEvent("zf:repo:changed"));
+    window.location.href = redirectUrl;
+  }
+
+  closeBtns.forEach((el) => el.addEventListener("click", closeAndRedirect, { once: true }));
+  dialog.addEventListener("click", (e) => {
+    if (e.target === dialog) closeAndRedirect();
+  }, { once: true });
+
+  const gitCommitUrl = `/api/projects/${state.owner}/${state.project}/git/commit`;
+
+  submitEl?.addEventListener("click", async () => {
+    const checkedFiles = Array.from(fileList.querySelectorAll("input[type=checkbox]:checked")).map((cb) => cb.value);
+    const message = messageEl?.value.trim();
+    const push = pushEl?.checked ?? false;
+    if (!checkedFiles.length || !message) return;
+    if (submitEl) { submitEl.disabled = true; submitEl.textContent = "Committing…"; }
+    if (errorEl) { errorEl.textContent = ""; errorEl.hidden = true; }
+    try {
+      const res = await fetch(gitCommitUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: checkedFiles, message, push }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (errorEl) { errorEl.textContent = data?.error?.message || data?.message || "Commit failed"; errorEl.hidden = false; }
+        if (submitEl) { submitEl.disabled = false; submitEl.textContent = "Commit"; }
+        return;
+      }
+      closeAndRedirect();
+    } catch (err) {
+      if (errorEl) { errorEl.textContent = err?.message || "Network error"; errorEl.hidden = false; }
+      if (submitEl) { submitEl.disabled = false; submitEl.textContent = "Commit"; }
+    }
+  }, { once: true });
+
+  dialog.hidden = false;
+  if (messageEl) { messageEl.focus(); }
+}
+
 function bindActions(state) {
   const saveBtn = state.root.querySelector("[data-editor-save]");
   const activateBtn = state.root.querySelector("[data-editor-activate]");
@@ -1698,7 +2188,23 @@ function bindActions(state) {
       });
       const id = result?.meta?.file_rel_path || state.selectedId;
       const path = result?.meta?.virtual_path || state.currentMeta.virtual_path || state.scopePath || "/";
-      window.location.href = `/projects/${state.owner}/${state.project}/pipelines/editor?path=${encodeURIComponent(path)}&id=${encodeURIComponent(id)}`;
+      const redirectUrl = `/projects/${state.owner}/${state.project}/pipelines/editor?path=${encodeURIComponent(path)}&id=${encodeURIComponent(id)}`;
+
+      // Fetch git status and show commit dialog before redirecting
+      try {
+        const gitStatusUrl = `/api/projects/${state.owner}/${state.project}/git/status`;
+        const gitRes = await fetch(gitStatusUrl, { headers: { Accept: "application/json" } });
+        const gitFiles = gitRes.ok ? await gitRes.json().catch(() => []) : [];
+        if (Array.isArray(gitFiles) && gitFiles.length > 0) {
+          showEditorGitCommitDialog(state, gitFiles, redirectUrl);
+          return;
+        }
+      } catch (_) {
+        // Fall through to plain redirect if git status unavailable
+      }
+
+      window.dispatchEvent(new CustomEvent("zf:repo:changed"));
+      window.location.href = redirectUrl;
     });
   }
 
@@ -1763,6 +2269,7 @@ async function initPipelineEditor(root) {
       templateSave: root.getAttribute("data-editor-api-template-save") || "",
     },
     pgCredentials: [],
+    jwtCredentials: [],
     pageTemplates: [],
     nodeEditObserver: null,
   };
@@ -1787,8 +2294,12 @@ async function initPipelineEditor(root) {
       state.pgCredentials = items.filter((item) =>
         String(item?.kind || "").toLowerCase() === "postgres"
       );
+      state.jwtCredentials = items.filter((item) =>
+        String(item?.kind || "").toLowerCase() === "jwt_signing_key"
+      );
     } catch (_err) {
       state.pgCredentials = [];
+      state.jwtCredentials = [];
     }
   }
 

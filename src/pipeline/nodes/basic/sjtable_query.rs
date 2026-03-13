@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::language::LanguageEngine;
 use crate::platform::model::{SimpleTableQueryRequest, UpsertSimpleTableRowRequest};
@@ -43,6 +43,8 @@ pub fn definition() -> NodeDefinition {
             name: "n.sjtable.query".to_string(),
             enabled: false,
         }),
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -95,7 +97,7 @@ impl Node {
         config: Config,
         simple_tables: Arc<SimpleTableService>,
         language: Arc<dyn LanguageEngine>,
-    ) -> Result<Self, FrameworkError> {
+    ) -> Result<Self, PipelineError> {
         if config.table.trim().is_empty()
             && config
                 .table_expr
@@ -104,7 +106,7 @@ impl Node {
                 .unwrap_or_default()
                 .is_empty()
         {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_SJTABLE_CONFIG",
                 "config.table must not be empty",
             ));
@@ -118,7 +120,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -132,7 +134,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
         let table = resolve_string_binding(
             self.language.as_ref(),
@@ -154,7 +156,7 @@ impl FrameworkNode for Node {
                         )?
                         .as_str()
                         .ok_or_else(|| {
-                            FrameworkError::new(
+                            PipelineError::new(
                                 "FW_NODE_SJTABLE_QUERY",
                                 "where_field_expr must return string",
                             )
@@ -182,13 +184,13 @@ impl FrameworkNode for Node {
                         &input.metadata,
                     )?;
                     let as_u64 = value.as_u64().ok_or_else(|| {
-                        FrameworkError::new(
+                        PipelineError::new(
                             "FW_NODE_SJTABLE_QUERY",
                             "limit_expr must return integer",
                         )
                     })?;
                     usize::try_from(as_u64).map_err(|_| {
-                        FrameworkError::new("FW_NODE_SJTABLE_QUERY", "limit_expr exceeds usize")
+                        PipelineError::new("FW_NODE_SJTABLE_QUERY", "limit_expr exceeds usize")
                     })?
                 } else {
                     self.config.limit.unwrap_or(100)
@@ -205,7 +207,7 @@ impl FrameworkNode for Node {
                             limit,
                         },
                     )
-                    .map_err(|err| FrameworkError::new("FW_NODE_SJTABLE_QUERY", err.to_string()))?;
+                    .map_err(|err| PipelineError::new("FW_NODE_SJTABLE_QUERY", err.to_string()))?;
                 json!({
                     "table": result.table,
                     "rows": result.rows,
@@ -222,7 +224,7 @@ impl FrameworkNode for Node {
                     .as_str()
                     .map(ToString::to_string)
                     .ok_or_else(|| {
-                        FrameworkError::new(
+                        PipelineError::new(
                             "FW_NODE_SJTABLE_UPSERT",
                             "row_id_expr must return string",
                         )
@@ -231,7 +233,7 @@ impl FrameworkNode for Node {
                     resolve_path_cloned(&input.payload, self.config.row_id_path.as_deref())
                         .and_then(|v| v.as_str().map(ToString::to_string))
                         .ok_or_else(|| {
-                            FrameworkError::new(
+                            PipelineError::new(
                                 "FW_NODE_SJTABLE_UPSERT",
                                 "row_id_path must resolve to a string",
                             )
@@ -260,7 +262,7 @@ impl FrameworkNode for Node {
                         },
                     )
                     .map_err(|err| {
-                        FrameworkError::new("FW_NODE_SJTABLE_UPSERT", err.to_string())
+                        PipelineError::new("FW_NODE_SJTABLE_UPSERT", err.to_string())
                     })?;
                 json!({ "row": row })
             }
@@ -281,11 +283,11 @@ fn resolve_string_binding(
     expr: Option<&str>,
     fallback: &str,
     field: &str,
-) -> Result<String, FrameworkError> {
+) -> Result<String, PipelineError> {
     if let Some(expr) = expr {
         let value = eval_deno_expr(language, expr, input, metadata)?;
         return value.as_str().map(ToString::to_string).ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_SJTABLE_BINDING",
                 format!("binding expression for '{field}' must return string"),
             )
@@ -293,7 +295,7 @@ fn resolve_string_binding(
     }
     let out = fallback.trim();
     if out.is_empty() {
-        return Err(FrameworkError::new(
+        return Err(PipelineError::new(
             "FW_NODE_SJTABLE_BINDING",
             format!("resolved '{field}' must not be empty"),
         ));

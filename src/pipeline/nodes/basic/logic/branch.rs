@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
@@ -29,6 +29,8 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![], // dynamic — defined per instance in the graph
         script_available: false,
         script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -65,7 +67,7 @@ impl Node {
         node_id: &str,
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
-    ) -> Result<Self, FrameworkError> {
+    ) -> Result<Self, PipelineError> {
         let compiled = if config.mode == BranchMode::ByExpression {
             let expr = config.expression.as_deref().unwrap_or("''");
             let source = format!("return String({});", expr);
@@ -76,14 +78,14 @@ impl Node {
                 code: source,
             };
             let ir = language.parse(&module).map_err(|e| {
-                FrameworkError::new("FW_NODE_LOGIC_BRANCH_PARSE", format!("node '{}': {}", node_id, e))
+                PipelineError::new("FW_NODE_LOGIC_BRANCH_PARSE", format!("node '{}': {}", node_id, e))
             })?;
             Some(language.compile(&ir, &CompileOptions {
                 target: COMPILE_TARGET_BACKEND.to_string(),
                 optimize_level: 1,
                 emit_trace_hints: false,
             }).map_err(|e| {
-                FrameworkError::new("FW_NODE_LOGIC_BRANCH_COMPILE", format!("node '{}': {}", node_id, e))
+                PipelineError::new("FW_NODE_LOGIC_BRANCH_COMPILE", format!("node '{}': {}", node_id, e))
             })?)
         } else {
             None
@@ -94,20 +96,20 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str { NODE_KIND }
     fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
     fn output_pins(&self) -> &'static [&'static str] { &[] }
 
-    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, FrameworkError> {
+    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
         let output_pins = match self.config.mode {
             BranchMode::Fanout => self.config.branches.clone(),
             BranchMode::ByExpression => {
                 let compiled = self.compiled.as_ref().ok_or_else(|| {
-                    FrameworkError::new("FW_NODE_LOGIC_BRANCH_NO_COMPILED", "by_expression mode requires expression")
+                    PipelineError::new("FW_NODE_LOGIC_BRANCH_NO_COMPILED", "by_expression mode requires expression")
                 })?;
                 let out = self.language.run(compiled, input.payload.clone(), &crate::language::ExecutionContext { project: String::new(), pipeline: String::new(), request_id: String::new(), metadata: serde_json::Value::Null })
-                    .map_err(|e| FrameworkError::new("FW_NODE_LOGIC_BRANCH_RUN", format!("node '{}': {}", self.node_id, e)))?;
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_BRANCH_RUN", format!("node '{}': {}", self.node_id, e)))?;
                 let pin = out.value.as_str().unwrap_or("").to_string();
                 vec![pin]
             }

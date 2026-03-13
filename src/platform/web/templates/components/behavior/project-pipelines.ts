@@ -232,6 +232,7 @@ export function initPipelineRegistryBehavior() {
           return;
         }
         closeCommitDialog();
+        window.dispatchEvent(new CustomEvent("zf:repo:changed"));
         window.location.reload();
       } catch (err: unknown) {
         if (commitError) { commitError.textContent = (err as Error)?.message ?? "Network error"; commitError.hidden = false; }

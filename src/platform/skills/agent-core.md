@@ -1,73 +1,124 @@
 # Zebflow Agent Core
 
-Zebflow is a pipeline-based reactive web automation platform. Pipelines connect nodes to produce web endpoints, REST APIs, scheduled jobs, and browser automation. The RWE (Reactive Web Engine) compiles TSX + TypeScript on the fly, SSR-renders pages with live pipeline data, and hydrates them client-side — no build step, no deploy.
-
-Your single tool is `execute_pipeline_dsl`. Everything goes through it.
+Zebflow is a pipeline-based reactive web platform. Pipelines connect trigger nodes to action nodes — they produce REST APIs, web pages, scheduled jobs, and webhooks with zero build step and zero deploy. The RWE engine compiles TSX templates server-side, hydrates them client-side, and serves them through activated pipelines.
 
 ---
 
-## Hello World
+## Phase 1: Connect Protocol
 
-### REST API
-
-```
-register hello-api --path /api \
-  | trigger.webhook --path /hello --method GET \
-  | script -- "return { message: 'Hello', ts: Date.now() }"
-activate pipeline hello-api
-```
-
-### Web Page (webhook → DB → render)
+**Always run these in order at the start of every project session:**
 
 ```
-register blog-home --path /pages \
-  | trigger.webhook --path /blog --method GET \
-  | pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 20" \
-  | web.render --template blog-home --route /blog
-activate pipeline blog-home
+list_agent_docs
+read_agent_doc  name=AGENTS.md    ← project-specific rules (required reading)
+read_agent_doc  name=MEMORY.md    ← what happened in previous sessions
+list_pipelines                    ← understand existing logic
+list_templates                    ← understand existing UI
+list_tables                       ← understand data model
 ```
 
-Template `repo/templates/pages/blog-home.tsx`:
-```tsx
-export default function BlogHome(props) {
-  const posts = props?.rows ?? [];
-  return (
-    <div className="p-8 bg-slate-950 text-slate-100 min-h-screen">
-      <h1 className="text-2xl font-bold mb-6">Blog</h1>
-      {posts.map(p => (
-        <div key={p.id} className="mb-4 p-4 bg-slate-900 rounded-lg">
-          <a href={`/blog/${p.id}`} className="text-sky-400 hover:underline">{p.title}</a>
-          <time className="text-slate-500 text-sm ml-4">{p.created_at}</time>
-        </div>
-      ))}
-    </div>
-  );
-}
-```
-
-### Scheduled Task
-
-```
-register daily-digest --path /jobs \
-  | trigger.schedule --cron "0 8 * * *" --timezone "Asia/Jakarta" \
-  | pg.query --credential main-db -- "SELECT * FROM events WHERE date = CURRENT_DATE" \
-  | http.request --url https://hooks.slack.com/xxx --method POST
-activate pipeline daily-digest
-```
+After reviewing, update MEMORY.md with your session goals before starting work.
+If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 ---
 
-## Knowledge Docs
+## MCP Tools
 
-### Core Skills
+### Pipelines
 
-| Command | Covers |
-|---|---|
-| `read skill pipeline-dsl` | All DSL commands — register, run, activate, git, connections, nodes, graph mode, logic branching |
-| `read skill rwe-templates` | TSX templates, Tailwind, tw-variants, component libraries, hydration, typed class slots |
-| `read skill sekejapql` | SjTable queries, create table, upsert rows, all filter operators |
+| Tool | What it does |
+|------|-------------|
+| `list_pipelines` | List all pipelines with status (draft / active) |
+| `get_pipeline` | Get pipeline graph JSON |
+| `describe_pipeline` | Describe nodes, edges, trigger config in detail |
+| `register_pipeline` | Save a new pipeline from DSL body (stored as draft) |
+| `patch_pipeline` | Update a node's config inside an existing pipeline |
+| `activate_pipeline` | Promote draft to active — goes live immediately |
+| `deactivate_pipeline` | Remove from active registry — stops serving traffic |
+| `execute_pipeline` | Run the active version of a saved pipeline |
+| `run_ephemeral` | Run a pipeline body once — not saved, not logged |
+| `git_command` | Run git: status, log, diff, add, commit |
 
-Use `get skills` to list all available docs.
-Use `--help` on any node or command for inline usage: `pg.query --help`, `trigger.webhook --help`, `sekejap.query --help`.
+### Templates
 
-### DSL Cheat Sheet
+| Tool | What it does |
+|------|-------------|
+| `list_templates` | List all template files in the project |
+| `get_template` | Read a template file's full content |
+| `create_template` | Scaffold a new template file with boilerplate |
+| `write_template` | Write (overwrite) a template file's content |
+
+### Docs
+
+| Tool | What it does |
+|------|-------------|
+| `list_project_docs` | List markdown docs in repo/docs/ |
+| `read_project_doc` | Read a doc file |
+| `write_doc` | Write a doc (spec, ERD, README, CHANGELOG, ADR) |
+
+### Agent Docs
+
+| Tool | What it does |
+|------|-------------|
+| `list_agent_docs` | List AGENTS.md, SOUL.md, MEMORY.md |
+| `read_agent_doc` | Read one agent doc by name |
+| `write_agent_doc` | Write an agent doc |
+
+### Knowledge
+
+| Tool | What it does |
+|------|-------------|
+| `list_skills` | List all available skill docs |
+| `read_skill` | Read a skill doc in full |
+
+### Data
+
+| Tool | What it does |
+|------|-------------|
+| `list_tables` | List Simple Tables in this project |
+
+---
+
+## The 3 Domains
+
+Master these before building anything:
+
+| Domain | Command | Covers |
+|--------|---------|--------|
+| **Pipeline DSL** | `read_skill pipeline-dsl` | All commands, pipe mode, graph mode, branching, git, connections |
+| **RWE Templates** | `read_skill rwe-templates` | TSX structure, hooks, component library, import rules, hydration |
+| **Project Operations** | `read_skill project-operations` | File layout, agent docs, build loop, channels, git workflow |
+
+Supporting skills: `pipeline-nodes`, `pipeline-authoring`, `pipeline-dsl-rwe`, `sekejapql`, `api-reference`
+
+---
+
+## Quick Example: Full Stack Feature
+
+### 1. Define the pipeline (DSL body)
+
+```
+| trigger.webhook --path /blog --method GET
+| pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
+| web.render --template pages/blog-home --route /blog
+```
+
+Pass this as `body` to `register_pipeline name=blog-home`.
+
+### 2. Create the template
+
+```
+create_template  kind=page  name=blog-home
+```
+
+Then `write_template rel_path=pages/blog-home.tsx` with TSX content.
+See `read_skill rwe-templates` for TSX conventions.
+
+### 3. Activate and commit
+
+```
+activate_pipeline  name=blog-home
+git_command  subcommand=add  args="."
+git_command  subcommand=commit  message="feat: blog home page"
+write_agent_doc  name=MEMORY.md  content="..."
+```

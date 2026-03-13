@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential,
-    ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject,
+    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding,
+    StoredUser,
 };
 
 pub use sekejap::SekejapDataAdapter;
@@ -168,6 +169,30 @@ pub trait DataAdapter: Send + Sync {
             "ADMIN_DB_UNAVAILABLE",
             "Admin DB access not supported by this adapter",
         ))
+    }
+
+    /// Record a pipeline invocation, retaining at most `max_n` entries.
+    /// Default implementation is a no-op (logging not supported).
+    fn log_pipeline_invocation(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _file_rel_path: &str,
+        _entry: &PipelineInvocationEntry,
+        _max_n: usize,
+    ) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
+    /// Return stored invocation log for a pipeline (most-recent first).
+    /// Default implementation returns an empty list.
+    fn get_pipeline_invocations(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _file_rel_path: &str,
+    ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
+        Ok(vec![])
     }
 }
 

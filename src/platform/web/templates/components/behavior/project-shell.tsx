@@ -3,9 +3,11 @@ import { registerShortcut, initKeyboardShortcuts } from "@/components/behavior/k
 // ── Console singleton ─────────────────────────────────────────────────────────
 // ConsolePanel is rendered by the shell template (so Tailwind classes are compiled)
 // and teleported to document.body on first mount so it survives SPA navigations.
+//
+// IMPORTANT: module-level state is reset on every SPA navigation because RWE
+// re-executes the page bundle. Persisted flags live on window so they survive.
 
 let consolePanel: HTMLElement | null = null;
-const linkedTriggers = new WeakSet<Element>();
 
 /**
  * Teleport the console panel from inside #__rwe_root to document.body.
@@ -13,7 +15,12 @@ const linkedTriggers = new WeakSet<Element>();
  * return the already-teleported body panel.
  */
 function teleportConsolePanel(): HTMLElement | null {
-  if (consolePanel && document.body.contains(consolePanel)) return consolePanel;
+  // Check window-persisted reference first (survives module re-evaluation)
+  const winPanel: HTMLElement | null = (window as any).__zf_console_panel ?? null;
+  if (winPanel && document.body.contains(winPanel)) {
+    consolePanel = winPanel;
+    return winPanel;
+  }
 
   const allPanels = Array.from(document.querySelectorAll<HTMLElement>("[data-console-panel]"));
   const bodyPanel = allPanels.find((el) => el.parentElement === document.body);
@@ -22,12 +29,14 @@ function teleportConsolePanel(): HTMLElement | null {
   if (bodyPanel) {
     inRootPanel?.remove();
     consolePanel = bodyPanel;
+    (window as any).__zf_console_panel = bodyPanel;
     return bodyPanel;
   }
 
   if (inRootPanel) {
     document.body.appendChild(inRootPanel);
     consolePanel = inRootPanel;
+    (window as any).__zf_console_panel = inRootPanel;
     return inRootPanel;
   }
 
@@ -39,9 +48,6 @@ function openConsole() {
   if (!panel) return;
   panel.classList.add("is-open");
   panel.setAttribute("aria-hidden", "false");
-  document.querySelectorAll(".project-shell-cmd[data-console-trigger]").forEach((t) => {
-    (t as HTMLDetailsElement).open = true;
-  });
   const input = panel.querySelector<HTMLInputElement>("[data-cli-input]");
   setTimeout(() => input?.focus(), 40);
 }
@@ -51,9 +57,6 @@ function closeConsole() {
   if (!panel) return;
   panel.classList.remove("is-open");
   panel.setAttribute("aria-hidden", "true");
-  document.querySelectorAll(".project-shell-cmd[data-console-trigger]").forEach((t) => {
-    (t as HTMLDetailsElement).open = false;
-  });
 }
 
 function toggleConsole() {
@@ -175,22 +178,14 @@ export function initProjectShellBehavior() {
   initKeyboardShortcuts();
 
   const mount = () => {
-    document.querySelectorAll(".project-shell-session").forEach((panel) => {
-      if (linkedTriggers.has(panel)) return;
-      linkedTriggers.add(panel);
-      initSessionPanel(panel);
+    document.querySelectorAll<HTMLElement>("[data-console-trigger]").forEach((trigger) => {
+      if (trigger.dataset.consoleTriggerLinked) return;
+      trigger.dataset.consoleTriggerLinked = "1";
+      trigger.addEventListener("click", toggleConsole);
     });
 
-    document.querySelectorAll(".project-shell-cmd[data-console-trigger]").forEach((trigger) => {
-      if (linkedTriggers.has(trigger)) return;
-      linkedTriggers.add(trigger);
-      linkConsoleTrigger(trigger as HTMLDetailsElement);
-    });
-
-    const firstTrigger = document.querySelector<HTMLElement>(
-      ".project-shell-cmd[data-console-trigger]",
-    );
-    if (firstTrigger && !consolePanel) {
+    const firstTrigger = document.querySelector<HTMLElement>("[data-console-trigger]");
+    if (firstTrigger && !(window as any).__zf_console_booted) {
       const owner = firstTrigger.dataset.owner ?? "";
       const project = firstTrigger.dataset.project ?? "";
       if (owner && project) {
@@ -215,27 +210,12 @@ export function initProjectShellBehavior() {
   scheduleMount();
 }
 
-function linkConsoleTrigger(trigger: HTMLDetailsElement) {
-  if (consolePanel?.classList.contains("is-open")) {
-    trigger.open = true;
-  }
-  trigger.addEventListener("toggle", () => {
-    if (trigger.open) {
-      openConsole();
-    } else {
-      closeConsole();
-    }
-  });
-}
-
 // ── Console behavior ──────────────────────────────────────────────────────────
-// Runs once; after that the panel is persistent.
-
-let consoleBehaviorBooted = false;
+// Runs once per session. __zf_console_booted persists on window across SPA navigations.
 
 function initConsoleBehavior(owner: string, project: string) {
-  if (consoleBehaviorBooted) return;
-  consoleBehaviorBooted = true;
+  if ((window as any).__zf_console_booted) return;
+  (window as any).__zf_console_booted = true;
 
   const panel = teleportConsolePanel()!;
   const input = panel.querySelector<HTMLInputElement>("[data-cli-input]")!;
@@ -243,6 +223,8 @@ function initConsoleBehavior(owner: string, project: string) {
   const promptEl = panel.querySelector<HTMLElement>("[data-cli-prompt]")!;
   const useHighToggle = panel.querySelector<HTMLInputElement>("[data-assistant-use-high]");
   const autoNavToggle = panel.querySelector<HTMLInputElement>("[data-auto-navigate]");
+  // Ensure auto-nav is on by default
+  if (autoNavToggle) autoNavToggle.checked = true;
   const closeBtn = panel.querySelector<HTMLButtonElement>("[data-console-close]");
 
   const dslApi = `/api/projects/${owner}/${project}/pipelines/dsl`;
@@ -287,27 +269,139 @@ function initConsoleBehavior(owner: string, project: string) {
   emit("Zebflow Console  ·  type commands or ask questions", "cli-muted");
   emit("  type 'help' for DSL reference  ·  ` to toggle", "cli-muted");
 
-  closeBtn?.addEventListener("click", closeConsole);
+  closeBtn?.addEventListener("click", () => { hideAc(); closeConsole(); });
+
+  // ── Autocomplete ───────────────────────────────────────────────────────────
+  const autocompleteEl = panel.querySelector<HTMLElement>("[data-cli-autocomplete]");
+  let acItems: string[] = [];
+  let acIndex = -1;
+
+  const STATIC_COMPLETIONS = [
+    "get pipelines", "get nodes", "get connections", "get credentials",
+    "get templates", "get docs",
+    "describe pipeline ", "describe connection ", "describe node ",
+    "register ", "activate pipeline ", "deactivate pipeline ",
+    "execute pipeline ", "run ", "run --dry-run",
+    "patch pipeline ",
+    "git status", "git log", "git diff", "git add .", "git commit -m ",
+    "clear", "help",
+  ];
+
+  function escHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function getMatches(value: string): string[] {
+    const v = value.trimStart();
+    if (!v) return [];
+    const lower = v.toLowerCase();
+    const fromHistory = [...cmdHistory]
+      .reverse()
+      .filter((c) => c.toLowerCase().startsWith(lower) && c !== v);
+    const fromStatic = STATIC_COMPLETIONS.filter(
+      (c) => c.toLowerCase().startsWith(lower) && c !== v,
+    );
+    return [...new Set([...fromHistory, ...fromStatic])].slice(0, 8);
+  }
+
+  function renderAc(inputValue: string) {
+    if (!autocompleteEl || acItems.length === 0) { hideAc(); return; }
+    const matchLen = inputValue.trimStart().length;
+    autocompleteEl.innerHTML = acItems.map((item, i) => {
+      const isHistory = cmdHistory.includes(item);
+      const hl = escHtml(item.slice(0, matchLen));
+      const rest = escHtml(item.slice(matchLen));
+      const activeClass = i === acIndex ? " is-active" : "";
+      const histBadge = isHistory ? `<span class="cli-ac-hist">hist</span>` : "";
+      return `<div class="cli-ac-item${activeClass}" data-ac-index="${i}"><span class="cli-ac-hl">${hl}</span>${rest}${histBadge}</div>`;
+    }).join("");
+    autocompleteEl.hidden = false;
+  }
+
+  function hideAc() {
+    if (autocompleteEl) autocompleteEl.hidden = true;
+    acItems = [];
+    acIndex = -1;
+  }
+
+  function applyCompletion(index: number) {
+    if (index < 0 || index >= acItems.length) return;
+    input.value = acItems[index];
+    input.selectionStart = input.selectionEnd = input.value.length;
+    hideAc();
+  }
+
+  // Live suggestions as you type
+  input.addEventListener("input", () => {
+    acIndex = -1;
+    acItems = getMatches(input.value);
+    renderAc(input.value);
+  });
+
+  // Click on a suggestion
+  autocompleteEl?.addEventListener("click", (e: MouseEvent) => {
+    const item = (e.target as Element).closest<HTMLElement>("[data-ac-index]");
+    if (item) { applyCompletion(Number(item.dataset.acIndex)); input.focus(); }
+  });
 
   input.addEventListener("keydown", (e: KeyboardEvent) => {
-    if (e.key === "ArrowUp") {
+    const acVisible = autocompleteEl && !autocompleteEl.hidden;
+
+    if (e.key === "Tab") {
       e.preventDefault();
-      if (!cmdHistory.length) return;
-      histIdx = Math.min(histIdx + 1, cmdHistory.length - 1);
-      input.value = cmdHistory[cmdHistory.length - 1 - histIdx];
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      histIdx = Math.max(histIdx - 1, -1);
-      input.value = histIdx < 0 ? "" : cmdHistory[cmdHistory.length - 1 - histIdx];
-    } else if (e.key === "Escape") {
-      pendingLines = [];
-      promptEl.textContent = "zf>";
-      input.value = "";
+      if (!acVisible) {
+        acItems = getMatches(input.value);
+        if (acItems.length > 0) { acIndex = 0; renderAc(input.value); }
+      } else if (e.shiftKey) {
+        acIndex = Math.max(acIndex - 1, 0);
+        renderAc(input.value);
+      } else {
+        if (acIndex < 0) acIndex = 0;
+        applyCompletion(acIndex);
+      }
+      return;
+    }
+
+    if (acVisible) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        acIndex = Math.max(acIndex - 1, 0);
+        renderAc(input.value);
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        acIndex = Math.min(acIndex + 1, acItems.length - 1);
+        renderAc(input.value);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.stopPropagation(); // prevent closing the console
+        hideAc();
+        return;
+      }
+    } else {
+      // History navigation — only when autocomplete is hidden
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!cmdHistory.length) return;
+        histIdx = Math.min(histIdx + 1, cmdHistory.length - 1);
+        input.value = cmdHistory[cmdHistory.length - 1 - histIdx];
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        histIdx = Math.max(histIdx - 1, -1);
+        input.value = histIdx < 0 ? "" : cmdHistory[cmdHistory.length - 1 - histIdx];
+      } else if (e.key === "Escape") {
+        pendingLines = [];
+        promptEl.textContent = "zf>";
+        input.value = "";
+      }
     }
   });
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    hideAc();
     const raw = input.value;   // don't trim — trailing \ matters
     if (!raw || busy) return;
     input.value = "";
@@ -503,94 +597,6 @@ const DSL_VERBS = new Set([
   "get", "describe", "register", "activate", "deactivate",
   "execute", "run", "patch", "git", "node", "clear", "help",
 ]);
-
-// ── Session panel ─────────────────────────────────────────────────────────────
-
-function initSessionPanel(panel) {
-  if (!(panel instanceof HTMLElement)) return;
-
-  const owner = panel.dataset.owner;
-  const project = panel.dataset.project;
-  if (!owner || !project) return;
-
-  const toggle = panel.querySelector<HTMLInputElement>(".project-shell-session-toggle");
-  const tokenInput = panel.querySelector<HTMLInputElement>(".project-shell-session-token-input");
-  const urlInput = panel.querySelector<HTMLInputElement>(".project-shell-session-url-input");
-  const copyBtn = panel.querySelector<HTMLButtonElement>(".project-shell-session-copy-button");
-  const operationChecks = panel.querySelectorAll<HTMLInputElement>(
-    '.project-shell-session-operations input[type="checkbox"]',
-  );
-  if (!toggle || !tokenInput || !urlInput || !copyBtn) return;
-
-  const apiBase = `/api/projects/${owner}/${project}/mcp/session`;
-
-  async function loadSession() {
-    try {
-      const resp = await fetch(apiBase);
-      if (!resp.ok) return;
-      const data = await resp.json();
-      if (data?.ok && data?.session) {
-        toggle.checked = true;
-      }
-    } catch (_err) {}
-  }
-
-  async function createSession() {
-    const capabilities = Array.from(operationChecks)
-      .filter((entry) => entry.checked)
-      .map((entry) => entry.value);
-    const resp = await fetch(apiBase, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ capabilities }),
-    });
-    const data = await resp.json();
-    if (!data?.ok || !data?.session) {
-      throw new Error(data?.error?.message || "failed to create session");
-    }
-    tokenInput.value = String(data.session.token || "");
-    urlInput.value = String(data.session.mcp_url || "");
-  }
-
-  async function revokeSession() {
-    await fetch(apiBase, { method: "DELETE" });
-    tokenInput.value = "";
-    urlInput.value = "";
-  }
-
-  toggle.addEventListener("change", async () => {
-    try {
-      if (toggle.checked) {
-        await createSession();
-      } else {
-        await revokeSession();
-      }
-    } catch (_err) {
-      toggle.checked = false;
-    }
-  });
-
-  copyBtn.addEventListener("click", async () => {
-    if (!tokenInput.value) return;
-    const text = tokenInput.value;
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        tokenInput.focus();
-        tokenInput.select();
-        document.execCommand("copy");
-      }
-      copyBtn.textContent = "Copied!";
-      window.setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
-    } catch (_err) {
-      copyBtn.textContent = "Copy failed";
-      window.setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
-    }
-  });
-
-  void loadSession();
-}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

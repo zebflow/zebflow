@@ -590,7 +590,7 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
 
-        let ctx = crate::pipeline::FrameworkContext {
+        let ctx = crate::pipeline::PipelineContext {
             owner: self.owner.clone(),
             project: self.project.clone(),
             pipeline: graph.id.clone(),
@@ -601,17 +601,18 @@ impl DslExecutor {
                     .unwrap_or_default()
                     .as_millis()
             ),
+            route: Default::default(),
             input,
         };
 
-        let engine = crate::pipeline::BasicFrameworkEngine::new(
+        let engine = crate::pipeline::BasicPipelineEngine::new(
             Arc::new(crate::language::NoopLanguageEngine),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.platform.credentials.clone()),
             Some(self.platform.simple_tables.clone()),
         );
 
-        use crate::pipeline::FrameworkEngine;
+        use crate::pipeline::PipelineEngine;
         match engine.execute_async(&graph, &ctx).await {
             Ok(output) => {
                 self.platform.pipeline_hits.record_success(
@@ -668,7 +669,7 @@ impl DslExecutor {
                     return out;
                 }
 
-                let ctx = crate::pipeline::FrameworkContext {
+                let ctx = crate::pipeline::PipelineContext {
                     owner: self.owner.clone(),
                     project: self.project.clone(),
                     pipeline: graph.id.clone(),
@@ -679,17 +680,18 @@ impl DslExecutor {
                             .unwrap_or_default()
                             .as_millis()
                     ),
+                    route: Default::default(),
                     input: json!({}),
                 };
 
-                let engine = crate::pipeline::BasicFrameworkEngine::new(
+                let engine = crate::pipeline::BasicPipelineEngine::new(
                     Arc::new(crate::language::NoopLanguageEngine),
                     crate::rwe::resolve_engine_or_default(None),
                     Some(self.platform.credentials.clone()),
                     Some(self.platform.simple_tables.clone()),
                 );
 
-                use crate::pipeline::FrameworkEngine;
+                use crate::pipeline::PipelineEngine;
                 match engine.execute_async(&graph, &ctx).await {
                     Ok(output) => {
                         let mut out = DslOutput::new_ok();

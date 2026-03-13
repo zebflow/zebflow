@@ -10,6 +10,7 @@ pub mod engines;
 pub mod flow;
 pub mod http_client;
 pub mod interface;
+pub mod llm;
 pub mod llm_interface;
 pub mod memory;
 pub mod model;

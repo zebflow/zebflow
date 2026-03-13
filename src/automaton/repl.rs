@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::model::{AutomatonContext, AutomatonExecutionOutput, AutomatonObjective, AutomatonPlan};
 use super::tools;
 use super::{AutomatonEngine, AutomatonError};
-use crate::llm::{LlmClient, LlmError, LlmMessage, LlmRole};
+use crate::automaton::llm::{LlmClient, LlmError, LlmMessage, LlmRole};
 
 const LOG_PREFIX: &str = "[Zebtune]";
 

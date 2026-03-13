@@ -66,6 +66,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [gitItems, setGitItems] = useState([]);
+  const [selectedTreePath, setSelectedTreePath] = useState(initialFile?.rel_path ?? "");
   const [saveState, setSaveState] = useState("Clean");
   const [gitState, setGitState] = useState("Synced");
   const [compileState, setCompileState] = useState("Unknown");
@@ -77,6 +78,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
   const editorViewRef = useRef(null);
   const workspaceRef = useRef(null);
   const currentFileRef = useRef(initialFile ?? null);
+  const selectedTreePathRef = useRef(initialFile?.rel_path ?? "");
   const itemsRef = useRef(Array.isArray(initialItems) ? initialItems : []);
   const keywordSymbolsRef = useRef([
     { label: "Page", type: "type" },
@@ -264,6 +266,26 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
     }
   }
 
+  function handleSelectFile(relPath) {
+    selectedTreePathRef.current = relPath;
+    setSelectedTreePath(relPath);
+    openFile(relPath);
+  }
+
+  function handleSelectFolder(relPath) {
+    selectedTreePathRef.current = relPath;
+    setSelectedTreePath(relPath);
+  }
+
+  function getCreateParent() {
+    const path = selectedTreePathRef.current;
+    if (!path) return "";
+    const isFolder = itemsRef.current.some(
+      (item) => item.rel_path === path && item.kind === "folder"
+    );
+    return isFolder ? path : tplParentDir(path);
+  }
+
   async function saveCurrentFile() {
     if (!currentFileRef.current || !editorViewRef.current) return;
     try {
@@ -284,6 +306,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
         hasError ? "error" : "success"
       );
       setEditorStatus(hasError ? "Saved with errors" : "Saved");
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("zf:repo:changed"));
     } catch (err) {
       pushToast(err.message || "Save failed", "error");
       setEditorStatus("Save failed");
@@ -305,6 +328,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
       setCurrentFile(null);
       await refreshWorkspace();
       pushToast("File deleted", "success");
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("zf:repo:changed"));
       setEditorStatus("Deleted");
     } catch (err) {
       pushToast(err.message || "Delete failed", "error");
@@ -317,7 +341,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
     const label = kind === "folder" ? "folder" : kind;
     const name = window.prompt(`New ${label} name`);
     if (!name) return;
-    const parentRelPath = currentFileRef.current ? tplParentDir(currentFileRef.current.rel_path) : "";
+    const parentRelPath = getCreateParent();
     try {
       const payload = await requestJson(api.create, {
         method: "POST",
@@ -329,6 +353,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
       }
       pushToast(`${kind} created`, "success");
       setEditorStatus("Created");
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("zf:repo:changed"));
     } catch (err) {
       pushToast(err.message || "Create failed", "error");
       setEditorStatus("Create failed");
@@ -433,9 +458,7 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
     setSearchResults(results);
   }, [searchQuery, items]);
 
-  // Derived
-  const selectedPath = currentFile?.rel_path || "";
-  const selectedFolder = currentFile ? tplParentDir(currentFile.rel_path) : "";
+  // Derived — none needed; selectedTreePath tracks the explicitly clicked item
 
   // --- Render ---
 
@@ -554,9 +577,9 @@ function TemplateWorkspace({ api, initialFile, initialItems }) {
           <div className="template-tree">
             <TemplateFolderTree
               items={items}
-              selectedFile={selectedPath}
-              selectedFolder={selectedFolder}
-              onSelectFile={openFile}
+              selectedPath={selectedTreePath}
+              onSelectFile={handleSelectFile}
+              onSelectFolder={handleSelectFolder}
             />
           </div>
         </section>

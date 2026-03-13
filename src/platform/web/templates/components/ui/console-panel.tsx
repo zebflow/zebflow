@@ -1,5 +1,4 @@
 import Button from "@/components/ui/button";
-import Input from "@/components/ui/input";
 import Kbd from "@/components/ui/kbd";
 import Checkbox from "@/components/ui/checkbox";
 
@@ -43,6 +42,9 @@ export default function ConsolePanel({ owner, project, children }) {
       {/* Output area — ConsoleOutput Preact component rendered as children from layout */}
       <div data-cli-output>{children}</div>
 
+      {/* Autocomplete suggestions — shown above the input row when typing */}
+      <div data-cli-autocomplete hidden />
+
       {/* Input row */}
       <form
         className="flex items-center gap-1.5 px-4 pt-1.5 pb-2 border-t border-white/[0.06] bg-[#080b10]"
@@ -53,9 +55,10 @@ export default function ConsolePanel({ owner, project, children }) {
           className="text-green-500 font-mono text-[0.8rem] select-none shrink-0"
           data-cli-prompt
         >zf&gt;</span>
-        <Input
+        {/* Raw input — avoids Input component's bg-white base class overriding bg-transparent */}
+        <input
           type="text"
-          className="flex-1 bg-transparent border-0 outline-none shadow-none rounded-none h-auto px-0 text-slate-200 font-mono text-[0.8rem] caret-green-500 placeholder:text-slate-800 focus-visible:ring-0 focus-visible:border-0"
+          className="cli-cmd-input"
           data-cli-input
           placeholder="ask or type commands"
           autoComplete="off"

@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    McpSession, PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser, normalize_virtual_path, slug_segment,
+    McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject, PlatformUser,
+    ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    normalize_virtual_path, slug_segment,
 };
 
 const QUERY_LIMIT: usize = 10_000;
@@ -908,5 +909,71 @@ impl DataAdapter for SekejapDataAdapter {
 
     fn admin_delete_node(&self, slug: &str) -> Result<bool, PlatformError> {
         self.delete_node_raw(slug)
+    }
+
+    fn log_pipeline_invocation(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+        entry: &PipelineInvocationEntry,
+        max_n: usize,
+    ) -> Result<(), PlatformError> {
+        let slug = format!(
+            "invlog/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(file_rel_path),
+        );
+        // Read existing entries.
+        let mut entries: Vec<Value> = if let Some(raw) = self.db.nodes().get(&slug) {
+            serde_json::from_str::<Value>(&raw)
+                .ok()
+                .and_then(|v| v.get("entries").and_then(Value::as_array).cloned())
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+        // Prepend new entry, truncate to max_n.
+        let new_entry = serde_json::to_value(entry)
+            .map_err(|e| PlatformError::new("PIPELINE_LOG_SERIALIZE", e.to_string()))?;
+        entries.insert(0, new_entry);
+        entries.truncate(max_n);
+        let data = json!({
+            "_id": slug,
+            "_collection": "invlog",
+            "owner": owner,
+            "project": project,
+            "file_rel_path": file_rel_path,
+            "entries": entries,
+        });
+        let op = json!({"mutation": "put_json", "data": data}).to_string();
+        self.db
+            .mutate(&op)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_pipeline_invocations(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+    ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
+        let slug = format!(
+            "invlog/{}/{}/{}",
+            slug_segment(owner),
+            slug_segment(project),
+            slug_segment(file_rel_path),
+        );
+        let Some(raw) = self.db.nodes().get(&slug) else {
+            return Ok(vec![]);
+        };
+        let entries: Vec<PipelineInvocationEntry> = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .and_then(|v| v.get("entries").cloned())
+            .and_then(|arr| serde_json::from_value(arr).ok())
+            .unwrap_or_default();
+        Ok(entries)
     }
 }

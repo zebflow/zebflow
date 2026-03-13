@@ -222,8 +222,14 @@ async fn describe_tables(
     schema_filter: Option<&str>,
     include_system: bool,
 ) -> Result<Vec<DbObjectNode>, PlatformError> {
-    let rows = sqlx::query(
-        "SELECT table_schema, table_name\n         FROM information_schema.tables\n         WHERE table_type = 'BASE TABLE'\n           AND ($1::text IS NULL OR table_schema = $1)\n           AND ($2::bool OR table_schema NOT IN ('pg_catalog', 'information_schema'))\n         ORDER BY table_schema, table_name",
+    // ── 1. Table list ────────────────────────────────────────────────────────
+    let table_rows = sqlx::query(
+        "SELECT table_schema, table_name \
+         FROM information_schema.tables \
+         WHERE table_type = 'BASE TABLE' \
+           AND ($1::text IS NULL OR table_schema = $1) \
+           AND ($2::bool OR table_schema NOT IN ('pg_catalog', 'information_schema')) \
+         ORDER BY table_schema, table_name",
     )
     .bind(schema_filter)
     .bind(include_system)
@@ -231,7 +237,108 @@ async fn describe_tables(
     .await
     .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
 
-    Ok(rows
+    // ── 2. Columns + primary key membership ──────────────────────────────────
+    let col_rows = sqlx::query(
+        "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, \
+                c.is_nullable, c.column_default, \
+                (pk.column_name IS NOT NULL) AS is_pk \
+         FROM information_schema.columns c \
+         LEFT JOIN ( \
+             SELECT kcu.table_schema, kcu.table_name, kcu.column_name \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu \
+                 ON kcu.constraint_name = tc.constraint_name \
+                 AND kcu.table_schema = tc.table_schema \
+             WHERE tc.constraint_type = 'PRIMARY KEY' \
+         ) pk ON pk.table_schema = c.table_schema \
+              AND pk.table_name = c.table_name \
+              AND pk.column_name = c.column_name \
+         WHERE ($1::text IS NULL OR c.table_schema = $1) \
+           AND ($2::bool OR c.table_schema NOT IN ('pg_catalog', 'information_schema')) \
+         ORDER BY c.table_schema, c.table_name, c.ordinal_position",
+    )
+    .bind(schema_filter)
+    .bind(include_system)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+
+    // ── 3. Foreign key relations ──────────────────────────────────────────────
+    let fk_rows = sqlx::query(
+        "SELECT kcu.table_schema, kcu.table_name, kcu.column_name, \
+                ccu.table_schema AS ref_schema, ccu.table_name AS ref_table, \
+                ccu.column_name AS ref_column \
+         FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage kcu \
+             ON kcu.constraint_name = tc.constraint_name \
+             AND kcu.table_schema = tc.table_schema \
+         JOIN information_schema.referential_constraints rc \
+             ON rc.constraint_name = tc.constraint_name \
+         JOIN information_schema.constraint_column_usage ccu \
+             ON ccu.constraint_name = rc.unique_constraint_name \
+         WHERE tc.constraint_type = 'FOREIGN KEY' \
+           AND ($1::text IS NULL OR kcu.table_schema = $1) \
+           AND ($2::bool OR kcu.table_schema NOT IN ('pg_catalog', 'information_schema')) \
+         ORDER BY kcu.table_schema, kcu.table_name, kcu.column_name",
+    )
+    .bind(schema_filter)
+    .bind(include_system)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+
+    // ── 4. Build FK lookup: (schema, table, column) → ref object ─────────────
+    // key: (schema, table, column)
+    let mut fk_lookup = BTreeMap::<(String, String, String), Value>::new();
+    for row in fk_rows {
+        let schema: String = row.get("table_schema");
+        let table: String = row.get("table_name");
+        let col: String = row.get("column_name");
+        let ref_schema: String = row.get("ref_schema");
+        let ref_table: String = row.get("ref_table");
+        let ref_col: String = row.get("ref_column");
+        fk_lookup.insert(
+            (schema, table, col),
+            json!({ "schema": ref_schema, "table": ref_table, "column": ref_col }),
+        );
+    }
+
+    // ── 5. Build columns lookup: (schema, table) → Vec<column object> ─────────
+    let mut cols_lookup = BTreeMap::<(String, String), Vec<Value>>::new();
+    for row in col_rows {
+        let schema: String = row.get("table_schema");
+        let table: String = row.get("table_name");
+        let col_name: String = row.get("column_name");
+        let data_type: String = row.get("data_type");
+        let is_nullable: String = row.get("is_nullable");
+        let default: Option<String> = row.try_get("column_default").ok().flatten();
+        let is_pk: bool = row.try_get("is_pk").unwrap_or(false);
+
+        let fk = fk_lookup.get(&(schema.clone(), table.clone(), col_name.clone())).cloned();
+
+        let mut col = json!({
+            "name": col_name,
+            "type": data_type,
+            "nullable": is_nullable == "YES",
+        });
+        if is_pk {
+            col["pk"] = json!(true);
+        }
+        if let Some(fk_ref) = fk {
+            col["fk"] = fk_ref;
+        }
+        if let Some(d) = default {
+            col["default"] = json!(d);
+        }
+
+        cols_lookup
+            .entry((schema, table))
+            .or_default()
+            .push(col);
+    }
+
+    // ── 6. Assemble final nodes ───────────────────────────────────────────────
+    Ok(table_rows
         .into_iter()
         .filter_map(|row| {
             let schema: String = row.get("table_schema");
@@ -239,12 +346,16 @@ async fn describe_tables(
                 return None;
             }
             let table: String = row.get("table_name");
+            let columns = cols_lookup
+                .get(&(schema.clone(), table.clone()))
+                .cloned()
+                .unwrap_or_default();
             Some(DbObjectNode {
                 kind: "table".to_string(),
                 name: table,
                 schema: Some(schema),
                 children: Vec::new(),
-                meta: json!({}),
+                meta: json!({ "columns": columns }),
             })
         })
         .collect())

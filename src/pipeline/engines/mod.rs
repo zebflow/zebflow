@@ -3,5 +3,5 @@
 pub mod basic;
 mod noop;
 
-pub use basic::BasicFrameworkEngine;
-pub use noop::NoopFrameworkEngine;
+pub use basic::BasicPipelineEngine;
+pub use noop::NoopPipelineEngine;

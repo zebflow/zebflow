@@ -12,6 +12,7 @@ use crate::platform::services::{
     DbConnectionService, DbRuntimeService, McpSessionService, PipelineHitsService,
     PipelineRuntimeService, ProjectService, SimpleTableService, UserService, ZebflowJsonService,
 };
+use crate::infra::transport::ws::WsHub;
 
 /// Main platform service graph, created once per process.
 #[derive(Clone)]
@@ -50,6 +51,8 @@ pub struct PlatformService {
     pub simple_tables: Arc<SimpleTableService>,
     /// MCP session management (in-memory tokens for project-scoped remote control).
     pub mcp_sessions: Arc<McpSessionService>,
+    /// WebSocket hub — real-time room management for WS pipelines.
+    pub ws_hub: Arc<WsHub>,
 }
 
 impl PlatformService {
@@ -83,6 +86,7 @@ impl PlatformService {
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(data.clone()));
+        let ws_hub = Arc::new(WsHub::new());
 
         let svc = Self {
             config,
@@ -102,6 +106,7 @@ impl PlatformService {
             pipeline_hits,
             simple_tables,
             mcp_sessions,
+            ws_hub,
         };
         svc.bootstrap_defaults()?;
         let _ = svc

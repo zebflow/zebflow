@@ -16,13 +16,26 @@ const MAX_JS_BYTES = 5_000_000;
 const PageStateContext = createContext(null);
 
 function createUsePageState() {
-  return function usePageState(initial = {}) {
+  return function usePageState(keyOrInitial, defaultValue) {
+    const isKeyed = typeof keyOrInitial === "string";
     const context = useContext(PageStateContext);
-    if (context) {
-      return context;
+    const [state, setState] = useState(
+      isKeyed ? { [keyOrInitial]: defaultValue } : (keyOrInitial || {})
+    );
+
+    if (isKeyed) {
+      const key = keyOrInitial;
+      if (context) {
+        const value = key in context ? context[key] : defaultValue;
+        const setter = (v) => context.setPageState({ [key]: v });
+        return [value, setter];
+      }
+      const value = state[key] !== undefined ? state[key] : defaultValue;
+      const setter = (v) => setState((prev) => ({ ...prev, [key]: v }));
+      return [value, setter];
     }
 
-    const [state, setState] = useState(initial || {});
+    if (context) return context;
     const setPageState = (patch) => {
       if (typeof patch === "function") {
         setState((prev) => {

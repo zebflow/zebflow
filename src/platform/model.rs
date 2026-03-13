@@ -547,6 +547,18 @@ pub struct GitCommitRequest {
     pub push: bool,
 }
 
+/// Request body for `PUT /api/projects/{owner}/{project}/settings/{section}`.
+///
+/// Wraps the section-specific data alongside a git commit message.
+/// The handler writes the section to `zebflow.json` then commits the file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateSettingsSectionRequest {
+    /// Git commit message. Shown in the commit dialog before save.
+    pub commit_message: String,
+    /// Section-specific payload. Deserialized per `{section}`.
+    pub data: serde_json::Value,
+}
+
 /// API payload used to target one pipeline by path and name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PipelineLocateRequest {
@@ -1060,6 +1072,78 @@ pub struct ZebflowJson {
     pub assistant: ZebflowJsonAssistant,
     #[serde(default)]
     pub ui: ZebflowJsonUi,
+    #[serde(default)]
+    pub logging: ZebflowJsonLogging,
+    #[serde(default)]
+    pub rwe: ZebflowJsonRwe,
+}
+
+/// RWE settings section of `zebflow.json`.
+///
+/// Controls project-level compile/render behaviour for all `n.web.render` nodes.
+/// Values are merged into [`crate::rwe::ReactiveWebOptions`] at execution time,
+/// before each pipeline run. Node-level `--load-scripts` is appended on top.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonRwe {
+    /// URL patterns applied to the RWE resource allow-list (scripts and CSS).
+    ///
+    /// Each entry is a glob-style prefix, e.g. `https://cdnjs.cloudflare.com/*`.
+    /// Blessed libraries (imported via `zeb/*`) are always allowed and do not
+    /// appear here. Node-level `--load-scripts` is blocked at save time if any
+    /// URL does not match an entry in this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_list: Vec<String>,
+    /// Enable HTML minification on rendered output. Default: false.
+    #[serde(default)]
+    pub minify_html: bool,
+    /// Enable strict compile-time checks. Default: true.
+    #[serde(default = "default_rwe_strict_mode")]
+    pub strict_mode: bool,
+}
+
+pub fn default_rwe_strict_mode() -> bool {
+    true
+}
+
+/// API request to update the project-level RWE settings in `zebflow.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpsertRweSettingsRequest {
+    #[serde(default)]
+    pub allow_list: Vec<String>,
+    #[serde(default)]
+    pub minify_html: bool,
+    #[serde(default = "default_rwe_strict_mode")]
+    pub strict_mode: bool,
+}
+
+/// Logging settings section of zebflow.json.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonLogging {
+    /// Max invocation entries to retain per pipeline. Defaults to 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_invocations: Option<u32>,
+}
+
+impl ZebflowJsonLogging {
+    pub fn effective_max_invocations(&self) -> usize {
+        self.max_invocations.unwrap_or(10).max(1) as usize
+    }
+}
+
+/// One recorded pipeline invocation (persisted to Sekejap).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineInvocationEntry {
+    /// Unix timestamp (seconds).
+    pub at: i64,
+    /// Wall-clock duration of the execution in milliseconds.
+    pub duration_ms: u64,
+    /// `"ok"` or `"error"`.
+    pub status: String,
+    /// Trigger source: `"webhook"`, `"manual"`, `"schedule"`, etc.
+    pub trigger: String,
+    /// Short error message, present only when `status == "error"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Project identity section of zebflow.json.
@@ -1176,6 +1260,10 @@ pub fn normalize_virtual_path(raw: &str) -> String {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// MCP session record (in-memory and persisted per-project).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpSession {
@@ -1193,6 +1281,9 @@ pub struct McpSession {
     /// Optional seconds after which this session auto-expires.
     #[serde(default)]
     pub auto_reset_seconds: Option<u64>,
+    /// Whether this session is active. Token persists even when disabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Request to create an MCP session for a project.
@@ -1203,6 +1294,13 @@ pub struct McpSessionCreateRequest {
     /// Optional seconds after which this session auto-expires (None = no expiry).
     #[serde(default)]
     pub auto_reset_seconds: Option<u64>,
+}
+
+/// Request to toggle an MCP session enabled/disabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpSessionToggleRequest {
+    /// Whether to enable or disable the session.
+    pub enabled: bool,
 }
 
 /// Response after creating an MCP session.
@@ -1245,13 +1343,25 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "list_db_connection_tables" => Some(ProjectCapability::TablesRead),
         "list_db_connection_functions" => Some(ProjectCapability::TablesRead),
         "preview_db_connection_table" => Some(ProjectCapability::TablesRead),
-        "list_tables" => Some(ProjectCapability::TablesRead),
+        "list_connections" => Some(ProjectCapability::TablesRead),
+        "describe_connection" => Some(ProjectCapability::TablesRead),
         "list_project_docs" => Some(ProjectCapability::ProjectRead),
         "read_project_doc" => Some(ProjectCapability::ProjectRead),
         "create_project_doc" => Some(ProjectCapability::FilesWrite),
         "list_skills" => Some(ProjectCapability::ProjectRead),
         "read_skill" => Some(ProjectCapability::ProjectRead),
+        // execute_pipeline_dsl temporarily disabled; keeping mapping for future re-enable
         "execute_pipeline_dsl" => Some(ProjectCapability::PipelinesExecute),
+        "describe_pipeline" => Some(ProjectCapability::PipelinesRead),
+        "register_pipeline" => Some(ProjectCapability::PipelinesWrite),
+        "patch_pipeline" => Some(ProjectCapability::PipelinesWrite),
+        "run_ephemeral" => Some(ProjectCapability::PipelinesExecute),
+        "git_command" => Some(ProjectCapability::PipelinesWrite),
+        "write_template" => Some(ProjectCapability::TemplatesWrite),
+        "write_doc" => Some(ProjectCapability::TemplatesWrite),
+        "list_agent_docs" => Some(ProjectCapability::SettingsRead),
+        "read_agent_doc" => Some(ProjectCapability::SettingsRead),
+        "write_agent_doc" => Some(ProjectCapability::SettingsWrite),
         _ => None,
     }
 }

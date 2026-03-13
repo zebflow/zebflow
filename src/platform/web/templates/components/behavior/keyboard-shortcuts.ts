@@ -7,6 +7,9 @@
  *
  * Shortcuts do NOT fire when the user is typing in an input/textarea,
  * with the exception of the console input itself (so ` closes it from there too).
+ *
+ * Registry and installed-flag are stored on window so they survive SPA navigation,
+ * which re-executes module bundles on every page change.
  */
 
 export interface ShortcutDef {
@@ -19,18 +22,28 @@ export interface ShortcutDef {
   action: () => void;
 }
 
-const registry: ShortcutDef[] = [];
-let installed = false;
+const WIN: any = typeof window !== "undefined" ? window : {};
 
-/** Register a global keyboard shortcut. Safe to call before initKeyboardShortcuts(). */
-export function registerShortcut(def: ShortcutDef): void {
-  registry.push(def);
+function getRegistry(): ShortcutDef[] {
+  if (!WIN.__zf_shortcuts) WIN.__zf_shortcuts = [];
+  return WIN.__zf_shortcuts as ShortcutDef[];
 }
 
-/** Install the global keydown listener. Idempotent — safe to call multiple times. */
+/** Register a global keyboard shortcut. Safe to call multiple times — deduplicates by key+description. */
+export function registerShortcut(def: ShortcutDef): void {
+  const reg = getRegistry();
+  const existing = reg.find((r) => r.key === def.key && r.description === def.description);
+  if (existing) {
+    existing.action = def.action; // update to latest action on re-registration
+  } else {
+    reg.push(def);
+  }
+}
+
+/** Install the global keydown listener. Idempotent across module re-evaluations. */
 export function initKeyboardShortcuts(): void {
-  if (installed || typeof window === "undefined") return;
-  installed = true;
+  if (WIN.__zf_shortcuts_installed || typeof window === "undefined") return;
+  WIN.__zf_shortcuts_installed = true;
 
   window.addEventListener(
     "keydown",
@@ -48,6 +61,7 @@ export function initKeyboardShortcuts(): void {
 
       if (inInput && !inConsoleInput) return;
 
+      const registry = getRegistry();
       for (const s of registry) {
         if (s.key !== e.key) continue;
         if (!!s.ctrl !== e.ctrlKey) continue;

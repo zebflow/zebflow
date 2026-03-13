@@ -4,18 +4,18 @@ use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
 
-use crate::pipeline::FrameworkError;
+use crate::pipeline::PipelineError;
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
     SourceKind,
 };
 
-pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), FrameworkError> {
+pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), PipelineError> {
     let owner = metadata
         .get("owner")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_SCOPE",
                 "missing metadata.owner for project-scoped node",
             )
@@ -24,7 +24,7 @@ pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), Fram
         .get("project")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_SCOPE",
                 "missing metadata.project for project-scoped node",
             )
@@ -79,10 +79,10 @@ pub fn eval_deno_expr(
     expr: &str,
     input: &Value,
     metadata: &Value,
-) -> Result<Value, FrameworkError> {
+) -> Result<Value, PipelineError> {
     let expr = expr.trim();
     if expr.is_empty() {
-        return Err(FrameworkError::new(
+        return Err(PipelineError::new(
             "FW_NODE_BINDING_EXPR",
             "binding expression must not be empty",
         ));
@@ -99,7 +99,7 @@ pub fn eval_deno_expr(
     };
     let ir = language
         .parse(&module)
-        .map_err(|err| FrameworkError::new("FW_NODE_BINDING_PARSE", err.to_string()))?;
+        .map_err(|err| PipelineError::new("FW_NODE_BINDING_PARSE", err.to_string()))?;
     let compiled = language
         .compile(
             &ir,
@@ -109,7 +109,7 @@ pub fn eval_deno_expr(
                 emit_trace_hints: false,
             },
         )
-        .map_err(|err| FrameworkError::new("FW_NODE_BINDING_COMPILE", err.to_string()))?;
+        .map_err(|err| PipelineError::new("FW_NODE_BINDING_COMPILE", err.to_string()))?;
     let ctx = ExecutionContext {
         project: metadata
             .get("project")
@@ -131,5 +131,5 @@ pub fn eval_deno_expr(
     language
         .run(&compiled, input.clone(), &ctx)
         .map(|out| out.value)
-        .map_err(|err| FrameworkError::new("FW_NODE_BINDING_RUN", err.to_string()))
+        .map_err(|err| PipelineError::new("FW_NODE_BINDING_RUN", err.to_string()))
 }

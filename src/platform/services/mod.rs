@@ -25,7 +25,7 @@ pub use db_connection::DbConnectionService;
 pub use db_runtime::DbRuntimeService;
 pub use mcp_session::McpSessionService;
 pub use pipeline_hits::PipelineHitsService;
-pub use pipeline_runtime::PipelineRuntimeService;
+pub use pipeline_runtime::{PipelineRuntimeService, WsTriggerSpec};
 pub use platform::PlatformService;
 pub use project::ProjectService;
 pub use project_config::ZebflowJsonService;

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use crate::pipeline::model::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
@@ -18,6 +19,47 @@ use crate::platform::model::{
     TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
 };
 use crate::platform::services::project_config::ZebflowJsonService;
+
+/// Validates every node config in a parsed pipeline graph against its node definition's
+/// `config_schema.required` fields.  Missing required fields = hard error.
+fn validate_pipeline_node_configs(graph: &PipelineGraph) -> Result<(), PlatformError> {
+    let definitions = crate::pipeline::nodes::builtin_node_definitions();
+    for node in &graph.nodes {
+        let Some(def) = definitions.iter().find(|d| d.kind == node.kind) else {
+            continue; // unknown kind — let the engine handle it
+        };
+        let required = def
+            .config_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for field in required {
+            let present = node.config.get(field).map(|v| !v.is_null()).unwrap_or(false);
+            let non_empty = node.config
+                .get(field)
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(true); // non-string types count as present
+            if !present || !non_empty {
+                return Err(PlatformError::new(
+                    "PIPELINE_NODE_CONFIG_VIOLATION",
+                    format!(
+                        "node '{}' (id: '{}') is missing required config field '{}' \
+                        as defined by its node definition. \
+                        Pipeline rejected.",
+                        node.kind, node.id, field
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Project service backed by swappable data + file adapters.
 pub struct ProjectService {
@@ -148,6 +190,11 @@ impl ProjectService {
                 "PLATFORM_PIPELINE_INVALID",
                 "project not found",
             ));
+        }
+
+        // Validate node configs against their definitions before writing to disk.
+        if let Ok(graph) = serde_json::from_str::<PipelineGraph>(source) {
+            validate_pipeline_node_configs(&graph)?;
         }
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
@@ -511,6 +558,18 @@ impl ProjectService {
             default_file,
             items,
         })
+    }
+
+    /// Returns the filesystem path of the project's template root directory.
+    pub fn get_project_template_root(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        Ok(layout.repo_templates_dir)
     }
 
     /// Reads one template workspace file by relative path under `app/templates`.

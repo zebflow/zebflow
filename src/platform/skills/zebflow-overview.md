@@ -2,24 +2,34 @@
 
 ## Architecture
 
-Zebflow is a visual pipeline orchestration platform. Projects contain:
+Zebflow is a pipeline-based reactive web automation platform. Projects contain:
 
 - **Pipelines** (`.zf.json`) — JSON-defined directed graphs connecting trigger nodes to action nodes
-- **Templates** (`.tsx`) — TSX-based server-side rendered UI components using the RWE engine
+- **Templates** (`.tsx`) — TSX-based server-side rendered UI using the RWE engine
 - **Simple Tables** — Managed key-value rows backed by Sekejap, queryable from pipelines
 - **Credentials** — Encrypted secrets (API keys, DB passwords) referenced by pipeline nodes
 - **DB Connections** — Named connections to PostgreSQL or SjTable databases
+- **Agent Docs** — AGENTS.md, SOUL.md, MEMORY.md for agent session continuity
 
 ## Project Structure
 
 ```
-app/
-  pipelines/          # .zf.json pipeline definitions
-  templates/
-    pages/            # Full-page TSX templates
-    components/       # Reusable TSX components
-    scripts/          # Shared TS utility modules
-  docs/               # Project documentation (README.md, AGENTS.md, ERD, etc.)
+{project-root}/
+├── repo/
+│   ├── zebflow.json          ← project config
+│   ├── pipelines/            ← .zf.json pipeline definitions
+│   ├── templates/
+│   │   ├── pages/            ← full-page TSX templates
+│   │   ├── components/       ← reusable TSX components
+│   │   │   ├── ui/           ← design system (always use)
+│   │   │   ├── layout/       ← page shell wrappers
+│   │   │   └── behavior/     ← client-side behavior modules
+│   │   ├── scripts/          ← shared TS utility modules
+│   │   └── styles/           ← CSS files
+│   └── docs/                 ← project documentation
+├── data/
+│   └── sekejap/              ← project data + agent docs
+└── files/                    ← public static assets
 ```
 
 ## Key Concepts
@@ -28,14 +38,14 @@ app/
 
 **Project**: Isolated workspace. Each project has its own pipelines, templates, tables, credentials.
 
-**Pipeline**: A graph of nodes. Webhook nodes receive HTTP requests; script/query nodes transform data; web_render nodes produce HTML output.
+**Pipeline**: A graph of nodes. Trigger nodes receive HTTP requests or cron ticks; action nodes transform data; web_render nodes produce HTML output.
 
 **Activation**: Pipelines must be explicitly activated to serve live traffic. Draft changes don't affect production until activated.
 
-**MCP Session**: A scoped token granting an LLM agent access to a project's tools. Created by a project owner, usable from Cursor/Claude.
+**MCP Session**: A scoped token granting an LLM agent access to a project's tools. Created by a project owner, usable from Cursor, Claude, or any MCP-compatible client.
 
 ## API Base
 
-All project APIs are at: `POST/GET /api/projects/{owner}/{project}/...`
+All project APIs: `POST/GET /api/projects/{owner}/{project}/...`
 
 Webhook ingress: `{method} /wh/{owner}/{project}/{webhook-path}`

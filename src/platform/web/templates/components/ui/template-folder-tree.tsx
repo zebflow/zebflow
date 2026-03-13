@@ -27,6 +27,22 @@ function TsFileIcon() {
   );
 }
 
+function CssFileIcon() {
+  return (
+    <span className="template-tech-icon is-css" aria-hidden="true">
+      CSS
+    </span>
+  );
+}
+
+function MdFileIcon() {
+  return (
+    <span className="template-tech-icon is-md" aria-hidden="true">
+      MD
+    </span>
+  );
+}
+
 function FolderIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="template-tech-icon is-folder" aria-hidden="true">
@@ -40,23 +56,17 @@ function iconForTemplateItem(item) {
   const isTsx = relPath.endsWith(".tsx");
   const isTs = relPath.endsWith(".ts");
   const isCss = relPath.endsWith(".css");
+  const isMd = relPath.endsWith(".md") || relPath.endsWith(".mdx");
 
-  if (item?.kind === "folder") {
-    return <FolderIcon />;
-  }
-  if (isTsx || item?.file_kind === "page" || item?.file_kind === "component") {
-    return <ReactFileIcon />;
-  }
-  if (isTs || item?.file_kind === "script") {
-    return <TsFileIcon />;
-  }
-  if (isCss || item?.file_kind === "style") {
-    return <i className="zf-devicon devicon-css3-plain colored" aria-hidden="true"></i>;
-  }
+  if (item?.kind === "folder") return <FolderIcon />;
+  if (isTsx || item?.file_kind === "page" || item?.file_kind === "component") return <ReactFileIcon />;
+  if (isTs || item?.file_kind === "script") return <TsFileIcon />;
+  if (isCss || item?.file_kind === "style") return <CssFileIcon />;
+  if (isMd) return <MdFileIcon />;
   return <i className="zf-devicon zf-icon-file" aria-hidden="true"></i>;
 }
 
-function toTemplateHierarchy(items, selectedFile, selectedFolder, onSelectFile) {
+function toTemplateHierarchy(items, selectedPath, onSelectFile, onSelectFolder) {
   const safeItems = Array.isArray(items) ? items : [];
   const byPath = new Map();
   const roots = [];
@@ -74,13 +84,11 @@ function toTemplateHierarchy(items, selectedFile, selectedFolder, onSelectFile) 
   sorted.forEach((item) => {
     const relPath = String(item?.rel_path || "");
     const isFolder = String(item?.kind || "") === "folder";
-    const isOpenFile = !isFolder && relPath === selectedFile;
-    const isSelected = isFolder ? relPath === selectedFolder : isOpenFile;
+    const isSelected = relPath === selectedPath;
     const rowClassName = cx(
       "template-tree-item",
       isFolder ? "is-folder" : "",
       item?.is_protected ? "is-protected" : "",
-      isOpenFile ? "is-open" : "",
       isSelected ? "is-selected" : ""
     );
 
@@ -89,10 +97,11 @@ function toTemplateHierarchy(items, selectedFile, selectedFolder, onSelectFile) 
       icon: <span className="template-tree-icon">{iconForTemplateItem(item)}</span>,
       label: <span className="template-tree-label">{item?.name || "item"}</span>,
       badge: <span className="template-tree-git"></span>,
-      className: rowClassName,
+      className: "",
       rowClassName,
       expanded: isFolder,
       children: [],
+      onClick: isFolder ? () => onSelectFolder(relPath) : undefined,
     };
 
     if (!isFolder) {
@@ -153,17 +162,17 @@ function toTemplateHierarchy(items, selectedFile, selectedFolder, onSelectFile) 
 
 interface TemplateFolderTreeProps {
   items?: any[];
-  selectedFile?: string;
-  selectedFolder?: string;
+  selectedPath?: string;
   onSelectFile?: (relPath: string) => void;
+  onSelectFolder?: (relPath: string) => void;
 }
 
 export default function TemplateFolderTree(props: TemplateFolderTreeProps) {
   const nodes = toTemplateHierarchy(
     props?.items || [],
-    props?.selectedFile || "",
-    props?.selectedFolder || "",
-    props?.onSelectFile || (() => {})
+    props?.selectedPath || "",
+    props?.onSelectFile || (() => {}),
+    props?.onSelectFolder || (() => {})
   );
   return (
     <HierarchyTree

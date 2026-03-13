@@ -404,126 +404,8 @@ select {
   background: var(--studio-panel-3);
 }
 
-.project-shell-session-label {
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
 .project-shell-session {
   position: relative;
-}
-
-.project-shell-session-panel {
-  position: absolute;
-  top: calc(100% + 0.5rem);
-  right: 0;
-  z-index: 50;
-  min-width: 22rem;
-  max-width: 28rem;
-  border-radius: 0.75rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel);
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-  padding: 1rem;
-}
-
-.project-shell-session-head {
-  margin-bottom: 0.875rem;
-  padding-bottom: 0.875rem;
-  border-bottom: 1px solid var(--studio-border);
-}
-
-.project-shell-session-title {
-  font-size: 0.875rem;
-  font-weight: 700;
-  color: var(--studio-text);
-  margin-bottom: 0.25rem;
-}
-
-.project-shell-session-subtitle {
-  font-size: 0.72rem;
-  color: var(--studio-text-soft);
-  line-height: 1.4;
-}
-
-.project-shell-session-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.project-shell-session-block {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.project-shell-session-toggle-label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.project-shell-session-toggle {
-  width: 1.125rem;
-  height: 1.125rem;
-}
-
-.project-shell-session-label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--studio-text);
-  margin-bottom: 0.25rem;
-}
-
-.project-shell-session-checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: var(--studio-text-soft);
-  cursor: pointer;
-}
-
-.project-shell-session-checkbox-label input {
-  width: 0.9375rem;
-  height: 0.9375rem;
-}
-
-.project-shell-session-token-input,
-.project-shell-session-url-input {
-  width: 100%;
-  padding: 0.5rem;
-  border-radius: 0.375rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
-  font-size: 0.72rem;
-  font-family: var(--zf-font-mono);
-}
-
-.project-shell-session-copy-button {
-  padding: 0.375rem 0.75rem;
-  border-radius: 0.375rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-3);
-  color: var(--studio-text);
-  font-size: 0.72rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.project-shell-session-copy-button:hover {
-  background: var(--studio-panel-2);
-}
-
-.project-shell-session-help {
-  font-size: 0.68rem;
-  color: var(--studio-text-soft);
-  line-height: 1.4;
 }
 
 .project-shell-theme-light {
@@ -940,6 +822,53 @@ select {
   color: #475569;
 }
 
+/* ── Toggle switch ───────────────────────────────────────────────────────── */
+.zf-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+.zf-toggle.is-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.zf-toggle-track {
+  position: relative;
+  display: inline-block;
+  width: 2.2rem;
+  height: 1.2rem;
+  border-radius: 9999px;
+  background: var(--studio-panel-3, #1e293b);
+  border: 1px solid var(--studio-border, #334155);
+  transition: background 0.18s ease, border-color 0.18s ease;
+  flex-shrink: 0;
+}
+.zf-toggle input:checked ~ .zf-toggle-track {
+  background: #16a34a;
+  border-color: #22c55e;
+}
+.zf-toggle-thumb {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 0.82rem;
+  height: 0.82rem;
+  border-radius: 9999px;
+  background: var(--studio-text-soft, #475569);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.zf-toggle input:checked ~ .zf-toggle-track .zf-toggle-thumb {
+  transform: translateX(1rem);
+  background: #fff;
+}
+.zf-toggle-label {
+  font-size: 0.78rem;
+  color: var(--studio-text-soft, #94a3b8);
+  line-height: 1;
+}
+
 .cli-line.cli-ai {
   color: #7dd3fc;
   white-space: pre-wrap;
@@ -967,13 +896,15 @@ select {
 }
 
 /* ── Bottom-docked console panel ─────────────────────────────────────────── */
-/* Position + slide animation only — inner layout is Tailwind in console-panel.tsx */
 .zf-console-panel {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
   z-index: 300;
+  height: 40vh;
+  display: flex;
+  flex-direction: column;
   background: #080b10;
   box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.55);
   transform: translateY(100%);
@@ -981,6 +912,84 @@ select {
 }
 .zf-console-panel.is-open {
   transform: translateY(0);
+}
+/* Output area — scrollable, fills remaining height */
+.zf-console-panel [data-cli-output] {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+.zf-console-panel [data-cli-output]::-webkit-scrollbar {
+  width: 4px;
+}
+.zf-console-panel [data-cli-output]::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 2px;
+}
+/* Line list inside the output area */
+.cli-output-list {
+  padding: 0.4rem 1rem 0.5rem;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.78rem;
+  line-height: 1.65;
+}
+
+/* Console raw text input */
+.cli-cmd-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 0;
+  height: auto;
+  color: #cbd5e1;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.8rem;
+  caret-color: #22c55e;
+  line-height: 1.5;
+}
+.cli-cmd-input::placeholder {
+  color: #1e293b;
+}
+.cli-cmd-input:focus {
+  outline: none;
+}
+
+/* Autocomplete suggestion panel */
+[data-cli-autocomplete] {
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  background: #090d14;
+  overflow: hidden;
+}
+.cli-ac-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.22rem 1rem 0.22rem 2.5rem;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.78rem;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.08s, color 0.08s;
+}
+.cli-ac-item:hover,
+.cli-ac-item.is-active {
+  background: rgba(255, 255, 255, 0.05);
+  color: #94a3b8;
+}
+.cli-ac-hl {
+  color: #7dd3fc;
+}
+.cli-ac-hist {
+  color: #1e3a52;
+  font-size: 0.68rem;
+  margin-left: auto;
+  shrink: 0;
 }
 
 /* cli-code: used by emitHtml() in project-shell.ts for inline <code> elements */
@@ -1480,7 +1489,7 @@ select {
   max-width: 100%;
   text-decoration: none;
   color: var(--studio-text-soft);
-  border-radius: 0.45rem;
+  border-radius: 0;
   padding: 0.18rem 0.4rem;
 }
 
@@ -1859,6 +1868,89 @@ select {
   border-color: var(--studio-accent);
 }
 
+/* ── Pipeline editor 1-column folder navigator ──────────────────────────── */
+
+.pipeline-editor-folder-nav {
+  border-bottom: 1px solid var(--studio-border-soft);
+}
+
+.pipeline-editor-folder-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.1rem;
+  padding: 0.38rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border-soft);
+}
+
+.pipeline-editor-folder-crumb {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pipeline-editor-crumb-link {
+  font-size: 0.68rem;
+  color: var(--studio-text-soft);
+  text-decoration: none;
+}
+
+.pipeline-editor-crumb-link:hover {
+  color: var(--studio-accent);
+}
+
+.pipeline-editor-crumb-sep {
+  font-size: 0.68rem;
+  color: var(--studio-border);
+  padding: 0 0.1rem;
+  user-select: none;
+}
+
+.pipeline-editor-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.32rem 0.65rem;
+  font-size: 0.72rem;
+  color: var(--studio-text);
+  text-decoration: none;
+}
+
+.pipeline-editor-nav-row:hover {
+  background: color-mix(in srgb, var(--studio-accent) 6%, transparent);
+}
+
+.pipeline-editor-nav-icon {
+  width: 0.88rem;
+  height: 0.88rem;
+  flex-shrink: 0;
+  color: #f6c95a;
+}
+
+.pipeline-editor-nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pipeline-editor-nav-count {
+  font-size: 0.62rem;
+  color: var(--studio-text-soft);
+  padding: 0.06rem 0.3rem;
+  background: var(--studio-panel-2);
+  border: 1px solid var(--studio-border-soft);
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+/* Folder icon color for entry cards */
+.project-entry-icon-folder {
+  color: #f6c95a;
+  background: color-mix(in srgb, #f6c95a 10%, transparent);
+  border-color: color-mix(in srgb, #f6c95a 25%, var(--studio-border-soft));
+}
+
 .pipeline-editor-cat {
   width: 1.9rem;
   height: 1.9rem;
@@ -2099,6 +2191,111 @@ select {
   width: min(34rem, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
   box-shadow: 0 24px 55px rgba(2, 6, 23, 0.32);
+}
+
+.pipeline-editor-dialog.credential-dialog {
+  width: min(640px, calc(100vw - 2rem));
+  max-height: calc(100vh - 3rem);
+  overflow: hidden;
+}
+
+/* Credential dialog form layout */
+.credential-dialog-form {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: calc(100vh - 3rem);
+}
+.credential-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem 0.7rem;
+  border-bottom: 1px solid var(--studio-border);
+  flex-shrink: 0;
+}
+.credential-dialog-header-meta { min-width: 0; }
+.credential-dialog-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.credential-dialog-header-actions button {
+  min-height: 1.9rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--studio-border);
+  background: var(--studio-panel-2);
+  color: var(--studio-text);
+  padding: 0 0.7rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.credential-dialog-header-actions button:hover {
+  background: var(--studio-panel-3);
+}
+.credential-dialog-header-actions button[type="submit"] {
+  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
+  background: color-mix(in srgb, var(--studio-accent) 15%, transparent);
+  color: var(--studio-accent);
+}
+.credential-dialog-header-actions button[type="submit"]:hover {
+  background: color-mix(in srgb, var(--studio-accent) 25%, transparent);
+}
+.credential-dialog-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+/* Two-column identity row: ID | Kind, then Title full width */
+.credential-identity-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.85rem;
+}
+.credential-field-full { grid-column: 1 / -1; }
+/* Two-column secret fields grid */
+.credential-secret-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.85rem;
+}
+.credential-secret-grid .is-full-width { grid-column: 1 / -1; }
+.credential-secret-grid label:has(textarea) { grid-column: 1 / -1; }
+/* Generate button for auto-generated secret fields */
+.credential-gen-wrap {
+  display: flex;
+  gap: 0.35rem;
+  align-items: stretch;
+}
+.credential-gen-wrap input {
+  flex: 1;
+  min-width: 0;
+}
+.credential-gen-btn {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0 0.6rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--studio-border, #2b3648);
+  background: var(--studio-panel-2, #1a2232);
+  color: var(--studio-text-muted, #8fa3c0);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.credential-gen-btn:hover {
+  background: var(--studio-accent, #3b82f6);
+  border-color: var(--studio-accent, #3b82f6);
+  color: #fff;
 }
 
 .pipeline-editor-dialog.is-fullscreen {
@@ -2638,26 +2835,40 @@ select {
   padding: 0.375rem 0;
 }
 
+.template-tree .project-tree-summary {
+  display: flex;
+  width: 100%;
+}
+
+.template-tree .project-tree-leaf-link {
+  width: 100%;
+}
+
 .template-tree-item {
   min-height: 2rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
   padding-right: 0.75rem;
-  border-radius: 0.55rem;
+  border-radius: 0;
   color: var(--studio-text-soft);
   font-size: 0.88rem;
   line-height: 1;
   user-select: none;
 }
 
-.template-tree-item:hover,
-.template-tree-item.is-selected {
+.template-tree-item:hover {
   color: var(--studio-text);
-  background: color-mix(in srgb, var(--studio-panel-3) 64%, transparent);
+  background: color-mix(in srgb, var(--studio-text) 7%, transparent);
 }
 
 .template-tree-item.is-selected {
+  color: var(--studio-text);
+  background: color-mix(in srgb, var(--studio-accent) 15%, transparent);
+}
+
+.project-tree-summary.template-tree-item.is-selected,
+.project-tree-leaf-link.template-tree-item.is-selected {
   border-left: 2px solid var(--studio-accent);
 }
 
@@ -2715,6 +2926,28 @@ select {
   background: #2f74c0;
   color: #f8fbff;
   font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  font-family: var(--zebflow-font-mono, monospace);
+}
+
+.template-tech-icon.is-css {
+  border-radius: 0.18rem;
+  background: #264de4;
+  color: #f8fbff;
+  font-size: 0.42rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  font-family: var(--zebflow-font-mono, monospace);
+}
+
+.template-tech-icon.is-md {
+  border-radius: 0.18rem;
+  background: #475569;
+  color: #e2e8f0;
+  font-size: 0.46rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   line-height: 1;
@@ -3724,10 +3957,21 @@ select {
   flex-wrap: wrap;
 }
 
-.pipeline-registry-inline-input,
-.pipeline-registry-inline-select {
+.pipeline-registry-inline-input {
+  width: auto;
+  flex: 1 1 8rem;
   height: 1.9rem;
   padding: 0 0.5rem;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  background: var(--studio-panel);
+  color: var(--studio-text);
+  font-size: 0.75rem;
+}
+
+.pipeline-registry-inline-select {
+  flex-shrink: 0;
+  height: 1.9rem;
   border: 1px solid var(--studio-border);
   border-radius: 0.35rem;
   background: var(--studio-panel);
@@ -3739,6 +3983,21 @@ select {
 .pipeline-registry-inline-select:focus {
   outline: none;
   border-color: var(--studio-accent);
+}
+
+/* ── Select component inner <select> override for inline forms ── */
+/* Select wraps <select> in a div; className goes to div, not inner select.
+   Override the inner select so it inherits the studio panel background. */
+.pipeline-registry-inline-select select {
+  height: 100%;
+  width: 100%;
+  background: transparent !important;
+  color: inherit !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 2rem 0 0 !important;
+  font-size: inherit !important;
 }
 
 .pipeline-registry-empty {
@@ -4030,3 +4289,425 @@ select {
   gap: 0.5rem;
   justify-content: flex-end;
 }
+
+/* ── Git Indicator & Panel (header) ─────────────────────────────────────── */
+
+.git-indicator-btn {
+  position: relative;
+}
+
+.git-indicator-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 1rem;
+  height: 1rem;
+  padding: 0 0.22rem;
+  border-radius: 9999px;
+  background: #f97316;
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+.git-indicator-dot {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #94a3b8;
+  pointer-events: none;
+}
+
+.git-indicator-dot.is-clean {
+  background: #22c55e;
+}
+
+.git-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 320px;
+  max-height: 480px;
+  display: flex;
+  flex-direction: column;
+  background: var(--studio-panel);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+
+.git-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border);
+  gap: 0.5rem;
+}
+
+.git-panel-left {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.git-panel-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.git-panel-branch {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--studio-text);
+  font-family: var(--zf-font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-panel-count {
+  font-size: 0.7rem;
+  color: var(--studio-text-soft);
+}
+
+.git-panel-sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #f97316;
+  flex-shrink: 0;
+}
+
+.git-panel-sync-dot.is-synced {
+  background: #22c55e;
+}
+
+.git-file-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 0;
+  min-height: 2.5rem;
+}
+
+.git-section-label {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: var(--studio-text-soft);
+  padding: 0.3rem 0.75rem 0.15rem;
+  text-transform: uppercase;
+}
+
+.git-file-item {
+  padding: 0.15rem 0.75rem;
+  font-size: 0.72rem;
+}
+
+.git-empty {
+  font-size: 0.74rem;
+  color: var(--studio-text-soft);
+  padding: 0.6rem 0.75rem;
+}
+
+.git-actions {
+  border-top: 1px solid var(--studio-border);
+  padding: 0.5rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.git-message-input {
+  width: 100%;
+  font-size: 0.78rem;
+}
+
+.git-error {
+  font-size: 0.7rem;
+  color: #ef4444;
+  padding: 0 0.1rem;
+}
+
+.git-action-row {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.git-sync-btn.is-synced {
+  color: #22c55e;
+  border-color: #22c55e;
+}
+
+/* ── MCP Session Panel ───────────────────────────────────────────────────── */
+.mcp-session-panel {
+  padding: 0;
+  overflow: hidden;
+}
+.mcp-session-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem 0.8rem;
+  border-bottom: 1px solid var(--studio-border, #1e293b);
+}
+.mcp-session-section {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--studio-border, #1e293b);
+}
+.mcp-session-section:last-child {
+  border-bottom: none;
+}
+.mcp-session-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--studio-text-soft, #64748b);
+  cursor: default;
+}
+.mcp-token-input {
+  background: var(--studio-panel-2, #0d1117);
+  border: 1px solid var(--studio-border, #1e293b);
+  border-radius: 0.35rem;
+  color: var(--studio-text-soft, #94a3b8);
+  font-size: 0.68rem;
+  font-family: ui-monospace, monospace;
+  padding: 0.3rem 0.5rem;
+  /* Keep outline for focus visibility; style it instead of removing */
+  outline: none;
+  width: 100%;
+  height: 1.75rem;
+  min-width: 0;
+  cursor: text;
+  /* Truncate long values (tokens/URLs) */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-token-input:focus {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+.mcp-copy-btn {
+  font-size: 0.7rem !important;
+  height: 1.75rem !important;
+  padding: 0 0.6rem !important;
+  flex-shrink: 0;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+/* Reset Token — subtle but discoverable */
+.mcp-reset-btn {
+  font-size: 0.65rem !important;
+  height: 1.4rem !important;
+  padding: 0 0.5rem !important;
+  color: var(--studio-text-soft) !important;
+  border: 1px solid var(--studio-border) !important;
+  border-radius: 0.3rem !important;
+  transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+.mcp-reset-btn:hover:not(:disabled) {
+  color: #f59e0b !important;
+  border-color: #f59e0b !important;
+  background: rgba(245, 158, 11, 0.08) !important;
+}
+/* Capability checkboxes — larger touch target */
+.mcp-cap-check {
+  padding: 0.25rem 0;
+  min-height: 1.75rem;
+}
+/* Repo panel */
+.repo-panel { padding: 0; overflow: hidden; }
+.repo-cred-card {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--studio-border);
+  background: var(--studio-panel-2);
+}
+.repo-cred-badge {
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.25rem;
+  border: 1px solid;
+  flex-shrink: 0;
+}
+.repo-cred-badge.is-github {
+  background: rgba(36, 41, 47, 0.6);
+  border-color: rgba(110, 118, 129, 0.4);
+  color: #cdd9e5;
+}
+.repo-cred-badge.is-gitlab {
+  background: rgba(252, 109, 38, 0.12);
+  border-color: rgba(252, 109, 38, 0.35);
+  color: #fc6d26;
+}
+.repo-cred-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+.repo-cred-host {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--studio-text);
+}
+.repo-cred-user {
+  font-size: 0.65rem;
+  color: var(--studio-text-soft);
+}
+.repo-cred-token-status {
+  font-size: 0.62rem;
+  color: var(--studio-text-muted);
+}
+/* Split body layout */
+.mcp-split-body { display: flex; align-items: stretch; }
+.mcp-split-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mcp-split-left .mcp-session-section:last-child { border-bottom: none; flex: 1; }
+.mcp-split-divider { width: 1px; background: var(--studio-border); flex-shrink: 0; }
+.mcp-split-right { width: 196px; flex-shrink: 0; padding: 0.75rem 0.85rem; display: flex; flex-direction: column; gap: 0; }
+.mcp-split-right-title { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--studio-text-muted); margin-bottom: 0.5rem; }
+/* Install Guide */
+.mcp-guide-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+}
+.mcp-guide-tab {
+  font-size: 0.62rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--studio-border);
+  background: var(--studio-panel-2);
+  color: var(--studio-text-soft);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  white-space: nowrap;
+}
+.mcp-guide-tab:hover {
+  color: var(--studio-text);
+  border-color: var(--studio-text-soft);
+}
+.mcp-guide-tab.is-active {
+  background: var(--studio-accent);
+  border-color: var(--studio-accent);
+  color: #fff;
+}
+.mcp-guide-snippet {
+  background: var(--studio-panel-2);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.6rem;
+  font-family: ui-monospace, monospace;
+  color: var(--studio-text-soft);
+  white-space: pre;
+  overflow-x: auto;
+  margin: 0 0 0.5rem;
+  line-height: 1.6;
+  max-height: 7rem;
+}
+.mcp-guide-copy-btn {
+  font-size: 0.65rem !important;
+  height: 1.5rem !important;
+  padding: 0 0.6rem !important;
+}
+
+/* prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .zf-toggle-track,
+  .zf-toggle-thumb {
+    transition: none;
+  }
+  .mcp-copy-btn,
+  .mcp-reset-btn,
+  .mcp-guide-tab {
+    transition: none;
+  }
+}
+
+/* ── Git Tree View ───────────────────────────────────────────────────────── */
+
+.git-tree-root {
+  padding: 0 0 0.25rem;
+}
+
+.git-tree-root .project-tree-details {
+  font-size: 0.72rem;
+}
+
+.git-tree-root .project-tree-body {
+  margin-left: 0.75rem;
+}
+
+.git-tree-dir {
+  padding: 0.1rem 0.5rem;
+  color: var(--studio-text-soft);
+  font-size: 0.7rem;
+  min-height: 1.4rem;
+}
+
+.git-tree-dir .project-tree-segment {
+  font-size: 0.7rem;
+}
+
+.git-tree-file {
+  padding: 0.1rem 0.5rem 0.1rem 0.25rem;
+  gap: 0.3rem;
+  min-height: 1.5rem;
+  align-items: center;
+}
+
+.git-tree-file:hover {
+  background: color-mix(in srgb, var(--studio-text) 6%, transparent);
+}
+
+.git-tree-check {
+  flex-shrink: 0;
+}
+
+.git-tree-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  color: var(--studio-text);
+}
+
+.git-tree-code {
+  font-family: var(--zf-font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 1rem;
+  text-align: center;
+}
+
+.git-tree-code.is-added    { color: #22c55e; }
+.git-tree-code.is-modified { color: #f59e0b; }
+.git-tree-code.is-deleted  { color: #ef4444; }
+.git-tree-code.is-untracked { color: #94a3b8; }
+

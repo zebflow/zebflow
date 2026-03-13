@@ -24,6 +24,20 @@ pub struct WebhookTriggerSpec {
     pub node_id: String,
     pub path: String,
     pub method: String,
+    /// Auth type: `"none"`, `"jwt"`, `"hmac"`, `"api_key"`.
+    #[serde(default)]
+    pub auth_type: String,
+    /// Credential ID for auth verification.
+    #[serde(default)]
+    pub auth_credential: String,
+}
+
+/// One extracted weberror trigger from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebErrorTriggerSpec {
+    pub node_id: String,
+    /// Code pattern: `"404"`, `"4xx"`, `"5xx"`, `"*"`, or `""` (catch-all).
+    pub code: String,
 }
 
 /// One extracted schedule trigger from an active compiled pipeline.
@@ -32,6 +46,16 @@ pub struct ScheduleTriggerSpec {
     pub node_id: String,
     pub cron: String,
     pub timezone: String,
+}
+
+/// One extracted WS trigger from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WsTriggerSpec {
+    pub node_id: String,
+    /// Room pattern — empty matches any room.
+    pub room: String,
+    /// Event pattern — empty matches any event.
+    pub event: String,
 }
 
 /// Execution-ready active pipeline entry.
@@ -46,6 +70,8 @@ pub struct CompiledPipeline {
     pub graph: PipelineGraph,
     pub webhook_triggers: Vec<WebhookTriggerSpec>,
     pub schedule_triggers: Vec<ScheduleTriggerSpec>,
+    pub ws_triggers: Vec<WsTriggerSpec>,
+    pub weberror_triggers: Vec<WebErrorTriggerSpec>,
 }
 
 impl CompiledPipeline {
@@ -60,8 +86,43 @@ impl CompiledPipeline {
                 ),
             )
         })?;
+
+        // Guard: reject pipelines with node configs that violate their definition.
+        let definitions = crate::pipeline::nodes::builtin_node_definitions();
+        for node in &graph.nodes {
+            let Some(def) = definitions.iter().find(|d| d.kind == node.kind) else {
+                continue;
+            };
+            let required = def
+                .config_schema
+                .get("required")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            for field in required {
+                let present = node.config.get(field).map(|v| !v.is_null()).unwrap_or(false);
+                let non_empty = node.config
+                    .get(field)
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(true);
+                if !present || !non_empty {
+                    return Err(PlatformError::new(
+                        "PIPELINE_NODE_CONFIG_VIOLATION",
+                        format!(
+                            "node '{}' (id: '{}') in pipeline '{}' is missing required config field '{}' \
+                            as defined by its node definition. \
+                            Pipeline rejected.",
+                            node.kind, node.id, meta.file_rel_path, field
+                        ),
+                    ));
+                }
+            }
+        }
         let mut webhook_triggers = Vec::new();
         let mut schedule_triggers = Vec::new();
+        let mut ws_triggers = Vec::new();
+        let mut weberror_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
                 "n.trigger.webhook" => {
@@ -77,10 +138,36 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("POST")
                         .to_string();
+                    let auth_type = node
+                        .config
+                        .get("auth_type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let auth_credential = node
+                        .config
+                        .get("auth_credential")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                     webhook_triggers.push(WebhookTriggerSpec {
                         node_id: node.id.clone(),
                         path,
                         method,
+                        auth_type,
+                        auth_credential,
+                    });
+                }
+                "n.trigger.weberror" => {
+                    let code = node
+                        .config
+                        .get("code")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    weberror_triggers.push(WebErrorTriggerSpec {
+                        node_id: node.id.clone(),
+                        code,
                     });
                 }
                 "n.trigger.schedule" => {
@@ -102,6 +189,25 @@ impl CompiledPipeline {
                         timezone,
                     });
                 }
+                "n.trigger.ws" => {
+                    let room = node
+                        .config
+                        .get("room")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let event = node
+                        .config
+                        .get("event")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    ws_triggers.push(WsTriggerSpec {
+                        node_id: node.id.clone(),
+                        room,
+                        event,
+                    });
+                }
                 _ => {}
             }
         }
@@ -116,6 +222,8 @@ impl CompiledPipeline {
             graph,
             webhook_triggers,
             schedule_triggers,
+            ws_triggers,
+            weberror_triggers,
         })
     }
 }

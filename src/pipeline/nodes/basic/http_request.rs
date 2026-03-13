@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 use crate::language::LanguageEngine;
 
@@ -44,6 +44,8 @@ pub fn definition() -> NodeDefinition {
             name: "n.http.request".to_string(),
             enabled: false,
         }),
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -95,7 +97,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config, language: Arc<dyn LanguageEngine>) -> Result<Self, FrameworkError> {
+    pub fn new(config: Config, language: Arc<dyn LanguageEngine>) -> Result<Self, PipelineError> {
         let url = config.url.trim();
         let url_expr_empty = config
             .url_expr
@@ -104,13 +106,13 @@ impl Node {
             .unwrap_or_default()
             .is_empty();
         if url.is_empty() && url_expr_empty {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_CONFIG",
                 "config.url must not be empty",
             ));
         }
         if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_CONFIG",
                 "config.url must start with http:// or https://",
             ));
@@ -120,7 +122,7 @@ impl Node {
 }
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -136,9 +138,9 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         if input.input_pin != INPUT_PIN_IN {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_INPUT_PIN",
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
@@ -158,7 +160,7 @@ impl FrameworkNode for Node {
             "url",
         )?;
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_CONFIG",
                 "resolved url must start with http:// or https://",
             ));
@@ -209,7 +211,7 @@ impl FrameworkNode for Node {
             Ok(resp) => resp,
             Err(ureq::Error::Status(_status, resp)) => resp,
             Err(ureq::Error::Transport(err)) => {
-                return Err(FrameworkError::new(
+                return Err(PipelineError::new(
                     "FW_NODE_HTTP_REQUEST_TRANSPORT",
                     err.to_string(),
                 ));
@@ -222,7 +224,7 @@ impl FrameworkNode for Node {
             .unwrap_or("application/octet-stream")
             .to_string();
         let body_text = response.into_string().map_err(|err| {
-            FrameworkError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
+            PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
         })?;
         let body = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
 
@@ -253,11 +255,11 @@ fn resolve_http_string_binding(
     expr: Option<&str>,
     fallback: &str,
     field: &str,
-) -> Result<String, FrameworkError> {
+) -> Result<String, PipelineError> {
     if let Some(expr) = expr {
         let value = eval_deno_expr(language, expr, input, metadata)?;
         return value.as_str().map(ToString::to_string).ok_or_else(|| {
-            FrameworkError::new(
+            PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_BINDING",
                 format!("binding expression for '{field}' must return string"),
             )
@@ -265,7 +267,7 @@ fn resolve_http_string_binding(
     }
     let out = fallback.trim();
     if out.is_empty() {
-        return Err(FrameworkError::new(
+        return Err(PipelineError::new(
             "FW_NODE_HTTP_REQUEST_BINDING",
             format!("resolved '{field}' must not be empty"),
         ));
@@ -273,17 +275,17 @@ fn resolve_http_string_binding(
     Ok(out.to_string())
 }
 
-fn parse_headers(value: Value) -> Result<BTreeMap<String, String>, FrameworkError> {
+fn parse_headers(value: Value) -> Result<BTreeMap<String, String>, PipelineError> {
     let mut out = BTreeMap::new();
     let Value::Object(map) = value else {
-        return Err(FrameworkError::new(
+        return Err(PipelineError::new(
             "FW_NODE_HTTP_REQUEST_BINDING",
             "headers_expr must return object",
         ));
     };
     for (k, v) in map {
         let Some(s) = v.as_str() else {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_BINDING",
                 "headers_expr values must be strings",
             ));

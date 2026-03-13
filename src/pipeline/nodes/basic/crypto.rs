@@ -92,8 +92,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
 
 use crate::pipeline::{
-    FrameworkError, NodeDefinition,
-    nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput},
+    PipelineError, NodeDefinition,
+    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
 
 pub const NODE_KIND: &str = "n.crypto";
@@ -147,6 +147,8 @@ pub fn definition() -> NodeDefinition {
         ],
         script_available: false,
         script_bridge: None,
+        config_schema: Default::default(),
+        dsl_flags: Default::default(),
         ai_tool: Default::default(),
     }
 }
@@ -201,7 +203,7 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config) -> Result<Self, FrameworkError> {
+    pub fn new(config: Config) -> Result<Self, PipelineError> {
         const VALID_OPS: &[&str] = &[
             "sha256",
             "sha512",
@@ -215,13 +217,13 @@ impl Node {
             "random_hex",
         ];
         if config.op.is_empty() {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_CRYPTO_CONFIG",
                 "n.crypto: --op must be specified",
             ));
         }
         if !VALID_OPS.contains(&config.op.as_str()) {
-            return Err(FrameworkError::new(
+            return Err(PipelineError::new(
                 "FW_NODE_CRYPTO_OP",
                 format!(
                     "n.crypto: unknown op '{}'. Valid ops: {}",
@@ -261,10 +263,10 @@ fn with_result(payload: Value, result: impl Into<Value>) -> Value {
     out
 }
 
-// ── FrameworkNode impl ───────────────────────────────────────────────────────
+// ── NodeHandler impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl FrameworkNode for Node {
+impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
@@ -278,7 +280,7 @@ impl FrameworkNode for Node {
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
-    ) -> Result<NodeExecutionOutput, FrameworkError> {
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let payload = input.payload;
 
         match self.config.op.as_str() {
@@ -319,8 +321,8 @@ impl FrameworkNode for Node {
                     bcrypt::hash(&input_val, cost).map_err(|e| e.to_string())
                 })
                 .await
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_BCRYPT_HASH", e))?;
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BCRYPT_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                     payload: with_result(payload, result),
@@ -338,7 +340,7 @@ impl FrameworkNode for Node {
                     bcrypt::verify(&plaintext, &stored).unwrap_or(false)
                 })
                 .await
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
                 let pin = if is_valid { OUTPUT_PIN_TRUE } else { OUTPUT_PIN_FALSE };
                 Ok(NodeExecutionOutput {
                     output_pins: vec![pin.to_string()],
@@ -363,8 +365,8 @@ impl FrameworkNode for Node {
                         .map_err(|e| e.to_string())
                 })
                 .await
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_ARGON2_HASH", e))?;
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_ARGON2_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                     payload: with_result(payload, result),
@@ -388,7 +390,7 @@ impl FrameworkNode for Node {
                         .unwrap_or(false)
                 })
                 .await
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
                 let pin = if is_valid { OUTPUT_PIN_TRUE } else { OUTPUT_PIN_FALSE };
                 Ok(NodeExecutionOutput {
                     output_pins: vec![pin.to_string()],
@@ -405,7 +407,7 @@ impl FrameworkNode for Node {
                     extract_str(&payload, &self.config.key_path, "key").to_string();
                 type HmacSha256 = Hmac<Sha256>;
                 let mut mac = HmacSha256::new_from_slice(key_val.as_bytes())
-                    .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_HMAC_KEY", e.to_string()))?;
+                    .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_HMAC_KEY", e.to_string()))?;
                 mac.update(input_val.as_bytes());
                 let result = hex::encode(mac.finalize().into_bytes());
                 Ok(NodeExecutionOutput {
@@ -432,10 +434,10 @@ impl FrameworkNode for Node {
                 let input_val =
                     extract_str(&payload, &self.config.input_path, "input").to_string();
                 let bytes = general_purpose::STANDARD.decode(input_val.as_bytes()).map_err(|e| {
-                    FrameworkError::new("FW_NODE_CRYPTO_BASE64_DECODE", e.to_string())
+                    PipelineError::new("FW_NODE_CRYPTO_BASE64_DECODE", e.to_string())
                 })?;
                 let result = String::from_utf8(bytes).map_err(|e| {
-                    FrameworkError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string())
+                    PipelineError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string())
                 })?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -454,7 +456,7 @@ impl FrameworkNode for Node {
                     hex::encode(&bytes)
                 })
                 .await
-                .map_err(|e| FrameworkError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
+                .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                     payload: with_result(payload, result),
@@ -463,7 +465,7 @@ impl FrameworkNode for Node {
             }
 
             // ── unknown op (validation should have caught this) ───────────────
-            other => Err(FrameworkError::new(
+            other => Err(PipelineError::new(
                 "FW_NODE_CRYPTO_OP",
                 format!("n.crypto: unknown op '{other}'"),
             )),

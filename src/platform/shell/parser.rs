@@ -208,7 +208,15 @@ pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>
                 }
                 "strategy" => { config.insert("strategy".to_string(), json!(val)); i += 2; }
                 "budget" => { config.insert("step_budget".to_string(), json!(val)); i += 2; }
-                _ => { i += 1; }
+                _ => {
+                    // Universal rule: --flag-name → flag_name (replace - with _).
+                    // Any flag not explicitly matched above lands here.
+                    // New nodes only need to declare dsl_flags on their NodeDefinition
+                    // for docs/validation — parsing is automatic.
+                    let config_key = key.replace('-', "_");
+                    config.insert(config_key, json!(val));
+                    i += 2;
+                }
             }
         } else {
             i += 1;

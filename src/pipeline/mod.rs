@@ -14,13 +14,13 @@ pub mod model;
 pub mod nodes;
 pub mod registry;
 
-pub use engines::{BasicFrameworkEngine, NoopFrameworkEngine};
-pub use interface::FrameworkEngine;
+pub use engines::{BasicPipelineEngine, NoopPipelineEngine};
+pub use interface::PipelineEngine;
 pub use model::{
-    ExecuteOptions, FrameworkContext, FrameworkError, FrameworkOutput, NodeAiToolDefinition,
+    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, NodeAiToolDefinition,
     NodeContractDocument, NodeContractItem, NodeDefinition, NodeScriptBridge,
     NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix, PipelineEdge, PipelineGraph,
     PipelineNode, StepEvent,
 };
-pub use nodes::{FrameworkNode, NodeExecutionInput, NodeExecutionOutput};
-pub use registry::FrameworkEngineRegistry;
+pub use nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
+pub use registry::PipelineEngineRegistry;
