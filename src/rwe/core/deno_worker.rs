@@ -710,28 +710,22 @@ const Markdown = function(props) {
     className: props && props.class,
   });
 };
-const D3Canvas = function(props) {
-  const cfg = JSON.stringify(Object.assign({ type: 'raw' }, (props && props.config) || {}));
-  return h('div', {
-    'data-zeb-lib': 'd3',
-    'data-zeb-wrapper': 'D3Canvas',
-    'data-config': cfg,
-    id: props && props.id,
-    className: props && props.className,
-    style: { width: '100%', height: (props && props.height) || '300px' },
-  });
-};
 // Namespace stubs — full namespace objects are browser-only
-const d3lib = {};
+const d3 = {};
 const deckgl = {};
 const threejs = {};
 const vrm = {};
+// useD3 hook stub — useRef/useEffect are globals during SSR but useEffect does not run
+const useD3 = function(callback, deps) {
+  var ref = (typeof useRef !== 'undefined' ? useRef : function() { return { current: null }; })(null);
+  (typeof useEffect !== 'undefined' ? useEffect : function(fn) {})(function() {
+    if (!ref.current) return;
+    return callback(ref.current, {});
+  }, deps || []);
+  return ref;
+};
 // Function stubs — all return empty/noop instances during SSR
-const ensureD3 = function() { return {}; };
 const ensureThree = function() { return {}; };
-const mountBarChart = function() { return { svg: null, update: _zebNoop, destroy: _zebNoop }; };
-const mountLineChart = function() { return { svg: null, update: _zebNoop, destroy: _zebNoop }; };
-const mountPieChart = function() { return { svg: null, update: _zebNoop, destroy: _zebNoop }; };
 const buildLayer = function() { return null; };
 const buildLayers = function() { return []; };
 // Imperative API stubs (no-ops during SSR)

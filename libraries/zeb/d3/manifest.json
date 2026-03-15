@@ -1,0 +1,22 @@
+{
+  "name": "zeb/d3",
+  "description": "D3.js v7 runtime for RWE templates. Full d3 namespace bundled offline. Bar, line, pie chart helpers with reactive stateKey bridge.",
+  "exports": [
+    "ensureD3",
+    "mountBarChart",
+    "mountLineChart",
+    "mountPieChart",
+    "d3lib",
+    "D3Bars"
+  ],
+  "versions": {
+    "full-7.x": {
+      "entry": "0.1/runtime/d3.bundle.mjs",
+      "source": "offline",
+      "package_version": "7.x",
+      "size_bytes": 292815,
+      "integrity": "",
+      "note": "Full d3 v7 bundle via esbuild. Build: cd /tmp/zeb-d3-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=d3.bundle.mjs"
+    }
+  }
+}
