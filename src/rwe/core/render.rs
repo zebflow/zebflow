@@ -29,6 +29,9 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
         vars,
         compiled.deno_timeout_ms,
     )?;
+    // Scan original source for zeb/* imports BEFORE stripping so the preamble
+    // can be injected into the outer script even though the inner bundle strips them.
+    let zeb_preamble = build_zeb_preamble(&compiled.client_module_source);
     let transpiled_client =
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let ssr_ms = started.elapsed().as_millis();
@@ -48,7 +51,7 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
 
     let html = build_document_shell(&ssr.page_config, &body_content);
 
-    let js = build_client_module(&transpiled_client);
+    let js = build_client_module(&transpiled_client, &zeb_preamble);
 
     Ok(RenderOutput {
         html,
@@ -77,16 +80,95 @@ fn strip_rwe_client_imports(source: &str) -> String {
             if !t.starts_with("import ") {
                 return true;
             }
+            // Strip "rwe" / "rwe-*" (hooks are globalThis globals) and
+            // "zeb/*" (library exports are injected into globalThis by the outer script).
             !(t.contains("from \"rwe\"")
                 || t.contains("from 'rwe'")
                 || t.contains("from \"rwe-")
-                || t.contains("from 'rwe-"))
+                || t.contains("from 'rwe-")
+                || t.contains("from \"zeb/")
+                || t.contains("from 'zeb/"))
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn build_client_module(client_source: &str) -> String {
+/// Scan source for `import { … } from "zeb/<name>"` lines and return the
+/// unique library specifiers used (e.g. `["zeb/threejs"]`).
+fn collect_zeb_libraries(source: &str) -> Vec<String> {
+    let mut libs: Vec<String> = Vec::new();
+    for line in source.lines() {
+        let t = line.trim();
+        if !t.starts_with("import ") {
+            continue;
+        }
+        for quote in ['"', '\''] {
+            let marker = format!("from {quote}zeb/");
+            if t.contains(&marker) {
+                let after_from = format!("from {quote}");
+                if let Some(pos) = t.rfind(&after_from) {
+                    let rest = &t[pos + after_from.len()..];
+                    let end = rest.find(quote).unwrap_or(rest.len());
+                    let lib = rest[..end].to_string();
+                    if !libs.contains(&lib) {
+                        libs.push(lib);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    libs
+}
+
+/// Map a `zeb/*` library specifier to its versioned browser bundle URL.
+/// TODO: resolve version from project `zeb.lock` instead of hardcoding.
+fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
+    match lib {
+        "zeb/threejs"     => Some("/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
+        "zeb/threejs-vrm" => Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs"),
+        "zeb/d3"          => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
+        "zeb/deckgl"      => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
+        "zeb/codemirror"  => Some("/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs"),
+        "zeb/graphui"     => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
+        "zeb/markdown"    => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
+        "zeb/prosemirror" => Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs"),
+        "zeb/use"         => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
+        "zeb/icons"       => Some("/assets/libraries/zeb/icons/0.1/runtime/icons.bundle.mjs"),
+        _ => None,
+    }
+}
+
+/// Build the outer-script preamble that imports each used `zeb/*` library
+/// from its versioned bundle URL and assigns all exports onto `globalThis`.
+///
+/// This runs in the outer script (a real URL context), so absolute-path
+/// imports like `/assets/libraries/…` resolve correctly. The inner user
+/// bundle (loaded as a `data:` URL) then just uses the symbols as globals —
+/// its `import { … } from "zeb/*"` lines are stripped by `strip_rwe_client_imports`.
+fn build_zeb_preamble(source: &str) -> String {
+    let libs = collect_zeb_libraries(source);
+    if libs.is_empty() {
+        return String::new();
+    }
+    // Use dynamic `await import(...)` — NOT static `import * as ...`.
+    // Static imports are hoisted: the bundle would be evaluated before the outer
+    // script body runs, so globalThis.createContext (etc.) wouldn't be set yet.
+    // Dynamic imports run in-order during script body execution, after the preact
+    // globals have been installed above.
+    let mut out = String::new();
+    for lib in &libs {
+        if let Some(url) = zeb_bundle_url(lib) {
+            let var = lib.replace('/', "_").replace('-', "_");
+            out.push_str(&format!(
+                "const __{var} = await import('{url}');\nObject.assign(globalThis, __{var});\n"
+            ));
+        }
+    }
+    out
+}
+
+fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let runtime_ready_source = strip_rwe_client_imports(client_source)
         .replace(
             "from \"npm:preact/jsx-runtime\"",
@@ -115,7 +197,8 @@ fn build_client_module(client_source: &str) -> String {
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
         "import {{ h, Fragment, hydrate, createContext }} from 'https://esm.sh/preact@10.28.4';\n\
-         import {{ useContext, useEffect, useMemo, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
+         import {{ forwardRef, memo }} from 'https://esm.sh/preact@10.28.4/compat';\n\
+         import {{ useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
          const __RwePageStateContext = createContext(null);\n\
          function __rweUsePageState(keyOrInitial, defaultValue) {{\n\
            const isKeyed = typeof keyOrInitial === 'string';\n\
@@ -151,6 +234,14 @@ fn build_client_module(client_source: &str) -> String {
          globalThis.useEffect = useEffect;\n\
          globalThis.useRef = useRef;\n\
          globalThis.useMemo = useMemo;\n\
+         globalThis.useCallback = useCallback;\n\
+         globalThis.useContext = useContext;\n\
+         globalThis.useReducer = useReducer;\n\
+         globalThis.useId = useId;\n\
+         globalThis.useLayoutEffect = useLayoutEffect;\n\
+         globalThis.createContext = createContext;\n\
+         globalThis.forwardRef = forwardRef;\n\
+         globalThis.memo = memo;\n\
          globalThis.usePageState = __rweUsePageState;\n\
          globalThis.useNavigate = function useNavigate() {{\n\
            return function(href) {{\n\
@@ -282,6 +373,7 @@ fn build_client_module(client_source: &str) -> String {
          const __payloadEl = document.getElementById('{PAYLOAD_ID}');\n\
          const __input = __payloadEl ? JSON.parse(__payloadEl.textContent || '{{}}') : {{}};\n\
          globalThis.ctx = __input;\n\
+         {zeb_preamble}\
          const __mod = await import('data:text/javascript;base64,{encoded}');\n\
          const __Page = __mod.default;\n\
          function __RweRoot(props) {{\n\
@@ -294,12 +386,25 @@ fn build_client_module(client_source: &str) -> String {
              setState((prev) => ({{ ...(prev || {{}}), ...((patch) || {{}}) }}));\n\
            }};\n\
            const value = useMemo(() => ({{ ...(state || {{}}), setPageState }}), [state]);\n\
+           /* Expose page-state bridge for external libraries (zeb/prosemirror, etc.).\n\
+            * window.__rweSetPageState(patch) — call from any zeb/* bundle to patch\n\
+            * the Preact page state. useState setter is stable so this ref is safe.\n\
+            * window.__rwePageState — read-only snapshot; updated after every change.\n\
+            * rwe:state:change event — dispatched on window after every state update;\n\
+            * bundles listen here to react to page-driven content changes (e.g. swap\n\
+            * a ProseEditor's content when the examiner navigates to the next answer). */\n\
+           window.__rweSetPageState = setPageState;\n\
+           useEffect(() => {{\n\
+             window.__rwePageState = state;\n\
+             window.dispatchEvent(new CustomEvent('rwe:state:change', {{ detail: state }}));\n\
+           }}, [state]);\n\
            return h(__RwePageStateContext.Provider, {{ value }}, h(__Page, props));\n\
          }}\n\
          const __root = document.getElementById('{ROOT_ID}');\n\
          if (__root && typeof __Page === 'function') {{\n\
            hydrate(h(__RweRoot, __input), __root);\n\
-         }}\n"
+         }}\n",
+        zeb_preamble = zeb_preamble,
     )
 }
 
