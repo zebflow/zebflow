@@ -519,10 +519,29 @@ if (typeof window !== "undefined") {
 
 /* ── Exports ── */
 
-export const d3lib = d3;
+export { d3 };
 
-export function ensureD3() {
-  return d3;
+/**
+ * useD3(callback, deps?) — hook for arbitrary d3 work inside Preact components.
+ *
+ * Returns a ref — attach it to any DOM element. The callback fires after mount
+ * with (container, d3) so you can call any d3 function directly.
+ * Return a cleanup function from the callback to run on unmount.
+ *
+ * Example:
+ *   const ref = useD3((el, d3) => {
+ *     const svg = d3.select(el).append("svg");
+ *     return () => svg.remove();
+ *   });
+ *   return <div ref={ref} class="w-full h-[400px]" />;
+ */
+export function useD3(callback, deps) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    return callback(ref.current, d3);
+  }, deps ?? []);
+  return ref;
 }
 
 /**
@@ -546,7 +565,7 @@ export function ensureD3() {
  *   area        boolean                  area fill under line (line only)
  *   donut       boolean                  donut mode (pie only)
  */
-export function D3Bars(props) {
+function D3Bars(props) {
   const _h         = globalThis.h;
   const _useRef    = globalThis.useRef;
   const _useEffect = globalThis.useEffect;
@@ -615,7 +634,7 @@ export function D3Bars(props) {
  *   id          string           container id
  *   className   string           Tailwind classes
  */
-export function D3Canvas(props) {
+function D3Canvas(props) {
   const _h         = globalThis.h;
   const _useRef    = globalThis.useRef;
   const _useEffect = globalThis.useEffect;

@@ -1,13 +1,7 @@
 {
   "raw": [
-    { "name": "d3lib", "kind": "namespace", "description": "Full d3 v7 namespace — all d3.* symbols available as d3lib.*" },
-    { "name": "ensureD3", "kind": "function", "description": "Returns the d3 namespace object" },
-    { "name": "mountBarChart", "kind": "function", "description": "Mount a bar chart into a host element. Returns { svg, update(data), destroy() }" },
-    { "name": "mountLineChart", "kind": "function", "description": "Mount a line chart into a host element. Returns { svg, update(data), destroy() }" },
-    { "name": "mountPieChart", "kind": "function", "description": "Mount a pie/donut chart into a host element. Returns { svg, update(data), destroy() }" }
+    { "name": "d3", "kind": "namespace", "description": "Full d3 v7 namespace — all d3.* symbols: select, scale*, axis*, force*, geo*, etc." },
+    { "name": "useD3", "kind": "hook", "description": "Hook for d3 work in Preact components. Returns a ref to attach to any element. Callback receives (container, d3)." }
   ],
-  "wrappers": [
-    { "name": "D3Bars", "kind": "tsx-component", "path": "wrappers/D3Bars.tsx", "description": "Chart component (bar/line/pie) — uses type prop" },
-    { "name": "D3Canvas", "kind": "tsx-component", "path": "wrappers/D3Canvas.tsx", "description": "General-purpose D3 canvas — fires zeb:d3:ready with { d3, container, id }" }
-  ]
+  "wrappers": []
 }

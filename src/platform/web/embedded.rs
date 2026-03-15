@@ -28,14 +28,6 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
     },
     EmbeddedAsset {
-        path: "zeb/d3/0.1/wrappers/D3Bars.tsx",
-        bytes: include_bytes!("../../../libraries/zeb/d3/0.1/wrappers/D3Bars.tsx"),
-    },
-    EmbeddedAsset {
-        path: "zeb/d3/0.1/wrappers/D3Canvas.tsx",
-        bytes: include_bytes!("../../../libraries/zeb/d3/0.1/wrappers/D3Canvas.tsx"),
-    },
-    EmbeddedAsset {
         path: "zeb/deckgl/0.1/library.json",
         bytes: include_bytes!("../../../libraries/zeb/deckgl/0.1/library.json"),
     },

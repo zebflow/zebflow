@@ -3,15 +3,31 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
+  "description": "D3.js v7 for data visualization in TSX templates. Full d3 namespace bundled offline. Bar, line, and pie chart helpers with reactive stateKey bridge, MutationObserver auto-mount, and imperative window.__zebD3 registry.",
   "source": {
     "provider": "zebflow",
     "package": "d3",
-    "package_version": "bridge",
+    "package_version": "7.x",
+    "packed_version": "full-7.x",
+    "packed_kind": "full",
     "entry": "runtime/d3.bundle.mjs"
   },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-d3-{version}.bundle.mjs"
+  },
   "exports": {
-    "raw": ["d3lib", "ensureD3", "mountBarChart"],
-    "wrappers": ["D3Bars"]
+    "raw": [
+      "d3lib",
+      "ensureD3",
+      "mountBarChart",
+      "mountLineChart",
+      "mountPieChart"
+    ],
+    "wrappers": [
+      "D3Bars"
+    ]
   },
   "runtime": {
     "format": "esm",
