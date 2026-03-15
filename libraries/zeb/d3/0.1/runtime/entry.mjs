@@ -536,11 +536,14 @@ export { d3 };
  *   return <div ref={ref} class="w-full h-[400px]" />;
  */
 export function useD3(callback, deps) {
-  const ref = useRef(null);
-  useEffect(() => {
+  const _useRef    = globalThis.useRef;
+  const _useEffect = globalThis.useEffect;
+  if (!_useRef || !_useEffect) return { current: null };
+  const ref = _useRef(null);
+  _useEffect(() => {
     if (!ref.current) return;
     return callback(ref.current, d3);
-  }, deps ?? []);
+  }, deps != null ? deps : []);
   return ref;
 }
 
