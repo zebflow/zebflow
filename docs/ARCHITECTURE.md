@@ -615,16 +615,14 @@ Layer 3 — Project Data
 
 ### 9a. pipeline_meta Sekejap Key Scheme
 
-Pipeline metadata rows in Layer 1 use a flat `file_rel_path`-derived slug as their node key.
-
 ```
 _id format:  "pipeline_meta/{owner}/{project}/{file_rel_path_slug}"
 
 file_rel_path_slug:
   "pipelines/api/foo.zf.json"  →  "pipelines-api-foo-zf-json"
-  All non-alphanumeric non(-/_) chars → "-"; runs of "-" collapsed.
+  All non-alphanumeric non(-/_) chars replaced with "-"; runs of "-" collapsed.
 
-Example _id:
+Example:
   "pipeline_meta/superadmin/default/pipelines-api-my-webhook-zf-json"
 
 Stored fields:
@@ -632,24 +630,12 @@ Stored fields:
   description, trigger_kind, hash, active_hash, activated_at,
   created_at, updated_at
 
-NOT stored (derived on every read):
-  virtual_path  ← always computed via virtual_path_from_file_rel_path()
+Derived on read (not stored):
+  virtual_path  ← virtual_path_from_file_rel_path(file_rel_path)
+
+put_pipeline_meta and delete_pipeline_meta use the same pipeline_slug() function —
+key on write == key on delete, always.
 ```
-
-`put_pipeline_meta` and `delete_pipeline_meta` both call the same `pipeline_slug()` function,
-so the key computed on write is always identical to the key used on delete.
-
-### 9b. Auto-Migration of Legacy Entries
-
-`list_pipeline_meta` (in `SekejapDataAdapter`) runs a silent key-scheme migration on every
-read. If a stored row's `_id` does not match what `pipeline_slug(owner, project, file_rel_path)`
-would produce (i.e. the row was written by old code using `virtual_path + name`), the adapter:
-
-1. Re-saves the row under the correct new key
-2. Removes the stale old key
-
-This is transparent — callers see only correctly-keyed rows. The migration is idempotent and
-runs once per stale entry. After migration, `delete_pipeline_meta` reliably hits the same key.
 
 ---
 
@@ -774,34 +760,10 @@ Node dialog shows wrong/missing fields        Fields come from Rust definition()
                                               the node's definition() return value.
                                               Restart server to pick up changes.
 
-pipeline_patch / activate targets wrong file  Pre-2025 code used name-only lookup:
-                                              .find(|m| m.name == name) — ambiguous.
-                                              Correct lookup: get_pipeline_meta_by_file_id.
-                                              All callers now use file_rel_path. See §21.
-
-PIPELINE_NOT_FOUND after refactor             Old REST/MCP calls passed virtual_path+name.
-                                              New API accepts only file_rel_path.
-                                              Check request body / MCP tool params. See §21e.
-
-Deleted pipeline reappears in registry        Two possible causes:
-                                              1. Stale sekejap entry with OLD key scheme.
-                                              list_pipeline_meta auto-migrates on next read
-                                              (re-keys old virtual_path+name key to the new
-                                              file_rel_path slug key). After migration,
-                                              deletion correctly hits the new key and sticks.
-                                              See §9a and §9b.
-                                              2. Physical file still on disk under
-                                              repo/pipelines/**/*.zf.json.
-                                              delete_pipeline removes the file; if file was
-                                              already absent (ghost entry), only the catalog
-                                              row is removed.
-
-automation/ or contents/ folders appear       Legacy seed pipelines from seed_default_pipelines
-  in fresh registry                           (deleted). Ghost metadata entries remain in
-                                              sekejap from old server runs. Delete them via
-                                              the UI delete button or DELETE API. They will
-                                              not return — seeding is permanently removed from
-                                              create_or_update_project.
+PLATFORM_PIPELINE_MISSING on pipeline load     Physical file at repo/pipelines/… is absent.
+                                              delete_pipeline removes both the file and the
+                                              catalog row. If file is missing but catalog row
+                                              exists, delete via API to clean the catalog row.
 ```
 
 ---
@@ -1655,8 +1617,7 @@ accepts `file_rel_path` only. `virtual_path` and `name` are **never accepted as 
 
 ### 21b. Derived Fields
 
-`name` and `virtual_path` are derived from `file_rel_path` on every read.
-They exist in `PipelineMeta` as display-only fields and are **never persisted** to the DB.
+`name` and `virtual_path` are computed from `file_rel_path` on every read and are not stored.
 
 ```rust
 // src/platform/services/project.rs
