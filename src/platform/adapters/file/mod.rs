@@ -82,12 +82,11 @@ impl FileAdapter for FilesystemFileAdapter {
         let repo_dir = root.join("repo");
         let repo_git_dir = repo_dir.join(".git");
         let repo_pipelines_dir = repo_dir.join("pipelines");
-        let repo_templates_dir = repo_dir.join("templates");
-        let repo_components_dir = repo_dir.join("components");
         let repo_docs_dir = repo_dir.join("docs");
         let zebflow_json_file = repo_dir.join("zebflow.json");
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
+        // Base dirs
         for dir in [
             &root,
             &data_dir,
@@ -97,12 +96,17 @@ impl FileAdapter for FilesystemFileAdapter {
             &files_dir,
             &repo_dir,
             &repo_pipelines_dir,
-            &repo_templates_dir,
-            &repo_components_dir,
             &repo_docs_dir,
             &agent_docs_dir,
         ] {
             fs::create_dir_all(dir)?;
+        }
+
+        // Only create assets/ and styles/ as default subdirs.
+        // All other folders (automation, web, components, lib, etc.) are created
+        // explicitly by the user — not auto-scaffolded on every request.
+        for subdir in ["assets", "styles"] {
+            fs::create_dir_all(repo_pipelines_dir.join(subdir))?;
         }
 
         Self::ensure_git_repo(&repo_dir, &repo_git_dir)?;
@@ -117,8 +121,6 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_dir,
             repo_git_dir,
             repo_pipelines_dir,
-            repo_templates_dir,
-            repo_components_dir,
             repo_docs_dir,
             zebflow_json_file,
             agent_docs_dir,

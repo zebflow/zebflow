@@ -10,6 +10,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::LayoutItem;
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
@@ -31,6 +32,23 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "mode".to_string(), label: "Mode".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "expression".to_string(), label: "Expression — route to one branch".to_string() },
+                    SelectOptionDef { value: "parallel".to_string(), label: "Parallel — route to all branches".to_string() },
+                ], ..Default::default() },
+                NodeFieldDef { name: "branches".to_string(), label: "Branches (one per line)".to_string(), field_type: NodeFieldType::Textarea, rows: Some(5), ..Default::default() },
+                NodeFieldDef { name: "expression".to_string(), label: "Expression".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("mode".to_string())] },
+            LayoutItem::Field("expression".to_string()),
+            LayoutItem::Field("branches".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

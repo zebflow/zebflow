@@ -1,5 +1,6 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { initProjectCredentialsBehavior } from "@/components/behavior/project-credentials";
+import HelpTooltip from "@/components/ui/help-tooltip";
 
 export const page = {
   head: {
@@ -95,12 +96,17 @@ export default function Page(input) {
                     {/* Identity row: ID + Kind / Title full width */}
                     <div className="credential-identity-grid">
                       <label className="pipeline-editor-field">
-                        <span>Credential ID</span>
+                        <span className="credential-field-label-row">
+                          <span>Credential ID</span>
+                          <HelpTooltip text="Stable slug used by pipeline nodes." />
+                        </span>
                         <input name="credential_id" type="text" placeholder="pg-main" required data-credential-id="true" />
-                        <small className="pipeline-editor-field-help">Stable slug used by pipeline nodes.</small>
                       </label>
                       <label className="pipeline-editor-field">
-                        <span>Kind</span>
+                        <span className="credential-field-label-row">
+                          <span>Kind</span>
+                          <HelpTooltip text="Determines secret fields below." />
+                        </span>
                         <select name="kind" data-credential-kind="true" required>
                           <option value="postgres">postgres</option>
                           <option value="mysql">mysql</option>
@@ -111,12 +117,13 @@ export default function Page(input) {
                           <option value="jwt_signing_key">jwt_signing_key</option>
                           <option value="custom">custom</option>
                         </select>
-                        <small className="pipeline-editor-field-help">Determines secret fields below.</small>
                       </label>
                       <label className="pipeline-editor-field credential-field-full">
-                        <span>Title</span>
+                        <span className="credential-field-label-row">
+                          <span>Title</span>
+                          <HelpTooltip text="Human-readable label shown in admin views." />
+                        </span>
                         <input name="title" type="text" placeholder="Main Postgres" required />
-                        <small className="pipeline-editor-field-help">Human-readable label shown in admin views.</small>
                       </label>
                     </div>
 

@@ -79,7 +79,7 @@ run scrape-hn --trigger manual \
     wait-for .itemlist \
     capture hn_page \
   | script --lang js -- "return parseHN(input.hn_page);" \
-  | sjtable.query --table hn_stories --op upsert
+  | sekejap.query --table hn_stories --op upsert
 ```
 
 External context spins up a headless Chromium instance, executes actions, and returns
@@ -97,7 +97,7 @@ register daily-price-check --path /jobs \
     wait-for .product-list \
     capture prices \
   | script --lang js -- "return extractPrices(input.prices);" \
-  | sjtable.query --table daily_prices --op upsert
+  | sekejap.query --table daily_prices --op upsert
 ```
 
 ---
@@ -115,12 +115,12 @@ register scrape-blog --path /jobs \
     wait-for article \
     capture articles \
   | script --lang js -- "return { rows: parseArticles(input.articles) };" \
-  | sjtable.query --table cached_articles --op upsert
+  | sekejap.query --table cached_articles --op upsert
 
 # Page: serve stored articles reactively
 register articles-page --path /pages \
   | trigger.webhook --path /articles --method GET \
-  | sjtable.query --table cached_articles --op query \
+  | sekejap.query --table cached_articles --op query \
   | web.render --template articles-home --route /articles
 ```
 

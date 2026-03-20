@@ -1,5 +1,6 @@
 //! Platform domain models and configuration.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -154,7 +155,7 @@ pub struct ProjectDbConnection {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sjtable`, `postgresql`, ...).
+    /// Database kind (`sekejap`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -175,7 +176,7 @@ pub struct ProjectDbConnectionListItem {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sjtable`, `postgresql`, ...).
+    /// Database kind (`sekejap`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -471,6 +472,23 @@ pub struct PipelineFolderItem {
     pub name: String,
     /// Link to drill-down into this folder.
     pub path: String,
+    /// True for reserved folders (assets, styles) — pinned at the bottom of the registry list.
+    pub is_special: bool,
+}
+
+/// One template/script/style file shown in the pipeline registry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryFileItem {
+    /// File name including extension (e.g. `home.tsx`).
+    pub name: String,
+    /// Path relative to `repo/` root (e.g. `pipelines/pages/home.tsx`).
+    pub rel_path: String,
+    /// File kind: `"template"` (.tsx), `"script"` (.ts), `"style"` (.css).
+    pub kind: String,
+    /// URL to open this file in the template editor.
+    pub edit_href: String,
+    /// Git status code if dirty.
+    pub git_status: Option<String>,
 }
 
 /// One pipeline item shown at one registry level.
@@ -501,20 +519,20 @@ pub struct PipelineRegistryListing {
     pub current_path: String,
     /// Breadcrumbs from root to current path.
     pub breadcrumbs: Vec<PipelineBreadcrumb>,
-    /// Immediate child folders.
+    /// Immediate child folders (sorted: normal first, special last).
     pub folders: Vec<PipelineFolderItem>,
     /// Pipeline entries located exactly at `current_path`.
     pub pipelines: Vec<PipelineRegistryItem>,
+    /// Template/script/style files physically at `current_path`.
+    pub files: Vec<RegistryFileItem>,
 }
 
 /// API payload used to create/update one pipeline definition.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpsertPipelineDefinitionRequest {
-    /// Logical virtual folder path (`/` or `/a/b`).
-    #[serde(default)]
-    pub virtual_path: String,
-    /// Pipeline id/name.
-    pub name: String,
+    /// Stable file-relative path under `repo/` (e.g. `"pipelines/api/my-hook.zf.json"`).
+    /// This is the single canonical identifier — name and virtual_path are derived from it.
+    pub file_rel_path: String,
     /// Optional display title.
     #[serde(default)]
     pub title: String,
@@ -545,6 +563,12 @@ pub struct GitCommitRequest {
     /// Whether to push after committing.
     #[serde(default)]
     pub push: bool,
+    /// Credential ID to use for authenticated push (optional).
+    pub credential_id: Option<String>,
+    /// Remote repository URL for authenticated push (optional).
+    pub repo_url: Option<String>,
+    /// Branch to push to (optional, defaults to current branch).
+    pub branch: Option<String>,
 }
 
 /// Request body for `PUT /api/projects/{owner}/{project}/settings/{section}`.
@@ -559,14 +583,11 @@ pub struct UpdateSettingsSectionRequest {
     pub data: serde_json::Value,
 }
 
-/// API payload used to target one pipeline by path and name.
+/// API payload used to target one pipeline by its stable file path.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PipelineLocateRequest {
-    /// Logical virtual folder path (`/` or `/a/b`).
-    #[serde(default)]
-    pub virtual_path: String,
-    /// Pipeline id/name.
-    pub name: String,
+    /// Stable file-relative path under `repo/` (e.g. `"pipelines/api/my-hook.zf.json"`).
+    pub file_rel_path: String,
 }
 
 /// Trigger type used for explicit pipeline execution calls.
@@ -581,11 +602,8 @@ pub enum PipelineExecuteTrigger {
 /// API payload used to execute one active pipeline with explicit trigger context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecutePipelineRequest {
-    /// Logical virtual folder path (`/` or `/a/b`).
-    #[serde(default)]
-    pub virtual_path: String,
-    /// Pipeline id/name.
-    pub name: String,
+    /// Stable file-relative path under `repo/` (e.g. `"pipelines/api/my-hook.zf.json"`).
+    pub file_rel_path: String,
     /// Trigger mode to validate against active trigger nodes.
     pub trigger: PipelineExecuteTrigger,
     /// Optional webhook path matcher.
@@ -811,7 +829,7 @@ pub struct UpsertProjectDbConnectionRequest {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sjtable`, `postgresql`, ...).
+    /// Database kind (`sekejap`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -854,10 +872,15 @@ pub struct TestProjectDbConnectionRequest {
 /// Describe payload for one DB connection runtime endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DescribeProjectDbConnectionRequest {
-    /// Describe scope (`tree`, `schemas`, `tables`, `functions`).
+    /// Describe scope (`tree`, `schemas`, `tables`, `functions`, `columns`).
     pub scope: Option<String>,
     /// Optional schema filter.
     pub schema: Option<String>,
+    /// Filter to a specific table for column-level detail.
+    /// Format: "schema.table" (e.g. "academic.staff") or just "table" for public schema.
+    /// When set, scope is treated as "columns" automatically.
+    #[serde(default)]
+    pub table: Option<String>,
     /// Whether system schemas should be included when supported.
     pub include_system: Option<bool>,
 }
@@ -886,7 +909,7 @@ pub struct ProjectDbConnectionDescribeResult {
     pub connection_id: String,
     /// Stable route slug.
     pub connection_slug: String,
-    /// Database kind (`sjtable`, `postgresql`, ...).
+    /// Database kind (`sekejap`, `postgresql`, ...).
     pub database_kind: String,
     /// Effective scope.
     pub scope: String,
@@ -928,7 +951,7 @@ pub struct ProjectDbConnectionQueryResult {
     pub connection_id: String,
     /// Stable route slug.
     pub connection_slug: String,
-    /// Database kind (`sjtable`, `postgresql`, ...).
+    /// Database kind (`sekejap`, `postgresql`, ...).
     pub database_kind: String,
     /// Returned columns.
     #[serde(default)]
@@ -1033,12 +1056,9 @@ pub struct ProjectFileLayout {
     pub repo_dir: PathBuf,
     /// `.../repo/.git`
     pub repo_git_dir: PathBuf,
-    /// `.../repo/pipelines`
+    /// `.../repo/pipelines` — unified source root: *.zf.json pipelines + *.tsx templates + *.ts scripts.
+    /// Also the @/ root for the RWE compiler.
     pub repo_pipelines_dir: PathBuf,
-    /// `.../repo/templates`
-    pub repo_templates_dir: PathBuf,
-    /// `.../repo/components`
-    pub repo_components_dir: PathBuf,
     /// `.../repo/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
     pub repo_docs_dir: PathBuf,
     /// `.../repo/zebflow.json` (Layer 2 non-sensitive project config, git-synced).
@@ -1099,6 +1119,49 @@ pub struct ZebflowJsonRwe {
     /// Enable strict compile-time checks. Default: true.
     #[serde(default = "default_rwe_strict_mode")]
     pub strict_mode: bool,
+    /// Per-project enabled `zeb/*` library declarations.
+    ///
+    /// Keyed by library name (e.g. `"zeb/threejs"`). An entry here locks
+    /// the version for reproducibility and surfaces the library in editor
+    /// tooling. All libraries are served unconditionally at
+    /// `/assets/libraries/zeb/…` regardless of this map.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub libraries: ZebflowJsonRweLibraries,
+}
+
+/// Enabled library map stored under `rwe.libraries` in `zebflow.json`.
+pub type ZebflowJsonRweLibraries = HashMap<String, ZebflowJsonRweLibraryEntry>;
+
+/// One enabled library entry stored in `zebflow.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZebflowJsonRweLibraryEntry {
+    /// Pinned packed version string (e.g. `"bridge-0.1"`).
+    pub version: String,
+    /// Source kind: `"offline"` (embedded binary) or `"online"` (CDN fetch).
+    pub source: String,
+}
+
+/// Lock file model — stored at `repo/zeb.lock` (git-tracked).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebLock {
+    /// Schema version; current is 1.
+    pub version: u32,
+    /// Locked library entries keyed by library name.
+    #[serde(default)]
+    pub libraries: HashMap<String, ZebLockEntry>,
+}
+
+/// One locked library entry in `zeb.lock`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZebLockEntry {
+    /// Pinned packed version string (e.g. `"bridge-0.1"`).
+    pub version: String,
+    /// Source kind: `"offline"` or `"online"`.
+    pub source: String,
+    /// Relative runtime entry path (e.g. `"runtime/threejs.bundle.mjs"`).
+    pub entry: String,
+    /// SHA-256 integrity hash of the bundle file; `None` for embedded bridge bundles.
+    pub integrity: Option<String>,
 }
 
 pub fn default_rwe_strict_mode() -> bool {
@@ -1126,7 +1189,7 @@ pub struct ZebflowJsonLogging {
 
 impl ZebflowJsonLogging {
     pub fn effective_max_invocations(&self) -> usize {
-        self.max_invocations.unwrap_or(10).max(1) as usize
+        self.max_invocations.unwrap_or(20).max(1) as usize
     }
 }
 
@@ -1144,6 +1207,9 @@ pub struct PipelineInvocationEntry {
     /// Short error message, present only when `status == "error"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Per-node execution trace for this invocation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<crate::pipeline::model::NodeTraceEntry>,
 }
 
 /// Project identity section of zebflow.json.
@@ -1328,7 +1394,6 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "save_template" => Some(ProjectCapability::TemplatesWrite),
         "create_template" => Some(ProjectCapability::TemplatesCreate),
         "delete_template" => Some(ProjectCapability::TemplatesDelete),
-        "list_credentials" => Some(ProjectCapability::CredentialsRead),
         "get_credential" => Some(ProjectCapability::CredentialsRead),
         "upsert_credential" => Some(ProjectCapability::CredentialsWrite),
         "list_db_connections" => Some(ProjectCapability::TablesRead),
@@ -1350,6 +1415,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "create_project_doc" => Some(ProjectCapability::FilesWrite),
         "list_skills" => Some(ProjectCapability::ProjectRead),
         "read_skill" => Some(ProjectCapability::ProjectRead),
+        "list_credentials" => Some(ProjectCapability::CredentialsRead),
         // execute_pipeline_dsl temporarily disabled; keeping mapping for future re-enable
         "execute_pipeline_dsl" => Some(ProjectCapability::PipelinesExecute),
         "describe_pipeline" => Some(ProjectCapability::PipelinesRead),
@@ -1362,6 +1428,38 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "list_agent_docs" => Some(ProjectCapability::SettingsRead),
         "read_agent_doc" => Some(ProjectCapability::SettingsRead),
         "write_agent_doc" => Some(ProjectCapability::SettingsWrite),
+        // New domain-prefixed tool names
+        "pipeline_list" => Some(ProjectCapability::PipelinesRead),
+        "pipeline_get" => Some(ProjectCapability::PipelinesRead),
+        "pipeline_register" => Some(ProjectCapability::PipelinesWrite),
+        "pipeline_describe" => Some(ProjectCapability::PipelinesRead),
+        "pipeline_patch" => Some(ProjectCapability::PipelinesWrite),
+        "pipeline_activate" => Some(ProjectCapability::PipelinesWrite),
+        "pipeline_deactivate" => Some(ProjectCapability::PipelinesWrite),
+        "pipeline_execute" => Some(ProjectCapability::PipelinesExecute),
+        "pipeline_run" => Some(ProjectCapability::PipelinesExecute),
+        "template_list" => Some(ProjectCapability::TemplatesRead),
+        "template_get" => Some(ProjectCapability::TemplatesRead),
+        "template_create" => Some(ProjectCapability::TemplatesCreate),
+        "template_write" => Some(ProjectCapability::TemplatesWrite),
+        "connection_list" => Some(ProjectCapability::TablesRead),
+        "connection_describe" => Some(ProjectCapability::TablesRead),
+        "credential_list" => Some(ProjectCapability::CredentialsRead),
+        "docs_project_list" => Some(ProjectCapability::ProjectRead),
+        "docs_project_read" => Some(ProjectCapability::ProjectRead),
+        "docs_project_write" => Some(ProjectCapability::TemplatesWrite),
+        "docs_agent_list" => Some(ProjectCapability::SettingsRead),
+        "docs_agent_read" => Some(ProjectCapability::SettingsRead),
+        "docs_agent_write" => Some(ProjectCapability::SettingsWrite),
+        "skill_list" => Some(ProjectCapability::ProjectRead),
+        "skill_read" => Some(ProjectCapability::ProjectRead),
+        // Help and orientation tools
+        "start_here" => Some(ProjectCapability::ProjectRead),
+        "help_pipeline" => Some(ProjectCapability::ProjectRead),
+        "help_rwe" => Some(ProjectCapability::ProjectRead),
+        "help_examples" => Some(ProjectCapability::ProjectRead),
+        "help_nodes" => Some(ProjectCapability::ProjectRead),
+        "help_search" => Some(ProjectCapability::ProjectRead),
         _ => None,
     }
 }

@@ -38,3 +38,5 @@ integrations/website/index.html
 .codex-local/
 .disposed
 output
+# local improvement notes
+test-and-improve-object.md

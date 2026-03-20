@@ -3,8 +3,8 @@ export default function DropdownMenuItem(props) {
   return (
     <div
       className={cx(
-        "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-slate-100 hover:text-slate-900 focus:bg-slate-100 focus:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-50",
-        isDestructive ? "text-red-500 hover:text-red-500 dark:text-red-500" : "",
+        "relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-[var(--zf-ui-bg-muted)] hover:text-[var(--zf-ui-text)]",
+        isDestructive ? "text-red-500 hover:text-red-500" : "",
         props?.className
       )}
       onClick={props?.onClick}

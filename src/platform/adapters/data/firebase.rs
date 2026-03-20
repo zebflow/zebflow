@@ -153,8 +153,7 @@ impl DataAdapter for FirebaseDataAdapter {
         &self,
         _owner: &str,
         _project: &str,
-        _virtual_path: &str,
-        _name: &str,
+        _file_rel_path: &str,
     ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",

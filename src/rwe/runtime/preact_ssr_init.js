@@ -341,6 +341,268 @@
     return out.join(" ");
   };
 
+  // ---------------------------------------------------------------------------
+  // zeb/use SSR stubs — safe server-side fallbacks (bundle only runs client-side)
+  // ---------------------------------------------------------------------------
+  globalThis.useDebounce = function(value) { return value; };
+  globalThis.useThrottle = function(value) { return value; };
+  globalThis.useLocalStorage = function(key, init) { return [init, function() {}]; };
+  globalThis.useClipboard = function() { return { copied: false, copy: function() {} }; };
+  globalThis.useTemporaryState = function(init) { return [init, function() {}]; };
+  globalThis.useWindowEvent = function() {};
+  globalThis.useLazyModule = function() { return [null, true, null]; };
+  globalThis.useSearchParams = function() { return [new URLSearchParams(), function() {}]; };
+  globalThis.useSplitPane = function() { return { current: null }; };
+  globalThis.useClickAway = function() { return { current: null }; };
+  globalThis.useInterval = function() {};
+  globalThis.useGeolocation = function() { return { loading: true, error: null, coords: null }; };
+  globalThis.useTree = function() {
+    return { expanded: new Set(), isExpanded: function() { return false; }, toggle: function() {}, expand: function() {}, collapse: function() {}, expandAll: function() {}, collapseAll: function() {} };
+  };
+
+  // ---------------------------------------------------------------------------
+  // zeb/icons SSR stubs — icon components render null during SSR
+  // ---------------------------------------------------------------------------
+  (function() {
+    var __nullIcon = function() { return null; };
+    var __icons = [
+      'ChevronLeft','ChevronRight','ChevronDown','ChevronUp',
+      'ChevronsLeft','ChevronsRight','ChevronsUpDown',
+      'ArrowLeft','ArrowRight','ArrowUp','ArrowDown',
+      'Plus','Minus','X','Check','Search','Filter','RefreshCw','Pencil',
+      'Trash2','Copy','Clipboard','Save','Download','Upload','ExternalLink',
+      'Undo2','Redo2',
+      'Eye','EyeOff','Lock','Unlock','Settings','Menu',
+      'MoreHorizontal','MoreVertical','Maximize2','Minimize2',
+      'PanelLeft','PanelRight','SidebarOpen','SidebarClose',
+      'AlertCircle','AlertTriangle','Info','CheckCircle','CheckCircle2','XCircle','Loader2',
+      'Database','TableIcon','Columns2','BarChart2','PieChart','TrendingUp','TrendingDown',
+      'File','FileText','Folder','FolderOpen','Code2','Terminal',
+      'User','Users','KeyRound','LogIn','LogOut',
+      'Globe','Package','Zap','Star','Layers','LayoutGrid','ListIcon',
+      'Cpu','Cloud','Wifi','Bell','BellOff','Tag','Bookmark','Hash','Slash','Sparkles'
+    ];
+    for (var i = 0; i < __icons.length; i++) {
+      globalThis[__icons[i]] = __nullIcon;
+    }
+  })();
+
+  // ---------------------------------------------------------------------------
+  // zeb/prosemirror SSR stubs — ProseEditor renders a placeholder div
+  // ---------------------------------------------------------------------------
+  globalThis.mountProseEditor = function() { return Promise.resolve(null); };
+  globalThis.prosemirror = { mountProseEditor: globalThis.mountProseEditor };
+  globalThis.ProseEditor = function ProseEditor(props) {
+    /* SSR stub — renders the sentinel div with the full data-config so the
+     * client-side MutationObserver and bundle can pick up the correct config
+     * on hydration.  Mirrors the ProseEditor export in prosemirror.bundle.mjs. */
+    var config = JSON.stringify({
+      content:     props.content,
+      stateKey:    props.stateKey,
+      statsKey:    props.statsKey,
+      editable:    props.editable !== false,
+      autofocus:   props.autofocus || false,
+      placeholder: props.placeholder,
+      toolbar:     props.toolbar !== undefined ? props.toolbar : 'basic',
+      toolbarMode: props.toolbarMode || 'inline',
+    });
+    return globalThis.h('div', {
+      'data-zeb-lib':     'prosemirror',
+      'data-zeb-wrapper': 'ProseEditor',
+      'data-config':      config,
+      id:                 props.id,
+      class:              props.className || 'w-full min-h-[200px]',
+    });
+  };
+
+  // ---------------------------------------------------------------------------
+  // zeb/icons devicons helpers — no-ops during SSR
+  // ---------------------------------------------------------------------------
+  globalThis.ensureDevicons = function() {};
+  globalThis.dbKindIconClass = function() { return ""; };
+  globalThis.dbObjectIconClass = function() { return ""; };
+
+  // ---------------------------------------------------------------------------
+  // zeb/threejs SSR stubs — Three.js is WebGL/browser-only.
+  // Canvas/ThreeCanvas/ThreeScene render placeholder divs.
+  // Three.js classes are empty constructors — only ever called inside useEffect,
+  // which does not run during SSR renderToString.
+  // ---------------------------------------------------------------------------
+  globalThis.Canvas = function(props) {
+    return h('div', { className: (props && props.className) || 'w-full h-full' });
+  };
+  globalThis.ThreeCanvas = globalThis.Canvas;
+  globalThis.ThreeContext = createContext(null);
+  globalThis.ThreeScene = function(props) {
+    return h('div', {
+      'data-zeb-lib': 'threejs',
+      'data-zeb-wrapper': 'ThreeScene',
+      'data-config': JSON.stringify((props && props.config) || {}),
+      id: props && props.id,
+      className: (props && props.className) || 'w-full h-full',
+    });
+  };
+  globalThis.useThree = function() { return {}; };
+  globalThis.useFrame = function() {};
+  globalThis.OrbitControls = function() { return null; };
+  globalThis.createSceneRuntime = function() { return {}; };
+  globalThis.mountThreeScene = function() {};
+  globalThis.ensureThree = function() { return {}; };
+  globalThis.MathUtils = {};
+  globalThis.REVISION = '183';
+  (function() {
+    var _cls = function() {};
+    var _names = [
+      'Scene','PerspectiveCamera','OrthographicCamera','WebGLRenderer',
+      'Mesh','Group','Object3D','InstancedMesh','Points','Line',
+      'BoxGeometry','SphereGeometry','PlaneGeometry','CylinderGeometry',
+      'TorusGeometry','TorusKnotGeometry','ConeGeometry','RingGeometry','CircleGeometry','BufferGeometry',
+      'MeshStandardMaterial','MeshBasicMaterial','MeshPhongMaterial','MeshLambertMaterial',
+      'MeshNormalMaterial','MeshToonMaterial','MeshPhysicalMaterial','ShaderMaterial',
+      'DirectionalLight','PointLight','SpotLight','AmbientLight','HemisphereLight',
+      'Vector2','Vector3','Vector4','Quaternion','Euler','Matrix4','Color',
+      'Raycaster','Clock','AnimationMixer','TextureLoader','CubeTextureLoader','Texture'
+    ];
+    for (var i = 0; i < _names.length; i++) { globalThis[_names[i]] = _cls; }
+  })();
+
+  // ---------------------------------------------------------------------------
+  // zeb/threejs-vrm SSR stubs — VRM viewer is WebGL/browser-only.
+  // ---------------------------------------------------------------------------
+  globalThis.VrmViewer = function(props) {
+    var cfg = JSON.stringify({
+      modelUrl: (props && (props.modelUrl || props.model_url)) || '',
+      height: (props && props.height) || '400px',
+      background: (props && props.background) || 'transparent',
+      autoRotate: !!(props && props.autoRotate),
+      cameraZ: (props && props.cameraZ) || 1.5,
+    });
+    return h('div', {
+      'data-zeb-lib': 'threejs-vrm',
+      'data-zeb-wrapper': 'VrmViewer',
+      'data-config': cfg,
+      id: props && props.id,
+      className: (props && props.className) || 'w-full h-full',
+      style: { width: '100%', height: (props && props.height) || '400px' },
+    });
+  };
+  globalThis.mountVrmViewer = function() {};
+
+  // ---------------------------------------------------------------------------
+  // zeb/deckgl SSR stubs — Deck.gl is WebGL/browser-only.
+  // ---------------------------------------------------------------------------
+  globalThis.DeckMap = function(props) {
+    var cfg = JSON.stringify({
+      initialViewState: props && props.initialViewState,
+      controller: !props || props.controller !== false,
+      layers: (props && props.layers) || [],
+      stateKey: (props && props.stateKey) || null,
+      layerKey: (props && props.layerKey) || null,
+      background: (props && props.background) || 'transparent',
+    });
+    return h('div', {
+      'data-zeb-lib': 'deckgl',
+      'data-zeb-wrapper': 'DeckMap',
+      'data-config': cfg,
+      id: props && props.id,
+      className: props && props.className,
+      style: { width: '100%', height: (props && props.height) || '400px' },
+    });
+  };
+  globalThis.deckgl = {};
+  globalThis.buildLayer = function() { return null; };
+  globalThis.buildLayers = function() { return []; };
+  globalThis.mountDeckMap = function() {};
+  globalThis.ensureDeck = function() {};
+  globalThis.createDeckMapRuntime = function() { return {}; };
+
+  // ---------------------------------------------------------------------------
+  // zeb/d3 SSR stubs — D3 chart components render placeholder divs.
+  // ---------------------------------------------------------------------------
+  globalThis.d3 = {};
+  globalThis.useD3 = function(callback, deps) {
+    var ref = useRef(null);
+    useEffect(function() {
+      if (!ref.current) return;
+      return callback(ref.current, {});
+    }, deps || []);
+    return ref;
+  };
+  globalThis.D3Bars = function(props) {
+    var cfg = JSON.stringify({
+      type: (props && props.type) || 'bar',
+      data: (props && props.data) || [],
+      xKey: props && props.xKey,
+      yKey: props && props.yKey,
+      stateKey: props && props.stateKey,
+      height: (props && props.height) || '260px',
+      colorScheme: props && props.colorScheme,
+      area: !!(props && props.area),
+    });
+    return h('div', {
+      'data-zeb-lib': 'd3',
+      'data-zeb-wrapper': 'D3Bars',
+      'data-config': cfg,
+      id: props && props.id,
+      className: props && props.className,
+      style: { width: '100%', height: (props && props.height) || '260px' },
+    });
+  };
+
+  // ---------------------------------------------------------------------------
+  // zeb/graphui SSR stubs — graph canvas is browser-only.
+  // ---------------------------------------------------------------------------
+  globalThis.GraphCanvas = function(props) {
+    return h('div', {
+      'data-zeb-lib': 'graphui',
+      'data-zeb-wrapper': 'GraphCanvas',
+      id: props && props.id,
+      className: (props && props.className) || 'w-full h-full',
+    });
+  };
+  globalThis.PipelineGraph = function PipelineGraph(props) {
+    return h('div', {
+      'data-zeb-lib': 'graphui',
+      'data-zeb-wrapper': 'PipelineGraph',
+      id: props && props.id,
+      className: (props && props.className) || 'w-full h-full',
+    });
+  };
+
+  // ---------------------------------------------------------------------------
+  // zeb/codemirror SSR stubs — code editor is browser-only.
+  // ---------------------------------------------------------------------------
+  globalThis.CodeEditor = function(props) {
+    return h('div', {
+      'data-zeb-lib': 'codemirror',
+      'data-zeb-wrapper': 'CodeEditor',
+      id: props && props.id,
+      className: (props && props.className) || 'w-full h-full',
+    });
+  };
+
+  // ---------------------------------------------------------------------------
+  // zeb/markdown SSR stubs — Markdown component renders an encoded placeholder.
+  // ---------------------------------------------------------------------------
+  globalThis.Markdown = function(props) {
+    var text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';
+    var encoded = typeof btoa !== 'undefined' ? btoa(unescape(encodeURIComponent(text))) : text;
+    return h('div', {
+      'data-zeb-lib': 'markdown',
+      'data-encoded': encoded,
+      className: props && props.className,
+    });
+  };
+
+  // ---------------------------------------------------------------------------
+  // Page-state bridge — SSR no-ops.
+  // The real implementations are installed by build_client_module in render.rs
+  // inside __RweRoot after hydration. These stubs prevent ReferenceError when
+  // zeb/* library bundles (e.g. zeb/prosemirror) call the bridge during SSR.
+  // ---------------------------------------------------------------------------
+  globalThis.__rweSetPageState = function() {};
+  globalThis.__rwePageState = {};
+
   // Internal helpers called by Rust after loading each page module.
   globalThis.__rweRenderToString = renderToString;
   globalThis.__rweWrapWithPageState = wrapWithPageState;

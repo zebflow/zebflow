@@ -45,6 +45,20 @@ impl DbDriver for PostgresqlDbDriver {
             "functions" => {
                 describe_functions(&pool, schema_filter.as_deref(), include_system).await?
             }
+            "columns" => {
+                if let Some(table_spec) = req.table.as_deref() {
+                    // Parse "schema.table" or just "table" (defaults to "public").
+                    let (tbl_schema, tbl_name) = if let Some(dot) = table_spec.find('.') {
+                        (&table_spec[..dot], &table_spec[dot + 1..])
+                    } else {
+                        ("public", table_spec)
+                    };
+                    describe_columns_for_table(&pool, tbl_schema, tbl_name).await?
+                } else {
+                    // No table specified — fall back to full table describe.
+                    describe_tables(&pool, schema_filter.as_deref(), include_system).await?
+                }
+            }
             _ => describe_tree(&pool, schema_filter.as_deref(), include_system).await?,
         };
 
@@ -397,16 +411,97 @@ async fn describe_functions(
     Ok(out)
 }
 
+/// Returns column detail for a single table as DbObjectNode items.
+/// Each item represents one column with metadata (type, nullable, pk, default, fk).
+async fn describe_columns_for_table(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<DbObjectNode>, PlatformError> {
+    let col_rows = sqlx::query(
+        "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, \
+                (pk.column_name IS NOT NULL) AS is_pk, \
+                ccu.table_schema AS ref_schema, ccu.table_name AS ref_table, \
+                ccu.column_name AS ref_column \
+         FROM information_schema.columns c \
+         LEFT JOIN ( \
+             SELECT kcu.column_name \
+             FROM information_schema.table_constraints tc \
+             JOIN information_schema.key_column_usage kcu \
+                 ON kcu.constraint_name = tc.constraint_name \
+                 AND kcu.table_schema = tc.table_schema \
+                 AND kcu.table_name = tc.table_name \
+             WHERE tc.constraint_type = 'PRIMARY KEY' \
+               AND tc.table_schema = $1 AND tc.table_name = $2 \
+         ) pk ON pk.column_name = c.column_name \
+         LEFT JOIN information_schema.referential_constraints rc \
+             ON rc.constraint_name IN ( \
+                 SELECT kcu2.constraint_name \
+                 FROM information_schema.key_column_usage kcu2 \
+                 WHERE kcu2.table_schema = $1 AND kcu2.table_name = $2 \
+                   AND kcu2.column_name = c.column_name \
+             ) \
+         LEFT JOIN information_schema.constraint_column_usage ccu \
+             ON ccu.constraint_name = rc.unique_constraint_name \
+         WHERE c.table_schema = $1 AND c.table_name = $2 \
+         ORDER BY c.ordinal_position",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| PlatformError::new("PLATFORM_DB_DESCRIBE_FAILED", err.to_string()))?;
+
+    let mut out = Vec::new();
+    for row in col_rows {
+        let col_name: String = row.get("column_name");
+        let data_type: String = row.get("data_type");
+        let is_nullable: String = row.get("is_nullable");
+        let default: Option<String> = row.try_get("column_default").ok().flatten();
+        let is_pk: bool = row.try_get("is_pk").unwrap_or(false);
+        let ref_schema: Option<String> = row.try_get("ref_schema").ok().flatten();
+        let ref_table: Option<String> = row.try_get("ref_table").ok().flatten();
+        let ref_col: Option<String> = row.try_get("ref_column").ok().flatten();
+
+        let fk = if ref_schema.is_some() && ref_table.is_some() {
+            Some(json!({ "schema": ref_schema, "table": ref_table, "column": ref_col }))
+        } else {
+            None
+        };
+
+        let mut meta = json!({
+            "type": data_type,
+            "nullable": is_nullable == "YES",
+            "pk": is_pk,
+        });
+        if let Some(d) = default {
+            meta["default"] = json!(d);
+        }
+        if let Some(fk_val) = fk {
+            meta["fk"] = fk_val;
+        }
+
+        out.push(DbObjectNode {
+            kind: "column".to_string(),
+            name: col_name,
+            schema: Some(schema.to_string()),
+            children: Vec::new(),
+            meta,
+        });
+    }
+    Ok(out)
+}
+
 fn normalize_scope(raw: Option<&str>) -> Result<String, PlatformError> {
     let normalized = raw
         .map(slug_segment)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "tree".to_string());
     match normalized.as_str() {
-        "tree" | "schemas" | "tables" | "functions" => Ok(normalized),
+        "tree" | "schemas" | "tables" | "functions" | "columns" => Ok(normalized),
         _ => Err(PlatformError::new(
             "PLATFORM_DB_DESCRIBE_SCOPE_INVALID",
-            "scope must be one of: tree, schemas, tables, functions",
+            "scope must be one of: tree, schemas, tables, functions, columns",
         )),
     }
 }

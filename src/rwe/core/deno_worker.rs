@@ -34,6 +34,7 @@ use super::error::EngineError;
 // Embedded JS — installs preact SSR globals once at startup.
 // ---------------------------------------------------------------------------
 const PREACT_SSR_INIT: &str = include_str!("../runtime/preact_ssr_init.js");
+const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 
 // ---------------------------------------------------------------------------
 // Thread-local result slot — JS op writes here; Rust reads after render.
@@ -113,6 +114,11 @@ fn run_js_thread(mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>) {
         js_rt
             .execute_script("<preact_ssr_init>", FastString::from_static(PREACT_SSR_INIT))
             .expect("rwe-js-runtime: preact_ssr_init failed");
+
+        // Load the Tool built-in (time, arr, stat, geo) once.
+        js_rt
+            .execute_script("<tool_init>", FastString::from_static(TOOL_INIT))
+            .expect("rwe-js-runtime: tool_init failed");
 
         // Process requests sequentially (one SSR at a time).
         while let Some(req) = rx.recv().await {
@@ -482,258 +488,26 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
 // ---------------------------------------------------------------------------
 
 /// Strip `import { … } from "rwe"`, `import { … } from "rwe-*"`, and
-/// `import { … } from "zeb/*"` lines for SSR, then prepend no-op stubs for
-/// `zeb/*` symbols so components render a safe placeholder without errors.
+/// `import { … } from "zeb/*"` lines before SSR.
 ///
-/// zeb/* libraries (e.g. zeb/threejs) are WebGL/browser-only. On the server:
-///   - Canvas/ThreeCanvas → empty div placeholder
-///   - useThree/useFrame/OrbitControls → no-ops
-///   - Three.js classes (BoxGeometry, Mesh, etc.) → empty stubs (never called in SSR;
-///     they live inside useEffect which does not run during renderToString)
+/// SSR stubs for all `zeb/*` library symbols are installed once at JsRuntime
+/// startup via `preact_ssr_init.js` as `globalThis.*` assignments — no
+/// per-render injection needed here.
 fn strip_rwe_imports(js: &str) -> String {
-    // Collect which zeb/* libraries are imported so we emit the right stubs.
-    let mut zeb_libs: Vec<String> = Vec::new();
-    let stripped = js
-        .lines()
+    js.lines()
         .filter(|line| {
             let t = line.trim();
             if !t.starts_with("import ") {
                 return true;
             }
-            if t.contains("from \"zeb/") || t.contains("from 'zeb/") {
-                // Extract library name for stub generation.
-                for quote in &['"', '\''] {
-                    let marker = format!("from {quote}");
-                    if let Some(pos) = t.rfind(&marker) {
-                        let after = &t[pos + marker.len()..];
-                        let end = after.find(*quote).unwrap_or(after.len());
-                        let lib = after[..end].to_string();
-                        if !zeb_libs.contains(&lib) {
-                            zeb_libs.push(lib);
-                        }
-                    }
-                }
-                return false; // strip the line
-            }
-            !(t.contains("from \"rwe\"")
-                || t.contains("from 'rwe'")
-                || t.contains("from \"rwe-")
-                || t.contains("from 'rwe-"))
+            !(t.contains("from \"zeb\"")
+                || t.contains("from 'zeb'")
+                || t.contains("from \"zeb/")
+                || t.contains("from 'zeb/"))
         })
         .collect::<Vec<_>>()
-        .join("\n");
-
-    if zeb_libs.is_empty() {
-        return stripped;
-    }
-
-    // Inject SSR stubs for all zeb/* libraries used by this template.
-    // Canvas renders an empty placeholder div. Hooks and controls are no-ops.
-    // Three.js classes are empty constructors (they only run inside useEffect,
-    // which is not called during server-side renderToString).
-    let stubs = ZEB_SSR_STUBS;
-    format!("{stubs}\n{stripped}")
+        .join("\n")
 }
-
-/// SSR no-op stubs for zeb/* library symbols.
-/// Injected before the template source so Canvas, useThree, etc. are defined.
-const ZEB_SSR_STUBS: &str = r#"
-// zeb/* SSR stubs — Three.js and WebGL are browser-only.
-// Canvas renders a placeholder div. Hooks and classes are no-ops.
-const _zebNoop = function(){};
-const _zebNoopClass = class { constructor(){} };
-const Canvas = function(props) {
-  return h('div', { className: (props && props.className) || 'w-full h-full' }, null);
-};
-const ThreeCanvas = Canvas;
-const ThreeContext = typeof createContext !== 'undefined' ? createContext(null) : null;
-const useThree = function() { return {}; };
-const useFrame = _zebNoop;
-const OrbitControls = function() { return null; };
-const createSceneRuntime = function() { return {}; };
-const mountThreeScene = function() { return {}; };
-// Three.js geometry / material / object stubs
-const Scene = _zebNoopClass;
-const PerspectiveCamera = _zebNoopClass;
-const OrthographicCamera = _zebNoopClass;
-const WebGLRenderer = _zebNoopClass;
-const Mesh = _zebNoopClass;
-const Group = _zebNoopClass;
-const Object3D = _zebNoopClass;
-const InstancedMesh = _zebNoopClass;
-const Points = _zebNoopClass;
-const Line = _zebNoopClass;
-const BoxGeometry = _zebNoopClass;
-const SphereGeometry = _zebNoopClass;
-const PlaneGeometry = _zebNoopClass;
-const CylinderGeometry = _zebNoopClass;
-const TorusGeometry = _zebNoopClass;
-const TorusKnotGeometry = _zebNoopClass;
-const ConeGeometry = _zebNoopClass;
-const RingGeometry = _zebNoopClass;
-const CircleGeometry = _zebNoopClass;
-const BufferGeometry = _zebNoopClass;
-const MeshStandardMaterial = _zebNoopClass;
-const MeshBasicMaterial = _zebNoopClass;
-const MeshPhongMaterial = _zebNoopClass;
-const MeshLambertMaterial = _zebNoopClass;
-const MeshNormalMaterial = _zebNoopClass;
-const MeshToonMaterial = _zebNoopClass;
-const MeshPhysicalMaterial = _zebNoopClass;
-const ShaderMaterial = _zebNoopClass;
-const DirectionalLight = _zebNoopClass;
-const PointLight = _zebNoopClass;
-const SpotLight = _zebNoopClass;
-const AmbientLight = _zebNoopClass;
-const HemisphereLight = _zebNoopClass;
-const Vector2 = _zebNoopClass;
-const Vector3 = _zebNoopClass;
-const Vector4 = _zebNoopClass;
-const Quaternion = _zebNoopClass;
-const Euler = _zebNoopClass;
-const Matrix4 = _zebNoopClass;
-const Color = _zebNoopClass;
-const Raycaster = _zebNoopClass;
-const Clock = _zebNoopClass;
-const AnimationMixer = _zebNoopClass;
-const TextureLoader = _zebNoopClass;
-const CubeTextureLoader = _zebNoopClass;
-const Texture = _zebNoopClass;
-const MathUtils = {};
-const REVISION = '183';
-// ── zeb/* wrapper component SSR stubs ────────────────────────────────────────
-// All zeb/* imports are stripped before SSR execution. These stubs produce
-// placeholder divs with the correct data-zeb-lib / data-config attributes so
-// (a) SSR does not crash, (b) Tailwind CSS is generated from surrounding markup,
-// (c) the client-side bundle's MutationObserver can mount onto the same element.
-const DeckMap = function(props) {
-  const cfg = JSON.stringify({
-    initialViewState: props && props.initialViewState,
-    controller: !props || props.controller !== false,
-    layers: (props && props.layers) || [],
-    stateKey: (props && props.stateKey) || null,
-    layerKey: (props && props.layerKey) || null,
-    background: (props && props.background) || 'transparent',
-  });
-  return h('div', {
-    'data-zeb-lib': 'deckgl',
-    'data-zeb-wrapper': 'DeckMap',
-    'data-config': cfg,
-    id: props && props.id,
-    className: props && props.className,
-    style: { width: '100%', height: (props && props.height) || '400px' },
-  });
-};
-const VrmViewer = function(props) {
-  const cfg = JSON.stringify({
-    modelUrl: (props && (props.modelUrl || props.model_url)) || '',
-    height: (props && props.height) || '400px',
-    background: (props && props.background) || 'transparent',
-    autoRotate: !!(props && props.autoRotate),
-    cameraZ: (props && props.cameraZ) || 1.5,
-  });
-  return h('div', {
-    'data-zeb-lib': 'threejs-vrm',
-    'data-zeb-wrapper': 'VrmViewer',
-    'data-config': cfg,
-    id: props && props.id,
-    className: props && props.className,
-    style: { width: '100%', height: (props && props.height) || '400px' },
-  });
-};
-const D3Bars = function(props) {
-  const cfg = JSON.stringify({
-    type: (props && props.type) || 'bar',
-    data: (props && props.data) || [],
-    xKey: props && props.xKey,
-    yKey: props && props.yKey,
-    stateKey: props && props.stateKey,
-    height: (props && props.height) || '260px',
-    colorScheme: props && props.colorScheme,
-    area: !!(props && props.area),
-  });
-  return h('div', {
-    'data-zeb-lib': 'd3',
-    'data-zeb-wrapper': 'D3Bars',
-    'data-config': cfg,
-    id: props && props.id,
-    className: props && props.className,
-    style: { width: '100%', height: (props && props.height) || '260px' },
-  });
-};
-const ProseEditor = function(props) {
-  const cfg = JSON.stringify({
-    content: props && props.content,
-    placeholder: props && props.placeholder,
-    stateKey: props && props.stateKey,
-    readonly: !!(props && props.readonly),
-  });
-  return h('div', {
-    'data-zeb-lib': 'prosemirror',
-    'data-zeb-wrapper': 'ProseEditor',
-    'data-config': cfg,
-    id: props && props.id,
-    className: (props && props.className) || 'w-full min-h-[200px]',
-  });
-};
-const GraphCanvas = function(props) {
-  return h('div', {
-    'data-zeb-lib': 'graphui',
-    'data-zeb-wrapper': 'GraphCanvas',
-    id: props && props.id,
-    className: (props && props.className) || 'w-full h-full',
-  });
-};
-const CodeEditor = function(props) {
-  return h('div', {
-    'data-zeb-lib': 'codemirror',
-    'data-zeb-wrapper': 'CodeEditor',
-    id: props && props.id,
-    className: (props && props.className) || 'w-full h-full',
-  });
-};
-const ThreeScene = function(props) {
-  return h('div', {
-    'data-zeb-lib': 'threejs',
-    'data-zeb-wrapper': 'ThreeScene',
-    'data-config': JSON.stringify((props && props.config) || {}),
-    id: props && props.id,
-    className: (props && props.className) || 'w-full h-full',
-  });
-};
-const Markdown = function(props) {
-  const text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';
-  const encoded = typeof btoa !== 'undefined' ? btoa(unescape(encodeURIComponent(text))) : text;
-  return h('div', {
-    'data-zeb-lib': 'markdown',
-    'data-encoded': encoded,
-    className: props && props.class,
-  });
-};
-// Namespace stubs — full namespace objects are browser-only
-const d3 = {};
-const deckgl = {};
-const threejs = {};
-const vrm = {};
-// useD3 hook stub — useRef/useEffect are globals during SSR but useEffect does not run
-const useD3 = function(callback, deps) {
-  var ref = (typeof useRef !== 'undefined' ? useRef : function() { return { current: null }; })(null);
-  (typeof useEffect !== 'undefined' ? useEffect : function(fn) {})(function() {
-    if (!ref.current) return;
-    return callback(ref.current, {});
-  }, deps || []);
-  return ref;
-};
-// Function stubs — all return empty/noop instances during SSR
-const ensureThree = function() { return {}; };
-const buildLayer = function() { return null; };
-const buildLayers = function() { return []; };
-// Imperative API stubs (no-ops during SSR)
-const mountVrmViewer = _zebNoop;
-const mountDeckMap = _zebNoop;
-const ensureDeck = _zebNoop;
-const createDeckMapRuntime = function() { return {}; };
-"#;
 
 fn write_temp_module(js: &str) -> Result<std::path::PathBuf, EngineError> {
     use std::io::Write;

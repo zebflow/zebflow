@@ -7,6 +7,7 @@ function requestJson(url, options = {}) {
     },
     ...options,
   }).then(async (response) => {
+    if (response.status === 401) { window.location.href = "/login"; return null; }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const message =
@@ -482,7 +483,7 @@ async function initDbConnections(root) {
       state.currentSlug = item.connection_slug || normalized;
       state.slugField.value = state.currentSlug;
       state.form.elements.namedItem("connection_label").value = item.connection_label || "";
-      state.kindField.value = item.database_kind || "sjtable";
+      state.kindField.value = item.database_kind || "sekejap";
       state.configJsonField.value = JSON.stringify(item.config || {}, null, 2);
       await loadCredentials(item.credential_id || "");
       setStatus(state, "Loaded. Update fields and save.", "ok");

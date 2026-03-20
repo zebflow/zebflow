@@ -51,7 +51,7 @@ DELETE /api/projects/{o}/{p}/templates/file             — delete template
 POST /api/projects/{o}/{p}/templates/compile            — compile check
 ```
 
-## Simple Tables
+## Sekejap Tables
 
 ```
 GET    /api/projects/{o}/{p}/tables                 — list tables

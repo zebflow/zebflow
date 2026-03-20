@@ -10,14 +10,14 @@ use serde_json::{Value, json};
 
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{
-    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
+    ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
-    auth_token_create, crypto, http_request, logic, pg_query, script, sjtable_query,
+    auth_token_create, crypto, http_request, logic, pg_query, script, sjtable_mutate, sjtable_query,
     trigger::{manual, schedule, webhook, weberror},
     web_render, ws_emit, ws_sync_state, ws_trigger, zebtune,
 };
-use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput};
+use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::{CredentialService, SimpleTableService};
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
@@ -125,7 +125,7 @@ impl BasicPipelineEngine {
                 })?,
                 self.language.clone(),
             )?)),
-            sjtable_query::NODE_KIND => {
+            sjtable_query::NODE_KIND | sjtable_query::NODE_KIND_ALIAS => {
                 let Some(simple_tables) = &self.simple_tables else {
                     return Err(PipelineError::new(
                         "FW_NODE_SJTABLE_UNAVAILABLE",
@@ -135,6 +135,21 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::SimpleTable(sjtable_query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
                         PipelineError::new("FW_NODE_SJTABLE_CONFIG", err.to_string())
+                    })?,
+                    simple_tables.clone(),
+                    self.language.clone(),
+                )?))
+            }
+            sjtable_mutate::NODE_KIND => {
+                let Some(simple_tables) = &self.simple_tables else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_SJTABLE_UNAVAILABLE",
+                        "simple table service is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::SimpleTableMutate(sjtable_mutate::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_SJTABLE_MUTATE_CONFIG", err.to_string())
                     })?,
                     simple_tables.clone(),
                     self.language.clone(),
@@ -371,6 +386,7 @@ impl PipelineEngine for BasicPipelineEngine {
 
         let mut trace = vec![format!("engine={}", self.id())];
         let mut last_value = Value::Null;
+        let mut node_trace: Vec<NodeTraceEntry> = Vec::new();
         // merge_pending: node_id -> { pin_name -> payload }
         let mut merge_pending: HashMap<String, HashMap<String, Value>> = HashMap::new();
         // first_fired: tracks merge nodes that already fired (first_completed strategy)
@@ -381,36 +397,42 @@ impl PipelineEngine for BasicPipelineEngine {
                 PipelineError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
             })?;
             let dispatch = self.build_node(node)?;
-            let output = match dispatch {
-                NodeDispatch::Webhook(node) => node.execute_async(input).await?,
-                NodeDispatch::Schedule(node) => node.execute_async(input).await?,
-                NodeDispatch::Manual(node) => node.execute_async(input).await?,
-                NodeDispatch::Script(node) => node.execute_async(input).await?,
-                NodeDispatch::HttpRequest(node) => node.execute_async(input).await?,
-                NodeDispatch::SimpleTable(node) => node.execute_async(input).await?,
-                NodeDispatch::Postgres(node) => node.execute_async(input).await?,
+
+            // Capture context for per-node trace before consuming `input`.
+            let trace_node_id = node.id.clone();
+            let trace_node_kind = node.kind.clone();
+            let node_start = std::time::Instant::now();
+            let input_snapshot = input.payload.clone();
+
+            let exec_result: Result<NodeExecutionOutput, PipelineError> = match dispatch {
+                NodeDispatch::Webhook(node) => node.execute_async(input).await,
+                NodeDispatch::Schedule(node) => node.execute_async(input).await,
+                NodeDispatch::Manual(node) => node.execute_async(input).await,
+                NodeDispatch::Script(node) => node.execute_async(input).await,
+                NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
+                NodeDispatch::SimpleTable(node) => node.execute_async(input).await,
+                NodeDispatch::SimpleTableMutate(node) => node.execute_async(input).await,
+                NodeDispatch::Postgres(node) => node.execute_async(input).await,
                 NodeDispatch::InlineWebRender { node_id, config } => {
                     // Require markup — same contract as render_from_config.
                     let markup = config.markup.as_deref().unwrap_or("").trim();
                     if markup.is_empty() {
-                        return Err(PipelineError::new(
+                        Err(PipelineError::new(
                             "FW_NODE_WEB_RENDER_CONFIG",
                             format!("node '{node_id}' requires config.markup for inline execution"),
-                        ));
-                    }
-
-                    // Check compile cache: same markup hash → reuse CompiledTemplate.
-                    // Cache miss (first request or user saved new content) → compile + store.
-                    let key = hash_markup(markup);
-                    let cached = self.web_render_cache.as_ref().and_then(|c| {
-                        c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
-                    });
-
-                    let compiled = if let Some(hit) = cached {
-                        hit
+                        ))
                     } else {
-                        let fresh = Arc::new(
-                            web_render::Node::compile(
+                        // Check compile cache: same markup hash → reuse CompiledTemplate.
+                        // Cache miss (first request or user saved new content) → compile + store.
+                        let key = hash_markup(markup);
+                        let cached = self.web_render_cache.as_ref().and_then(|c| {
+                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+                        });
+
+                        let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
+                            Ok(hit)
+                        } else {
+                            let fresh = web_render::Node::compile(
                                 &node_id,
                                 &config,
                                 &TemplateSource {
@@ -426,37 +448,72 @@ impl PipelineEngine for BasicPipelineEngine {
                                     "FW_NODE_WEB_RENDER_COMPILE",
                                     e.to_string(),
                                 )
-                            })?,
-                        );
-                        if let Some(cache) = &self.web_render_cache {
-                            cache
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(key, fresh.clone());
-                        }
-                        fresh
-                    };
+                            })
+                            .map(Arc::new);
+                            if let Ok(ref fresh_arc) = fresh {
+                                if let Some(cache) = &self.web_render_cache {
+                                    cache
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(key, fresh_arc.clone());
+                                }
+                            }
+                            fresh
+                        };
 
-                    web_render::render_with_engines(
-                        &compiled,
-                        input.payload,
-                        input.metadata,
-                        self.rwe.as_ref(),
-                        self.language.as_ref(),
-                        &ctx.request_id,
-                    )?
+                        compiled_result.and_then(|compiled| {
+                            web_render::render_with_engines(
+                                &compiled,
+                                input.payload,
+                                input.metadata,
+                                self.rwe.as_ref(),
+                                self.language.as_ref(),
+                                &ctx.request_id,
+                            )
+                        })
+                    }
                 }
-                NodeDispatch::Zebtune(node) => node.execute_async(input).await?,
-                NodeDispatch::LogicIf(node) => node.execute_async(input).await?,
-                NodeDispatch::LogicSwitch(node) => node.execute_async(input).await?,
-                NodeDispatch::LogicBranch(node) => node.execute_async(input).await?,
-                NodeDispatch::LogicMerge(node) => node.execute_async(input).await?,
-                NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await?,
-                NodeDispatch::WebError(node) => node.execute_async(input).await?,
-                NodeDispatch::WsTrigger(node) => node.execute_async(input).await?,
-                NodeDispatch::WsSyncState(node) => node.execute_async(input).await?,
-                NodeDispatch::WsEmit(node) => node.execute_async(input).await?,
-                NodeDispatch::Crypto(node) => node.execute_async(input).await?,
+                NodeDispatch::Zebtune(node) => node.execute_async(input).await,
+                NodeDispatch::LogicIf(node) => node.execute_async(input).await,
+                NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
+                NodeDispatch::LogicBranch(node) => node.execute_async(input).await,
+                NodeDispatch::LogicMerge(node) => node.execute_async(input).await,
+                NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await,
+                NodeDispatch::WebError(node) => node.execute_async(input).await,
+                NodeDispatch::WsTrigger(node) => node.execute_async(input).await,
+                NodeDispatch::WsSyncState(node) => node.execute_async(input).await,
+                NodeDispatch::WsEmit(node) => node.execute_async(input).await,
+                NodeDispatch::Crypto(node) => node.execute_async(input).await,
+            };
+
+            let output = match exec_result {
+                Ok(out) => {
+                    node_trace.push(NodeTraceEntry {
+                        node_id: trace_node_id,
+                        node_kind: trace_node_kind,
+                        duration_ms: node_start.elapsed().as_millis() as u64,
+                        input: input_snapshot,
+                        output: out.payload.clone(),
+                        error: None,
+                    });
+                    out
+                }
+                Err(mut e) => {
+                    node_trace.push(NodeTraceEntry {
+                        node_id: trace_node_id.clone(),
+                        node_kind: trace_node_kind.clone(),
+                        duration_ms: node_start.elapsed().as_millis() as u64,
+                        input: input_snapshot,
+                        output: Value::Null,
+                        error: Some(e.message.clone()),
+                    });
+                    // Attribute error to the failing node if not already set.
+                    if e.node_id.is_none() {
+                        e.node_id = Some(trace_node_id);
+                        e.node_kind = Some(trace_node_kind);
+                    }
+                    return Err(e);
+                }
             };
             trace.extend(output.trace.clone());
             last_value = output.payload.clone();
@@ -534,6 +591,7 @@ impl PipelineEngine for BasicPipelineEngine {
         Ok(PipelineOutput {
             value: last_value,
             trace,
+            node_trace,
         })
     }
 }
@@ -545,6 +603,7 @@ enum NodeDispatch {
     Script(script::Node),
     HttpRequest(http_request::Node),
     SimpleTable(sjtable_query::Node),
+    SimpleTableMutate(sjtable_mutate::Node),
     Postgres(pg_query::Node),
     InlineWebRender {
         node_id: String,

@@ -1,6 +1,6 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { initDashboardBehavior } from "@/components/behavior/project-dashboard";
-import { Link } from "rwe";
+import { Link } from "zeb";
 
 export const page = {
   head: {

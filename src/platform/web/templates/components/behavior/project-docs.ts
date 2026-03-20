@@ -2,11 +2,10 @@ let editorViewCtor = null;
 let basicSetupExt = null;
 let markdownExt = null;
 let oneDarkExt = null;
-let createSplitPaneFn = null;
 let runtimePromise = null;
 
 async function ensureDocsEditorRuntime() {
-  if (editorViewCtor && basicSetupExt && oneDarkExt && createSplitPaneFn) {
+  if (editorViewCtor && basicSetupExt && oneDarkExt) {
     return;
   }
   if (runtimePromise) {
@@ -18,19 +17,35 @@ async function ensureDocsEditorRuntime() {
       "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
       base
     );
-    const interactUrl = new URL(
-      "/assets/libraries/zeb/interact/0.1/runtime/interact.bundle.mjs",
-      base
-    );
     const codeMirrorRuntime = await import(codeMirrorUrl.href);
-    const interactRuntime = await import(interactUrl.href);
     editorViewCtor = codeMirrorRuntime.EditorView;
     basicSetupExt = codeMirrorRuntime.basicSetup;
     markdownExt = codeMirrorRuntime.markdown;
     oneDarkExt = codeMirrorRuntime.oneDark;
-    createSplitPaneFn = interactRuntime.createSplitPane;
   })();
   return runtimePromise;
+}
+
+function mountSplitPane(root, options = {}) {
+  const handle = root.querySelector(options.handleSelector || "[data-split-handle]");
+  if (!handle) return;
+  const min = options.min ?? 160;
+  const max = options.max ?? 420;
+  const variable = options.variable ?? "--split-width";
+  const startDrag = (event) => {
+    event.preventDefault();
+    const move = (e) => {
+      const rect = root.getBoundingClientRect();
+      root.style.setProperty(variable, `${Math.max(min, Math.min(max, e.clientX - rect.left))}px`);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  };
+  handle.addEventListener("pointerdown", startDrag);
 }
 
 let editorInstance = null;
@@ -309,11 +324,12 @@ function runDocsBehavior() {
 
   // Init split pane and editor
   ensureDocsEditorRuntime().then(function() {
-    const sidebar = root.querySelector("[data-split-target]");
-    const handle = root.querySelector("[data-docs-split-handle]");
-    if (sidebar && handle && createSplitPaneFn) {
-      createSplitPaneFn(root, sidebar, handle, { minSize: 160, defaultSize: 220 });
-    }
+    mountSplitPane(root, {
+      handleSelector: "[data-docs-split-handle]",
+      variable: "--docs-sidebar-width",
+      min: 160,
+      max: 420,
+    });
 
     const initialContent = editorSource ? editorSource.textContent || "" : "";
     const initialPath = root.getAttribute("data-docs-selected-path") || "";

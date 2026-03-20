@@ -13,6 +13,7 @@ use super::model::{CompiledTemplate, RenderMeta, RenderOutput};
 
 const ROOT_ID: &str = "__rwe_root";
 const PAYLOAD_ID: &str = "__rwe_payload";
+const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 static CLIENT_TRANSPILE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -73,7 +74,10 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
 }
 
 fn strip_rwe_client_imports(source: &str) -> String {
-    source
+    // Join multi-line import statements into single logical lines before filtering.
+    // A multi-line import starts with `import {` and ends on the line containing `from "..."`.
+    let logical = join_import_lines(source);
+    logical
         .lines()
         .filter(|line| {
             let t = line.trim();
@@ -82,10 +86,8 @@ fn strip_rwe_client_imports(source: &str) -> String {
             }
             // Strip "rwe" / "rwe-*" (hooks are globalThis globals) and
             // "zeb/*" (library exports are injected into globalThis by the outer script).
-            !(t.contains("from \"rwe\"")
-                || t.contains("from 'rwe'")
-                || t.contains("from \"rwe-")
-                || t.contains("from 'rwe-")
+            !(t.contains("from \"zeb\"")
+                || t.contains("from 'zeb'")
                 || t.contains("from \"zeb/")
                 || t.contains("from 'zeb/"))
         })
@@ -96,8 +98,10 @@ fn strip_rwe_client_imports(source: &str) -> String {
 /// Scan source for `import { … } from "zeb/<name>"` lines and return the
 /// unique library specifiers used (e.g. `["zeb/threejs"]`).
 fn collect_zeb_libraries(source: &str) -> Vec<String> {
+    // Join multi-line import statements into single logical lines before scanning.
+    let logical = join_import_lines(source);
     let mut libs: Vec<String> = Vec::new();
-    for line in source.lines() {
+    for line in logical.lines() {
         let t = line.trim();
         if !t.starts_with("import ") {
             continue;
@@ -119,6 +123,54 @@ fn collect_zeb_libraries(source: &str) -> Vec<String> {
         }
     }
     libs
+}
+
+/// Collapse multi-line `import { … } from "…"` statements into a single line each.
+///
+/// ES import declarations can span multiple lines:
+/// ```text
+/// import {
+///   WebGLRenderer,
+///   Scene,
+/// } from "zeb/threejs";
+/// ```
+/// Line-by-line scanners miss the `from "zeb/threejs"` part because it appears
+/// on a line that does not start with `import`. This function joins continuation
+/// lines (those between `import {` and the closing `} from "…"`) into one line
+/// so that the scanners see a complete `import { … } from "…"` statement.
+fn join_import_lines(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut buf: Option<String> = None;
+
+    for line in source.lines() {
+        let t = line.trim();
+
+        if let Some(ref mut acc) = buf {
+            // Inside a multi-line import — append stripped content.
+            acc.push(' ');
+            acc.push_str(t);
+            // The closing `} from "…"` ends the declaration.
+            if t.contains("from \"") || t.contains("from '") {
+                out.push_str(acc);
+                out.push('\n');
+                buf = None;
+            }
+        } else if t.starts_with("import ") && t.contains('{') && !t.contains("from ") {
+            // Opening of a multi-line import: `import {` with no `from` yet.
+            buf = Some(t.to_string());
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    // Flush any unclosed buffer (shouldn't happen in valid source, but be safe).
+    if let Some(acc) = buf {
+        out.push_str(&acc);
+        out.push('\n');
+    }
+
+    out
 }
 
 /// Map a `zeb/*` library specifier to its versioned browser bundle URL.
@@ -169,6 +221,7 @@ fn build_zeb_preamble(source: &str) -> String {
 }
 
 fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
+    let tool_js = TOOL_INIT;
     let runtime_ready_source = strip_rwe_client_imports(client_source)
         .replace(
             "from \"npm:preact/jsx-runtime\"",
@@ -196,9 +249,10 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
         );
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
-        "import {{ h, Fragment, hydrate, createContext }} from 'https://esm.sh/preact@10.28.4';\n\
+        "{tool_js}\n\
+         import {{ h, Fragment, hydrate, createContext }} from 'https://esm.sh/preact@10.28.4';\n\
          import {{ forwardRef, memo }} from 'https://esm.sh/preact@10.28.4/compat';\n\
-         import {{ useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
+         import {{ useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
          const __RwePageStateContext = createContext(null);\n\
          function __rweUsePageState(keyOrInitial, defaultValue) {{\n\
            const isKeyed = typeof keyOrInitial === 'string';\n\
@@ -238,6 +292,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          globalThis.useContext = useContext;\n\
          globalThis.useReducer = useReducer;\n\
          globalThis.useId = useId;\n\
+         globalThis.useImperativeHandle = useImperativeHandle;\n\
          globalThis.useLayoutEffect = useLayoutEffect;\n\
          globalThis.createContext = createContext;\n\
          globalThis.forwardRef = forwardRef;\n\

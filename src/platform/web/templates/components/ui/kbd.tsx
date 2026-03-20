@@ -1,4 +1,4 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 /**
  * Keyboard key chip — inline mono badge styled like a physical key.

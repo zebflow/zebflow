@@ -3,8 +3,8 @@ export default function TabsTrigger(props) {
     <button
       type="button"
       className={cx(
-        "inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 dark:ring-offset-slate-950 dark:focus-visible:ring-slate-300",
-        props?.active ? "bg-white text-slate-950 shadow-sm dark:bg-slate-950 dark:text-slate-50" : "",
+        "inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--zf-color-brand-blue)]/40 disabled:pointer-events-none disabled:opacity-50",
+        props?.active ? "bg-[var(--zf-ui-bg)] text-[var(--zf-ui-text)] shadow-sm" : "text-[var(--zf-ui-text-muted)]",
         props?.className
       )}
       onClick={props?.onClick}

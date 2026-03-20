@@ -86,13 +86,12 @@ pub trait DataAdapter: Send + Sync {
     ) -> Result<(), PlatformError>;
     /// Upsert one pipeline metadata row.
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
-    /// Delete one pipeline metadata row by owner/project/virtual_path/name.
+    /// Delete one pipeline metadata row by owner/project/file_rel_path.
     fn delete_pipeline_meta(
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
     ) -> Result<(), PlatformError>;
     /// List pipeline metadata rows by owner/project.
     fn list_pipeline_meta(

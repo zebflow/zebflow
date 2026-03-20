@@ -21,6 +21,7 @@ pub use model::{
     NodeContractDocument, NodeContractItem, NodeDefinition, NodeScriptBridge,
     NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix, PipelineEdge, PipelineGraph,
     PipelineNode, StepEvent,
+    NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef, SidebarSection, SidebarItem,
 };
 pub use nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 pub use registry::PipelineEngineRegistry;

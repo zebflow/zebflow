@@ -10,6 +10,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::LayoutItem;
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
@@ -31,6 +32,20 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "expression".to_string(), label: "Expression".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), ..Default::default() },
+                NodeFieldDef { name: "cases".to_string(), label: "Cases (one per line)".to_string(), field_type: NodeFieldType::Textarea, rows: Some(5), help: Some("Each case becomes an output pin.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "default".to_string(), label: "Default Pin".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("default")), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("default".to_string())] },
+            LayoutItem::Field("expression".to_string()),
+            LayoutItem::Field("cases".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

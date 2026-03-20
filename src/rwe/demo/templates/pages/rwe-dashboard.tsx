@@ -1,4 +1,4 @@
-import { usePageState, useMemo } from "rwe";
+import { usePageState, useMemo } from "zeb";
 
 export default function RweDashboard(input) {
   const data = input?.data || {

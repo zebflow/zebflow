@@ -17,6 +17,16 @@
   --rwe-nav-color: var(--zf-color-brand-blue);
   --zebflow-font-sans: var(--zf-font-sans);
   --zebflow-font-mono: var(--zf-font-mono);
+
+  /* UI component design tokens — light defaults */
+  --zf-ui-bg:            #ffffff;
+  --zf-ui-bg-subtle:     #f8fafc;
+  --zf-ui-bg-muted:      #f1f5f9;
+  --zf-ui-border:        #e2e8f0;
+  --zf-ui-border-subtle: #f1f5f9;
+  --zf-ui-text:          #020617;
+  --zf-ui-text-soft:     #475569;
+  --zf-ui-text-muted:    #64748b;
 }
 
 html {
@@ -80,6 +90,16 @@ select {
   --studio-accent-alt-strong: var(--zf-color-brand-blue-ink);
   background: var(--studio-bg);
   color: var(--studio-text);
+
+  /* UI component tokens — dark (studio is dark by default) */
+  --zf-ui-bg:            #020617;
+  --zf-ui-bg-subtle:     #0f172a;
+  --zf-ui-bg-muted:      #1e293b;
+  --zf-ui-border:        #1e293b;
+  --zf-ui-border-subtle: #1e293b;
+  --zf-ui-text:          #f8fafc;
+  --zf-ui-text-soft:     #94a3b8;
+  --zf-ui-text-muted:    #94a3b8;
 }
 
 .project-studio-frame[data-theme="light"] {
@@ -95,6 +115,22 @@ select {
   --studio-accent-strong: var(--zf-color-brand-orange-ink);
   --studio-accent-alt: var(--zf-color-brand-blue);
   --studio-accent-alt-strong: var(--zf-color-brand-blue-ink);
+
+  /* Restore light UI tokens for light theme */
+  --zf-ui-bg:            #ffffff;
+  --zf-ui-bg-subtle:     #f8fafc;
+  --zf-ui-bg-muted:      #f1f5f9;
+  --zf-ui-border:        #e2e8f0;
+  --zf-ui-border-subtle: #f1f5f9;
+  --zf-ui-text:          #020617;
+  --zf-ui-text-soft:     #475569;
+  --zf-ui-text-muted:    #64748b;
+}
+
+/* Placeholder color driven by theme token */
+.project-studio-frame input::placeholder,
+.project-studio-frame textarea::placeholder {
+  color: var(--zf-ui-text-muted);
 }
 
 .platform-sidebar-shell {
@@ -1782,10 +1818,11 @@ select {
 }
 
 .pipeline-editor-shell {
+  --pipeline-editor-sidebar-width: 18rem;
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 18rem minmax(0, 1fr);
+  grid-template-columns: var(--pipeline-editor-sidebar-width) 6px minmax(0, 1fr);
 }
 
 .pipeline-editor-sidebar {
@@ -1794,6 +1831,12 @@ select {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.pipeline-editor-sidebar-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .pipeline-editor-sidebar-head {
@@ -2051,6 +2094,39 @@ select {
   color: var(--studio-text-soft);
 }
 
+.pipeline-editor-section-head {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--studio-text-soft);
+  background: var(--studio-panel-2);
+  border-bottom: 1px solid var(--studio-border-soft);
+  user-select: none;
+}
+
+.pipeline-editor-item-git {
+  color: var(--studio-warning, #f59e0b);
+}
+
+/* Template editor items are buttons — reset browser defaults */
+button.pipeline-editor-item {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--studio-border-soft);
+  padding: 0.65rem 0.75rem;
+  font: inherit;
+  color: inherit;
+}
+
+button.pipeline-editor-item:hover {
+  background: color-mix(in srgb, var(--studio-panel-3) 74%, transparent);
+}
+
 .pipeline-editor-main {
   min-width: 0;
   display: flex;
@@ -2140,6 +2216,34 @@ select {
   position: relative;
 }
 
+/* Pipeline content host — display:contents when pipeline is active (layout-transparent) */
+.pipeline-editor-pipeline-host {
+  display: contents;
+}
+
+/* Hidden variant — hides the pipeline host completely when template editor is open */
+.pipeline-editor-pipeline-host.is-hidden {
+  display: none;
+}
+
+.pipeline-editor-template-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.pipeline-editor-template-host .cm-editor {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.pipeline-editor-template-host .cm-scroller {
+  overflow: auto;
+}
+
 .pipeline-editor-canvas-tools {
   position: absolute;
   top: 0.8rem;
@@ -2157,6 +2261,30 @@ select {
 .pipeline-editor-graph {
   width: 100%;
   height: 100%;
+}
+
+/* ── Pipeline log panel — structural heights only ─── */
+.pipeline-editor-logs-panel { height: 300px; display: flex; flex-direction: column; overflow: hidden; }
+.pipeline-editor-logs-body { flex: 1; min-height: 0; overflow-y: auto; }
+.pipeline-editor-logs-io-pre {
+  overflow-y: auto;
+  max-height: 200px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: monospace;
+  font-size: 0.65rem;
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.25rem;
+  padding: 0.375rem;
+  margin: 0;
+}
+.pipeline-editor-logs-io-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 1.25rem;
+  border-top: 1px solid var(--studio-border);
 }
 
 .pipeline-editor-foot {
@@ -2188,8 +2316,9 @@ select {
   border-radius: 0.65rem;
   background: var(--studio-panel);
   color: var(--studio-text);
-  width: min(34rem, calc(100vw - 2rem));
+  width: min(680px, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
+  overflow-y: auto;
   box-shadow: 0 24px 55px rgba(2, 6, 23, 0.32);
 }
 
@@ -2298,15 +2427,6 @@ select {
   color: #fff;
 }
 
-.pipeline-editor-dialog.is-fullscreen {
-  top: 0.75rem;
-  left: 0.75rem;
-  width: calc(100vw - 1.5rem);
-  height: calc(100vh - 1.5rem);
-  max-height: calc(100vh - 1.5rem);
-  transform: none;
-}
-
 .pipeline-editor-dialog::backdrop {
   background: rgba(2, 6, 23, 0.62);
 }
@@ -2315,11 +2435,6 @@ select {
   display: grid;
   gap: 0.55rem;
   padding: 0.9rem;
-}
-
-.pipeline-editor-dialog.is-fullscreen .pipeline-editor-dialog-form {
-  height: 100%;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
 }
 
 .pipeline-editor-dialog-title {
@@ -2441,6 +2556,16 @@ select {
   border-color: color-mix(in srgb, var(--studio-accent) 55%, var(--studio-border));
 }
 
+.pipeline-editor-dialog-error {
+  font-size: 0.75rem;
+  color: #f87171;
+  background: rgb(239 68 68 / 0.1);
+  border: 1px solid rgb(239 68 68 / 0.25);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.6rem;
+  margin-top: 0.25rem;
+}
+
 .pipeline-editor-dialog-actions {
   display: flex;
   align-items: center;
@@ -2465,7 +2590,13 @@ select {
 
 .pipeline-editor-node-fields {
   display: grid;
-  gap: 0.5rem;
+  gap: 1rem;
+}
+
+.pipeline-editor-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
 }
 
 .pipeline-editor-node-fields.is-web-render {
@@ -2624,16 +2755,6 @@ select {
   overflow: auto;
 }
 
-.pipeline-editor-dialog.is-fullscreen .pipeline-editor-node-fields {
-  min-height: 0;
-  overflow: auto;
-  padding-right: 0.25rem;
-}
-
-.pipeline-editor-dialog.is-fullscreen .pipeline-editor-node-fields textarea {
-  min-height: 18rem;
-}
-
 .zf-node-edit {
   position: absolute;
   top: 0.25rem;
@@ -2730,6 +2851,10 @@ select {
 
   .pipeline-editor-shell {
     grid-template-columns: 1fr;
+  }
+
+  .pipeline-editor-split-handle {
+    display: none;
   }
 
   .pipeline-editor-sidebar {
@@ -3136,6 +3261,29 @@ select {
 }
 
 .template-split-handle:hover::before {
+  background: var(--studio-accent);
+}
+
+.pipeline-editor-split-handle {
+  position: relative;
+  cursor: col-resize;
+  background: var(--studio-panel);
+  border-right: 1px solid var(--studio-border);
+}
+
+.pipeline-editor-split-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 2rem;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: var(--studio-border);
+}
+
+.pipeline-editor-split-handle:hover::before {
   background: var(--studio-accent);
 }
 
@@ -3913,7 +4061,22 @@ select {
   flex-wrap: wrap;
 }
 
+.pipeline-registry-section-head {
+  padding: 0.875rem 0.6rem 0.2rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--studio-muted);
+}
+
+.pipeline-registry-section-head:first-child {
+  padding-top: 0.25rem;
+}
+
 .pipeline-registry-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--studio-text);
@@ -3946,6 +4109,44 @@ select {
 
 .pipeline-registry-delete-btn:hover {
   background: rgba(239, 68, 68, 0.08) !important;
+}
+
+/* ── Registry row: inner link + hover delete button ─────────────────────── */
+.pipeline-registry-row-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+}
+
+.pipeline-registry-row-del {
+  opacity: 0;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 0.3rem;
+  color: var(--studio-text-muted);
+  padding: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+
+.pipeline-registry-row:hover .pipeline-registry-row-del {
+  opacity: 1;
+}
+
+.pipeline-registry-row-del:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .pipeline-registry-inline-form {
@@ -4005,6 +4206,123 @@ select {
   text-align: center;
   font-size: 0.78rem;
   color: var(--studio-text-soft);
+}
+
+/* ── Registry Filter Tabs ────────────────────────────────────────────────── */
+
+.pipeline-registry-filters {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.375rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border);
+  background: var(--studio-panel);
+}
+
+.pipeline-registry-filter-tab {
+  padding: 0.2rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  border-radius: 0.25rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: var(--studio-text-soft);
+  background: transparent;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.pipeline-registry-filter-tab:hover {
+  color: var(--studio-text);
+  background: var(--studio-surface);
+}
+
+.pipeline-registry-filter-tab.is-active {
+  color: var(--studio-text);
+  background: var(--studio-surface);
+  border-color: var(--studio-border);
+}
+
+/* ── Registry Special Folder Separator ───────────────────────────────────── */
+
+.pipeline-registry-special-sep {
+  height: 1px;
+  background: var(--studio-border);
+  margin: 0.25rem 0;
+  opacity: 0.5;
+}
+
+.pipeline-registry-folder-row.is-special {
+  opacity: 0.7;
+}
+
+/* ── Registry Special Folder Colors ─────────────────────────────────────── */
+
+.pipeline-registry-special-folder {
+  opacity: 1;
+}
+
+.registry-folder-assets .pipeline-registry-row-icon,
+.registry-folder-assets .pipeline-registry-row-name {
+  color: #22c55e; /* green-500 */
+}
+
+.registry-folder-assets:hover .pipeline-registry-row-icon,
+.registry-folder-assets:hover .pipeline-registry-row-name {
+  color: #16a34a; /* green-600 */
+}
+
+.registry-folder-styles .pipeline-registry-row-icon,
+.registry-folder-styles .pipeline-registry-row-name {
+  color: #a855f7; /* purple-500 */
+}
+
+.registry-folder-styles:hover .pipeline-registry-row-icon,
+.registry-folder-styles:hover .pipeline-registry-row-name {
+  color: #9333ea; /* purple-600 */
+}
+
+.registry-folder-docs .pipeline-registry-row-icon,
+.registry-folder-docs .pipeline-registry-row-name {
+  color: #3b82f6; /* blue-500 */
+}
+
+.registry-folder-docs:hover .pipeline-registry-row-icon,
+.registry-folder-docs:hover .pipeline-registry-row-name {
+  color: #2563eb; /* blue-600 */
+}
+
+/* Editor sidebar special folder colors (pipeline-editor-nav-row) */
+.registry-folder-assets .pipeline-editor-nav-icon,
+.registry-folder-assets .pipeline-editor-nav-label { color: #22c55e; }
+.registry-folder-assets:hover .pipeline-editor-nav-icon,
+.registry-folder-assets:hover .pipeline-editor-nav-label { color: #16a34a; }
+
+.registry-folder-styles .pipeline-editor-nav-icon,
+.registry-folder-styles .pipeline-editor-nav-label { color: #a855f7; }
+.registry-folder-styles:hover .pipeline-editor-nav-icon,
+.registry-folder-styles:hover .pipeline-editor-nav-label { color: #9333ea; }
+
+.registry-folder-docs .pipeline-editor-nav-icon,
+.registry-folder-docs .pipeline-editor-nav-label { color: #3b82f6; }
+.registry-folder-docs:hover .pipeline-editor-nav-icon,
+.registry-folder-docs:hover .pipeline-editor-nav-label { color: #2563eb; }
+
+/* ── Registry File Rows ──────────────────────────────────────────────────── */
+
+.pipeline-registry-file-row {
+  background: transparent;
+  border-style: solid;
+  gap: 0.5rem;
+  text-decoration: none;
+  color: var(--studio-text-soft);
+}
+
+.pipeline-registry-file-row:hover {
+  color: var(--studio-text);
+}
+
+.pipeline-registry-file-kind {
+  font-size: 0.65rem;
+  opacity: 0.7;
 }
 
 /* ── Pipeline Status Dot ─────────────────────────────────────────────────── */
@@ -4450,6 +4768,242 @@ select {
   border-color: #22c55e;
 }
 
+/* ── Git+Repo Combined Panel ─────────────────────────────────────────────── */
+.git-repo-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 640px;
+  display: flex;
+  flex-direction: column;
+  background: var(--studio-panel);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.git-repo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--studio-border);
+  gap: 0.5rem;
+}
+
+.git-repo-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--studio-text);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.git-repo-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--studio-text-soft);
+}
+
+.git-repo-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  max-height: 440px;
+}
+
+.git-repo-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.git-repo-divider {
+  width: 1px;
+  background: var(--studio-border);
+  flex-shrink: 0;
+}
+
+.git-repo-right {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 0.75rem;
+  gap: 0.85rem;
+}
+
+.git-repo-col-head {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--studio-text-soft);
+  padding: 0.5rem 0.75rem 0.3rem;
+  border-bottom: 1px solid var(--studio-border-soft);
+}
+
+.git-repo-cred-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--studio-text-soft);
+  margin-bottom: 0.3rem;
+  display: block;
+}
+
+.git-repo-cred-select {
+  width: 100%;
+  background: var(--studio-panel-2);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  color: var(--studio-text);
+  font-size: 0.72rem;
+  padding: 0 0.4rem;
+  height: 1.75rem;
+  outline: none;
+  cursor: pointer;
+}
+
+.git-repo-slug-row {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  overflow: hidden;
+  background: var(--studio-panel-2);
+}
+
+.git-repo-slug-row:focus-within {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15);
+}
+
+.git-repo-host-prefix {
+  font-size: 0.65rem;
+  font-family: ui-monospace, monospace;
+  color: var(--studio-text-soft);
+  padding: 0 0.4rem;
+  white-space: nowrap;
+  background: var(--studio-panel-3);
+  border-right: 1px solid var(--studio-border);
+  height: 1.75rem;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.git-repo-slug-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--studio-text);
+  font-size: 0.68rem;
+  font-family: ui-monospace, monospace;
+  padding: 0 0.4rem;
+  height: 1.75rem;
+}
+
+.git-repo-branch-input {
+  width: 100%;
+  background: var(--studio-panel-2);
+  border: 1px solid var(--studio-border);
+  border-radius: 0.35rem;
+  color: var(--studio-text);
+  font-size: 0.68rem;
+  font-family: ui-monospace, monospace;
+  padding: 0 0.4rem;
+  height: 1.75rem;
+  outline: none;
+}
+
+.git-repo-branch-input:focus {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.15);
+}
+
+.git-repo-no-cred {
+  font-size: 0.72rem;
+  color: var(--studio-text-soft);
+  line-height: 1.5;
+}
+
+.git-repo-status-msg {
+  font-size: 0.68rem;
+}
+
+.git-repo-connect-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+/* ── Git Credential Create Dialog (native <dialog> → top layer) ────────────── */
+dialog.git-cred-dialog:not([open]) {
+  display: none;
+}
+
+dialog.git-cred-dialog {
+  padding: 0;
+  margin: auto;
+  border: 1px solid var(--studio-border);
+  border-radius: 0.5rem;
+  background: var(--studio-panel);
+  color: var(--studio-text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 85vh;
+}
+
+dialog.git-cred-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.git-cred-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid var(--studio-border);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--studio-text);
+}
+
+.git-cred-dialog-close {
+  background: none;
+  border: none;
+  color: var(--studio-text-soft);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+  line-height: 1;
+}
+.git-cred-dialog-close:hover { color: var(--studio-text); }
+
+.git-cred-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  overflow-y: auto;
+  max-height: 80vh;
+}
+
 /* ── MCP Session Panel ───────────────────────────────────────────────────── */
 .mcp-session-panel {
   padding: 0;
@@ -4711,3 +5265,113 @@ select {
 .git-tree-code.is-deleted  { color: #ef4444; }
 .git-tree-code.is-untracked { color: #94a3b8; }
 
+/* ── credential-field label row ─────────────────────────── */
+.credential-field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ── HelpTooltip ─────────────────────────────────────────── */
+.zf-help-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  cursor: help;
+  outline: none;
+}
+.zf-help-tooltip-icon {
+  display: inline-flex;
+  color: var(--zf-ui-text-muted);
+  transition: color 0.15s ease;
+}
+.zf-help-tooltip:hover .zf-help-tooltip-icon,
+.zf-help-tooltip:focus-within .zf-help-tooltip-icon {
+  color: var(--zf-ui-text);
+}
+.zf-help-tooltip-content {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  min-width: 160px;
+  max-width: 240px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  line-height: 1.5;
+  white-space: normal;
+  background: #1e293b;
+  color: #f1f5f9;
+  border: 1px solid var(--zf-ui-border);
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.15), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+.zf-help-tooltip:hover .zf-help-tooltip-content,
+.zf-help-tooltip:focus-within .zf-help-tooltip-content {
+  visibility: visible;
+  opacity: 1;
+}
+.zf-help-tooltip-content::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #1e293b;
+}
+
+
+/* ── Node dialog layout renderer ──────────────────────────── */
+.zf-node-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.zf-node-layout-row {
+  display: flex;
+  flex-direction: row;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.zf-node-layout-row-cell {
+  flex: 1;
+  min-width: 0;
+}
+.zf-node-layout-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* ── Pipeline editor save error banner ──────────────────────────────────── */
+.pipeline-editor-save-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--color-destructive, #ef4444) 10%, transparent);
+  border: 1px solid var(--color-destructive, #ef4444);
+  color: var(--color-destructive-foreground, #b91c1c);
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin: 6px 16px 0;
+}
+.pipeline-editor-save-error button {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+}

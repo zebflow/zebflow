@@ -125,7 +125,7 @@ fn rewrite_imports_variant(
         let spec_end = spec_start + end_rel;
         let rel = &out[spec_start..spec_end];
 
-        if rel == "rwe" {
+        if rel == "zeb" {
             let shim = root.join("rwe.ts");
             let resolved = fs::canonicalize(&shim).unwrap_or(shim);
             let resolved_str = resolved.to_string_lossy().to_string();

@@ -22,7 +22,7 @@ pub struct DbDriverContext {
 /// Runtime driver contract for one database kind.
 #[async_trait]
 pub trait DbDriver: Send + Sync {
-    /// Stable kind key (`sjtable`, `postgresql`, ...).
+    /// Stable kind key (`sekejap`, `postgresql`, ...).
     fn kind(&self) -> &'static str;
 
     /// Describes objects available in one connection.

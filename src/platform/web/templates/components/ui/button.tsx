@@ -1,4 +1,4 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 const VARIANT_CLASSES = {
   primary: "bg-slate-900 text-white hover:opacity-90",
@@ -10,15 +10,16 @@ const VARIANT_CLASSES = {
 };
 
 const SIZE_CLASSES = {
-  md: "h-8 px-3",
-  sm: "h-6 px-2 text-xs",
+  md: "h-9 px-4",
+  sm: "h-8 px-3 text-xs",
   xs: "h-7 px-2.5 text-[0.8rem]",
-  lg: "h-9 px-4",
-  icon: "size-8",
+  lg: "h-10 px-6",
+  icon: "h-9 w-9",
 };
 
 export default function Button({
   type = "button",
+  as: Tag,
   variant = "primary",
   size = "md",
   className,
@@ -29,10 +30,11 @@ export default function Button({
   const variantClass = VARIANT_CLASSES[variant] ?? VARIANT_CLASSES.primary;
   const sizeClass = SIZE_CLASSES[size] ?? SIZE_CLASSES.md;
   const content = children ?? label;
+  const Element = Tag || "button";
 
   return (
-    <button
-      type={type}
+    <Element
+      type={Element === "button" ? type : undefined}
       {...rest}
       className={cx(
         "inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-lg text-sm font-medium transition-all outline-none select-none disabled:pointer-events-none disabled:opacity-50",
@@ -42,6 +44,6 @@ export default function Button({
       )}
     >
       <span>{content}</span>
-    </button>
+    </Element>
   );
 }

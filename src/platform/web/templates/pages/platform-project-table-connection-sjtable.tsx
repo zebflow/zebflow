@@ -1,6 +1,6 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { initProjectDbSuiteSjtableBehavior } from "@/components/behavior/project-db-suite-sjtable";
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 export const page = {
   head: {
@@ -8,7 +8,7 @@ export const page = {
     description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-suite.css" },
-      { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
+      { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
     ],
   },
   html: {

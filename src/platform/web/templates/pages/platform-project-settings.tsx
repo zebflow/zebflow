@@ -1,4 +1,4 @@
-import { useState, cx, Link } from "rwe";
+import { useState, cx, Link } from "zeb";
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import Checkbox from "@/components/ui/checkbox";
 import Input from "@/components/ui/input";
@@ -10,6 +10,7 @@ import Card from "@/components/ui/card";
 import CardContent from "@/components/ui/card-content";
 import CardDescription from "@/components/ui/card-description";
 import CommitDialog from "@/components/ui/commit-dialog";
+import Field from "@/components/ui/field";
 import { Select, SelectOption } from "@/components/ui/select";
 
 export const page = {
@@ -37,6 +38,7 @@ async function requestJson(url, options = {}) {
     },
     ...options,
   }).then(async (response) => {
+    if (response.status === 401) { window.location.href = "/login"; return null; }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const message =
@@ -337,6 +339,73 @@ function AssistantPanel({ api, credentials, initialConfig }) {
   );
 }
 
+// ─── Libraries Panel ─────────────────────────────────────────────────────────
+
+function LibrariesPanel({ items, api }) {
+  const [libs, setLibs] = useState(Array.isArray(items) ? items : []);
+  const [loading, setLoading] = useState(null);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  async function toggle(lib) {
+    setLoading(lib.name);
+    setErrorMsg(null);
+    try {
+      if (lib.enabled) {
+        await requestJson(`${api}/disable?name=${encodeURIComponent(lib.name)}`, { method: "DELETE" });
+      } else {
+        await requestJson(`${api}/enable`, {
+          method: "POST",
+          body: JSON.stringify({
+            name: lib.name,
+            version: lib.packed_version,
+            source: "offline",
+          }),
+        });
+      }
+      const updated = await requestJson(api);
+      setLibs(Array.isArray(updated) ? updated : libs);
+    } catch (err) {
+      setErrorMsg(String(err?.message || err));
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {errorMsg ? (
+        <p className="project-settings-status" data-tone="error">{errorMsg}</p>
+      ) : null}
+      {libs.map((lib) => (
+        <article key={lib.name} className="project-settings-panel">
+          <header className="project-settings-panel-head">
+            <div className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <h3 className="project-card-title">{lib.name}</h3>
+                <Badge label={lib.packed_version} variant="secondary" />
+                <Badge label={lib.packed_kind} variant={lib.packed_kind === "full" ? "default" : "secondary"} />
+              </div>
+              <p className="project-card-copy">{lib.description}</p>
+              {lib.enabled ? (
+                <p className="project-card-copy" data-tone="ok">
+                  locked: {lib.installed_version} · {lib.source}
+                </p>
+              ) : null}
+            </div>
+            <Button
+              variant={lib.enabled ? "outline" : "primary"}
+              size="sm"
+              disabled={loading === lib.name}
+              label={loading === lib.name ? "..." : lib.enabled ? "Disable" : "Enable"}
+              onClick={() => toggle(lib)}
+            />
+          </header>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 // ─── Node Registry Panel ─────────────────────────────────────────────────────
 
 function NodeRegistryPanel({ groups, count }) {
@@ -469,6 +538,96 @@ function NodeRegistryPanel({ groups, count }) {
   );
 }
 
+// ─── Logging Settings Panel ─────────────────────────────────────────────────
+
+function LoggingPanel({ api, initialConfig }) {
+  const [maxInv, setMaxInv] = useState(String(initialConfig?.max_invocations ?? 20));
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [saving, setSaving] = useState(false);
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [pendingData, setPendingData] = useState(null);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setPendingData({ max_invocations: parseInt(maxInv, 10) || 20 });
+    setCommitOpen(true);
+  }
+
+  async function handleCommit(commitMessage) {
+    setCommitOpen(false);
+    setSaving(true);
+    setStatusMsg("Saving...");
+    setStatusTone("info");
+    try {
+      const resp = await requestJson(api, {
+        method: "PUT",
+        body: JSON.stringify({ commit_message: commitMessage, data: pendingData }),
+      });
+      if (resp?.committed) {
+        setStatusMsg("Saved & committed.");
+        setStatusTone("ok");
+      } else if (resp?.git_error) {
+        setStatusMsg(`Saved (git: ${resp.git_error})`);
+        setStatusTone("info");
+      } else {
+        setStatusMsg("Saved.");
+        setStatusTone("ok");
+      }
+    } catch (err) {
+      setStatusMsg(`Failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setSaving(false);
+      setPendingData(null);
+    }
+  }
+
+  return (
+    <article className="project-settings-panel">
+      <CommitDialog
+        open={commitOpen}
+        section="logging"
+        defaultMessage="settings(logging): update retention config"
+        onConfirm={handleCommit}
+        onCancel={() => { setCommitOpen(false); setPendingData(null); }}
+      />
+      <header className="project-settings-panel-head">
+        <div>
+          <h3 className="project-card-title">Pipeline Logging</h3>
+          <p className="project-card-copy">Retention settings for pipeline invocation logs.</p>
+        </div>
+        <span className="project-inline-chip">Logging</span>
+      </header>
+      <form className="project-settings-form" onSubmit={handleSubmit}>
+        <Field label="Max Invocations Per Pipeline">
+          <Input
+            name="max_invocations"
+            type="number"
+            min="1"
+            max="1000"
+            value={maxInv}
+            onInput={(e) => setMaxInv(e.currentTarget.value)}
+          />
+          <small className="pipeline-editor-field-help">
+            How many invocation log entries to retain per pipeline. Oldest are dropped. Default: 20.
+          </small>
+        </Field>
+        <div className="project-settings-actions">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={saving}
+            label={saving ? "Saving..." : "Save Logging Config"}
+          />
+          <span className="project-settings-status" data-tone={statusTone}>{statusMsg}</span>
+        </div>
+      </form>
+    </article>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function Page(input) {
@@ -526,6 +685,11 @@ export default function Page(input) {
                       api={input?.rwe?.api ?? ""}
                       initialConfig={input?.rwe?.config ?? {}}
                     />
+                    <Separator className="my-6" />
+                    <LoggingPanel
+                      api={input?.logging?.api ?? ""}
+                      initialConfig={input?.logging?.config ?? {}}
+                    />
                     <div className="project-card-grid cols-2">
                       {renderCardGrid(input?.cards_policy)}
                     </div>
@@ -564,7 +728,10 @@ export default function Page(input) {
               {tabFlags?.libraries ? (
                 <section className="project-content-section">
                   <div className="project-content-body">
-                    <div className="project-card-grid cols-2">{renderCardGrid(input?.cards_libraries)}</div>
+                    <LibrariesPanel
+                      items={Array.isArray(input?.libraries_available) ? input.libraries_available : []}
+                      api={input?.libraries_api ?? ""}
+                    />
                   </div>
                 </section>
               ) : null}

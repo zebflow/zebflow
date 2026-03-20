@@ -12,6 +12,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::LayoutItem;
 
 pub const NODE_KIND: &str = "n.logic.merge";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -29,6 +30,20 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "strategy".to_string(), label: "Merge Strategy".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "first".to_string(), label: "First — pass through first arriving payload".to_string() },
+                    SelectOptionDef { value: "all".to_string(), label: "All — wait for all inputs, emit array".to_string() },
+                    SelectOptionDef { value: "merge".to_string(), label: "Merge — deep-merge all arriving objects".to_string() },
+                ], ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("strategy".to_string())] },
+        ],
         ai_tool: Default::default(),
     }
 }

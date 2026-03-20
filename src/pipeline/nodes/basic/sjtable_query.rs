@@ -1,4 +1,4 @@
-//! Simple Table query/upsert node.
+//! Sekejap query/upsert node (formerly "Simple Table").
 
 use std::sync::Arc;
 
@@ -14,18 +14,23 @@ use crate::language::LanguageEngine;
 use crate::platform::model::{SimpleTableQueryRequest, UpsertSimpleTableRowRequest};
 use crate::platform::services::SimpleTableService;
 
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use super::util::{eval_deno_expr, metadata_scope, resolve_path_cloned};
 
-pub const NODE_KIND: &str = "n.sjtable.query";
+pub const NODE_KIND: &str = "n.sekejap.query";
+/// Backward-compat alias — old `.zf.json` files using `n.sjtable.query` are still dispatched here.
+pub const NODE_KIND_ALIAS: &str = "n.sjtable.query";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.sjtable.query`.
+/// Unified node-definition metadata for `n.sekejap.query`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Simple Table Query".to_string(),
-        description: "Query or upsert rows on project simple-table collections.".to_string(),
+        title: "Sekejap Query".to_string(),
+        description: "Query or upsert rows in Sekejap — Zebflow's embedded multi-model database. \
+            Supports graph, vector, spatial, full-text, and vague temporal queries. \
+            Create tables in the UI (Tables page) before querying.".to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Input context used for where/upsert bindings."
@@ -40,11 +45,92 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: true,
         script_bridge: Some(crate::pipeline::NodeScriptBridge {
-            name: "n.sjtable.query".to_string(),
+            name: "n.sekejap.query".to_string(),
             enabled: false,
         }),
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag {
+                flag: "--table".to_string(),
+                config_key: "table".to_string(),
+                description: "Sekejap table name to query or upsert.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--op".to_string(),
+                config_key: "operation".to_string(),
+                description: "Operation: query (default) or upsert.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--operation".to_string(),
+                config_key: "operation".to_string(),
+                description: "Operation: query (default) or upsert.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--id-path".to_string(),
+                config_key: "row_id_path".to_string(),
+                description: "JSON pointer into input payload for the row ID (upsert).".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--limit".to_string(),
+                config_key: "limit".to_string(),
+                description: "Maximum rows to return (query).".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--where-field".to_string(),
+                config_key: "where_field".to_string(),
+                description: "Field name to filter on (query).".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--where-value".to_string(),
+                config_key: "where_value_expr".to_string(),
+                description: "JS expression for filter value (query).".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "table".to_string(), label: "Table".to_string(), field_type: NodeFieldType::Text, help: Some("Sekejap table slug to query/upsert (create in UI first).".to_string()), default_value: Some(serde_json::json!("posts")), ..Default::default() },
+                NodeFieldDef { name: "operation".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "query".to_string(), label: "query".to_string() },
+                    SelectOptionDef { value: "upsert".to_string(), label: "upsert".to_string() },
+                ], help: Some("query returns rows, upsert writes one row.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "table_expr".to_string(), label: "Table Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
+                NodeFieldDef { name: "where_field".to_string(), label: "Where Field".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "where_field_expr".to_string(), label: "Where Field Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
+                NodeFieldDef { name: "where_value_path".to_string(), label: "Where Value Path".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "where_value_expr".to_string(), label: "Where Value Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
+                NodeFieldDef { name: "limit".to_string(), label: "Limit".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "limit_expr".to_string(), label: "Limit Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
+                NodeFieldDef { name: "row_id_path".to_string(), label: "Row ID Path".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("row_id")), ..Default::default() },
+                NodeFieldDef { name: "row_id_expr".to_string(), label: "Row ID Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
+                NodeFieldDef { name: "data_path".to_string(), label: "Data Path".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("data")), ..Default::default() },
+                NodeFieldDef { name: "data_expr".to_string(), label: "Data Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("operation".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("table".to_string()), LayoutItem::Field("table_expr".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("where_field".to_string()), LayoutItem::Field("where_field_expr".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("where_value_path".to_string()), LayoutItem::Field("where_value_expr".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("row_id_path".to_string()), LayoutItem::Field("row_id_expr".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("limit".to_string()), LayoutItem::Field("limit_expr".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("data_path".to_string()), LayoutItem::Field("data_expr".to_string())] },
+        ],
         ai_tool: Default::default(),
     }
 }

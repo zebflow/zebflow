@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::automaton::tools;
 use crate::automaton::{parse_tool_request, strip_thinking};
-use crate::pipeline::model::StepEvent;
+use crate::pipeline::model::{LayoutItem, StepEvent};
 use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
@@ -98,6 +98,23 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "step_budget".to_string(), label: "Step Budget".to_string(), field_type: NodeFieldType::Text, help: Some("Maximum LLM + tool iterations (default 10).".to_string()), ..Default::default() },
+                NodeFieldDef { name: "output_mode".to_string(), label: "Output Mode".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "full".to_string(), label: "full".to_string() },
+                    SelectOptionDef { value: "final_only".to_string(), label: "final_only".to_string() },
+                ], help: Some("full includes chain details, final_only returns final answer only.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "system_prompt".to_string(), label: "System Prompt".to_string(), field_type: NodeFieldType::Textarea, rows: Some(10), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("step_budget".to_string())] },
+            LayoutItem::Field("output_mode".to_string()),
+            LayoutItem::Field("system_prompt".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

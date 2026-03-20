@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, usePageState, useNavigate, Link } from "rwe";
+import { useState, useMemo, useEffect, useRef, usePageState, useNavigate, Link } from "zeb";
 
 // ─── Inline sub-components ────────────────────────────────────────────────
 

@@ -95,6 +95,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::LayoutItem;
 
 pub const NODE_KIND: &str = "n.crypto";
 const INPUT_PIN_IN: &str = "in";
@@ -149,6 +150,35 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "op".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "sha256".to_string(), label: "SHA-256 hash".to_string() },
+                    SelectOptionDef { value: "sha512".to_string(), label: "SHA-512 hash".to_string() },
+                    SelectOptionDef { value: "bcrypt_hash".to_string(), label: "bcrypt hash".to_string() },
+                    SelectOptionDef { value: "bcrypt_verify".to_string(), label: "bcrypt verify → true/false pin".to_string() },
+                    SelectOptionDef { value: "argon2_hash".to_string(), label: "Argon2id hash".to_string() },
+                    SelectOptionDef { value: "argon2_verify".to_string(), label: "Argon2id verify → true/false pin".to_string() },
+                    SelectOptionDef { value: "hmac_sha256".to_string(), label: "HMAC-SHA256".to_string() },
+                    SelectOptionDef { value: "base64_encode".to_string(), label: "Base64 encode".to_string() },
+                    SelectOptionDef { value: "base64_decode".to_string(), label: "Base64 decode".to_string() },
+                    SelectOptionDef { value: "random_hex".to_string(), label: "Random hex token".to_string() },
+                ], ..Default::default() },
+                NodeFieldDef { name: "input_path".to_string(), label: "Input Path".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "hash_path".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "key_path".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "cost".to_string(), label: "Cost (bcrypt)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "length".to_string(), label: "Length (random_hex)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("op".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("input_path".to_string()), LayoutItem::Field("hash_path".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("key_path".to_string()), LayoutItem::Field("cost".to_string())] },
+            LayoutItem::Field("length".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

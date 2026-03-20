@@ -83,7 +83,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::infra::transport::ws::{EmitTarget, RoomCmd, WsHub};
 
 pub const NODE_KIND: &str = "n.ws.emit";
@@ -158,6 +158,24 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+        ],
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "event".to_string(), label: "Event".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("message")), ..Default::default() },
+                NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "room".to_string(), label: "Room — broadcast to all members".to_string() },
+                    SelectOptionDef { value: "sender".to_string(), label: "Sender — reply to triggering socket only".to_string() },
+                ], ..Default::default() },
+                NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("event".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("to".to_string())] },
+            LayoutItem::Field("payload_path".to_string()),
         ],
         ai_tool: Default::default(),
     }

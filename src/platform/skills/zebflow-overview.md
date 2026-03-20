@@ -6,9 +6,9 @@ Zebflow is a pipeline-based reactive web automation platform. Projects contain:
 
 - **Pipelines** (`.zf.json`) — JSON-defined directed graphs connecting trigger nodes to action nodes
 - **Templates** (`.tsx`) — TSX-based server-side rendered UI using the RWE engine
-- **Simple Tables** — Managed key-value rows backed by Sekejap, queryable from pipelines
+- **Sekejap** — Zebflow's embedded multi-model database. Graph, vector, spatial, full-text, and temporal queries. Use `n.sekejap.query` in pipelines. Create tables in the UI first.
 - **Credentials** — Encrypted secrets (API keys, DB passwords) referenced by pipeline nodes
-- **DB Connections** — Named connections to PostgreSQL or SjTable databases
+- **DB Connections** — Named connections to PostgreSQL or Sekejap databases
 - **Agent Docs** — AGENTS.md, SOUL.md, MEMORY.md for agent session continuity
 
 ## Project Structure

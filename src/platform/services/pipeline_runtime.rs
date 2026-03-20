@@ -58,6 +58,15 @@ pub struct WsTriggerSpec {
     pub event: String,
 }
 
+/// Describes one webhook path conflict found during pipeline registration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookPathConflict {
+    pub path: String,
+    pub method: String,
+    pub pipeline_name: String,
+    pub file_rel_path: String,
+}
+
 /// Execution-ready active pipeline entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledPipeline {
@@ -267,14 +276,13 @@ impl PipelineRuntimeService {
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
     ) -> Result<(), PlatformError> {
         let owner = crate::platform::model::slug_segment(owner);
         let project = crate::platform::model::slug_segment(project);
         let Some(meta) = self
             .projects
-            .get_pipeline_meta(&owner, &project, virtual_path, name)?
+            .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
         else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
@@ -320,6 +328,71 @@ impl PipelineRuntimeService {
             .filter(|compiled| compiled.owner == owner && compiled.project == project)
             .cloned()
             .collect()
+    }
+
+    /// Returns any active pipelines that already claim the same `{method, path}` webhook
+    /// combination as the incoming graph.  Pass `self_file_rel_path` so a pipeline updating
+    /// itself is not reported as a conflict.
+    pub fn check_webhook_path_conflict(
+        &self,
+        owner: &str,
+        project: &str,
+        graph: &crate::pipeline::PipelineGraph,
+        self_file_rel_path: &str,
+    ) -> Vec<WebhookPathConflict> {
+        use crate::pipeline::nodes::basic::trigger::webhook::NODE_KIND as WEBHOOK_KIND;
+
+        let new_triggers: Vec<(String, String)> = graph
+            .nodes
+            .iter()
+            .filter(|n| n.kind == WEBHOOK_KIND)
+            .map(|n| {
+                let path = n
+                    .config
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("/")
+                    .to_string();
+                let method = n
+                    .config
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("POST")
+                    .to_uppercase();
+                (method, path)
+            })
+            .collect();
+
+        if new_triggers.is_empty() {
+            return vec![];
+        }
+
+        let mut conflicts = vec![];
+        for compiled in self.list_project(owner, project) {
+            if compiled.file_rel_path == self_file_rel_path {
+                continue;
+            }
+            for trigger in &compiled.webhook_triggers {
+                let existing = (trigger.method.to_uppercase(), trigger.path.clone());
+                for new in &new_triggers {
+                    if *new == existing {
+                        conflicts.push(WebhookPathConflict {
+                            path: trigger.path.clone(),
+                            method: trigger.method.to_uppercase(),
+                            pipeline_name: compiled
+                                .file_rel_path
+                                .trim_end_matches(".zf.json")
+                                .split('/')
+                                .last()
+                                .unwrap_or(&compiled.file_rel_path)
+                                .to_string(),
+                            file_rel_path: compiled.file_rel_path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        conflicts
     }
 }
 

@@ -68,8 +68,8 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
         }
     }
 
-    // contains sjtable.query — navigate to sekejap tables page
-    if lower.contains("sjtable.query") {
+    // contains sekejap.query (or legacy sjtable.query) — navigate to sekejap tables page
+    if lower.contains("sekejap.query") || lower.contains("sjtable.query") {
         let table_name = tokens.windows(2)
             .find(|w| w[0] == "--table")
             .map(|w| w[1])

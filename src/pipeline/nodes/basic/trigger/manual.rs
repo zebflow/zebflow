@@ -7,6 +7,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::{LayoutItem, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.trigger.manual";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -31,6 +32,14 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: vec![
+            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "__manual_note".to_string(), label: "Manual Trigger".to_string(), field_type: NodeFieldType::Text, readonly: true, default_value: Some(serde_json::json!("Runs only when pipeline execute trigger=manual.")), ..Default::default() },
+        ],
+        layout: vec![
+            LayoutItem::Field("title".to_string()),
+            LayoutItem::Field("__manual_note".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

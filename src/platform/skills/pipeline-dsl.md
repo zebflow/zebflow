@@ -44,9 +44,9 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
   [b] logic.switch --expr "input.body.type" --cases normal,urgent --default unknown \
-  [c] sjtable.query --table normal_queue --op upsert \
+  [c] sekejap.query --table normal_queue --op upsert \
   [d] http.request --url https://alerts.api/send --method POST \
-  [e] sjtable.query --table unknown_queue --op upsert \
+  [e] sekejap.query --table unknown_queue --op upsert \
   [a] -> [b] \
   [b]:normal  -> [c] \
   [b]:urgent  -> [d] \
@@ -188,13 +188,13 @@ run | pg.query --credential main-db -- "SELECT count(*) FROM users"
 
 run \
   | http.request --url https://example.com --method GET \
-  | sjtable.query --table results --op upsert
+  | sekejap.query --table results --op upsert
 
 # Graph mode
 run \
   [a] http.request --url https://example.com --method GET \
   [b] logic.if --expr "input.status >= 400" \
-  [c] sjtable.query --table errors --op upsert \
+  [c] sekejap.query --table errors --op upsert \
   [a] -> [b] \
   [b]:true -> [c]
 
@@ -214,8 +214,8 @@ DB connections are first-class. Explore them before writing SQL nodes.
 get connections
 ```
 
-Returns: slug, label, kind (postgres, mysql, sjtable) for each connection.
-The **slug** is what `--credential` references in `pg.query` and `sjtable.query` nodes.
+Returns: slug, label, kind (postgres, mysql, sekejap) for each connection.
+The **slug** is what `--credential` references in `pg.query` and `sekejap.query` nodes.
 
 ### describe connection — traverse schema
 
@@ -269,7 +269,7 @@ n.logic.switch --help           # same
 | `script` | `n.script` | `--lang <js\|py\|...>` or `-- <code>` |
 | `web.render` | `n.web.render` | `--template-path <pages/name.tsx> --route <path>` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST>` |
-| `sjtable.query` | `n.sjtable.query` | `--table <name> --op <query\|upsert>` |
+| `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
 | `pg.query` | `n.pg.query` | `--credential <slug>` + `-- <sql>` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
@@ -379,7 +379,7 @@ register event-router --path /webhooks \
   [c] script --lang js -- "return handleCreate(input);" \
   [d] script --lang js -- "return handleUpdate(input);" \
   [e] script --lang js -- "return handleDelete(input);" \
-  [f] sjtable.query --table unknown_events --op upsert \
+  [f] sekejap.query --table unknown_events --op upsert \
   [a] -> [b] \
   [b]:create  -> [c] \
   [b]:update  -> [d] \
@@ -431,7 +431,7 @@ register retry-job --path /jobs \
        -- "const n=(input.attempts||0)+1; return {...doWork(input), attempts:n};" \
   [c] logic.switch --expr "input.status" --cases done,failed --default retry \
   [d] script --lang js -- "return { result: input };" \
-  [e] sjtable.query --table failures --op upsert \
+  [e] sekejap.query --table failures --op upsert \
   [f] logic.if --expr "input.attempts < 5" \
   [a] -> [b] \
   [b] -> [c] \
