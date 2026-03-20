@@ -39,12 +39,8 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
             },
             security: crate::rwe::core::SecurityPolicy {
                 import_allowlist: {
-                    // Always allow project-local import shapes; external prefixes are additive.
-                    let mut allow = vec!["./".to_string(), "../".to_string(), "@/".to_string()];
+                    let mut allow = vec!["@/".to_string()];
                     allow.extend(options.allow_list.urls.clone());
-                    if !allow.iter().any(|v| v == "rwe") {
-                        allow.push("rwe".to_string());
-                    }
                     allow
                 },
                 network_allowlist: if options.allow_list.urls.is_empty() {

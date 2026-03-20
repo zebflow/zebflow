@@ -45,6 +45,7 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
     let mut diagnostics = security::analyze(source, &options.security)?;
 
     let raw_imports = collect_imports(&parsed.program);
+    validate_zeb_exclusive_symbols(&parsed.program)?;
     validate_import_allowlist(&raw_imports, &options)?;
 
     let (rewritten_source, imports) =
@@ -114,30 +115,56 @@ fn collect_imports(program: &oxc_ast::ast::Program<'_>) -> Vec<String> {
 
 fn validate_import_allowlist(
     imports: &[String],
-    options: &CompileOptions,
+    _options: &CompileOptions,
 ) -> Result<(), EngineError> {
     for import in imports {
-        if import == "rwe" {
-            continue;
-        }
-        if import.starts_with("npm:") || import.starts_with("node:") || import.starts_with("jsr:") {
-            continue;
-        }
-        if import.starts_with('/') {
-            continue;
-        }
-        if options
-            .security
-            .import_allowlist
-            .iter()
-            .any(|prefix| import.starts_with(prefix))
-        {
-            continue;
-        }
+        if import == "zeb" { continue; }
+        if import.starts_with("zeb/") { continue; }
+        if import.starts_with("@/") { continue; }
+        // Absolute paths are the resolved form of @/ imports written to disk by
+        // prepare_template_root() before compile() is called. Never user-authored.
+        if import.starts_with('/') { continue; }
         return Err(EngineError::new(
-            "RWE_IMPORT_ALLOWLIST",
-            format!("import '{import}' is not allowed by security policy"),
+            "RWE_IMPORT_NOT_ALLOWED",
+            format!("import '{import}' is not allowed; only \"zeb\", \"zeb/*\", and \"@/\" imports are valid"),
         ));
+    }
+    Ok(())
+}
+
+const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
+    "useState", "useEffect", "useRef", "useMemo", "useCallback",
+    "useContext", "useReducer", "useId", "useLayoutEffect",
+    "usePageState", "useNavigate",
+    "cx", "Link", "forwardRef", "memo", "createContext", "Fragment",
+];
+
+fn validate_zeb_exclusive_symbols(
+    program: &oxc_ast::ast::Program<'_>,
+) -> Result<(), EngineError> {
+    use oxc_ast::ast::ImportDeclarationSpecifier;
+    for stmt in &program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let specifier = import.source.value.as_str();
+            // "zeb", "zeb/*", and absolute paths (resolved form of @/ and "zeb" after
+            // prepare_template_root rewrites them on disk) are all trusted.
+            if specifier == "zeb" || specifier.starts_with("zeb/") || specifier.starts_with('/') {
+                continue;
+            }
+            if let Some(specifiers) = &import.specifiers {
+                for s in specifiers.iter() {
+                    if let ImportDeclarationSpecifier::ImportSpecifier(named) = s {
+                        let name = named.imported.name().as_str();
+                        if ZEB_EXCLUSIVE_SYMBOLS.contains(&name) {
+                            return Err(EngineError::new(
+                                "RWE_IMPORT_ZEB_ONLY",
+                                format!("'{name}' must be imported from \"zeb\", not \"{specifier}\""),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -153,6 +180,8 @@ fn strip_runtime_imports(source: &str) -> String {
             }
             !trimmed.contains("from 'rwe'")
                 && !trimmed.contains("from \"rwe\"")
+                && !trimmed.contains("from 'zeb'")
+                && !trimmed.contains("from \"zeb\"")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -168,7 +197,7 @@ fn rewrite_imports(
     let mut out = Vec::new();
 
     for import in imports {
-        if import == "rwe" {
+        if import == "zeb" {
             continue;
         }
 
@@ -287,7 +316,7 @@ fn canonical_or_fallback(path: &Path) -> Result<PathBuf, EngineError> {
 }
 
 fn resolve_module_path(base: &Path) -> Result<PathBuf, EngineError> {
-    if base.exists() {
+    if base.is_file() {
         return Ok(base.to_path_buf());
     }
 
@@ -540,7 +569,7 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier == "rwe" || specifier.starts_with("rwe-") {
+            if specifier == "zeb" {
                 if let Some(ref specifiers) = import.specifiers {
                     for s in specifiers {
                         match s {
@@ -608,8 +637,7 @@ fn strip_local_imports(source: &str) -> String {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            let should_strip = specifier == "rwe"
-                || specifier.starts_with("rwe-")
+            let should_strip = specifier == "zeb"
                 || specifier.starts_with('/');
             if should_strip {
                 let start = import.span.start as usize;
@@ -643,59 +671,102 @@ fn strip_local_imports(source: &str) -> String {
 }
 
 /// Convert exported declarations to local ones for inlined modules.
-/// Handles multi-line TypeScript type/interface declarations by tracking brace depth.
+/// Uses OXC AST — handles all valid TypeScript syntax regardless of formatting or comments.
+///
+/// - `export type X = ...`, `export interface X {}` → stripped entirely (type-only, no runtime)
+/// - `export function/class/const/let/var X` → `export ` prefix removed
+/// - `export default function/class X` → `export default ` prefix removed
+/// - `export default expression` → `export default ` prefix removed
 fn localize_exports(source: &str) -> String {
-    let mut skip_depth: i32 = 0;
-    source
-        .lines()
-        .filter_map(|line| {
-            let t = line.trim();
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind};
 
-            // Inside a multi-line export type/interface block — track braces, skip all lines.
-            if skip_depth > 0 {
-                for ch in t.chars() {
-                    match ch {
-                        '{' => skip_depth += 1,
-                        '}' => skip_depth -= 1,
-                        _ => {}
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        // Cannot parse — return source unchanged rather than corrupting it.
+        return source.to_string();
+    }
+
+    let src_bytes = source.as_bytes();
+    let mut ops: Vec<(usize, usize)> = Vec::new(); // byte ranges to delete
+
+    for stmt in &parsed.program.body {
+        match stmt {
+            Statement::ExportNamedDeclaration(ed) => {
+                let Some(decl) = &ed.declaration else { continue };
+                let export_start = ed.span.start as usize;
+                match decl {
+                    // Type-only: strip the entire statement.
+                    Declaration::TSTypeAliasDeclaration(_)
+                    | Declaration::TSInterfaceDeclaration(_) => {
+                        let mut end = ed.span.end as usize;
+                        if end < source.len() && src_bytes[end] == b'\n' {
+                            end += 1;
+                        }
+                        ops.push((export_start, end));
                     }
+                    // Runtime: strip only the `export ` prefix so the declaration stays.
+                    Declaration::FunctionDeclaration(f) => {
+                        ops.push((export_start, f.span.start as usize));
+                    }
+                    Declaration::ClassDeclaration(c) => {
+                        ops.push((export_start, c.span.start as usize));
+                    }
+                    Declaration::VariableDeclaration(v) => {
+                        ops.push((export_start, v.span.start as usize));
+                    }
+                    _ => {}
                 }
-                return None;
             }
+            Statement::ExportDefaultDeclaration(ed) => {
+                let export_start = ed.span.start as usize;
+                let inner_start = match &ed.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        f.span.start as usize
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                        c.span.start as usize
+                    }
+                    _ => {
+                        // Covers: expressions, `export default interface X {}`, etc.
+                        // Scan past the `export default ` keyword in raw bytes.
+                        let mut i = export_start;
+                        while i < src_bytes.len() && src_bytes[i] != b' ' && src_bytes[i] != b'\t' { i += 1; }
+                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t') { i += 1; }
+                        while i < src_bytes.len() && src_bytes[i] != b' ' && src_bytes[i] != b'\t' && src_bytes[i] != b'\n' { i += 1; }
+                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t') { i += 1; }
+                        i
+                    }
+                };
+                if inner_start > export_start {
+                    ops.push((export_start, inner_start));
+                }
+            }
+            _ => {}
+        }
+    }
 
-            // Start of a multi-line (or single-line) export type/interface declaration.
-            if t.starts_with("export type ") || t.starts_with("export interface ") {
-                let opens = t.chars().filter(|&c| c == '{').count() as i32;
-                let closes = t.chars().filter(|&c| c == '}').count() as i32;
-                skip_depth = opens - closes;
-                return None;
-            }
+    if ops.is_empty() {
+        return source.to_string();
+    }
 
-            let mut s = line.to_string();
-            // Order matters: check "export default function/class" before "export default"
-            if t.starts_with("export default function ") {
-                s = s.replacen("export default function ", "function ", 1);
-            } else if t.starts_with("export default class ") {
-                s = s.replacen("export default class ", "class ", 1);
-            } else if t.starts_with("export default ") {
-                // Bare re-export: `export default Select;` → `Select;` (no-op expression)
-                s = s.replacen("export default ", "", 1);
-            } else if t.starts_with("export function ") {
-                s = s.replacen("export function ", "function ", 1);
-            } else if t.starts_with("export async function ") {
-                s = s.replacen("export async function ", "async function ", 1);
-            } else if t.starts_with("export class ") {
-                s = s.replacen("export class ", "class ", 1);
-            } else if t.starts_with("export const ") {
-                s = s.replacen("export const ", "const ", 1);
-            } else if t.starts_with("export let ") {
-                s = s.replacen("export let ", "let ", 1);
-            } else if t.starts_with("export var ") {
-                s = s.replacen("export var ", "var ", 1);
-            }
-            Some(s)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    ops.sort_by_key(|r| r.0);
+
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in &ops {
+        if *start > cursor {
+            result.push_str(&source[cursor..*start]);
+        }
+        cursor = *end;
+    }
+    if cursor < source.len() {
+        result.push_str(&source[cursor..]);
+    }
+    result
 }
 

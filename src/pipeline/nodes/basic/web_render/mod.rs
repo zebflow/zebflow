@@ -173,7 +173,7 @@ use serde_json::{Value, json};
 
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 use crate::pipeline::{PipelineError, NodeDefinition};
-use crate::pipeline::model::{DslFlag, DslFlagKind};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::language::LanguageEngine;
 use crate::rwe::{CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, TemplateSource};
 
@@ -238,6 +238,19 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::CommaSeparatedList,
                 required: false,
             },
+        ],
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "__render_basic".to_string(), label: "Render Target".to_string(), field_type: NodeFieldType::Section, ..Default::default() },
+                NodeFieldDef { name: "template_path_select".to_string(), label: "Template".to_string(), field_type: NodeFieldType::Datalist, data_source: Some(NodeFieldDataSource::TemplatesPages), placeholder: Some("pages/blog/list.tsx".to_string()), help: Some("Select template file from workspace.".to_string()), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Field("title".to_string()),
+            LayoutItem::Field("__render_basic".to_string()),
+            LayoutItem::Field("template_path_select".to_string()),
         ],
         ai_tool: Default::default(),
     }

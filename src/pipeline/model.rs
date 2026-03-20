@@ -226,6 +226,135 @@ pub struct DslFlag {
     pub required: bool,
 }
 
+// ── Node field definitions ────────────────────────────────────────────────────
+//
+// These types describe the **UI form fields** for each node kind.  Every node
+// declares its own `fields: Vec<NodeFieldDef>` inside `definition()`.  The
+// pipeline editor reads these from the `/docs/node` API response and renders a
+// generic config form — no TypeScript changes needed when a new node is added.
+
+/// What kind of UI widget a node field uses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeFieldType {
+    Text,
+    Textarea,
+    CodeEditor,
+    Select,
+    Datalist,
+    MethodButtons,
+    CopyUrl,
+    Checkbox,
+    Section,
+}
+
+impl Default for NodeFieldType {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
+/// Where a select/datalist field's options come from at runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeFieldDataSource {
+    /// Live project Postgres credentials.
+    CredentialsPostgres,
+    /// Live project JWT credentials.
+    CredentialsJwt,
+    /// Live project page templates.
+    TemplatesPages,
+}
+
+/// One option in a `select`, `datalist`, or `method_buttons` field.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SelectOptionDef {
+    pub value: String,
+    pub label: String,
+}
+
+/// One item in a code-editor sidebar section.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SidebarItem {
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// A collapsible group of items shown in the code-editor sidebar.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct SidebarSection {
+    pub title: String,
+    pub items: Vec<SidebarItem>,
+}
+
+/// Describes one form field in a node's config dialog.
+///
+/// Nodes declare `fields: Vec<NodeFieldDef>` in their `definition()`.
+/// The pipeline editor reads this from `/docs/node` and renders the form
+/// generically — no frontend changes are needed when a new node is added.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct NodeFieldDef {
+    /// Config key (also used as the HTML field name).
+    pub name: String,
+    /// Human-readable label shown above the field.
+    pub label: String,
+    /// Widget type.
+    #[serde(rename = "type", default)]
+    pub field_type: NodeFieldType,
+    /// Optional help text shown below the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// Input placeholder text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// When true the field is read-only (display only).
+    #[serde(default)]
+    pub readonly: bool,
+    /// Textarea height hint (number of rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+    /// Code-editor language (e.g. `"javascript"`, `"sql"`, `"json"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Static options for `select`, `datalist`, and `method_buttons`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<SelectOptionDef>,
+    /// Dynamic options resolved from live project data at render time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_source: Option<NodeFieldDataSource>,
+    /// Default value used when the config key is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<serde_json::Value>,
+    /// Sidebar sections shown next to a `code_editor` field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sidebar: Vec<SidebarSection>,
+    /// Grid span override: `"full"` (col-span-2) or `"half"` (col-span-1).
+    /// Omit to use the default based on field type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<String>,
+}
+
+/// One item in a node's dialog layout tree.
+///
+/// `Field(name)` references a `NodeFieldDef` by its `name` key.
+/// `Row` renders children horizontally (equal-width flex columns).
+/// `Col` renders children vertically (nested stack inside a row cell).
+///
+/// Top-level `NodeDefinition::layout` is an implicit vertical stack.
+/// Serializes as untagged: `"field_name"`, `{"row":[...]}`, `{"col":[...]}`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum LayoutItem {
+    Field(String),
+    Row { row: Vec<LayoutItem> },
+    Col { col: Vec<LayoutItem> },
+}
+
+// ── Pipeline graph ─────────────────────────────────────────────────────────────
+
 /// A complete pipeline graph ready for execution.
 ///
 /// Persisted as `repo/pipelines/<name>.zf.json`.  Loaded by
@@ -480,6 +609,19 @@ pub struct NodeDefinition {
     /// `route`) must NOT appear here — they are not settable by users or agents.
     #[serde(default)]
     pub dsl_flags: Vec<DslFlag>,
+    /// UI field definitions for the node config dialog.
+    ///
+    /// Declares the form fields shown when a user clicks "Edit" on this node in the
+    /// pipeline editor.  The editor reads these from `/docs/node` and renders a generic
+    /// form — no TypeScript changes needed when a new node is added or modified.
+    ///
+    /// Every node prepends a `title` text field automatically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<NodeFieldDef>,
+    /// Hierarchical layout tree for the config dialog.
+    /// Empty = fall back to flat 2-column grid using `fields` order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout: Vec<LayoutItem>,
 }
 
 /// Script bridge capability as exposed in a [`NodeUsageMatrix`].
@@ -564,6 +706,12 @@ pub struct NodeContractItem {
     /// exactly what `--flags` a node accepts without reading Rust source.
     #[serde(default)]
     pub dsl_flags: Vec<DslFlag>,
+    /// UI field definitions for the node config dialog.  Same as [`NodeDefinition::fields`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<NodeFieldDef>,
+    /// Hierarchical layout tree — passed through from [`NodeDefinition::layout`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout: Vec<LayoutItem>,
 }
 
 /// Root response envelope for `GET /docs/node`.
@@ -620,6 +768,8 @@ impl From<NodeDefinition> for NodeContractItem {
             input_pins: value.input_pins,
             output_pins: value.output_pins,
             dsl_flags: value.dsl_flags,
+            fields: value.fields,
+            layout: value.layout,
             usage_matrix: NodeUsageMatrix {
                 pipeline_node: true,
                 script_usage: NodeScriptUsageContract {
@@ -700,6 +850,24 @@ pub struct PipelineContext {
     pub input: Value,
 }
 
+/// Per-node execution record captured by the pipeline engine during a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeTraceEntry {
+    /// Node's `zfPipelineNodeId` (slug), e.g. `"fetch-user"`.
+    pub node_id: String,
+    /// Node kind, e.g. `"n.pg.query"`.
+    pub node_kind: String,
+    /// Wall-clock duration of this node in milliseconds.
+    pub duration_ms: u64,
+    /// Input payload delivered to this node.
+    pub input: Value,
+    /// Output payload produced by this node (`null` on error).
+    pub output: Value,
+    /// Set if this node threw a `PipelineError`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Final output of a completed pipeline execution.
 ///
 /// `value` is the payload produced by the last (terminal) node.  For `n.web.render` this
@@ -714,6 +882,9 @@ pub struct PipelineOutput {
     pub value: Value,
     /// Ordered trace entries from all nodes that executed during this run.
     pub trace: Vec<String>,
+    /// Structured per-node trace (populated by BasicPipelineEngine).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_trace: Vec<NodeTraceEntry>,
 }
 
 /// A typed error produced at any point during pipeline execution.
@@ -721,6 +892,9 @@ pub struct PipelineOutput {
 /// `code` is a stable SCREAMING_SNAKE_CASE string prefixed by the node kind
 /// (e.g. `"FW_NODE_PG_CONFIG"`, `"FW_NODE_WEB_RENDER_COMPILE"`).  It is safe to
 /// match on in tests and error handlers.  `message` is the human-readable detail.
+///
+/// `node_id` and `node_kind` are optionally populated by the engine at the BFS execution
+/// boundary so error messages include the failing node identity.
 ///
 /// # Stable error code conventions
 ///
@@ -737,6 +911,14 @@ pub struct PipelineError {
     pub code: &'static str,
     /// Human-readable error detail.
     pub message: String,
+    /// Node instance id that produced this error (e.g. `"n1"`, `"query"`).
+    /// Populated by the engine at the BFS execution boundary; `None` for config errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Node kind that produced this error (e.g. `"n.pg.query"`).
+    /// Populated by the engine at the BFS execution boundary; `None` for config errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_kind: Option<String>,
 }
 
 impl PipelineError {
@@ -745,6 +927,18 @@ impl PipelineError {
         Self {
             code,
             message: message.into(),
+            node_id: None,
+            node_kind: None,
+        }
+    }
+
+    /// Constructs an error attributed to a specific node instance.
+    pub fn node(node_id: &str, node_kind: &str, code: &'static str, msg: &str) -> Self {
+        Self {
+            code,
+            message: msg.to_string(),
+            node_id: Some(node_id.to_string()),
+            node_kind: Some(node_kind.to_string()),
         }
     }
 }

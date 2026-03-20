@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use crate::platform::error::PlatformError;
-use crate::platform::model::{ZebflowJson, ZebflowJsonAssistant, ZebflowJsonProject, slug_segment};
+use crate::platform::model::{
+    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonProject, ZebflowJsonRweLibraries,
+    ZebflowJsonRweLibraryEntry, slug_segment,
+};
 
 /// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.json`.
 pub struct ZebflowJsonService {
@@ -94,6 +97,49 @@ impl ZebflowJsonService {
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
             cfg.assistant = assistant;
+        })?;
+        Ok(())
+    }
+
+    /// Returns the `rwe.libraries` map from zebflow.json.
+    pub fn get_rwe_libraries(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ZebflowJsonRweLibraries, PlatformError> {
+        Ok(self.read_or_default(owner, project).rwe.libraries)
+    }
+
+    /// Adds or updates one enabled library entry in `rwe.libraries`.
+    pub fn enable_rwe_library(
+        &self,
+        owner: &str,
+        project: &str,
+        name: &str,
+        version: &str,
+        source: &str,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            cfg.rwe.libraries.insert(
+                name.to_string(),
+                ZebflowJsonRweLibraryEntry {
+                    version: version.to_string(),
+                    source: source.to_string(),
+                },
+            );
+        })?;
+        Ok(())
+    }
+
+    /// Removes one library entry from `rwe.libraries`. No-op if not present.
+    pub fn disable_rwe_library(
+        &self,
+        owner: &str,
+        project: &str,
+        name: &str,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            cfg.rwe.libraries.remove(name);
         })?;
         Ok(())
     }

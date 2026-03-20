@@ -4,11 +4,11 @@
 
 /// One platform skill document.
 pub struct Skill {
-    /// Stable identifier used by `read_skill` MCP tool.
+    /// Stable identifier used by `skill_read` MCP tool.
     pub name: &'static str,
     /// Short human-readable title.
     pub title: &'static str,
-    /// First ~150 chars used as summary in `list_skills`.
+    /// First ~150 chars used as summary in `skill_list`.
     pub content: &'static str,
 }
 
@@ -24,6 +24,18 @@ impl Skill {
             .unwrap_or(s.len());
         &s[..end]
     }
+}
+
+/// One project archetype example (returned by `help_examples`).
+pub struct Example {
+    /// Stable slug used by `help_examples` tool.
+    pub slug: &'static str,
+    /// Short human-readable title.
+    pub title: &'static str,
+    /// One-line description shown in the listing.
+    pub description: &'static str,
+    /// Full markdown content returned when slug is specified.
+    pub content: &'static str,
 }
 
 static SKILLS: &[Skill] = &[
@@ -87,6 +99,68 @@ static SKILLS: &[Skill] = &[
         title: "REST API Reference",
         content: include_str!("api-reference.md"),
     },
+    Skill {
+        name: "help-pipeline",
+        title: "Pipeline System Guide",
+        content: include_str!("help-pipeline.md"),
+    },
+];
+
+static EXAMPLES: &[Example] = &[
+    Example {
+        slug: "webhook-restapi-postgres",
+        title: "REST API + PostgreSQL",
+        description: "JSON REST API (list, detail, create, update, delete) backed by PostgreSQL. Shows --params-path and --params-expr for safe parameterized queries with path params, query strings, and POST body.",
+        content: include_str!("examples/webhook-restapi-postgres.md"),
+    },
+    Example {
+        slug: "webhook-page-tsx",
+        title: "Webhook → TSX Page",
+        description: "Server-rendered HTML page from a GET webhook. pg.query result flows as `input` into the TSX template. Covers static, list, detail (path param), and query-string-filtered pages.",
+        content: include_str!("examples/webhook-page-tsx.md"),
+    },
+    Example {
+        slug: "cookie-jwt-auth",
+        title: "Cookie + JWT Authentication",
+        description: "Login issues a JWT in an HttpOnly cookie. Protected routes use --auth-type jwt to auto-verify; claims land in input.auth. Covers logout, role checks, and protected API endpoints.",
+        content: include_str!("examples/cookie-jwt-auth.md"),
+    },
+    Example {
+        slug: "agentic-scheduling",
+        title: "Agentic Scheduling (AI + Cron)",
+        description: "Scheduled pipelines that invoke zebtune AI agent to analyze data, generate reports, and classify queues.",
+        content: include_str!("examples/agentic-scheduling.md"),
+    },
+    Example {
+        slug: "blog-with-admin",
+        title: "Blog with Admin",
+        description: "Public blog with paginated listing, post detail, and JWT-protected admin CRUD. Uses Sekejap for posts.",
+        content: include_str!("examples/blog-with-admin.md"),
+    },
+    Example {
+        slug: "forum-with-chat",
+        title: "Forum with Real-Time Chat",
+        description: "Forum with threaded rooms and live WebSocket chat per room. Messages persisted in Sekejap.",
+        content: include_str!("examples/forum-with-chat.md"),
+    },
+    Example {
+        slug: "realtime-game",
+        title: "Real-Time Game (WebSocket State Sync)",
+        description: "Multiplayer game with server-side room state synced to all clients via ws.sync_state and ws.emit.",
+        content: include_str!("examples/realtime-game.md"),
+    },
+    Example {
+        slug: "scraping",
+        title: "Web Scraping + Data Pipeline",
+        description: "Cron-based scrapers that fetch external APIs or HTML pages, parse with script nodes, and upsert to Sekejap.",
+        content: include_str!("examples/scraping.md"),
+    },
+    Example {
+        slug: "auth-and-authorization",
+        title: "Auth and Authorization",
+        description: "Full JWT auth: login, register, session cookies, role-based access control, protected routes.",
+        content: include_str!("examples/auth-and-authorization.md"),
+    },
 ];
 
 /// Returns all available platform skills.
@@ -97,6 +171,16 @@ pub fn all_skills() -> &'static [Skill] {
 /// Find a skill by name.
 pub fn get_skill(name: &str) -> Option<&'static Skill> {
     SKILLS.iter().find(|s| s.name == name)
+}
+
+/// Returns all available project archetypes.
+pub fn all_examples() -> &'static [Example] {
+    EXAMPLES
+}
+
+/// Find an example archetype by slug.
+pub fn get_example(slug: &str) -> Option<&'static Example> {
+    EXAMPLES.iter().find(|e| e.slug == slug)
 }
 
 /// Format all skill summaries into a system prompt section.

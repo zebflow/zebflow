@@ -7,6 +7,7 @@ export function initPipelineRegistryBehavior() {
     const owner = root.dataset.owner ?? "";
     const project = root.dataset.project ?? "";
     const apiDelete = root.dataset.apiDelete ?? "";
+    const apiDeleteTemplate = root.dataset.apiDeleteTemplate ?? "";
     const apiGitStatus = root.dataset.apiGitStatus ?? "";
     const apiGitCommit = root.dataset.apiGitCommit ?? "";
 
@@ -31,6 +32,28 @@ export function initPipelineRegistryBehavior() {
       const triggerKind = (newPipelineForm?.querySelector<HTMLSelectElement>("[name=trigger_kind]")?.value ?? "webhook");
       if (!name) return;
       createPipelineAndNavigate(getCurrentVirtualPath(), name, title, triggerKind);
+    });
+
+    // ── New Template inline form ──────────────────────────────────────────────
+    const newTemplateToggle = root.querySelector<HTMLButtonElement>("[data-new-template-toggle]");
+    const newTemplateForm = root.querySelector<HTMLElement>("[data-new-template-form]");
+    const newTemplateSubmit = root.querySelector<HTMLButtonElement>("[data-new-template-submit]");
+    const newTemplateCancel = root.querySelector<HTMLButtonElement>("[data-new-template-cancel]");
+
+    newTemplateToggle?.addEventListener("click", () => {
+      if (newTemplateForm) newTemplateForm.hidden = false;
+      if (newTemplateToggle) newTemplateToggle.hidden = true;
+    });
+    newTemplateCancel?.addEventListener("click", () => {
+      if (newTemplateForm) newTemplateForm.hidden = true;
+      if (newTemplateToggle) newTemplateToggle.hidden = false;
+      clearForm(newTemplateForm);
+    });
+    newTemplateSubmit?.addEventListener("click", () => {
+      const name = (newTemplateForm?.querySelector<HTMLInputElement>("[name=template_name]")?.value ?? "").trim();
+      const kindVal = (newTemplateForm?.querySelector<HTMLSelectElement>("[name=template_kind]")?.value ?? "page");
+      if (!name) return;
+      createTemplateAndNavigate(getCurrentVirtualPath(), name, kindVal);
     });
 
     // ── New Folder inline form ────────────────────────────────────────────────
@@ -99,15 +122,25 @@ export function initPipelineRegistryBehavior() {
     deleteCancelBtns.forEach((el) => el.addEventListener("click", closeDeleteDialog));
 
     deleteConfirmBtn?.addEventListener("click", async () => {
-      if (!pendingDeletePath || !apiDelete) return;
+      if (!pendingDeletePath) return;
       deleteConfirmBtn.disabled = true;
       deleteConfirmBtn.textContent = "Deleting…";
       try {
-        const resp = await fetch(apiDelete, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ file_rel_path: pendingDeletePath }),
-        });
+        const isPipeline = pendingDeletePath.endsWith(".zf.json");
+        let resp: Response;
+        if (isPipeline) {
+          if (!apiDelete) { alert("Delete API not configured"); deleteConfirmBtn.disabled = false; deleteConfirmBtn.textContent = "Delete"; return; }
+          resp = await fetch(apiDelete, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ file_rel_path: pendingDeletePath }),
+          });
+        } else {
+          if (!apiDeleteTemplate) { alert("Delete API not configured"); deleteConfirmBtn.disabled = false; deleteConfirmBtn.textContent = "Delete"; return; }
+          resp = await fetch(`${apiDeleteTemplate}?path=${encodeURIComponent(pendingDeletePath)}`, {
+            method: "DELETE",
+          });
+        }
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}));
           alert(`Delete failed: ${(data as any).error ?? resp.status}`);
@@ -250,16 +283,41 @@ export function initPipelineRegistryBehavior() {
       form?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea").forEach((el) => { el.value = ""; });
     }
 
+    async function createTemplateAndNavigate(virtualPath: string, name: string, kindVal: string) {
+      // Map kindVal (page/component/script) to parent folder relative to repo/pipelines/
+      const parentPath = virtualPath === "/" ? "" : virtualPath.replace(/^\//, "");
+      const kind = kindVal === "script" ? "Script" : kindVal === "component" ? "Component" : "Page";
+      const resp = await fetch(`/api/projects/${owner}/${project}/templates/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind, name, parent_rel_path: parentPath || null }),
+      });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        alert(`Failed to create template: ${(data as any).error ?? resp.status}`);
+        return;
+      }
+      const data = await resp.json() as any;
+      const relPath: string = data?.rel_path ?? "";
+      if (relPath) {
+        window.location.href = `/projects/${owner}/${project}/editor?type=template&file=${encodeURIComponent(relPath)}`;
+      } else {
+        window.location.reload();
+      }
+    }
+
     async function createPipelineAndNavigate(virtualPath: string, name: string, title: string, triggerKind: string) {
+      // Derive file_rel_path from virtualPath + name
+      const vSeg = virtualPath === "/" ? "" : virtualPath.replace(/^\//, "") + "/";
+      const fileRelPath = `pipelines/${vSeg}${name}.zf.json`;
       const defaultSource = JSON.stringify({
         kind: "zebflow.pipeline", version: "0.1", id: name,
-        metadata: { virtual_path: virtualPath },
         entry_nodes: [], nodes: [], edges: [],
       }, null, 2);
       const resp = await fetch(`/api/projects/${owner}/${project}/pipelines/definition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ virtual_path: virtualPath, name, title, description: "", trigger_kind: triggerKind, source: defaultSource }),
+        body: JSON.stringify({ file_rel_path: fileRelPath, title, description: "", trigger_kind: triggerKind, source: defaultSource }),
       });
       if (!resp.ok) {
         const data = await resp.json().catch(() => ({}));

@@ -1,5 +1,5 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
-import { useState, useEffect, cx } from "rwe";
+import { useState, useEffect, cx } from "zeb";
 
 export const page = {
   head: {
@@ -7,7 +7,7 @@ export const page = {
     description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-suite.css" },
-      { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
+      { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
     ],
   },
   html: {
@@ -28,6 +28,7 @@ function requestJson(url, options = {}) {
     },
     ...options,
   }).then(async (response) => {
+    if (response.status === 401) { window.location.href = "/login"; return null; }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const message = payload?.error?.message || payload?.message || `${response.status} ${response.statusText}`;

@@ -24,6 +24,7 @@ use super::instrument::{forbid_patterns, inject_loop_guards};
 use super::runner::run_compiled_script;
 
 const RUNNER_REL_PATH: &str = "runtime/secure_js_runner.js";
+const TOOL_INIT: &str = include_str!("../../../language/runtime/tool_init.js");
 
 /// Serialized artifact produced by `DenoSandboxEngine::compile_script`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -111,7 +112,7 @@ impl DenoSandboxEngine {
         };
 
         let module_source =
-            format!("export default async function(input, n, ctx) {{\n{body}\n}}\n");
+            format!("{TOOL_INIT}\nexport default async function(input, n, ctx) {{\n{body}\n}}\n");
 
         let mut hasher = DefaultHasher::new();
         module_source.hash(&mut hasher);

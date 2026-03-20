@@ -10,10 +10,10 @@ export function CodeEditor(props) {
   const heightClass = HEIGHT_CLASSES[props?.height] ?? HEIGHT_CLASSES.sm;
 
   return (
-    <div className={cx("relative group rounded-md border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 overflow-hidden", props?.className)}>
-      <div className={cx("items-center justify-between px-3 py-1.5 border-b border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900", headerVisible ? "flex" : "hidden")}>
-        <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">{props.language}</span>
-        <span className="text-[10px] text-slate-400">{props.filename}</span>
+    <div className={cx("relative group rounded-md border border-[var(--zf-ui-border)] bg-[var(--zf-ui-bg)] overflow-hidden", props?.className)}>
+      <div className={cx("items-center justify-between px-3 py-1.5 border-b border-[var(--zf-ui-border)] bg-[var(--zf-ui-bg-subtle)]", headerVisible ? "flex" : "hidden")}>
+        <span className="text-[10px] font-medium text-[var(--zf-ui-text-muted)] uppercase tracking-wider">{props.language}</span>
+        <span className="text-[10px] text-[var(--zf-ui-text-muted)]">{props.filename}</span>
       </div>
       <div 
         data-zeb-lib="codemirror"

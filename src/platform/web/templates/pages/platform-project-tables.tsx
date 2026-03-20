@@ -7,7 +7,7 @@ export const page = {
     description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
-      { rel: "stylesheet", href: "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css" },
+      { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
     ],
   },
   html: {

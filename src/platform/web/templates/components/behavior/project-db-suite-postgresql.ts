@@ -45,6 +45,7 @@ async function requestJson(url, options = {}) {
     ...options,
   });
 
+  if (response.status === 401) { window.location.href = "/login"; return null; }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const message =

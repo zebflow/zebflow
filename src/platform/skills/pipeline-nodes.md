@@ -85,15 +85,17 @@ When the terminal node is `web_render`, the webhook response is HTML with `Conte
 
 ## Data Nodes
 
-### `sjtable_query`
-Queries or mutates a Simple Table (Sekejap-backed).
+### `n.sekejap.query`
+Queries or upserts rows in Sekejap — Zebflow's embedded multi-model database (graph, vector, spatial, full-text, temporal). Create tables in the UI (Tables page) before using.
+
+**DSL name:** `sekejap.query`
 
 **List rows:**
 ```json
 {
-  "kind": "sjtable_query",
+  "kind": "n.sekejap.query",
   "config": {
-    "operation": "list",
+    "operation": "query",
     "table": "blog_posts"
   }
 }
@@ -102,12 +104,12 @@ Queries or mutates a Simple Table (Sekejap-backed).
 **Get by field:**
 ```json
 {
-  "kind": "sjtable_query",
+  "kind": "n.sekejap.query",
   "config": {
-    "operation": "get",
+    "operation": "query",
     "table": "blog_posts",
     "where_field": "slug",
-    "where_value": "{{input.query.slug}}"
+    "where_value_path": "/query/slug"
   }
 }
 ```
@@ -115,24 +117,12 @@ Queries or mutates a Simple Table (Sekejap-backed).
 **Upsert row:**
 ```json
 {
-  "kind": "sjtable_query",
+  "kind": "n.sekejap.query",
   "config": {
     "operation": "upsert",
     "table": "blog_posts",
-    "row_id": "{{input.body.id}}",
-    "data": "{{input.body}}"
-  }
-}
-```
-
-**Delete row:**
-```json
-{
-  "kind": "sjtable_query",
-  "config": {
-    "operation": "delete",
-    "table": "blog_posts",
-    "row_id": "{{input.body.id}}"
+    "row_id_path": "/body/id",
+    "data_path": "/body"
   }
 }
 ```
@@ -215,16 +205,65 @@ Mutates the shared room state and broadcasts a `state_patch` to all clients.
 
 ---
 
-### `pg_query`
-Executes a SQL query against a PostgreSQL DB connection.
+### `pg.query`
 
-```json
-{
-  "kind": "pg_query",
-  "config": {
-    "connection_slug": "my_pg_connection",
-    "sql": "SELECT * FROM posts WHERE status = $1",
-    "params": ["published"]
-  }
-}
+Executes a SQL query against a PostgreSQL credential. SELECT/WITH returns `{ rows: [...] }`. INSERT/UPDATE/DELETE returns `{ affected_rows: N }`.
+
+**DSL:** `pg.query --credential <slug> [--params-path <dot.path>] [--params-expr <js>] -- "SQL"`
+
+**DSL flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--credential <slug>` | **Required.** PostgreSQL credential slug from project credentials. |
+| `--params-path <dot.path>` | Dot-notation path into upstream payload → value becomes `$1` (scalar) or `$1,$2,...` (array). e.g. `params.unit_id`, `query.status` |
+| `--params-expr <js>` | JS expression evaluated against `input` → must return array `[$1, $2, ...]`. Use for multiple or conditional params. |
+
+**Webhook input shape** (what's available in `--params-path` / `--params-expr`):
+- `input.params.<name>` — path segment from `:name` in the trigger path (e.g. `--path /api/users/:id` → `input.params.id`)
+- `input.query.<name>` — URL query string value (e.g. `?status=active` → `input.query.status`)
+- `input.<name>` — GET: path params + query string are also merged to root; POST with JSON object body: fields merged to root
+- `input.body` — raw body or nested non-object JSON
+
+**IMPORTANT: `--params-path` uses dot notation**, not JSON pointer syntax. Use `params.unit_id` not `/params/unit_id`.
+
+**Static query (no params):**
 ```
+| pg.query --credential my-pg -- "SELECT id, title FROM posts ORDER BY created_at DESC LIMIT 20"
+```
+
+**Path param** — `:unit_id` in trigger path → `input.params.unit_id` → dot path `params.unit_id`:
+```
+| trigger.webhook --path /api/programmes/:unit_id --method GET
+| pg.query --credential my-pg --params-path params.unit_id \
+    -- "SELECT unit_id::text, code, title FROM academic_unit WHERE unit_id = $1::uuid"
+```
+
+**Query string param** — `?status=active` → `input.query.status` → dot path `query.status`:
+```
+| trigger.webhook --path /api/users --method GET
+| pg.query --credential my-pg --params-path query.status \
+    -- "SELECT id, name FROM users WHERE status = $1"
+```
+
+**Multiple params via JS expression:**
+```
+| trigger.webhook --path /api/search --method GET
+| pg.query --credential my-pg --params-expr "[input.query.q, input.query.limit || '20']" \
+    -- "SELECT * FROM posts WHERE title ILIKE '%' || $1 || '%' LIMIT $2::int"
+```
+
+**POST body fields:**
+```
+| trigger.webhook --path /api/users --method POST
+| pg.query --credential my-pg --params-expr "[input.name, input.email]" \
+    -- "INSERT INTO users (name, email) VALUES ($1, $2) RETURNING id"
+```
+
+**`--params-path` vs `--params-expr`:**
+
+| | `--params-path` | `--params-expr` |
+|---|---|---|
+| Use when | Single `$1` from a known dot path | Multiple values or conditional logic |
+| Syntax | Dot notation: `params.id`, `query.status` | JS expression: `[input.name, input.email]` |
+| Returns | Scalar → `[$1]`; array → `[$1, $2, ...]` | Array → `[$1, $2, ...]` |

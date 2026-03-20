@@ -1,10 +1,8 @@
-import { cx } from "rwe";
-
-export default function DropdownMenuTrigger({ className, children, label, ...rest }) {
-  return (
-    <summary className={cx("list-none cursor-pointer outline-none", className)} {...rest}>
-      {children}
-      {label ? <span>{label}</span> : null}
-    </summary>
-  );
+/**
+ * DropdownMenuTrigger — passthrough wrapper kept for backward compatibility.
+ * The trigger is now passed as a prop to DropdownMenu directly; this component
+ * simply renders its children unchanged.
+ */
+export default function DropdownMenuTrigger({ children }) {
+  return children;
 }

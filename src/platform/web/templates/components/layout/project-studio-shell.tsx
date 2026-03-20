@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, cx, Link } from "rwe";
+import { useState, useEffect, useRef, cx, Link } from "zeb";
 import PlatformSidebar from "@/components/platform-sidebar";
 import {
   initProjectShellBehavior,
@@ -262,34 +262,62 @@ function GitFileTree({ files, setFiles }) {
   );
 }
 
-function GitPanel({ owner, project }) {
+function GitRepoPanel({ owner, project }) {
+  // ── Git state ────────────────────────────────────────────────────────────
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [gitLoading, setGitLoading] = useState(false);
   const [synced, setSynced] = useState(true);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [commitError, setCommitError] = useState("");
 
+  // ── Repo state ───────────────────────────────────────────────────────────
+  const [creds, setCreds] = useState([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [slug, setSlug] = useState("");
+  const [branch, setBranch] = useState("main");
+  const [saveState, setSaveState] = useState("idle");
+  const [saveMsg, setSaveMsg] = useState("");
+  const [repoLoading, setRepoLoading] = useState(false);
+
+  // ── Inline credential dialog state ─────────────────────────────────────
+  const [showCredDialog, setShowCredDialog] = useState(false);
+  const credDialogRef = useRef(null as any);
+  const [newCredId, setNewCredId] = useState("");
+  const [newCredKind, setNewCredKind] = useState("github");
+  const [newCredTitle, setNewCredTitle] = useState("");
+  const [newCredUsername, setNewCredUsername] = useState("");
+  const [newCredToken, setNewCredToken] = useState("");
+  const [newCredGitName, setNewCredGitName] = useState("");
+  const [newCredGitEmail, setNewCredGitEmail] = useState("");
+  const [newCredGitlabUrl, setNewCredGitlabUrl] = useState("https://gitlab.com");
+  const [credSaving, setCredSaving] = useState(false);
+  const [credSaveError, setCredSaveError] = useState("");
+
+  const storageKey = `zf-repo-${owner}-${project}`;
   const statusUrl = `/api/projects/${owner}/${project}/git/status`;
   const commitUrl = `/api/projects/${owner}/${project}/git/commit`;
+  const credApiUrl = `/api/projects/${owner}/${project}/credentials`;
 
+  // ── Git helpers ──────────────────────────────────────────────────────────
   async function fetchStatus() {
     if (!owner || !project) return;
-    setLoading(true);
+    setGitLoading(true);
     try {
       const res = await fetch(statusUrl, { headers: { Accept: "application/json" } });
+      if (res.status === 401) { window.location.href = "/login"; return; }
       const data = await res.json().catch(() => []);
       setFiles(Array.isArray(data) ? data.map((f) => ({ ...f, checked: true })) : []);
     } catch (_) {}
-    setLoading(false);
+    setGitLoading(false);
   }
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     fetchStatus();
     const repoHandler = () => { fetchStatus(); setSynced(false); };
-    const panelHandler = (e) => { if (e.detail?.panel !== "git") setOpen(false); };
+    const panelHandler = (e) => { if (e.detail?.panel !== "git-repo") setOpen(false); };
     const navHandler = () => setOpen(false);
     window.addEventListener("zf:repo:changed", repoHandler);
     window.addEventListener("zf:panel:opened", panelHandler);
@@ -301,46 +329,171 @@ function GitPanel({ owner, project }) {
     };
   }, []);
 
-  function toggle() {
-    if (!open) { fetchStatus(); dispatchPanelOpen("git"); }
-    setOpen((o) => !o);
-  }
+  useEffect(() => {
+    const d = credDialogRef.current;
+    if (!d) return;
+    if (showCredDialog && !d.open) { d.showModal(); }
+    else if (!showCredDialog && d.open) { d.close(); }
+  }, [showCredDialog]);
 
   async function doCommit(push) {
     const checked = files.filter((f) => f.checked).map((f) => f.rel_path);
     if (!checked.length || !message.trim()) return;
     setBusy(true);
-    setError("");
+    setCommitError("");
+
+    // Read stored repo config when pushing
+    let pushExtra: Record<string, string> = {};
+    if (push) {
+      try {
+        const cfg = JSON.parse(localStorage.getItem(storageKey) || "null");
+        if (cfg) {
+          if (cfg.credential_id) pushExtra.credential_id = cfg.credential_id;
+          if (cfg.repo_url)      pushExtra.repo_url = cfg.repo_url;
+          if (cfg.branch)        pushExtra.branch = cfg.branch;
+        }
+      } catch (_) {}
+    }
+
     try {
       const res = await fetch(commitUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ files: checked, message: message.trim(), push }),
+        body: JSON.stringify({ files: checked, message: message.trim(), push, ...pushExtra }),
       });
+      if (res.status === 401) { window.location.href = "/login"; return; }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.error?.message || body?.message || "Failed");
       setMessage("");
       if (push) setSynced(true);
       await fetchStatus();
     } catch (e) {
-      setError(e.message || "Error");
+      setCommitError(e.message || "Error");
     }
     setBusy(false);
   }
 
-  // Partition staged (X != ' ') vs unstaged/untracked
-  const staged = files.filter((f) => {
-    const x = (f.code ?? " ")[0];
-    return x !== " " && x !== "?";
-  });
-  const unstaged = files.filter((f) => {
-    const x = (f.code ?? " ")[0];
-    const y = (f.code ?? " ")[1];
-    return x === "?" || (y && y !== " ");
-  });
+  // ── Repo helpers ─────────────────────────────────────────────────────────
+  function getCredHost(cred) {
+    if (!cred) return "";
+    if (cred.kind === "github") return "github.com";
+    if (cred.kind === "gitlab") return cred.secret?.url || "gitlab.com";
+    return "";
+  }
 
+  function loadSaved() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+      if (saved) {
+        setSelectedId(saved.credential_id ?? "");
+        if (saved.slug) {
+          setSlug(saved.slug);
+        } else if (saved.repo_url) {
+          const m = String(saved.repo_url).match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/);
+          setSlug(m ? m[1] : saved.repo_url);
+        }
+        setBranch(saved.branch ?? "main");
+      }
+    } catch (_) {}
+  }
+
+  async function fetchCreds() {
+    if (!owner || !project) return;
+    setRepoLoading(true);
+    try {
+      const res = await fetch(credApiUrl, { headers: { Accept: "application/json" } });
+      const data = await res.json().catch(() => ({}));
+      const items = (Array.isArray(data?.items) ? data.items : []).filter(
+        (c) => c.kind === "github" || c.kind === "gitlab"
+      );
+      setCreds(items);
+    } catch (_) {}
+    setRepoLoading(false);
+  }
+
+  function handleConnect() {
+    if (!selectedId || !slug.trim()) {
+      setSaveMsg("Select a credential and enter the repo path.");
+      setSaveState("error");
+      return;
+    }
+    const host = getCredHost(creds.find((c) => c.credential_id === selectedId) ?? null);
+    const repoUrl = host ? `https://${host}/${slug.trim()}.git` : slug.trim();
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({
+        credential_id: selectedId,
+        slug: slug.trim(),
+        repo_url: repoUrl,
+        branch: branch.trim() || "main",
+      }));
+      setSaveState("saved");
+      setSaveMsg("Connected.");
+      setTimeout(() => { setSaveState("idle"); setSaveMsg(""); }, 2500);
+    } catch (_) {
+      setSaveState("error");
+      setSaveMsg("Failed to save.");
+    }
+  }
+
+  function handleDisconnect() {
+    try { localStorage.removeItem(storageKey); } catch (_) {}
+    setSelectedId("");
+    setSlug("");
+    setBranch("main");
+    setSaveState("idle");
+    setSaveMsg("");
+  }
+
+  async function handleCreateCred() {
+    if (!newCredId.trim() || !newCredTitle.trim() || !newCredUsername.trim() || !newCredToken.trim()) {
+      setCredSaveError("ID, Title, Username and Token are required.");
+      return;
+    }
+    setCredSaving(true);
+    setCredSaveError("");
+    const createdId = newCredId.trim();
+    const secret = { username: newCredUsername, token: newCredToken, git_name: newCredGitName, git_email: newCredGitEmail };
+    if (newCredKind === "gitlab") (secret as any).url = newCredGitlabUrl || "https://gitlab.com";
+    const payload = { credential_id: createdId, title: newCredTitle.trim(), kind: newCredKind, notes: "", secret };
+    try {
+      const res = await fetch(credApiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.status === 401) { window.location.href = "/login"; return; }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error?.message || body?.message || "Failed");
+      setShowCredDialog(false);
+      setNewCredId(""); setNewCredTitle(""); setNewCredKind("github");
+      setNewCredUsername(""); setNewCredToken(""); setNewCredGitName(""); setNewCredGitEmail("");
+      setNewCredGitlabUrl("https://gitlab.com");
+      await fetchCreds();
+      setSelectedId(createdId);
+    } catch (e) {
+      setCredSaveError((e as any)?.message || "Error");
+    }
+    setCredSaving(false);
+  }
+
+  function toggle() {
+    if (!open) {
+      fetchStatus();
+      fetchCreds();
+      loadSaved();
+      dispatchPanelOpen("git-repo");
+    }
+    setOpen((o) => !o);
+  }
+
+  // ── Derived ──────────────────────────────────────────────────────────────
+  const staged = files.filter((f) => { const x = (f.code ?? " ")[0]; return x !== " " && x !== "?"; });
+  const unstaged = files.filter((f) => { const x = (f.code ?? " ")[0]; const y = (f.code ?? " ")[1]; return x === "?" || (y && y !== " "); });
   const count = files.length;
   const checkedCount = files.filter((f) => f.checked).length;
+  const connected = (() => { try { return !!JSON.parse(localStorage.getItem(storageKey) || "null"); } catch (_) { return false; } })();
+  const selectedCred = creds.find((c) => c.credential_id === selectedId) ?? null;
+  const credHost = getCredHost(selectedCred);
 
   return (
     <div className="relative">
@@ -348,81 +501,283 @@ function GitPanel({ owner, project }) {
         variant="outline"
         size="icon"
         onClick={toggle}
-        title={count > 0 ? `${count} change${count !== 1 ? "s" : ""}` : "Git — clean"}
+        title={count > 0 ? `${count} change${count !== 1 ? "s" : ""}` : "Git"}
         className="git-indicator-btn"
       >
         <GitBranchIcon />
         {count > 0 && <span className="git-indicator-badge">{count}</span>}
-        {count === 0 && <span className="git-indicator-dot is-clean" />}
+        {count === 0 && <span className={cx("git-indicator-dot", (connected || synced) && "is-clean")} />}
       </Button>
 
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="git-panel z-50">
+          <div className="git-repo-panel">
             {/* Header */}
-            <div className="git-panel-header">
-              <div className="git-panel-left">
+            <div className="git-repo-header">
+              <div className="git-repo-title">
                 <GitBranchIcon className="w-3.5 h-3.5 shrink-0" />
-                <span className="git-panel-branch">repo</span>
+                <span>Git</span>
               </div>
-              <div className="git-panel-right">
-                <span className="git-panel-count">{loading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>
+              <div className="git-repo-meta">
+                <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>
                 <span className={cx("git-panel-sync-dot", synced && count === 0 && "is-synced")} />
+                {connected && <span className="text-blue-400 text-xs">● remote</span>}
               </div>
             </div>
 
-            {/* File tree */}
-            <div className="git-file-list">
-              {staged.length > 0 && (
-                <>
-                  <p className="git-section-label">STAGED CHANGES</p>
-                  <GitFileTree files={staged} setFiles={setFiles} />
-                </>
-              )}
-              {unstaged.length > 0 && (
-                <>
-                  <p className="git-section-label">CHANGES</p>
-                  <GitFileTree files={unstaged} setFiles={setFiles} />
-                </>
-              )}
-              {count === 0 && !loading && <p className="git-empty">Working tree clean.</p>}
-              {loading && <p className="git-empty">Loading…</p>}
-            </div>
-
-            {/* Commit area */}
-            {count > 0 && (
-              <div className="git-actions">
-                <Input
-                  value={message}
-                  onInput={(e) => setMessage(e.target.value)}
-                  placeholder="Commit message…"
-                  className="git-message-input"
-                />
-                {error && <p className="git-error">{error}</p>}
-                <div className="git-action-row">
-                  <Button
-                    size="xs"
-                    onClick={() => doCommit(false)}
-                    disabled={busy || !message.trim() || !checkedCount}
-                  >
-                    Commit
-                  </Button>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    className={cx("git-sync-btn", synced && "is-synced")}
-                    onClick={() => doCommit(true)}
-                    disabled={busy || !message.trim() || !checkedCount}
-                  >
-                    {synced ? "✓ Synced" : "↑ Sync"}
-                  </Button>
+            {/* Two-column body */}
+            <div className="git-repo-body">
+              {/* Left: commit */}
+              <div className="git-repo-left">
+                <div className="git-repo-col-head">Commit</div>
+                <div className="git-file-list">
+                  {staged.length > 0 && (
+                    <>
+                      <p className="git-section-label">STAGED</p>
+                      <GitFileTree files={staged} setFiles={setFiles} />
+                    </>
+                  )}
+                  {unstaged.length > 0 && (
+                    <>
+                      <p className="git-section-label">CHANGES</p>
+                      <GitFileTree files={unstaged} setFiles={setFiles} />
+                    </>
+                  )}
+                  {count === 0 && !gitLoading && <p className="git-empty">Working tree clean.</p>}
+                  {gitLoading && <p className="git-empty">Loading…</p>}
                 </div>
+                {count > 0 && (
+                  <div className="git-actions">
+                    <Input
+                      value={message}
+                      onInput={(e) => setMessage(e.target.value)}
+                      placeholder="Commit message…"
+                      className="git-message-input"
+                    />
+                    {commitError && <p className="git-error">{commitError}</p>}
+                    <div className="git-action-row">
+                      <Button size="xs" onClick={() => doCommit(false)} disabled={busy || !message.trim() || !checkedCount}>
+                        Commit
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className={cx("git-sync-btn", synced && "is-synced")}
+                        onClick={() => doCommit(true)}
+                        disabled={busy || !message.trim() || !checkedCount}
+                      >
+                        {synced ? "✓ Synced" : "↑ Sync"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
+
+              {/* Divider */}
+              <div className="git-repo-divider" />
+
+              {/* Right: remote */}
+              <div className="git-repo-right">
+                <div className="git-repo-col-head" style={{ margin: "-.75rem -.75rem .6rem" }}>Remote</div>
+                {repoLoading ? (
+                  <p className="git-repo-no-cred">Loading…</p>
+                ) : creds.length === 0 ? (
+                  <p className="git-repo-no-cred">
+                    No GitHub / GitLab credentials.{" "}
+                    <a
+                      href="#"
+                      onClick={(e) => { e.preventDefault(); setShowCredDialog(true); }}
+                      className="underline text-[var(--studio-accent)]"
+                    >Create one</a>
+                  </p>
+                ) : (
+                  <>
+                    <div>
+                      <label className="git-repo-cred-label">Credential</label>
+                      <select
+                        className="git-repo-cred-select"
+                        value={selectedId}
+                        onChange={(e) => { setSelectedId(e.target.value); setSaveState("idle"); setSaveMsg(""); }}
+                      >
+                        <option value="">— select —</option>
+                        {creds.map((c) => (
+                          <option key={c.credential_id} value={c.credential_id}>{c.title} · {c.kind}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="git-repo-cred-label">Repository</label>
+                      <div className={cx("git-repo-slug-row", !selectedId && "opacity-50")}>
+                        {credHost && <span className="git-repo-host-prefix">{credHost}/</span>}
+                        <input
+                          className="git-repo-slug-input"
+                          type="text"
+                          placeholder="username/repo-name"
+                          value={slug}
+                          disabled={!selectedId}
+                          onInput={(e) => setSlug((e.target as HTMLInputElement).value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="git-repo-cred-label">Branch</label>
+                      <input
+                        className="git-repo-branch-input"
+                        type="text"
+                        placeholder="main"
+                        value={branch}
+                        onInput={(e) => setBranch((e.target as HTMLInputElement).value)}
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1.5">
+                      <Button
+                        variant={saveState === "saved" ? "default" : "outline"}
+                        size="xs"
+                        onClick={handleConnect}
+                        disabled={!selectedId || !slug.trim()}
+                        className="w-full"
+                      >
+                        {saveState === "saved" ? "✓ Connected" : connected ? "Reconnect" : "Connect"}
+                      </Button>
+                      {connected && (
+                        <Button variant="ghost" size="xs" onClick={handleDisconnect} className="w-full">
+                          Disconnect
+                        </Button>
+                      )}
+                      {saveMsg && (
+                        <p className={cx("git-repo-status-msg", saveState === "error" ? "text-red-400" : "text-green-400")}>
+                          {saveMsg}
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         </>
       )}
+
+      <dialog
+        ref={credDialogRef}
+        className="git-cred-dialog"
+        onClose={() => setShowCredDialog(false)}
+        onClick={(e) => { if (e.target === e.currentTarget) setShowCredDialog(false); }}
+      >
+            <div className="git-cred-dialog-head">
+              <span>Add Git Credential</span>
+              <button className="git-cred-dialog-close" onClick={() => setShowCredDialog(false)}>✕</button>
+            </div>
+            <div className="git-cred-dialog-body">
+              <div>
+                <label className="git-repo-cred-label">Kind</label>
+                <select
+                  className="git-repo-cred-select"
+                  value={newCredKind}
+                  onChange={(e) => setNewCredKind(e.target.value)}
+                >
+                  <option value="github">GitHub</option>
+                  <option value="gitlab">GitLab</option>
+                </select>
+              </div>
+
+              {newCredKind === "gitlab" && (
+                <div>
+                  <label className="git-repo-cred-label">Instance URL</label>
+                  <input
+                    className="git-repo-branch-input"
+                    type="text"
+                    placeholder="https://gitlab.com"
+                    value={newCredGitlabUrl}
+                    onInput={(e) => setNewCredGitlabUrl((e.target as HTMLInputElement).value)}
+                  />
+                </div>
+              )}
+
+              <div>
+                <label className="git-repo-cred-label">Credential ID</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="text"
+                  placeholder="my-github"
+                  value={newCredId}
+                  onInput={(e) => setNewCredId((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              <div>
+                <label className="git-repo-cred-label">Title</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="text"
+                  placeholder="My GitHub Account"
+                  value={newCredTitle}
+                  onInput={(e) => setNewCredTitle((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              <div>
+                <label className="git-repo-cred-label">Username</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="text"
+                  placeholder={newCredKind === "github" ? "github-username" : "gitlab-username"}
+                  value={newCredUsername}
+                  onInput={(e) => setNewCredUsername((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              <div>
+                <label className="git-repo-cred-label">Personal Access Token</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="password"
+                  placeholder={newCredKind === "github" ? "ghp_…" : "glpat-…"}
+                  value={newCredToken}
+                  onInput={(e) => setNewCredToken((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              <div>
+                <label className="git-repo-cred-label">Git Name (optional)</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="text"
+                  placeholder="Your Name"
+                  value={newCredGitName}
+                  onInput={(e) => setNewCredGitName((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              <div>
+                <label className="git-repo-cred-label">Git Email (optional)</label>
+                <input
+                  className="git-repo-branch-input"
+                  type="text"
+                  placeholder="you@example.com"
+                  value={newCredGitEmail}
+                  onInput={(e) => setNewCredGitEmail((e.target as HTMLInputElement).value)}
+                />
+              </div>
+
+              {credSaveError && (
+                <p className="git-repo-status-msg text-red-400">{credSaveError}</p>
+              )}
+
+              <div className="flex gap-2">
+                <Button size="xs" onClick={handleCreateCred} disabled={credSaving} className="flex-1">
+                  {credSaving ? "Saving…" : "Save"}
+                </Button>
+                <Button size="xs" variant="ghost" onClick={() => setShowCredDialog(false)} disabled={credSaving} className="flex-1">
+                  Cancel
+                </Button>
+              </div>
+            </div>
+      </dialog>
     </div>
   );
 }
@@ -796,261 +1151,6 @@ function SessionPanel({ owner, project }) {
   );
 }
 
-// ── RepoPanel ─────────────────────────────────────────────────────────────────
-
-function RepoPanel({ owner, project }) {
-  const [open, setOpen] = useState(false);
-  const [creds, setCreds] = useState([]);
-  const [selectedId, setSelectedId] = useState("");
-  const [repoUrl, setRepoUrl] = useState("");
-  const [branch, setBranch] = useState("main");
-  const [saveState, setSaveState] = useState("idle"); // idle | saved | error
-  const [saveMsg, setSaveMsg] = useState("");
-  const [loading, setLoading] = useState(false);
-  const repoPanelRef = useRef(null);
-
-  const storageKey = `zf-repo-${owner}-${project}`;
-  const credApiUrl = `/api/projects/${owner}/${project}/credentials`;
-
-  function loadSaved() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
-      if (saved) {
-        setSelectedId(saved.credential_id ?? "");
-        setRepoUrl(saved.repo_url ?? "");
-        setBranch(saved.branch ?? "main");
-      }
-    } catch (_) {}
-  }
-
-  async function fetchCreds() {
-    if (!owner || !project) return;
-    setLoading(true);
-    try {
-      const res = await fetch(credApiUrl, { headers: { Accept: "application/json" } });
-      const data = await res.json().catch(() => ({}));
-      const items = (Array.isArray(data?.items) ? data.items : []).filter(
-        (c) => c.kind === "github" || c.kind === "gitlab"
-      );
-      setCreds(items);
-    } catch (_) {}
-    setLoading(false);
-  }
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const panelHandler = (e) => {
-      if (e.detail?.panel !== "repo" && repoPanelRef.current) {
-        repoPanelRef.current.open = false;
-        setOpen(false);
-      }
-    };
-    window.addEventListener("zf:panel:opened", panelHandler);
-    return () => window.removeEventListener("zf:panel:opened", panelHandler);
-  }, []);
-
-  function toggle() {
-    if (!open) {
-      loadSaved();
-      fetchCreds();
-      dispatchPanelOpen("repo");
-    }
-    setOpen((o) => !o);
-  }
-
-  function handleConnect() {
-    if (!selectedId || !repoUrl.trim()) {
-      setSaveMsg("Select a credential and enter a clone URL.");
-      setSaveState("error");
-      return;
-    }
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({
-        credential_id: selectedId,
-        repo_url: repoUrl.trim(),
-        branch: branch.trim() || "main",
-      }));
-      setSaveState("saved");
-      setSaveMsg("Connected.");
-      setTimeout(() => { setSaveState("idle"); setSaveMsg(""); }, 2500);
-    } catch (_) {
-      setSaveState("error");
-      setSaveMsg("Failed to save.");
-    }
-  }
-
-  function handleDisconnect() {
-    try { localStorage.removeItem(storageKey); } catch (_) {}
-    setSelectedId("");
-    setRepoUrl("");
-    setBranch("main");
-    setSaveState("idle");
-    setSaveMsg("");
-  }
-
-  const connected = (() => {
-    try { return !!JSON.parse(localStorage.getItem(storageKey) || "null"); } catch (_) { return false; }
-  })();
-
-  const selectedCred = creds.find((c) => c.credential_id === selectedId) ?? null;
-
-  const credHost = selectedCred?.kind === "github"
-    ? "github.com"
-    : selectedCred?.kind === "gitlab"
-      ? (selectedCred?.secret?.url || "gitlab.com")
-      : "";
-
-  return (
-    <details ref={repoPanelRef} className="relative inline-block group project-shell-repo" data-dropdown-menu="true">
-      <summary
-        className={cx(
-          "list-none cursor-pointer outline-none",
-          "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border transition-all text-sm",
-          "border-[var(--studio-border)] bg-[var(--studio-panel-2)]",
-          "text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] hover:bg-[var(--studio-panel-3)]",
-          connected && "border-blue-800/60 text-blue-400 hover:text-blue-300"
-        )}
-        onClick={() => toggle()}
-      >
-        <RepoIcon />
-        <span className="text-xs">Repo</span>
-        {connected && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
-      </summary>
-
-      <DropdownMenuContent
-        align="right"
-        className="repo-panel w-[480px] border-[var(--studio-border)] bg-[var(--studio-panel)]"
-      >
-        {/* Header */}
-        <div className="mcp-session-header">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-[var(--studio-text)]">Git Repository</p>
-              <span className={cx(
-                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.6rem] font-semibold tracking-wide",
-                connected
-                  ? "bg-blue-900/40 text-blue-400 border border-blue-800/60"
-                  : "bg-[var(--studio-panel-3)] text-[var(--studio-text-soft)] border border-[var(--studio-border)]"
-              )}>
-                <span className={cx("w-1.5 h-1.5 rounded-full", connected ? "bg-blue-500" : "bg-slate-500")} />
-                {connected ? "Connected" : "Not connected"}
-              </span>
-            </div>
-            <p className="text-[0.68rem] text-[var(--studio-text-soft)] mt-0.5 leading-snug">
-              Link to a GitHub or GitLab repository credential.
-            </p>
-          </div>
-          {connected && (
-            <Button variant="ghost" size="xs" onClick={handleDisconnect} className="mcp-reset-btn shrink-0">
-              Disconnect
-            </Button>
-          )}
-        </div>
-
-        {/* Split body */}
-        <div className="mcp-split-body">
-
-          {/* Left: credential selector + preview */}
-          <div className="mcp-split-left">
-            <div className="mcp-session-section">
-              <label className="mcp-session-label block mb-1.5">Remote Credential</label>
-              {loading ? (
-                <p className="text-[0.7rem] text-[var(--studio-text-muted)]">Loading…</p>
-              ) : creds.length === 0 ? (
-                <p className="text-[0.7rem] text-[var(--studio-text-soft)] leading-snug">
-                  No GitHub / GitLab credentials.{" "}
-                  <a
-                    href={`/projects/${owner}/${project}/settings`}
-                    className="underline underline-offset-2 text-[var(--studio-accent)]"
-                  >Create one</a>
-                </p>
-              ) : (
-                <select
-                  className="mcp-token-input w-full"
-                  value={selectedId}
-                  onChange={(e) => setSelectedId(e.target.value)}
-                >
-                  <option value="">— select —</option>
-                  {creds.map((c) => (
-                    <option key={c.credential_id} value={c.credential_id}>
-                      {c.title} · {c.kind}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            {/* Credential preview card */}
-            {selectedCred && (
-              <div className="mcp-session-section">
-                <div className="repo-cred-card">
-                  <span className={cx("repo-cred-badge", `is-${selectedCred.kind}`)}>
-                    {selectedCred.kind === "github" ? "GitHub" : "GitLab"}
-                  </span>
-                  <div className="repo-cred-info">
-                    <span className="repo-cred-host">{credHost}</span>
-                    {selectedCred.secret?.username && (
-                      <span className="repo-cred-user">@{selectedCred.secret.username}</span>
-                    )}
-                    <span className="repo-cred-token-status">
-                      {selectedCred.has_secret ? "Token: configured" : "Token: not set"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Divider */}
-          <div className="mcp-split-divider" />
-
-          {/* Right: clone URL + branch + connect */}
-          <div className="mcp-split-right">
-            <div className="flex flex-col gap-2.5">
-              <div>
-                <label className="mcp-session-label block mb-1">Clone URL</label>
-                <input
-                  className="mcp-token-input w-full"
-                  type="text"
-                  placeholder="https://github.com/org/repo.git"
-                  value={repoUrl}
-                  onInput={(e) => setRepoUrl(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="mcp-session-label block mb-1">Branch</label>
-                <input
-                  className="mcp-token-input w-full"
-                  type="text"
-                  placeholder="main"
-                  value={branch}
-                  onInput={(e) => setBranch(e.target.value)}
-                />
-              </div>
-              <Button
-                variant={saveState === "saved" ? "default" : "outline"}
-                size="sm"
-                onClick={handleConnect}
-                className="w-full mt-0.5"
-              >
-                {saveState === "saved" ? "✓ Connected" : "Connect"}
-              </Button>
-              {saveMsg && (
-                <p className={cx(
-                  "text-[0.68rem]",
-                  saveState === "error" ? "text-red-400" : "text-green-400"
-                )}>{saveMsg}</p>
-              )}
-            </div>
-          </div>
-
-        </div>{/* /mcp-split-body */}
-
-      </DropdownMenuContent>
-    </details>
-  );
-}
-
 // ── Layout Shell ─────────────────────────────────────────────────────────────
 
 export default function ProjectStudioShell(props) {
@@ -1122,11 +1222,8 @@ export default function ProjectStudioShell(props) {
                   <TerminalIcon />
                 </Button>
 
-                {/* Git */}
-                <GitPanel owner={owner} project={project} />
-
-                {/* Repo */}
-                <RepoPanel owner={owner} project={project} />
+                {/* Git + Remote */}
+                <GitRepoPanel owner={owner} project={project} />
 
                 {/* MCP Session */}
                 <SessionPanel owner={owner} project={project} />

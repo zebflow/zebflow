@@ -1,4 +1,4 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 /**
  * Inline checkbox toggle — compact mono style for dark console/toolbar contexts.

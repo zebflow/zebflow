@@ -1,4 +1,4 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 const ALIGN_CLASSES = {
   left: "left-0",

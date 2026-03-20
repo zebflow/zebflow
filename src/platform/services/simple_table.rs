@@ -167,6 +167,36 @@ impl SimpleTableService {
         Ok(())
     }
 
+    /// Deletes one row from a managed Simple Table by its row ID.
+    pub fn delete_row(
+        &self,
+        owner: &str,
+        project: &str,
+        table: &str,
+        row_id: &str,
+    ) -> Result<(), PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        let db = self.open_db(&layout)?;
+        let Some(table_def) = self.get_table(owner, project, &slug_segment(table))? else {
+            return Err(PlatformError::new(
+                "PLATFORM_SIMPLE_TABLE_MISSING",
+                format!("simple table '{}' not found", slug_segment(table)),
+            ));
+        };
+        let row_id = slug_segment(row_id);
+        if row_id.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_SIMPLE_TABLE_INVALID",
+                "row id must not be empty",
+            ));
+        }
+        let slug = format!("{}/{}", table_def.collection, row_id);
+        db.nodes()
+            .remove(&slug)
+            .map_err(|e| PlatformError::new("PLATFORM_SIMPLE_TABLE_DELETE_ROW", e.to_string()))?;
+        Ok(())
+    }
+
     /// Upserts one row into a managed Simple Table.
     pub fn upsert_row(
         &self,

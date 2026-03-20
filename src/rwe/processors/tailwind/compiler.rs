@@ -981,6 +981,22 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             important,
         ));
     }
+    if let Some(v) = utility.strip_prefix("inset-y-") {
+        let value = inset_value(v)?;
+        return Some(simple_rule(
+            base_selector,
+            &format!("top:{};bottom:{};", value, value),
+            important,
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("inset-x-") {
+        let value = inset_value(v)?;
+        return Some(simple_rule(
+            base_selector,
+            &format!("left:{};right:{};", value, value),
+            important,
+        ));
+    }
     if let Some(v) = utility.strip_prefix("inset-") {
         let value = inset_value(v)?;
         return Some(simple_rule(

@@ -13,6 +13,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::CredentialService;
 
+use crate::pipeline::model::LayoutItem;
 use super::util::metadata_scope;
 
 pub const NODE_KIND: &str = "n.auth.token.create";
@@ -41,8 +42,75 @@ pub fn definition() -> NodeDefinition {
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
         script_bridge: None,
-        config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        config_schema: serde_json::json!({
+        "type": "object",
+        "properties": {
+            "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
+            "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
+            "set_cookie": { "type": "boolean", "description": "When true, sets the token as an HttpOnly cookie in the response." },
+            "cookie_name": { "type": "string", "description": "Cookie name (default: zebflow_session)." },
+            "claims": { "type": "object", "description": "Map of claim_name → JSON pointer path ($.field) or literal value." },
+            "issuer": { "type": "string" },
+            "audience": { "type": "string" }
+        }
+    }),
+        dsl_flags: vec![
+            crate::pipeline::model::DslFlag {
+                flag: "--credential".to_string(),
+                config_key: "credential_id".to_string(),
+                description: "ID of the jwt_signing_key credential used to sign the token.".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: true,
+            },
+            crate::pipeline::model::DslFlag {
+                flag: "--expires-in".to_string(),
+                config_key: "expires_in".to_string(),
+                description: "Token lifetime in seconds (default 900).".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
+                flag: "--set-cookie".to_string(),
+                config_key: "set_cookie".to_string(),
+                description: "When true, instructs the webhook ingress to set the token as an HttpOnly cookie (name controlled by --cookie-name).".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
+                flag: "--cookie-name".to_string(),
+                config_key: "cookie_name".to_string(),
+                description: "Cookie name to use when --set-cookie is true (default: zebflow_session).".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "credential_id".to_string(), label: "Signing Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("JWT signing key credential (kind: jwt_signing_key).".to_string()), ..Default::default() },
+                NodeFieldDef { name: "algorithm".to_string(), label: "Algorithm".to_string(), field_type: NodeFieldType::Select, options: vec![
+                    SelectOptionDef { value: "HS256".to_string(), label: "HS256 — HMAC-SHA256 (symmetric)".to_string() },
+                    SelectOptionDef { value: "HS384".to_string(), label: "HS384 — HMAC-SHA384 (symmetric)".to_string() },
+                    SelectOptionDef { value: "HS512".to_string(), label: "HS512 — HMAC-SHA512 (symmetric)".to_string() },
+                    SelectOptionDef { value: "RS256".to_string(), label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)".to_string() },
+                    SelectOptionDef { value: "RS384".to_string(), label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)".to_string() },
+                    SelectOptionDef { value: "RS512".to_string(), label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)".to_string() },
+                    SelectOptionDef { value: "ES256".to_string(), label: "ES256 — ECDSA P-256 (asymmetric)".to_string() },
+                    SelectOptionDef { value: "ES384".to_string(), label: "ES384 — ECDSA P-384 (asymmetric)".to_string() },
+                ], ..Default::default() },
+                NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "claims".to_string(), label: "Static Claims (JSON)".to_string(), field_type: NodeFieldType::Textarea, rows: Some(5), ..Default::default() },
+                NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "audience".to_string(), label: "Audience (aud)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("algorithm".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string()), LayoutItem::Field("expires_in".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("issuer".to_string()), LayoutItem::Field("audience".to_string())] },
+            LayoutItem::Field("claims".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }
@@ -63,6 +131,12 @@ pub struct Config {
     /// Optional JWT audience (`aud`).
     #[serde(default)]
     pub audience: Option<String>,
+    /// When true, instruct the webhook ingress to set the token as an HttpOnly cookie.
+    #[serde(default)]
+    pub set_cookie: bool,
+    /// Cookie name when `set_cookie` is true (default: `zebflow_session`).
+    #[serde(default)]
+    pub cookie_name: Option<String>,
 }
 
 pub struct Node {
@@ -234,12 +308,27 @@ impl NodeHandler for Node {
             }
         };
 
-        let output = json!({
+        let mut output = json!({
             "access_token": token,
             "token_type": "bearer",
             "expires_in": expires_in,
             "profile": profile,
         });
+
+        // Inject _set_cookie directive for the webhook ingress to pick up.
+        if self.config.set_cookie {
+            let name = self.config.cookie_name.as_deref().unwrap_or("zebflow_session");
+            if let Value::Object(ref mut map) = output {
+                map.insert("_set_cookie".to_string(), json!({
+                    "name": name,
+                    "value": token,
+                    "max_age": expires_in,
+                    "http_only": true,
+                    "same_site": "Lax",
+                    "path": "/"
+                }));
+            }
+        }
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

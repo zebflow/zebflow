@@ -1,4 +1,4 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 /**
  * iOS-style toggle switch. Drop-in replacement for Checkbox when a

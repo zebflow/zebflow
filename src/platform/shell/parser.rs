@@ -26,23 +26,22 @@ pub enum DslVerb {
     Write { kind: String, name: String, body: Option<String> },
     /// `delete <kind> <name>`
     Delete { kind: String, name: String },
-    /// `activate pipeline <name>`
-    Activate { name: String },
-    /// `deactivate pipeline <name>`
-    Deactivate { name: String },
-    /// `execute pipeline <name> [--input <json>]`
-    Execute { name: String, input: Value },
-    /// `register <name> [--path <p>] [--title <t>] [--as-json] [| ...]`
+    /// `activate pipeline <file_rel_path>`
+    Activate { file_rel_path: String },
+    /// `deactivate pipeline <file_rel_path>`
+    Deactivate { file_rel_path: String },
+    /// `execute pipeline <file_rel_path> [--input <json>]`
+    Execute { file_rel_path: String, input: Value },
+    /// `register <file_rel_path> [--title <t>] [--as-json] [| ...]`
     Register {
-        name: String,
-        path: String,
+        file_rel_path: String,
         title: String,
         as_json: bool,
         body: String,
     },
-    /// `patch pipeline <name> node <id> [flags...]`
+    /// `patch pipeline <file_rel_path> node <id> [flags...]`
     Patch {
-        name: String,
+        file_rel_path: String,
         node_id: String,
         flags: HashMap<String, Value>,
         body: Option<String>,
@@ -112,7 +111,9 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "script" | "n.script" => Some("n.script"),
         "web.render" | "n.web.render" => Some("n.web.render"),
         "http.request" | "n.http.request" => Some("n.http.request"),
-        "sjtable.query" | "n.sjtable.query" => Some("n.sjtable.query"),
+        "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
+        // Backward-compat alias — old pipelines using n.sjtable.query still work
+        "sjtable.query" | "n.sjtable.query" => Some("n.sekejap.query"),
         "fanout" | "n.fanout" | "logic.branch" | "n.logic.branch" => Some("n.logic.branch"),
         "zebtune" | "n.zebtune" => Some("n.zebtune"),
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
@@ -121,6 +122,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.ws" | "n.trigger.ws" => Some("n.trigger.ws"),
         "ws.emit" | "n.ws.emit" => Some("n.ws.emit"),
         "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
+        "auth.token.create" | "n.auth.token.create" => Some("n.auth.token.create"),
+        "crypto" | "n.crypto" => Some("n.crypto"),
         _ => None,
     }
 }
@@ -131,7 +134,7 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sjtable.query" | "n.script" | "n.http.request"
+        "n.pg.query" | "n.sekejap.query" | "n.sjtable.query" | "n.script" | "n.http.request"
         | "n.zebtune" | "n.logic.if" | "n.logic.switch" | "n.logic.branch"
         | "n.logic.merge" => {
             (vec!["in".to_string()], vec!["out".to_string()])
@@ -162,6 +165,20 @@ fn extract_raw_body_from(raw: &str) -> Option<String> {
         let after = raw[pos + 4..].trim();
         strip_outer_quotes(after).to_string()
     }).filter(|s| !s.is_empty())
+}
+
+/// Coerce a DSL flag string value to the appropriate JSON type.
+/// "true"/"false" → bool, integer strings → i64, float strings → f64, else string.
+fn coerce_scalar_value(s: &str) -> Value {
+    match s {
+        "true" => json!(true),
+        "false" => json!(false),
+        _ => {
+            if let Ok(n) = s.parse::<i64>() { json!(n) }
+            else if let Ok(f) = s.parse::<f64>() { json!(f) }
+            else { json!(s) }
+        }
+    }
 }
 
 /// Parse flag→config key mapping and body from token list after node kind.
@@ -214,7 +231,7 @@ pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>
                     // New nodes only need to declare dsl_flags on their NodeDefinition
                     // for docs/validation — parsing is automatic.
                     let config_key = key.replace('-', "_");
-                    config.insert(config_key, json!(val));
+                    config.insert(config_key, coerce_scalar_value(&val));
                     i += 2;
                 }
             }
@@ -226,10 +243,9 @@ pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>
     (Value::Object(config), body)
 }
 
-/// Parse `register <name> [--path p] [--title t] [--as-json] <body>`
+/// Parse `register <file_rel_path> [--title t] [--as-json] <body>`
 fn parse_register(tokens: &[String]) -> DslVerb {
-    let name = tokens.get(1).cloned().unwrap_or_default();
-    let mut path = "/".to_string();
+    let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
     let mut title = String::new();
     let mut as_json = false;
     let mut body_start = tokens.len();
@@ -237,10 +253,6 @@ fn parse_register(tokens: &[String]) -> DslVerb {
 
     while i < tokens.len() {
         match tokens[i].as_str() {
-            "--path" => {
-                path = tokens.get(i + 1).cloned().unwrap_or("/".to_string());
-                i += 2;
-            }
             "--title" => {
                 title = tokens.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
@@ -262,12 +274,12 @@ fn parse_register(tokens: &[String]) -> DslVerb {
         String::new()
     };
 
-    DslVerb::Register { name, path, title, as_json, body }
+    DslVerb::Register { file_rel_path, title, as_json, body }
 }
 
-/// Parse `patch pipeline <name> node <id> [flags] [-- body]`
+/// Parse `patch pipeline <file_rel_path> node <id> [flags] [-- body]`
 fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
-    let name = tokens.get(2).cloned().unwrap_or_default();
+    let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
     let node_id = tokens.get(4).cloned().unwrap_or_default();
     let flag_tokens = if tokens.len() > 5 { tokens[5..].to_vec() } else { vec![] };
     let (flags_val, body) = parse_node_config(&flag_tokens, cmd);
@@ -276,7 +288,7 @@ fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
     } else {
         HashMap::new()
     };
-    DslVerb::Patch { name, node_id, flags, body }
+    DslVerb::Patch { file_rel_path, node_id, flags, body }
 }
 
 fn extract_flag(tokens: &[String], flag: &str) -> Option<String> {
@@ -327,18 +339,18 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             DslVerb::Delete { kind, name }
         }
         "activate" => {
-            let name = tokens.get(2).cloned().unwrap_or_default();
-            DslVerb::Activate { name }
+            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+            DslVerb::Activate { file_rel_path }
         }
         "deactivate" => {
-            let name = tokens.get(2).cloned().unwrap_or_default();
-            DslVerb::Deactivate { name }
+            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+            DslVerb::Deactivate { file_rel_path }
         }
         "execute" | "exec" => {
-            let name = tokens.get(2).cloned().unwrap_or_default();
+            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
             let input_str = extract_flag(&tokens, "--input").unwrap_or_default();
             let input = serde_json::from_str(&input_str).unwrap_or(json!({}));
-            DslVerb::Execute { name, input }
+            DslVerb::Execute { file_rel_path, input }
         }
         "register" | "reg" => parse_register(&tokens),
         "patch" => parse_patch(&tokens, cmd),
@@ -386,25 +398,173 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
     }
 }
 
-/// Build a `PipelineGraph` from pipe (`|`) or graph (`[id]->`) notation.
+/// Build a `PipelineGraph` from pipe (`|`) or graph (`[id] ->`) notation.
 pub fn build_pipeline_graph(id: &str, body: &str) -> Result<PipelineGraph, String> {
     let body = body.trim();
     if body.is_empty() {
         return Err("Pipeline body is empty".to_string());
     }
-    // Detect mode by presence of graph notation
-    if body.contains("[") && body.contains("]->") {
-        build_pipe_mode(id, body) // fallback: graph mode uses same parse for now
+    // Detect graph mode: body contains `[` and `] ->` (with space before arrow)
+    if body.contains('[') && body.contains("] ->") {
+        build_graph_mode(id, body)
     } else {
         build_pipe_mode(id, body)
     }
+}
+
+/// Split a pipe-notation body into segments, ignoring `|` inside single/double quotes.
+fn split_pipe_segments(body: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    for (byte_pos, ch) in body.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '|' if !in_single && !in_double => {
+                let seg = body[start..byte_pos].trim();
+                if !seg.is_empty() {
+                    segments.push(seg);
+                }
+                start = byte_pos + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let last = body[start..].trim();
+    if !last.is_empty() {
+        segments.push(last);
+    }
+    segments
+}
+
+/// Build pipeline from graph notation: `[label] node_kind --flags...\n[from] -> [to]`
+fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
+    let mut nodes: Vec<PipelineNode> = Vec::new();
+    let mut edges: Vec<PipelineEdge> = Vec::new();
+
+    // Join line continuations then split on newlines
+    let joined = body.replace("\\\n", " ").replace("\\\r\n", " ");
+    let lines: Vec<&str> = joined
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for line in &lines {
+        if !line.starts_with('[') {
+            continue;
+        }
+        if line.contains("->") {
+            // Edge declaration: [from]:pin -> [to]:pin  or  [from] -> [to]
+            parse_graph_edge(line, &mut edges)?;
+        } else {
+            // Node declaration: [label] node_kind --flags...
+            parse_graph_node(line, &mut nodes)?;
+        }
+    }
+
+    // Entry nodes = nodes with no incoming edges
+    let to_nodes: std::collections::HashSet<&str> =
+        edges.iter().map(|e| e.to_node.as_str()).collect();
+    let entry_nodes: Vec<String> = nodes
+        .iter()
+        .filter(|n| !to_nodes.contains(n.id.as_str()))
+        .map(|n| n.id.clone())
+        .collect();
+
+    Ok(PipelineGraph {
+        kind: "zebflow.pipeline".to_string(),
+        version: "0.1".to_string(),
+        id: id.to_string(),
+        entry_nodes,
+        nodes,
+        edges,
+    })
+}
+
+fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
+    let rest = line.strip_prefix('[').ok_or("expected '[' at start of node declaration")?;
+    let (label, rest) = rest
+        .split_once(']')
+        .ok_or("expected ']' in node declaration")?;
+    let label = label.trim();
+    if label.is_empty() {
+        return Err("node label must not be empty".to_string());
+    }
+    let rest = rest.trim();
+    let tokens = tokenize(rest);
+    if tokens.is_empty() {
+        return Err(format!("node '[{label}]' has no kind"));
+    }
+    let raw_kind = &tokens[0];
+    let full_kind =
+        expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
+    let (input_pins, output_pins) = default_pins(full_kind);
+    let (mut config, body_val) = parse_node_config(&tokens[1..], rest);
+    if let Some(bval) = body_val {
+        let body_key = match full_kind {
+            "n.pg.query" => "query",
+            "n.script" => "source",
+            _ => "body",
+        };
+        if let Value::Object(ref mut map) = config {
+            map.insert(body_key.to_string(), json!(bval));
+        }
+    }
+    nodes.push(PipelineNode {
+        id: label.to_string(),
+        kind: full_kind.to_string(),
+        input_pins,
+        output_pins,
+        config,
+    });
+    Ok(())
+}
+
+fn parse_graph_edge(line: &str, edges: &mut Vec<PipelineEdge>) -> Result<(), String> {
+    // Format: [from]:pin -> [to]:pin  or  [from] -> [to]
+    let arrow_pos = line.find("->").ok_or("expected '->' in edge declaration")?;
+    let from_part = line[..arrow_pos].trim();
+    let to_part = line[arrow_pos + 2..].trim();
+
+    let (from_node, from_pin) = parse_node_pin_part(from_part, "out")?;
+    let (to_node, to_pin) = parse_node_pin_part(to_part, "in")?;
+
+    edges.push(PipelineEdge {
+        from_node,
+        from_pin,
+        to_node,
+        to_pin,
+    });
+    Ok(())
+}
+
+/// Parse `[label]` or `[label]:pin` into `(node_id, pin)`. `default_pin` used when no `:pin`.
+fn parse_node_pin_part(s: &str, default_pin: &str) -> Result<(String, String), String> {
+    let s = s.trim();
+    let inner = s
+        .strip_prefix('[')
+        .ok_or_else(|| format!("expected '[' in edge endpoint: '{s}'"))?;
+    let (label, rest) = inner
+        .split_once(']')
+        .ok_or_else(|| format!("expected ']' in edge endpoint: '{s}'"))?;
+    let label = label.trim().to_string();
+    let pin = rest
+        .trim()
+        .strip_prefix(':')
+        .map(|p| p.trim().to_string())
+        .unwrap_or_else(|| default_pin.to_string());
+    Ok((label, pin))
 }
 
 /// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query --credential main`
 fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
     // Strip leading `|` if present
     let body = body.trim_start_matches('|').trim();
-    let segments: Vec<&str> = body.split('|').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = split_pipe_segments(body);
 
     if segments.is_empty() {
         return Err("No nodes in pipeline body".to_string());

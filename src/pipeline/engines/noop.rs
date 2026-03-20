@@ -85,6 +85,7 @@ impl PipelineEngine for NoopPipelineEngine {
                 format!("pipeline={}", ctx.pipeline),
                 format!("request_id={}", ctx.request_id),
             ],
+            node_trace: vec![],
         })
     }
 }

@@ -4,6 +4,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::{LayoutItem, NodeFieldDef, NodeFieldType, SidebarSection, SidebarItem};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, ExecutionContext, LanguageEngine,
     ModuleSource, SourceKind,
@@ -37,6 +38,47 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: vec![
+            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "source".to_string(),
+                label: "Source".to_string(),
+                field_type: NodeFieldType::CodeEditor,
+                language: Some("javascript".to_string()),
+                span: Some("full".to_string()),
+                help: Some("Deno JavaScript expression/body. Must return next payload.".to_string()),
+                default_value: Some(serde_json::json!("return input;")),
+                sidebar: vec![
+                    SidebarSection {
+                        title: "Input".to_string(),
+                        items: vec![
+                            SidebarItem { label: "input".to_string(), type_hint: Some("any".to_string()), description: Some("Upstream payload passed into the script.".to_string()) },
+                        ],
+                    },
+                    SidebarSection {
+                        title: "Return".to_string(),
+                        items: vec![
+                            SidebarItem { label: "payload".to_string(), type_hint: Some("object".to_string()), description: Some("Value returned becomes the downstream payload.".to_string()) },
+                        ],
+                    },
+                    SidebarSection {
+                        title: "Built-ins".to_string(),
+                        items: vec![
+                            SidebarItem { label: "console.log(...)".to_string(), type_hint: Some("void".to_string()), description: Some("Log to pipeline trace output.".to_string()) },
+                            SidebarItem { label: "n.pg.query({...})".to_string(), type_hint: Some("Promise<rows>".to_string()), description: Some("Execute a Postgres query inline.".to_string()) },
+                            SidebarItem { label: "n.http.request({...})".to_string(), type_hint: Some("Promise<response>".to_string()), description: Some("Make an HTTP request inline.".to_string()) },
+                            SidebarItem { label: "ctx.pipeline".to_string(), type_hint: Some("string".to_string()), description: Some("Current pipeline id.".to_string()) },
+                            SidebarItem { label: "ctx.request_id".to_string(), type_hint: Some("string".to_string()), description: Some("Unique execution request id.".to_string()) },
+                        ],
+                    },
+                ],
+                ..Default::default()
+            },
+        ],
+        layout: vec![
+            LayoutItem::Field("title".to_string()),
+            LayoutItem::Field("source".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

@@ -16,7 +16,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +30,10 @@ pub fn definition() -> NodeDefinition {
         title: "Webhook Trigger".to_string(),
         description: "Start pipeline run from inbound HTTP path + method. \
             Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
-            JWT claims are injected into payload.auth. \
-            Output with _status sets the HTTP response status code.".to_string(),
+            jwt auth checks Authorization: Bearer header first, then Cookie: zebflow_session fallback — \
+            verified claims are injected into input.auth. \
+            Output with _status sets HTTP response status code. \
+            Output with _set_cookie sets an HttpOnly cookie in the response.".to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Request payload forwarded from webhook ingress."
@@ -68,6 +70,19 @@ pub fn definition() -> NodeDefinition {
                 }
             }
         }),
+        fields: vec![
+            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::MethodButtons, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("HTTP method accepted by webhook trigger.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "path".to_string(), label: "Path".to_string(), field_type: NodeFieldType::Text, help: Some("Webhook relative path under /wh/{owner}/{project}.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "__webhook_public_url".to_string(), label: "Public URL".to_string(), field_type: NodeFieldType::CopyUrl, help: Some("Copy-ready URL for this trigger.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "auth_type".to_string(), label: "Auth Type".to_string(), field_type: NodeFieldType::Select, options: vec![
+                SelectOptionDef { value: "none".to_string(), label: "None (public)".to_string() },
+                SelectOptionDef { value: "jwt".to_string(), label: "JWT Bearer".to_string() },
+                SelectOptionDef { value: "hmac".to_string(), label: "HMAC-SHA256 (X-Hub-Signature-256)".to_string() },
+                SelectOptionDef { value: "api_key".to_string(), label: "API Key (X-API-Key)".to_string() },
+            ], help: Some("Trigger-level auth. On failure returns 401.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
+        ],
         dsl_flags: vec![
             DslFlag {
                 flag: "--path".to_string(),
@@ -97,6 +112,12 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+        ],
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("path".to_string())] },
+            LayoutItem::Field("method".to_string()),
+            LayoutItem::Field("__webhook_public_url".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("auth_type".to_string()), LayoutItem::Field("auth_credential".to_string())] },
         ],
         ai_tool: Default::default(),
     }

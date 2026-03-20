@@ -7,6 +7,7 @@ function requestJson(url, options = {}) {
     },
     ...options,
   }).then(async (response) => {
+    if (response.status === 401) { window.location.href = "/login"; return null; }
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       const message =
@@ -139,6 +140,24 @@ function setBusy(state, isBusy) {
   });
 }
 
+function createHelpTooltip(text: string): HTMLElement {
+  const wrapper = document.createElement("span");
+  wrapper.className = "zf-help-tooltip";
+  (wrapper as any).tabIndex = 0;
+  wrapper.setAttribute("aria-label", text);
+  const icon = document.createElement("span");
+  icon.className = "zf-help-tooltip-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.8"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="17" r="0.5" fill="currentColor" stroke="currentColor" stroke-width="1.5"/></svg>`;
+  const content = document.createElement("span");
+  content.className = "zf-help-tooltip-content";
+  content.setAttribute("role", "tooltip");
+  content.textContent = text;
+  wrapper.appendChild(icon);
+  wrapper.appendChild(content);
+  return wrapper;
+}
+
 function generateValue(type) {
   if (type === "random_hex_32") {
     const bytes = new Uint8Array(32);
@@ -162,9 +181,13 @@ function renderSecretFields(container, kind, secret = {}) {
     const row = document.createElement("label");
     row.className = field.fullWidth ? "pipeline-editor-field is-full-width" : "pipeline-editor-field";
 
+    const labelRow = document.createElement("span");
+    labelRow.className = "credential-field-label-row";
     const label = document.createElement("span");
     label.textContent = field.label;
-    row.appendChild(label);
+    labelRow.appendChild(label);
+    if (field.help) labelRow.appendChild(createHelpTooltip(field.help));
+    row.appendChild(labelRow);
 
     let input;
     if (field.type === "select") {
@@ -211,12 +234,6 @@ function renderSecretFields(container, kind, secret = {}) {
       row.appendChild(input);
     }
 
-    if (field.help) {
-      const hint = document.createElement("small");
-      hint.className = "pipeline-editor-field-help";
-      hint.textContent = field.help;
-      row.appendChild(hint);
-    }
 
     container.appendChild(row);
   });

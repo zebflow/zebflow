@@ -1,10 +1,10 @@
-import { cx } from "rwe";
+import { cx } from "zeb";
 
 const VARIANT_CLASSES = {
-  error:   "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400",
-  warning: "border-yellow-200 bg-yellow-50 text-yellow-700 dark:border-yellow-800 dark:bg-yellow-950/30 dark:text-yellow-400",
-  success: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/30 dark:text-green-400",
-  info:    "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-400",
+  error:   "border-red-500/30 bg-red-500/10 text-red-500",
+  warning: "border-yellow-500/30 bg-yellow-500/10 text-yellow-500",
+  success: "border-green-500/30 bg-green-500/10 text-green-500",
+  info:    "border-blue-500/30 bg-blue-500/10 text-blue-500",
 };
 
 export default function Alert({ variant = "info", className, children }) {

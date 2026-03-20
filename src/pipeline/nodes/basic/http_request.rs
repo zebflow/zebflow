@@ -14,6 +14,7 @@ use crate::pipeline::{
 };
 use crate::language::LanguageEngine;
 
+use crate::pipeline::model::LayoutItem;
 use super::util::{eval_deno_expr, resolve_path_cloned};
 
 pub const NODE_KIND: &str = "n.http.request";
@@ -46,6 +47,29 @@ pub fn definition() -> NodeDefinition {
         }),
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: {
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
+            vec![
+                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "url".to_string(), label: "URL".to_string(), field_type: NodeFieldType::Text, help: Some("Fallback URL when url_expr is empty.".to_string()), default_value: Some(serde_json::json!("https://example.com")), ..Default::default() },
+                NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::Select, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("Fallback HTTP method when method_expr is empty.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "timeout_ms".to_string(), label: "Timeout (ms)".to_string(), field_type: NodeFieldType::Text, help: Some("Request timeout in milliseconds.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "url_expr".to_string(), label: "URL Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string URL.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "method_expr".to_string(), label: "Method Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string method.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "body_path".to_string(), label: "Body Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path used as request body when body_expr is empty.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "headers_expr".to_string(), label: "Headers Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning header object.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "body_expr".to_string(), label: "Body Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning request body value.".to_string()), ..Default::default() },
+            ]
+        },
+        layout: vec![
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("method".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("url".to_string()), LayoutItem::Field("timeout_ms".to_string())] },
+            LayoutItem::Field("body_path".to_string()),
+            LayoutItem::Field("url_expr".to_string()),
+            LayoutItem::Field("method_expr".to_string()),
+            LayoutItem::Field("headers_expr".to_string()),
+            LayoutItem::Field("body_expr".to_string()),
+        ],
         ai_tool: Default::default(),
     }
 }

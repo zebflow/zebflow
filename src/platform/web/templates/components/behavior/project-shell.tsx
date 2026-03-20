@@ -448,6 +448,7 @@ function initConsoleBehavior(owner: string, project: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dsl: cmd }),
       });
+      if (resp.status === 401) { window.location.href = "/login"; return; }
       const data = await resp.json();
       const incoming = Array.isArray(data?.lines) ? data.lines : [];
       if (!incoming.length) {
@@ -487,6 +488,7 @@ function initConsoleBehavior(owner: string, project: string) {
         }),
       });
 
+      if (response.status === 401) { window.location.href = "/login"; return; }
       if (!response.ok || !response.body) {
         dropLine(thinkingId);
         emit(`Error: request failed (${response.status})`, "cli-error");

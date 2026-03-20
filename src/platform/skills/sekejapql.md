@@ -1,7 +1,7 @@
-# SekejapQL — SjTable Query & Write Guide
+# SekejapQL — Sekejap Query & Write Guide
 
-SjTable is the project-local document store (backed by SekejapDB). Each "table" is a named
-collection with optional indexed fields.
+Sekejap is Zebflow's embedded multi-model database — graph, vector, spatial, full-text, and vague
+temporal. Each "table" is a named collection with optional indexed fields.
 
 ## Query Format — SekejapQL text DSL
 
@@ -128,10 +128,10 @@ get tables
 
 ## Inserting / Updating a Row — DSL (preferred for agent)
 
-Use `run` with a `n.sjtable.query` node (operation=upsert):
+Use `run` with a `n.sekejap.query` node (operation=upsert):
 
 ```
-run | trigger.manual | n.sjtable.query --table contacts --op upsert --row-id alice-001 -- {"name":"Alice","email":"alice@example.com","status":"active","score":95,"created_at":1741300000000}
+run | trigger.manual | n.sekejap.query --table contacts --op upsert --row-id alice-001 -- {"name":"Alice","email":"alice@example.com","status":"active","score":95,"created_at":1741300000000}
 ```
 
 The `row-id` is the row's unique key. Upserting the same id overwrites the row.
@@ -143,8 +143,8 @@ The `row-id` is the row's unique key. Upserting the same id overwrites the row.
 create table products --fields "name:Text,price:Number,category:Text,in_stock:Boolean" --hash "category" --range "price"
 
 # 2. Insert rows
-run | trigger.manual | n.sjtable.query --table products --op upsert --row-id prod-001 -- {"name":"Widget A","price":29.99,"category":"widgets","in_stock":true}
-run | trigger.manual | n.sjtable.query --table products --op upsert --row-id prod-002 -- {"name":"Widget B","price":49.99,"category":"widgets","in_stock":false}
+run | trigger.manual | n.sekejap.query --table products --op upsert --row-id prod-001 -- {"name":"Widget A","price":29.99,"category":"widgets","in_stock":true}
+run | trigger.manual | n.sekejap.query --table products --op upsert --row-id prod-002 -- {"name":"Widget B","price":49.99,"category":"widgets","in_stock":false}
 
 # 3. Query rows
 collection "sjtable__products"
@@ -154,10 +154,10 @@ sort "price" asc
 take 20
 ```
 
-## n.sjtable.query Pipeline Node Config
+## `n.sekejap.query` Pipeline Node Config
 
 ```
-n.sjtable.query
+n.sekejap.query
   --table <name>                     Table slug (e.g. contacts)
   --op query|upsert                  Default: query
   --where-field <field>              (query) equality filter field
@@ -174,7 +174,7 @@ All flags have `_expr` variants for Deno expression evaluation:
 
 ## Platform Collections (metadata DB, read-only)
 
-The platform catalog sekejap has these collections (NOT sjtable, use admin DB API):
+The platform catalog (internal metadata DB) has these collections — use the admin DB API, NOT the project Sekejap connection:
 - `user` — user accounts
 - `project` — project records
 - `project_credential` — credentials

@@ -1,4 +1,4 @@
-import { cx, Link } from "rwe";
+import { cx, Link } from "zeb";
 
 export default function PlatformSidebar(props) {
   const nav = props?.nav ?? {};
@@ -39,15 +39,6 @@ export default function PlatformSidebar(props) {
         <span className="platform-sidebar-label">Pipelines</span>
       </Link>
 
-      <Link href={links.build_templates ?? "#"} className={cx("platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm", classes.build)}>
-        <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
-          <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
-            <path d="M5 6h6v6H5zM13 6h6v6h-6zM5 14h6v4H5zM13 14h6v4h-6z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-          </svg>
-        </span>
-        <span className="platform-sidebar-label">Build</span>
-      </Link>
-
       <Link href={links.dashboard ?? "#"} className={cx("platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm", classes.dashboard)}>
         <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
@@ -85,14 +76,10 @@ export default function PlatformSidebar(props) {
         <span className="platform-sidebar-label">Files</span>
       </Link>
 
-      <Link href={links.todo ?? "#"} className={cx("platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm", classes.todo)}>
-        <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">
-          <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5">
-            <path d="M8 6h8M8 12h8M8 18h8M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
-          </svg>
-        </span>
-        <span className="platform-sidebar-label">Todo</span>
-      </Link>
+      {/* Todo — hidden for now, re-enable when section is ready */}
+      {/* <Link href={links.todo ?? "#"} className={cx("platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm", classes.todo)}>
+        ...
+      </Link> */}
 
       <Link href={links.settings ?? "#"} className={cx("platform-sidebar-main group flex items-center gap-3 px-3 py-2 rounded-md text-sm", classes.settings)}>
         <span className="inline-flex items-center justify-center w-5 h-5 shrink-0">

@@ -1,6 +1,6 @@
 //! Pipeline DSL executor — executes parsed verbs using platform services.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -54,14 +54,14 @@ impl DslExecutor {
             }
             DslVerb::Describe { kind, name } => self.cmd_describe(&kind, &name).await,
             DslVerb::Read { kind, name } => self.cmd_describe(&kind, &name).await,
-            DslVerb::Activate { name } => self.cmd_activate(&name).await,
-            DslVerb::Deactivate { name } => self.cmd_deactivate(&name).await,
-            DslVerb::Execute { name, input } => self.cmd_execute(&name, input).await,
-            DslVerb::Register { name, path, title, as_json, body } => {
-                self.cmd_register(&name, &path, &title, as_json, &body).await
+            DslVerb::Activate { file_rel_path } => self.cmd_activate(&file_rel_path).await,
+            DslVerb::Deactivate { file_rel_path } => self.cmd_deactivate(&file_rel_path).await,
+            DslVerb::Execute { file_rel_path, input } => self.cmd_execute(&file_rel_path, input).await,
+            DslVerb::Register { file_rel_path, title, as_json, body } => {
+                self.cmd_register(&file_rel_path, &title, as_json, &body).await
             }
-            DslVerb::Patch { name, node_id, flags, body } => {
-                self.cmd_patch(&name, &node_id, flags, body.as_deref()).await
+            DslVerb::Patch { file_rel_path, node_id, flags, body } => {
+                self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref()).await
             }
             DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run).await,
             DslVerb::Delete { kind, name } => self.cmd_delete(&kind, &name).await,
@@ -230,13 +230,14 @@ impl DslExecutor {
         }
     }
 
-    async fn describe_pipeline(&self, name: &str) -> DslOutput {
-        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
-            Ok(r) => r,
+    async fn describe_pipeline(&self, file_rel_path: &str) -> DslOutput {
+        let Some(meta) = (match self.platform.projects.get_pipeline_meta_by_file_id(
+            &self.owner, &self.project, file_rel_path
+        ) {
+            Ok(m) => m,
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
-        };
-        let Some(meta) = rows.iter().find(|m| m.name == name) else {
-            return DslOutput::err(format!("Pipeline '{name}' not found"));
+        }) else {
+            return DslOutput::err(format!("Pipeline '{file_rel_path}' not found"));
         };
 
         let mut out = DslOutput::new_ok();
@@ -333,26 +334,26 @@ impl DslExecutor {
 
     async fn cmd_register(
         &self,
-        name: &str,
-        path: &str,
+        file_rel_path: &str,
         title: &str,
         as_json: bool,
         body: &str,
     ) -> DslOutput {
-        if name.is_empty() {
-            return DslOutput::err("register: pipeline name is required");
+        if file_rel_path.is_empty() {
+            return DslOutput::err("register: pipeline file_rel_path is required (e.g. pipelines/api/my-pipe)");
         }
         if body.is_empty() {
             return DslOutput::err(
                 "register: pipeline body is required. \
-                 Example: register my-pipe | trigger.webhook --path /api | pg.query --credential main-db",
+                 Example: register pipelines/api/my-pipe | trigger.webhook --path /api | pg.query --credential main-db",
             );
         }
 
+        let name = crate::platform::services::project::name_from_file_rel_path(file_rel_path);
         let graph_source = if as_json {
             body.to_string()
         } else {
-            match build_pipeline_graph(name, body) {
+            match build_pipeline_graph(&name, body) {
                 Ok(graph) => match serde_json::to_string_pretty(&graph) {
                     Ok(s) => s,
                     Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
@@ -367,6 +368,30 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Invalid pipeline JSON: {e}")),
         };
 
+        // Webhook conflict check: reject if any active pipeline already owns the same path.
+        let self_file_rel_path = self
+            .platform
+            .projects
+            .get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path)
+            .ok()
+            .flatten()
+            .map(|m| m.file_rel_path)
+            .unwrap_or_default();
+
+        let conflicts = self.platform.pipeline_runtime.check_webhook_path_conflict(
+            &self.owner,
+            &self.project,
+            &graph,
+            &self_file_rel_path,
+        );
+        if !conflicts.is_empty() {
+            let c = &conflicts[0];
+            return DslOutput::err(format!(
+                "Webhook conflict: {} {} is already registered by pipeline '{}' ({})",
+                c.method, c.path, c.pipeline_name, c.file_rel_path
+            ));
+        }
+
         let trigger_kind = graph.nodes.first()
             .map(|n| {
                 if n.kind.contains("webhook") { "webhook" }
@@ -375,13 +400,12 @@ impl DslExecutor {
             })
             .unwrap_or("manual");
 
-        let display_title = if title.is_empty() { name } else { title };
+        let display_title = if title.is_empty() { &name } else { title };
 
         match self.platform.projects.upsert_pipeline_definition(
             &self.owner,
             &self.project,
-            path,
-            name,
+            file_rel_path,
             display_title,
             "",
             trigger_kind,
@@ -391,10 +415,14 @@ impl DslExecutor {
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
                     "Pipeline '{}' registered ({} nodes). Use 'activate pipeline {}' to make it live.",
-                    meta.name,
+                    meta.file_rel_path,
                     graph.nodes.len(),
-                    meta.name
+                    meta.file_rel_path
                 )));
+                // Emit non-fatal warnings for unknown config keys (likely flag typos).
+                for w in validate_graph_flags(&graph) {
+                    out.push(DslLine::muted(format!("⚠ {}", w)));
+                }
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -403,23 +431,23 @@ impl DslExecutor {
 
     async fn cmd_patch(
         &self,
-        name: &str,
+        file_rel_path: &str,
         node_id: &str,
         flags: HashMap<String, Value>,
         body: Option<&str>,
     ) -> DslOutput {
-        if name.is_empty() || node_id.is_empty() {
+        if file_rel_path.is_empty() || node_id.is_empty() {
             return DslOutput::err(
-                "patch: usage: patch pipeline <name> node <id> [--flag value...]",
+                "patch: usage: patch pipeline <file_rel_path> node <id> [--flag value...]",
             );
         }
 
-        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
-            Ok(r) => r,
+        let meta = match self.platform.projects.get_pipeline_meta_by_file_id(
+            &self.owner, &self.project, file_rel_path
+        ) {
+            Ok(Some(m)) => m,
+            Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
-        };
-        let Some(meta) = rows.iter().find(|m| m.name == name) else {
-            return DslOutput::err(format!("Pipeline '{name}' not found"));
         };
 
         let source = match self.platform.projects.read_pipeline_source(
@@ -438,7 +466,7 @@ impl DslExecutor {
 
         let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else {
             return DslOutput::err(format!(
-                "Node '{node_id}' not found in pipeline '{name}'"
+                "Node '{node_id}' not found in pipeline '{file_rel_path}'"
             ));
         };
 
@@ -470,8 +498,7 @@ impl DslExecutor {
         match self.platform.projects.upsert_pipeline_definition(
             &self.owner,
             &self.project,
-            &meta.virtual_path,
-            name,
+            &meta.file_rel_path,
             &meta.title,
             "",
             trigger_kind,
@@ -480,7 +507,7 @@ impl DslExecutor {
             Ok(_) => {
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
-                    "Node '{node_id}' in pipeline '{name}' updated."
+                    "Node '{node_id}' in pipeline '{file_rel_path}' updated."
                 )));
                 out
             }
@@ -488,98 +515,76 @@ impl DslExecutor {
         }
     }
 
-    async fn cmd_activate(&self, name: &str) -> DslOutput {
-        if name.is_empty() {
-            return DslOutput::err("activate: pipeline name is required");
+    async fn cmd_activate(&self, file_rel_path: &str) -> DslOutput {
+        if file_rel_path.is_empty() {
+            return DslOutput::err("activate: pipeline file_rel_path is required");
         }
-
-        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
-            Ok(r) => r,
-            Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
-        };
-        let Some(meta) = rows.iter().find(|m| m.name == name) else {
-            return DslOutput::err(format!("Pipeline '{name}' not found"));
-        };
-        let vpath = meta.virtual_path.clone();
 
         match self.platform.projects.activate_pipeline_definition(
             &self.owner,
             &self.project,
-            &vpath,
-            name,
+            file_rel_path,
         ) {
             Ok(meta) => {
                 let _ = self.platform.pipeline_runtime.refresh_pipeline(
                     &self.owner,
                     &self.project,
-                    &vpath,
-                    name,
+                    file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{}' activated.", meta.name)));
+                out.push(DslLine::success(format!("Pipeline '{}' activated.", meta.file_rel_path)));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
         }
     }
 
-    async fn cmd_deactivate(&self, name: &str) -> DslOutput {
-        if name.is_empty() {
-            return DslOutput::err("deactivate: pipeline name is required");
+    async fn cmd_deactivate(&self, file_rel_path: &str) -> DslOutput {
+        if file_rel_path.is_empty() {
+            return DslOutput::err("deactivate: pipeline file_rel_path is required");
         }
-
-        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
-            Ok(r) => r,
-            Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
-        };
-        let Some(meta) = rows.iter().find(|m| m.name == name) else {
-            return DslOutput::err(format!("Pipeline '{name}' not found"));
-        };
-        let vpath = meta.virtual_path.clone();
 
         match self.platform.projects.deactivate_pipeline_definition(
             &self.owner,
             &self.project,
-            &vpath,
-            name,
+            file_rel_path,
         ) {
             Ok(meta) => {
                 let _ = self.platform.pipeline_runtime.refresh_pipeline(
                     &self.owner,
                     &self.project,
-                    &vpath,
-                    name,
+                    file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{}' deactivated.", meta.name)));
+                out.push(DslLine::success(format!("Pipeline '{}' deactivated.", meta.file_rel_path)));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
         }
     }
 
-    async fn cmd_execute(&self, name: &str, input: Value) -> DslOutput {
-        if name.is_empty() {
-            return DslOutput::err("execute: pipeline name is required");
+    async fn cmd_execute(&self, file_rel_path: &str, input: Value) -> DslOutput {
+        if file_rel_path.is_empty() {
+            return DslOutput::err("execute: pipeline file_rel_path is required");
         }
 
-        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
-            Ok(r) => r,
+        let meta = match self.platform.projects.get_pipeline_meta_by_file_id(
+            &self.owner, &self.project, file_rel_path
+        ) {
+            Ok(Some(m)) => m,
+            Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
-        };
-        let Some(meta) = rows.iter().find(|m| m.name == name) else {
-            return DslOutput::err(format!("Pipeline '{name}' not found"));
         };
         if meta.active_hash.is_none() {
             return DslOutput::err(format!(
-                "Pipeline '{name}' is not active. Use 'activate pipeline {name}' first."
+                "Pipeline '{file_rel_path}' is not active. Use 'activate pipeline {file_rel_path}' first."
             ));
         }
 
         let source = match self.platform.projects.read_active_pipeline_source(
             &self.owner,
             &self.project,
-            meta,
+            &meta,
         ) {
             Ok(s) => s,
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
@@ -606,7 +611,7 @@ impl DslExecutor {
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(
-            Arc::new(crate::language::NoopLanguageEngine),
+            Arc::new(crate::language::DenoSandboxEngine::default()),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.platform.credentials.clone()),
             Some(self.platform.simple_tables.clone()),
@@ -621,7 +626,7 @@ impl DslExecutor {
                     &meta.file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{name}' executed.")));
+                out.push(DslLine::success(format!("Pipeline '{}' executed.", meta.file_rel_path)));
                 let result_str = serde_json::to_string_pretty(&output.value)
                     .unwrap_or_else(|_| output.value.to_string());
                 for line in result_str.lines().take(20) {
@@ -641,7 +646,11 @@ impl DslExecutor {
                     e.code,
                     &e.message,
                 );
-                DslOutput::err(format!("Execution error: {} — {}", e.code, e.message))
+                let node_ctx = match (&e.node_id, &e.node_kind) {
+                    (Some(id), Some(kind)) => format!(" [node {} ({})]", id, kind),
+                    _ => String::new(),
+                };
+                DslOutput::err(format!("Execution error: {} — {}{}", e.code, e.message, node_ctx))
             }
         }
     }
@@ -685,7 +694,7 @@ impl DslExecutor {
                 };
 
                 let engine = crate::pipeline::BasicPipelineEngine::new(
-                    Arc::new(crate::language::NoopLanguageEngine),
+                    Arc::new(crate::language::DenoSandboxEngine::default()),
                     crate::rwe::resolve_engine_or_default(None),
                     Some(self.platform.credentials.clone()),
                     Some(self.platform.simple_tables.clone()),
@@ -706,10 +715,13 @@ impl DslExecutor {
                         }
                         out
                     }
-                    Err(e) => DslOutput::err(format!(
-                        "Run error: {} — {}",
-                        e.code, e.message
-                    )),
+                    Err(e) => {
+                        let node_ctx = match (&e.node_id, &e.node_kind) {
+                            (Some(id), Some(kind)) => format!(" [node {} ({})]", id, kind),
+                            _ => String::new(),
+                        };
+                        DslOutput::err(format!("Run error: {} — {}{}", e.code, e.message, node_ctx))
+                    }
                 }
             }
             Err(e) => DslOutput::err(format!("Parse error: {e}")),
@@ -808,6 +820,56 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}…", &s[..max.saturating_sub(1)])
     }
+}
+
+/// Config keys that are valid on any node and should not trigger unknown-key warnings.
+const GLOBAL_CONFIG_KEYS: &[&str] = &[
+    "title", "path", "method", "route", "credential_id", "sql", "query", "source",
+    "body", "markup", "template_path", "template_id", "credential_id_expr",
+    "query_expr", "params_expr", "room", "event",
+];
+
+/// Validate node config keys against declared DSL flags for each node kind.
+/// Returns a list of warning strings for unknown config keys (likely typos).
+fn validate_graph_flags(graph: &crate::pipeline::PipelineGraph) -> Vec<String> {
+    let defs: HashMap<String, crate::pipeline::NodeDefinition> =
+        crate::pipeline::nodes::builtin_node_definitions()
+            .into_iter()
+            .map(|d| (d.kind.clone(), d))
+            .collect();
+
+    let mut warnings = vec![];
+    for node in &graph.nodes {
+        let Some(def) = defs.get(&node.kind) else {
+            continue;
+        };
+        // Only check nodes that have declared flags; skip nodes with empty flag list.
+        if def.dsl_flags.is_empty() {
+            continue;
+        }
+        let known_keys: HashSet<&str> =
+            def.dsl_flags.iter().map(|f| f.config_key.as_str()).collect();
+
+        let global_keys: HashSet<&str> = GLOBAL_CONFIG_KEYS.iter().copied().collect();
+
+        if let Some(obj) = node.config.as_object() {
+            for key in obj.keys() {
+                if global_keys.contains(key.as_str()) {
+                    continue;
+                }
+                if !known_keys.contains(key.as_str()) {
+                    warnings.push(format!(
+                        "node {} ({}): unknown config key '{}' — check flag spelling. Known: {}",
+                        node.id,
+                        node.kind,
+                        key,
+                        known_keys.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    warnings
 }
 
 fn summarize_config(config: &Value) -> String {

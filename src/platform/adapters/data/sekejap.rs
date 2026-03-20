@@ -57,16 +57,22 @@ impl SekejapDataAdapter {
         )
     }
 
-    fn pipeline_slug(owner: &str, project: &str, virtual_path: &str, name: &str) -> String {
-        let vp = normalize_virtual_path(virtual_path)
-            .trim_start_matches('/')
-            .replace('/', "__");
+    fn pipeline_slug(owner: &str, project: &str, file_rel_path: &str) -> String {
+        // Normalize file_rel_path into a flat slug key:
+        // "pipelines/api/foo.zf.json" → "pipelines-api-foo-zf-json"
+        let key = file_rel_path
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
         format!(
-            "pipeline_meta/{}/{}/{}/{}",
+            "pipeline_meta/{}/{}/{}",
             slug_segment(owner),
             slug_segment(project),
-            slug_segment(&vp),
-            slug_segment(name)
+            key
         )
     }
 
@@ -611,10 +617,9 @@ impl DataAdapter for SekejapDataAdapter {
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
     ) -> Result<(), PlatformError> {
-        let slug = Self::pipeline_slug(owner, project, virtual_path, name);
+        let slug = Self::pipeline_slug(owner, project, file_rel_path);
         self.db
             .nodes()
             .remove(&slug)
@@ -624,13 +629,12 @@ impl DataAdapter for SekejapDataAdapter {
 
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError> {
         let data = json!({
-            "_id": Self::pipeline_slug(&meta.owner, &meta.project, &meta.virtual_path, &meta.name),
+            "_id": Self::pipeline_slug(&meta.owner, &meta.project, &meta.file_rel_path),
             "_collection": "pipeline_meta",
             "owner": meta.owner,
             "project": meta.project,
             "name": meta.name,
             "title": meta.title,
-            "virtual_path": normalize_virtual_path(&meta.virtual_path),
             "file_rel_path": meta.file_rel_path,
             "description": meta.description,
             "trigger_kind": meta.trigger_kind,
@@ -658,64 +662,81 @@ impl DataAdapter for SekejapDataAdapter {
             json!({"op":"where_eq","field":"project","value":project}),
             json!({"op":"take","n":QUERY_LIMIT}),
         ])?;
-        let mut out = rows
-            .into_iter()
-            .filter_map(|v| {
-                let name = v.get("name").and_then(Value::as_str)?.trim().to_string();
-                if name.is_empty() {
-                    return None;
+        let mut out = Vec::new();
+        for v in rows {
+            let name = match v.get("name").and_then(Value::as_str) {
+                Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                _ => continue,
+            };
+
+            let file_rel_path = v
+                .get("file_rel_path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            // Legacy entries with no file_rel_path are invalid — remove and skip.
+            if file_rel_path.is_empty() {
+                let stored_id = v.get("_id").and_then(Value::as_str).unwrap_or("");
+                if !stored_id.is_empty() {
+                    let _ = self.db.nodes().remove(stored_id);
                 }
-                let fallback_title = name.clone();
-                Some(PipelineMeta {
-                    owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
-                    project: Self::pick_non_empty(
-                        v.get("project").and_then(Value::as_str),
-                        project,
-                    ),
-                    name: name.clone(),
-                    title: v
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&fallback_title)
-                        .to_string(),
-                    virtual_path: normalize_virtual_path(
-                        v.get("virtual_path").and_then(Value::as_str).unwrap_or("/"),
-                    ),
-                    file_rel_path: v
-                        .get("file_rel_path")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    description: v
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    trigger_kind: v
-                        .get("trigger_kind")
-                        .and_then(Value::as_str)
-                        .unwrap_or("webhook")
-                        .to_string(),
-                    hash: v
-                        .get("hash")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    active_hash: v
-                        .get("active_hash")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string),
-                    activated_at: v.get("activated_at").and_then(Value::as_i64),
-                    created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
-                    updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
-                })
-            })
-            .collect::<Vec<_>>();
-        out.sort_by(|a, b| {
-            a.virtual_path
-                .cmp(&b.virtual_path)
-                .then(a.name.cmp(&b.name))
-        });
+                continue;
+            }
+
+            let fallback_title = name.clone();
+            let meta = PipelineMeta {
+                owner: Self::pick_non_empty(v.get("owner").and_then(Value::as_str), owner),
+                project: Self::pick_non_empty(v.get("project").and_then(Value::as_str), project),
+                name: name.clone(),
+                title: v
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&fallback_title)
+                    .to_string(),
+                // virtual_path is derived on read in the service layer; use stored value as
+                // temporary fallback (will be overwritten by project.rs before use).
+                virtual_path: normalize_virtual_path(
+                    v.get("virtual_path").and_then(Value::as_str).unwrap_or("/"),
+                ),
+                file_rel_path: file_rel_path.clone(),
+                description: v
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                trigger_kind: v
+                    .get("trigger_kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("webhook")
+                    .to_string(),
+                hash: v
+                    .get("hash")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                active_hash: v
+                    .get("active_hash")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string),
+                activated_at: v.get("activated_at").and_then(Value::as_i64),
+                created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+                updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+            };
+
+            // Auto-migrate: if stored _id doesn't match the new file_rel_path key scheme,
+            // re-save with the correct key and remove the stale old key.
+            let expected_id = Self::pipeline_slug(owner, project, &file_rel_path);
+            let stored_id = v.get("_id").and_then(Value::as_str).unwrap_or("");
+            if !stored_id.is_empty() && stored_id != expected_id {
+                let old = stored_id.to_string();
+                let _ = self.put_pipeline_meta(&meta);
+                let _ = self.db.nodes().remove(&old);
+            }
+
+            out.push(meta);
+        }
+        out.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(out)
     }
 

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use crate::pipeline::model::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
@@ -14,52 +13,14 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     AgentDocItem, CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
     PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
-    ProjectFileLayout, TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload,
-    TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem,
-    TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
+    ProjectFileLayout, RegistryFileItem, TemplateCreateKind, TemplateCreateRequest,
+    TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest,
+    TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
 };
+use crate::platform::model::ZebLock;
 use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::services::zeb_lock::ZebLockService;
 
-/// Validates every node config in a parsed pipeline graph against its node definition's
-/// `config_schema.required` fields.  Missing required fields = hard error.
-fn validate_pipeline_node_configs(graph: &PipelineGraph) -> Result<(), PlatformError> {
-    let definitions = crate::pipeline::nodes::builtin_node_definitions();
-    for node in &graph.nodes {
-        let Some(def) = definitions.iter().find(|d| d.kind == node.kind) else {
-            continue; // unknown kind — let the engine handle it
-        };
-        let required = def
-            .config_schema
-            .get("required")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for field in required {
-            let present = node.config.get(field).map(|v| !v.is_null()).unwrap_or(false);
-            let non_empty = node.config
-                .get(field)
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(true); // non-string types count as present
-            if !present || !non_empty {
-                return Err(PlatformError::new(
-                    "PIPELINE_NODE_CONFIG_VIOLATION",
-                    format!(
-                        "node '{}' (id: '{}') is missing required config field '{}' \
-                        as defined by its node definition. \
-                        Pipeline rejected.",
-                        node.kind, node.id, field
-                    ),
-                ));
-            }
-        }
-    }
-    Ok(())
-}
 
 /// Project service backed by swappable data + file adapters.
 pub struct ProjectService {
@@ -67,6 +28,7 @@ pub struct ProjectService {
     file: Arc<dyn FileAdapter>,
     project_data: Arc<dyn ProjectDataFactory>,
     zebflow_cfg: Arc<ZebflowJsonService>,
+    zeb_lock: Arc<ZebLockService>,
 }
 
 impl ProjectService {
@@ -76,12 +38,14 @@ impl ProjectService {
         file: Arc<dyn FileAdapter>,
         project_data: Arc<dyn ProjectDataFactory>,
         zebflow_cfg: Arc<ZebflowJsonService>,
+        zeb_lock: Arc<ZebLockService>,
     ) -> Self {
         Self {
             data,
             file,
             project_data,
             zebflow_cfg,
+            zeb_lock,
         }
     }
 
@@ -154,23 +118,26 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         // Write title to zebflow.json (Layer 2)
         self.zebflow_cfg.ensure_initialized(&owner, &project, &title)?;
+        // Write zeb.lock if it doesn't exist yet
+        self.zeb_lock.write_if_missing(&owner, &project, &ZebLock {
+            version: 1,
+            ..Default::default()
+        })?;
         self.project_data.initialize_project(&layout)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let metas = self.data.list_pipeline_meta(&owner, &project)?;
-        if metas.is_empty() {
-            self.seed_default_pipelines(&owner, &project)?;
-        }
         Ok((record, layout))
     }
 
     /// Upserts one pipeline source file + metadata catalog entry.
+    ///
+    /// `file_rel_path` is the canonical identifier, e.g. `"pipelines/api/my-hook.zf.json"`.
+    /// Name and virtual_path are derived from it automatically.
     pub fn upsert_pipeline_definition(
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
         title: &str,
         description: &str,
         trigger_kind: &str,
@@ -178,7 +145,9 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let name = slug_segment(name);
+        // Normalize file_rel_path: ensure it starts with "pipelines/" and ends with ".zf.json"
+        let file_rel_path = normalize_pipeline_file_rel_path(file_rel_path);
+        let name = name_from_file_rel_path(&file_rel_path);
         if owner.is_empty() || project.is_empty() || name.is_empty() {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_INVALID",
@@ -192,27 +161,18 @@ impl ProjectService {
             ));
         }
 
-        // Validate node configs against their definitions before writing to disk.
-        if let Ok(graph) = serde_json::from_str::<PipelineGraph>(source) {
-            validate_pipeline_node_configs(&graph)?;
-        }
-
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;
 
-        let vpath = normalize_virtual_path(virtual_path);
-        let (file_rel_path, file_abs_path) = self.pipeline_file_paths(&layout, &vpath, &name)?;
+        let file_abs_path = self.pipeline_abs_path(&layout, &file_rel_path)?;
         if let Some(parent) = file_abs_path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(&file_abs_path, source)?;
 
+        let vpath = virtual_path_from_file_rel_path(&file_rel_path);
         let now = now_ts();
-        let existing = self
-            .data
-            .list_pipeline_meta(&owner, &project)?
-            .into_iter()
-            .find(|m| normalize_virtual_path(&m.virtual_path) == vpath && m.name == name);
+        let existing = self.get_pipeline_meta_by_file_id(&owner, &project, &file_rel_path)?;
         let created_at = existing.as_ref().map(|m| m.created_at).unwrap_or(now);
         let meta = PipelineMeta {
             owner,
@@ -241,26 +201,6 @@ impl ProjectService {
         Ok(meta)
     }
 
-    /// Returns one pipeline metadata row by project path and name.
-    pub fn get_pipeline_meta(
-        &self,
-        owner: &str,
-        project: &str,
-        virtual_path: &str,
-        name: &str,
-    ) -> Result<Option<PipelineMeta>, PlatformError> {
-        let owner = slug_segment(owner);
-        let project = slug_segment(project);
-        let virtual_path = normalize_virtual_path(virtual_path);
-        let name = slug_segment(name);
-        let meta = self
-            .data
-            .list_pipeline_meta(&owner, &project)?
-            .into_iter()
-            .find(|m| normalize_virtual_path(&m.virtual_path) == virtual_path && m.name == name);
-        Ok(meta)
-    }
-
     /// Lists all pipeline metadata rows for one project.
     pub fn list_pipeline_meta_rows(
         &self,
@@ -270,11 +210,11 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let mut rows = self.data.list_pipeline_meta(&owner, &project)?;
-        rows.sort_by(|a, b| {
-            normalize_virtual_path(&a.virtual_path)
-                .cmp(&normalize_virtual_path(&b.virtual_path))
-                .then(a.name.cmp(&b.name))
-        });
+        // Re-derive virtual_path from file_rel_path (source of truth).
+        for m in &mut rows {
+            m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
+        }
+        rows.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(rows)
     }
 
@@ -287,12 +227,17 @@ impl ProjectService {
     ) -> Result<Option<PipelineMeta>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let wanted = file_id.trim().replace('\\', "/");
+        let wanted = normalize_pipeline_file_rel_path(file_id.trim());
         let meta = self
             .data
             .list_pipeline_meta(&owner, &project)?
             .into_iter()
-            .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
+            .find(|m| normalize_pipeline_file_rel_path(&m.file_rel_path) == wanted)
+            .map(|mut m| {
+                // Re-derive virtual_path from file_rel_path (source of truth).
+                m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
+                m
+            });
         Ok(meta)
     }
 
@@ -327,25 +272,14 @@ impl ProjectService {
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let Some(mut meta) = self.get_pipeline_meta(&owner, &project, virtual_path, name)? else {
+        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)? else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
-                format!(
-                    "pipeline '{}/{}{}{}' not found",
-                    owner,
-                    project,
-                    if normalize_virtual_path(virtual_path) == "/" {
-                        "/"
-                    } else {
-                        ""
-                    },
-                    slug_segment(name)
-                ),
+                format!("pipeline '{}' not found", file_rel_path),
             ));
         };
         let layout = self.file.ensure_project_layout(&owner, &project)?;
@@ -353,8 +287,7 @@ impl ProjectService {
         let current_hash = stable_hash_hex(&source);
         let snapshot_path = self.runtime_pipeline_snapshot_path(
             &layout,
-            &meta.virtual_path,
-            &meta.name,
+            &meta.file_rel_path,
             &current_hash,
         )?;
         if let Some(parent) = snapshot_path.parent() {
@@ -375,12 +308,11 @@ impl ProjectService {
         &self,
         owner: &str,
         project: &str,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let Some(mut meta) = self.get_pipeline_meta(&owner, &project, virtual_path, name)? else {
+        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)? else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
                 "pipeline not found",
@@ -406,12 +338,12 @@ impl ProjectService {
             .list_pipeline_meta(&owner, &project)?
             .into_iter()
             .filter(|m| m.active_hash.as_deref().is_some())
+            .map(|mut m| {
+                m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);
+                m
+            })
             .collect::<Vec<_>>();
-        rows.sort_by(|a, b| {
-            a.virtual_path
-                .cmp(&b.virtual_path)
-                .then(a.name.cmp(&b.name))
-        });
+        rows.sort_by(|a, b| a.file_rel_path.cmp(&b.file_rel_path));
         Ok(rows)
     }
 
@@ -433,8 +365,7 @@ impl ProjectService {
         })?;
         let snapshot_path = self.runtime_pipeline_snapshot_path(
             &layout,
-            &meta.virtual_path,
-            &meta.name,
+            &meta.file_rel_path,
             active_hash,
         )?;
         if !snapshot_path.is_file() {
@@ -453,16 +384,20 @@ impl ProjectService {
         project: &str,
         current_virtual_path: &str,
         base_route: &str,
+        editor_base: &str,
     ) -> Result<PipelineRegistryListing, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let current_path = normalize_virtual_path(current_virtual_path);
-        let rows = self.data.list_pipeline_meta(&owner, &project)?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
 
-        let mut folders = BTreeSet::new();
+        // ── 1. Pipeline metadata rows ────────────────────────────────────────
+        let rows = self.data.list_pipeline_meta(&owner, &project)?;
+        let mut folders: BTreeSet<String> = BTreeSet::new();
         let mut pipelines = Vec::new();
         for m in rows {
-            let vp = normalize_virtual_path(&m.virtual_path);
+            // Derive virtual_path from file_rel_path (source of truth).
+            let vp = virtual_path_from_file_rel_path(&m.file_rel_path);
             if vp == current_path {
                 let is_active = m.active_hash.as_deref().map(|h| !h.is_empty() && h == m.hash).unwrap_or(false);
                 let has_draft = m.active_hash.as_deref().map(|h| !h.is_empty() && h != m.hash).unwrap_or(false);
@@ -489,21 +424,98 @@ impl ProjectService {
         }
         pipelines.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let folder_items = folders
-            .into_iter()
-            .map(|name| {
-                let next = if current_path == "/" {
-                    format!("/{name}")
-                } else {
-                    format!("{current_path}/{name}")
-                };
-                PipelineFolderItem {
-                    name: name.clone(),
-                    path: format!("{base_route}?path={next}"),
-                }
-            })
-            .collect::<Vec<_>>();
+        // ── 2. Physical subdirs and files ────────────────────────────────────
+        // Map virtual path → physical dir: virtual "/" → repo/pipelines/, "/pages" → repo/pipelines/pages/
+        let phys_dir = if current_path == "/" {
+            layout.repo_pipelines_dir.clone()
+        } else {
+            layout.repo_pipelines_dir.join(current_path.trim_start_matches('/'))
+        };
 
+        let mut files: Vec<RegistryFileItem> = Vec::new();
+
+        if phys_dir.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&phys_dir) {
+                for entry in rd.flatten() {
+                    let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+                    let fname = entry.file_name().to_string_lossy().into_owned();
+                    if fname.starts_with('.') { continue; }
+
+                    if ft.is_dir() {
+                        // Add physical subdir if not already derived from pipeline meta
+                        folders.insert(fname);
+                    } else if ft.is_file() {
+                        let kind = if fname.ends_with(".tsx") {
+                            "template"
+                        } else if fname.ends_with(".ts") {
+                            "script"
+                        } else if fname.ends_with(".css") {
+                            "style"
+                        } else {
+                            continue; // skip .zf.json and other files here
+                        };
+                        // rel_path relative to repo/ root (used for git status)
+                        let rel_path = if current_path == "/" {
+                            format!("pipelines/{fname}")
+                        } else {
+                            format!("pipelines{current_path}/{fname}")
+                        };
+                        // template_path relative to repo/pipelines/ (for template editor ?file=)
+                        let template_path = if current_path == "/" {
+                            fname.clone()
+                        } else {
+                            format!("{}/{fname}", current_path.trim_start_matches('/'))
+                        };
+                        let scope_param = current_path.trim_start_matches('/');
+                        let edit_href = format!(
+                            "/projects/{owner}/{project}/editor?type=template&path={scope_param}&file={template_path}"
+                        );
+                        files.push(RegistryFileItem {
+                            name: fname,
+                            rel_path,
+                            kind: kind.to_string(),
+                            edit_href,
+                            git_status: None,
+                        });
+                    }
+                }
+            }
+        }
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // ── 3. Folder items — normal first, special pinned at bottom ─────────
+        // Special folders appear at the bottom in fixed order: docs → styles → assets
+        const SPECIAL: &[&str] = &["docs", "assets", "styles"];
+        const SPECIAL_ORDER: &[&str] = &["docs", "styles", "assets"];
+        let mut normal_folders = Vec::new();
+        let mut special_folders = Vec::new();
+        for name in folders {
+            let next = if current_path == "/" {
+                format!("/{name}")
+            } else {
+                format!("{current_path}/{name}")
+            };
+            let item = PipelineFolderItem {
+                name: name.clone(),
+                path: format!("{base_route}?path={next}"),
+                is_special: SPECIAL.contains(&name.as_str()),
+            };
+            if item.is_special {
+                special_folders.push(item);
+            } else {
+                normal_folders.push(item);
+            }
+        }
+        normal_folders.sort_by(|a, b| a.name.cmp(&b.name));
+        special_folders.sort_by(|a, b| {
+            let ai = SPECIAL_ORDER.iter().position(|&s| s == a.name).unwrap_or(99);
+            let bi = SPECIAL_ORDER.iter().position(|&s| s == b.name).unwrap_or(99);
+            ai.cmp(&bi)
+        });
+        normal_folders.extend(special_folders);
+        let folder_items = normal_folders;
+
+        // ── 4. Breadcrumbs ───────────────────────────────────────────────────
         let mut breadcrumbs = vec![PipelineBreadcrumb {
             name: "root".to_string(),
             path: format!("{base_route}?path=/"),
@@ -512,9 +524,7 @@ impl ProjectService {
         if current_path != "/" {
             let mut accum = String::new();
             for seg in current_path.trim_start_matches('/').split('/') {
-                if seg.trim().is_empty() {
-                    continue;
-                }
+                if seg.trim().is_empty() { continue; }
                 accum.push('/');
                 accum.push_str(seg);
                 breadcrumbs.push(PipelineBreadcrumb {
@@ -525,11 +535,13 @@ impl ProjectService {
             }
         }
 
+        let _ = editor_base; // available for future use
         Ok(PipelineRegistryListing {
             current_path,
             breadcrumbs,
             folders: folder_items,
             pipelines,
+            files,
         })
     }
 
@@ -547,8 +559,8 @@ impl ProjectService {
         let mut items = Vec::new();
         let mut default_file = None;
         walk_template_tree(
-            &layout.repo_templates_dir,
-            &layout.repo_templates_dir,
+            &layout.repo_pipelines_dir,
+            &layout.repo_pipelines_dir,
             0,
             &mut items,
             &mut default_file,
@@ -560,6 +572,39 @@ impl ProjectService {
         })
     }
 
+    /// Lists `.tsx` template files in the project, optionally scoped to a sub-path.
+    ///
+    /// Returns items with `file_kind` of `"page"` or `"component"` (only `.tsx` files).
+    /// `path` is a relative sub-path under the template root; `"/"` means all files.
+    pub fn list_template_pages(
+        &self,
+        owner: &str,
+        project: &str,
+        path: Option<&str>,
+    ) -> Result<Vec<TemplateTreeItem>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        self.ensure_default_template_workspace(&layout)?;
+
+        let root = &layout.repo_pipelines_dir;
+        let search_root = if let Some(p) = path.filter(|p| !p.is_empty() && p != &"/") {
+            let sub = p.trim_start_matches('/');
+            let candidate = root.join(sub);
+            if candidate.starts_with(root) && candidate.is_dir() {
+                candidate
+            } else {
+                root.clone()
+            }
+        } else {
+            root.clone()
+        };
+
+        let mut items = Vec::new();
+        collect_tsx_files(root, &search_root, &mut items)?;
+        Ok(items)
+    }
+
     /// Returns the filesystem path of the project's template root directory.
     pub fn get_project_template_root(
         &self,
@@ -569,7 +614,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        Ok(layout.repo_templates_dir)
+        Ok(layout.repo_pipelines_dir)
     }
 
     /// Reads one template workspace file by relative path under `app/templates`.
@@ -584,7 +629,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -606,7 +651,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
         if !abs.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -629,12 +674,9 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, &req.rel_path)?;
-        if !abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_TEMPLATE_MISSING",
-                format!("template file '{}' not found", rel),
-            ));
+        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, &req.rel_path)?;
+        if let Some(parent) = abs.parent() {
+            fs::create_dir_all(parent)?;
         }
         fs::write(&abs, &req.content)?;
         Ok(template_payload_from_content(&rel, &req.content))
@@ -655,8 +697,8 @@ impl ProjectService {
         let parent_rel =
             normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
         let parent_rel = default_template_parent(&req.kind, &parent_rel);
-        let parent_abs = layout.repo_templates_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_templates_dir) {
+        let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template parent escaped template root",
@@ -677,7 +719,7 @@ impl ProjectService {
             } else {
                 format!("{parent_rel}/{folder_name}")
             };
-            let abs = layout.repo_templates_dir.join(&rel);
+            let abs = layout.repo_pipelines_dir.join(&rel);
             if abs.exists() {
                 return Err(PlatformError::new(
                     "PLATFORM_TEMPLATE_CREATE",
@@ -701,8 +743,8 @@ impl ProjectService {
         } else {
             format!("{parent_rel}/{filename}")
         };
-        let abs = layout.repo_templates_dir.join(&rel);
-        if !abs.starts_with(&layout.repo_templates_dir) {
+        let abs = layout.repo_pipelines_dir.join(&rel);
+        if !abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved template path escaped template root",
@@ -733,7 +775,7 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
-        let (rel, abs) = resolve_template_entry(&layout.repo_templates_dir, rel_path)?;
+        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
         if !abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -767,7 +809,7 @@ impl ProjectService {
         self.ensure_default_template_workspace(&layout)?;
 
         let (from_rel, from_abs) =
-            resolve_template_entry(&layout.repo_templates_dir, &req.from_rel_path)?;
+            resolve_template_entry(&layout.repo_pipelines_dir, &req.from_rel_path)?;
         if !from_abs.exists() {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_MISSING",
@@ -775,8 +817,8 @@ impl ProjectService {
             ));
         }
         let parent_rel = normalize_template_folder_rel_path(&req.to_parent_rel_path);
-        let parent_abs = layout.repo_templates_dir.join(&parent_rel);
-        if !parent_abs.starts_with(&layout.repo_templates_dir) {
+        let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
+        if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_PATH",
                 "resolved move target escaped template root",
@@ -964,152 +1006,9 @@ impl ProjectService {
             .into_iter()
             .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
         if let Some(m) = meta {
-            self.data.delete_pipeline_meta(&m.owner, &m.project, &m.virtual_path, &m.name)?;
+            self.data.delete_pipeline_meta(&m.owner, &m.project, &m.file_rel_path)?;
         }
 
-        Ok(())
-    }
-
-    fn seed_default_pipelines(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
-        let list_posts = r#"{
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "blog-list-posts",
-  "metadata": {"virtual_path":"/contents/blog"},
-  "entry_nodes": ["trigger_list_posts"],
-  "nodes": [
-    {
-      "id": "trigger_list_posts",
-      "kind": "n.trigger.webhook",
-      "input_pins": [],
-      "output_pins": ["out"],
-      "config": {"path":"/blog","method":"GET"}
-    },
-    {
-      "id": "script_build_list",
-      "kind": "n.script",
-      "input_pins": ["in"],
-      "output_pins": ["out"],
-      "config": {
-        "source": "const sample = [{ slug: \"welcome\", title: \"Welcome\" }, { slug: \"zebflow\", title: \"Building Zebflow\" }]; return { page_title: \"Blog\", posts: sample, query: input.query || {}, params: input.params || {} };"
-      }
-    },
-    {
-      "id": "render_blog_list",
-      "kind": "n.web.render",
-      "input_pins": ["in"],
-      "output_pins": ["out","error"],
-      "config": {
-        "template_id":"blog.list",
-        "route":"/blog",
-        "markup":"export const page = { head: { title: \"Blog\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><h1>{input.page_title}</h1><ul>{(input.posts || []).map((post) => (<li key={post.slug}><a href={'/blog/' + post.slug}>{post.title}</a></li>))}</ul></main></Page>); }"
-      }
-    }
-  ],
-  "edges": [
-    {"from_node":"trigger_list_posts","from_pin":"out","to_node":"script_build_list","to_pin":"in"},
-    {"from_node":"script_build_list","from_pin":"out","to_node":"render_blog_list","to_pin":"in"}
-  ]
-}"#;
-        let get_post = r#"{
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "blog-get-post",
-  "metadata": {"virtual_path":"/contents/blog"},
-  "entry_nodes": ["trigger_get_post"],
-  "nodes": [
-    {
-      "id": "trigger_get_post",
-      "kind": "n.trigger.webhook",
-      "input_pins": [],
-      "output_pins": ["out"],
-      "config": {"path":"/blog/{slug}","method":"GET"}
-    },
-    {
-      "id": "script_build_post",
-      "kind": "n.script",
-      "input_pins": ["in"],
-      "output_pins": ["out"],
-      "config": {
-        "source": "const slug = input.params?.slug || \"unknown\"; return { title: slug.replace(/-/g, \" \"), slug, body: `Post detail for ${slug}`, query: input.query || {} };"
-      }
-    },
-    {
-      "id": "render_blog_post",
-      "kind": "n.web.render",
-      "input_pins": ["in"],
-      "output_pins": ["out","error"],
-      "config": {
-        "template_id":"blog.post",
-        "route":"/blog/{slug}",
-        "markup":"export const page = { head: { title: \"Blog Post\" }, navigation: \"history\" }; export default function Page(input) { return (<Page><main><p><a href=\"/blog\">Back</a></p><h1>{input.title}</h1><p>{input.body}</p><small>{input.slug}</small></main></Page>); }"
-      }
-    }
-  ],
-  "edges": [
-    {"from_node":"trigger_get_post","from_pin":"out","to_node":"script_build_post","to_pin":"in"},
-    {"from_node":"script_build_post","from_pin":"out","to_node":"render_blog_post","to_pin":"in"}
-  ]
-}"#;
-        let send_digest = r#"{
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "email-send-digest",
-  "metadata": {"virtual_path":"/automation/email","locked":true},
-  "entry_nodes": ["trigger_digest_schedule"],
-  "nodes": [
-    {
-      "id": "trigger_digest_schedule",
-      "kind": "n.trigger.schedule",
-      "input_pins": [],
-      "output_pins": ["out"],
-      "config": {"cron":"*/10 * * * *","timezone":"UTC"}
-    },
-    {
-      "id": "script_digest_payload",
-      "kind": "n.script",
-      "input_pins": ["in"],
-      "output_pins": ["out"],
-      "config": {
-        "source": "return { status: \"queued\", channel: \"email\", generated_at: new Date().toISOString(), input };"
-      }
-    }
-  ],
-  "edges": [
-    {"from_node":"trigger_digest_schedule","from_pin":"out","to_node":"script_digest_payload","to_pin":"in"}
-  ]
-}"#;
-
-        let _ = self.upsert_pipeline_definition(
-            owner,
-            project,
-            "/contents/blog",
-            "list-posts",
-            "List Posts",
-            "Serve blog list payload",
-            "webhook",
-            list_posts,
-        )?;
-        let _ = self.upsert_pipeline_definition(
-            owner,
-            project,
-            "/contents/blog",
-            "get-post",
-            "Get Post",
-            "Serve post detail payload",
-            "webhook",
-            get_post,
-        )?;
-        let _ = self.upsert_pipeline_definition(
-            owner,
-            project,
-            "/automation/email",
-            "send-digest",
-            "Send Digest",
-            "Scheduled email digest",
-            "schedule",
-            send_digest,
-        )?;
         Ok(())
     }
 
@@ -1117,14 +1016,11 @@ impl ProjectService {
         &self,
         layout: &ProjectFileLayout,
     ) -> Result<(), PlatformError> {
-        let pages_dir = layout.repo_templates_dir.join("pages");
-        let components_dir = layout.repo_templates_dir.join("components");
-        let styles_dir = layout.repo_templates_dir.join("styles");
-        let scripts_dir = layout.repo_templates_dir.join("scripts");
-
-        for dir in [&pages_dir, &components_dir, &styles_dir, &scripts_dir] {
-            fs::create_dir_all(dir)?;
-        }
+        // Subdirs are created by ensure_project_layout. Only scaffold default files here.
+        let pages_dir = layout.repo_pipelines_dir.join("pages");
+        let styles_dir = layout.repo_pipelines_dir.join("styles");
+        fs::create_dir_all(&pages_dir)?;
+        fs::create_dir_all(&styles_dir)?;
 
         let main_css = styles_dir.join("main.css");
         if !main_css.exists() {
@@ -1177,44 +1073,44 @@ export default function Page(input) {
         Ok(())
     }
 
-    fn pipeline_file_paths(
+    /// Returns the absolute filesystem path for a pipeline given its `file_rel_path`.
+    fn pipeline_abs_path(
         &self,
         layout: &ProjectFileLayout,
-        virtual_path: &str,
-        name: &str,
-    ) -> Result<(String, std::path::PathBuf), PlatformError> {
-        let vpath = normalize_virtual_path(virtual_path);
-        let filename = format!("{}.zf.json", slug_segment(name));
-        let rel = if vpath == "/" {
-            format!("pipelines/{filename}")
-        } else {
-            format!("pipelines/{}/{}", vpath.trim_start_matches('/'), filename)
-        };
-        let abs = layout.repo_dir.join(&rel);
+        file_rel_path: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let abs = layout.repo_dir.join(file_rel_path);
         if !abs.starts_with(&layout.repo_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
-                "resolved path escaped app root",
+                "resolved path escaped repo root",
             ));
         }
-        Ok((rel, abs))
+        Ok(abs)
     }
 
+    /// Returns the runtime snapshot path for an active pipeline.
+    ///
+    /// Uses `file_rel_path` as the stable identifier:
+    /// `pipelines/api/foo.zf.json` + `abc123` → `<runtime>/api/foo.abc123.zf.json`
     fn runtime_pipeline_snapshot_path(
         &self,
         layout: &ProjectFileLayout,
-        virtual_path: &str,
-        name: &str,
+        file_rel_path: &str,
         hash: &str,
     ) -> Result<PathBuf, PlatformError> {
-        let vpath = normalize_virtual_path(virtual_path);
-        let filename = format!("{}.{}.zf.json", slug_segment(name), slug_segment(hash));
-        let rel = if vpath == "/" {
-            filename
+        // Strip "pipelines/" prefix to get the sub-path, then replace .zf.json with .{hash}.zf.json
+        let sub = file_rel_path
+            .trim_start_matches("pipelines/")
+            .trim_start_matches('/');
+        let snapshot_name = if let Some(stem) = sub.strip_suffix(".zf.json") {
+            format!("{stem}.{}.zf.json", slug_segment(hash))
+        } else if let Some(stem) = sub.strip_suffix(".json") {
+            format!("{stem}.{}.json", slug_segment(hash))
         } else {
-            format!("{}/{}", vpath.trim_start_matches('/'), filename)
+            format!("{sub}.{}", slug_segment(hash))
         };
-        let abs = layout.data_runtime_pipelines_dir.join(rel);
+        let abs = layout.data_runtime_pipelines_dir.join(&snapshot_name);
         if !abs.starts_with(&layout.data_runtime_pipelines_dir) {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_PATH",
@@ -1460,6 +1356,44 @@ fn resolve_doc_path(root: &Path, rel_path: &str) -> Result<(String, PathBuf), Pl
         ));
     }
     Ok((normalized, abs))
+}
+
+/// Recursively collects `.tsx` files under `current`, returning `TemplateTreeItem` entries.
+/// `file_kind` is `"page"` for paths containing `/pages/`, else `"component"`.
+fn collect_tsx_files(
+    root: &Path,
+    current: &Path,
+    items: &mut Vec<TemplateTreeItem>,
+) -> Result<(), PlatformError> {
+    let mut entries = fs::read_dir(current)?
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_tsx_files(root, &path, items)?;
+        } else if file_type.is_file() {
+            if path.extension().and_then(std::ffi::OsStr::to_str) != Some("tsx") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|_| PlatformError::new("PLATFORM_TEMPLATE_PATH", "invalid template path"))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let file_kind = template_file_kind(&path);
+            items.push(TemplateTreeItem {
+                name: entry.file_name().to_string_lossy().to_string(),
+                rel_path: rel,
+                kind: "file".to_string(),
+                depth: 0,
+                file_kind,
+                is_protected: false,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn walk_template_tree(
@@ -1715,6 +1649,52 @@ fn capitalize_ascii(raw: &str) -> String {
         Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
         None => String::new(),
     }
+}
+
+/// Normalizes a pipeline file_rel_path:
+/// - Ensures it starts with "pipelines/"
+/// - Ensures it ends with ".zf.json"
+/// - Strips leading "/" if present
+pub fn normalize_pipeline_file_rel_path(raw: &str) -> String {
+    let s = raw.trim().trim_start_matches('/');
+    // Ensure starts with "pipelines/"
+    let s = if s.starts_with("pipelines/") {
+        s.to_string()
+    } else {
+        format!("pipelines/{s}")
+    };
+    // Ensure ends with ".zf.json"
+    if s.ends_with(".zf.json") {
+        s
+    } else if s.ends_with(".json") {
+        s
+    } else {
+        format!("{s}.zf.json")
+    }
+}
+
+/// Derives the virtual_path from a file_rel_path.
+/// "pipelines/api/foo.zf.json" → "/api"
+/// "pipelines/foo.zf.json"     → "/"
+pub fn virtual_path_from_file_rel_path(file_rel_path: &str) -> String {
+    let stripped = file_rel_path
+        .trim_start_matches("pipelines/")
+        .trim_start_matches('/');
+    match stripped.rfind('/') {
+        Some(pos) => format!("/{}", &stripped[..pos]),
+        None => "/".to_string(),
+    }
+}
+
+/// Derives the pipeline name (slug) from a file_rel_path.
+/// "pipelines/api/foo.zf.json" → "foo"
+pub fn name_from_file_rel_path(file_rel_path: &str) -> String {
+    std::path::Path::new(file_rel_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.trim_end_matches(".zf"))
+        .unwrap_or(file_rel_path)
+        .to_string()
 }
 
 fn path_remainder(current: &str, candidate: &str) -> Option<String> {

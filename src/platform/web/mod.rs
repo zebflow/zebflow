@@ -1,6 +1,6 @@
 //! Axum web layer for Zebflow platform flows, rendered via RWE templates.
 
-mod embedded;
+pub(crate) mod embedded;
 
 use std::collections::{BTreeSet, VecDeque};
 use std::convert::Infallible;
@@ -18,7 +18,7 @@ use axum::http::{
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -51,6 +51,11 @@ use crate::rwe::{
     resolve_engine_or_default,
 };
 use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
+
+/// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
+const LOGIN_PATH: &str = "/login";
+/// Platform home path — redirect target after successful login.
+const HOME_PATH: &str = "/home";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
@@ -98,6 +103,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route("/assets/{owner}/{project}/{*path}", get(project_asset))
         .route("/assets/libraries/{*path}", get(library_asset))
+        .route("/p/{owner}/{project}/assets/{*path}", get(project_static_asset))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -109,26 +115,6 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/projects/{owner}/{project}/pipelines/{tab}",
             get(project_pipelines_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/build",
-            get(project_build_root_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/build/{tab}",
-            get(project_build_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/studio",
-            get(project_studio_redirect_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/studio/{tab}",
-            get(project_studio_tab_redirect_page),
-        )
-        .route(
-            "/projects/{owner}/{project}/design",
-            get(project_design_page),
         )
         .route(
             "/projects/{owner}/{project}/dashboard",
@@ -159,6 +145,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/projects/{owner}/{project}/settings/{tab}",
             get(project_settings_tab_page),
+        )
+        .route(
+            "/projects/{owner}/{project}/editor",
+            get(project_editor_page),
         )
         .route("/api/meta", get(api_meta))
         .route("/api/system/info", get(api_system_info))
@@ -227,6 +217,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             get(api_template_workspace),
         )
         .route(
+            "/api/projects/{owner}/{project}/templates/pages",
+            get(api_template_pages),
+        )
+        .route(
             "/api/projects/{owner}/{project}/templates/file",
             get(api_template_file)
                 .put(api_template_save)
@@ -265,6 +259,18 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/settings/{section}",
             get(api_get_settings_section).put(api_upsert_settings_section),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/rwe/libraries",
+            get(api_list_rwe_libraries),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/rwe/libraries/enable",
+            post(api_enable_rwe_library),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/rwe/libraries/disable",
+            delete(api_disable_rwe_library),
         )
         .route(
             "/api/projects/{owner}/{project}/assistant/chat",
@@ -357,6 +363,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         )
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
+        .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/{*tail}", any(public_webhook_ingress))
         .route(
             "/ws/{owner}/{project}/rooms/{room_id}",
@@ -441,13 +448,13 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
         )?,
     );
     pages.insert(
-        "platform-project-pipelines-registry",
+        "platform-project-editor",
         compile_page(
             rwe.as_ref(),
             language.as_ref(),
-            "platform.project.pipelines.registry",
+            "platform.project.editor",
             &template_root,
-            "pages/platform-project-pipelines-registry.tsx",
+            "pages/platform-project-editor.tsx",
             options.clone(),
         )?,
     );
@@ -484,42 +491,6 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             "platform.project.settings",
             &template_root,
             "pages/platform-project-settings.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-studio",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.studio",
-            &template_root,
-            "pages/platform-project-studio.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-build-templates",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.build.templates",
-            &template_root,
-            "pages/platform-project-build-templates.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-docs",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.docs",
-            &template_root,
-            "pages/platform-project-docs.tsx",
             options.clone(),
         )?,
     );
@@ -726,12 +697,15 @@ fn render_page(
 
     // All platform pages depend on shared design tokens and reset CSS.
     html = ensure_stylesheet_link(html, "/assets/platform/main.css");
-    // DB suite pages require dedicated layout rules + devicons.
+    // DB suite pages require dedicated layout rules.
     if html.contains("data-db-suite=\"true\"") {
         html = ensure_stylesheet_link(html, "/assets/platform/db-suite.css");
+    }
+    // Any page that uses devicon- classes gets the icon font CSS injected.
+    if html.contains("devicon-") {
         html = ensure_stylesheet_link(
             html,
-            "/assets/libraries/zeb/devicons/0.1/runtime/devicons.css",
+            "/assets/libraries/zeb/icons/0.1/runtime/devicons.css",
         );
     }
 
@@ -853,12 +827,15 @@ fn inject_before_body_end(html: &str, chunk: &str) -> String {
 }
 
 async fn root_redirect() -> Redirect {
-    Redirect::to("/login")
+    Redirect::to(LOGIN_PATH)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct PipelineRegistryQuery {
+    #[serde(rename = "type")]
+    editor_type: Option<String>,
     path: Option<String>,
+    file: Option<String>,
     scope: Option<String>,
     id: Option<String>,
 }
@@ -883,7 +860,10 @@ struct PipelineByIdQuery {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct TemplateWorkspaceQuery {
+struct UnifiedEditorQuery {
+    #[serde(rename = "type")]
+    editor_type: Option<String>,
+    path: Option<String>,
     file: Option<String>,
 }
 
@@ -1153,6 +1133,52 @@ async fn project_asset(
     resp
 }
 
+/// Serves static project assets from `repo/pipelines/assets/{*path}`.
+/// Route: GET /p/{owner}/{project}/assets/{*path}
+async fn project_static_asset(
+    State(state): State<PlatformAppState>,
+    Path((owner, project, path)): Path<(String, String, String)>,
+) -> Response {
+    let valid_segment = |value: &str| {
+        value
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
+    };
+    if !valid_segment(&owner) || !valid_segment(&project) {
+        return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
+    }
+
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() || normalized.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
+    }
+
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
+    let assets_root = layout.repo_pipelines_dir.join("assets");
+    let abs = assets_root.join(&normalized);
+    if !abs.starts_with(&assets_root) {
+        return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
+    }
+    if !abs.is_file() {
+        return (StatusCode::NOT_FOUND, "asset not found").into_response();
+    }
+    let bytes = match std::fs::read(&abs) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return internal_error(PlatformError::new("PLATFORM_STATIC_ASSET_READ", err.to_string()));
+        }
+    };
+    let mut resp = Response::new(Body::from(bytes));
+    *resp.status_mut() = StatusCode::OK;
+    if let Ok(v) = HeaderValue::from_str(content_type_for_path(&abs)) {
+        resp.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    resp
+}
+
 fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
     let mut resp = Response::new(Body::from(bytes.to_vec()));
     *resp.status_mut() = StatusCode::OK;
@@ -1196,7 +1222,7 @@ async fn login_submit(
 ) -> Response {
     match state.platform.auth.login(&req.identifier, &req.password) {
         Ok(Some(session)) => {
-            let mut resp = Redirect::to("/home").into_response();
+            let mut resp = Redirect::to(HOME_PATH).into_response();
             let cookie = format!(
                 "zebflow_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
                 session.owner
@@ -1221,7 +1247,7 @@ async fn login_submit(
 }
 
 async fn logout_submit() -> Response {
-    let mut resp = Redirect::to("/login").into_response();
+    let mut resp = Redirect::to(LOGIN_PATH).into_response();
     if let Ok(v) =
         HeaderValue::from_str("zebflow_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
     {
@@ -1232,7 +1258,7 @@ async fn logout_submit() -> Response {
 
 async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
     let Some(owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
+        return Redirect::to(LOGIN_PATH).into_response();
     };
 
     match state.platform.projects.list_projects(&owner) {
@@ -1279,7 +1305,7 @@ async fn design_system_page(
     headers: HeaderMap,
 ) -> Response {
     let Some(_owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
+        return Redirect::to(LOGIN_PATH).into_response();
     };
     match render_page(
         &state,
@@ -1303,7 +1329,7 @@ async fn home_create_project_submit(
     Form(req): Form<CreateProjectRequest>,
 ) -> Response {
     let Some(owner) = session_owner(&headers) else {
-        return Redirect::to("/login").into_response();
+        return Redirect::to(LOGIN_PATH).into_response();
     };
 
     match state
@@ -1311,7 +1337,7 @@ async fn home_create_project_submit(
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok(_) => Redirect::to("/home").into_response(),
+        Ok(_) => Redirect::to(HOME_PATH).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -1330,6 +1356,8 @@ async fn project_root_page(
         "registry",
         query.path.as_deref(),
         None,
+        query.editor_type.as_deref(),
+        query.file.as_deref(),
     )
     .await
 }
@@ -1348,36 +1376,10 @@ async fn project_pipelines_page(
         &tab,
         query.path.as_deref(),
         query.id.as_deref(),
+        query.editor_type.as_deref(),
+        query.file.as_deref(),
     )
     .await
-}
-
-async fn project_build_root_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    Query(query): Query<TemplateWorkspaceQuery>,
-) -> Response {
-    render_project_build_with_tab(state, headers, owner, project, "templates", query).await
-}
-
-async fn project_build_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project, tab)): Path<(String, String, String)>,
-    Query(query): Query<TemplateWorkspaceQuery>,
-) -> Response {
-    render_project_build_with_tab(state, headers, owner, project, &tab, query).await
-}
-
-async fn project_studio_redirect_page(Path((owner, project)): Path<(String, String)>) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/build/templates")).into_response()
-}
-
-async fn project_studio_tab_redirect_page(
-    Path((owner, project, tab)): Path<(String, String, String)>,
-) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/build/{tab}")).into_response()
 }
 
 async fn render_project_pipelines_with_tab(
@@ -1388,6 +1390,8 @@ async fn render_project_pipelines_with_tab(
     tab: &str,
     registry_path: Option<&str>,
     editor_id: Option<&str>,
+    registry_type: Option<&str>,
+    registry_file: Option<&str>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
         &state,
@@ -1401,6 +1405,17 @@ async fn render_project_pipelines_with_tab(
 
     let is_registry = tab == "registry";
     let is_editor = tab == "editor";
+
+    // Registry tab now delegates to the unified editor with nav_sub="registry"
+    if is_registry {
+        let query = UnifiedEditorQuery {
+            editor_type: registry_type.map(str::to_string),
+            path: registry_path.map(str::to_string),
+            file: registry_file.map(str::to_string),
+        };
+        return render_project_editor(state, headers, owner, project, query, "registry").await;
+    }
+
     let tab_payload = if is_registry {
         Some((
             "registry",
@@ -1507,14 +1522,19 @@ async fn render_project_pipelines_with_tab(
                     &project,
                     current_registry_path,
                     &route_base,
+                    &editor_base,
                 ) {
                     Ok(mut listing) => {
                         for item in &mut listing.pipelines {
                             item.git_status = registry_git_map.get(&item.file_rel_path).cloned();
                         }
+                        for item in &mut listing.files {
+                            item.git_status = registry_git_map.get(&item.rel_path).cloned();
+                        }
                         let current_path = listing.current_path;
                         let breadcrumbs = listing.breadcrumbs;
                         let folders = listing.folders;
+                        let template_files = listing.files;
                         let pipelines = listing
                             .pipelines
                             .into_iter()
@@ -1529,22 +1549,40 @@ async fn render_project_pipelines_with_tab(
                                     "is_active": item.is_active,
                                     "has_draft": item.has_draft,
                                     "git_status": item.git_status,
-                                    "edit_href": format!("{editor_base}?path={current_path}&id={file_id}")
+                                    "edit_href": format!("/projects/{owner}/{project}/editor?type=pipeline&path={current_path}&file={file_id}")
                                 })
                             })
                             .collect::<Vec<_>>();
                         let has_folders = !folders.is_empty();
                         let has_pipelines = !pipelines.is_empty();
+                        let has_files = !template_files.is_empty();
+                        let docs_items = state
+                            .platform
+                            .projects
+                            .list_project_docs(&owner, &project)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|d| d.kind == "file")
+                            .map(|d| {
+                                let encoded = d.path.replace(' ', "%20");
+                                let href = format!("/projects/{owner}/{project}/editor?type=doc&file={}", encoded);
+                                json!({ "name": d.name, "path": d.path, "href": href })
+                            })
+                            .collect::<Vec<_>>();
                         json!({
                             "current_path": current_path,
                             "editor_href": format!("{editor_base}?path={current_path}"),
                             "breadcrumbs": breadcrumbs,
                             "folders": folders,
                             "pipelines": pipelines,
+                            "files": template_files,
+                            "docs": docs_items,
                             "has_folders": has_folders,
                             "has_pipelines": has_pipelines,
+                            "has_files": has_files,
                             "api": {
                                 "delete": format!("/api/projects/{owner}/{project}/pipelines/definition"),
+                                "delete_template": format!("/api/projects/{owner}/{project}/templates/file"),
                                 "git_status": format!("/api/projects/{owner}/{project}/templates/git-status"),
                                 "git_commit": format!("/api/projects/{owner}/{project}/git/commit"),
                             }
@@ -1557,7 +1595,8 @@ async fn render_project_pipelines_with_tab(
                     "current_path": "/",
                     "breadcrumbs": [],
                     "folders": [],
-                    "pipelines": []
+                    "pipelines": [],
+                    "files": []
                 })
             };
 
@@ -1752,6 +1791,34 @@ async fn render_project_pipelines_with_tab(
                     })
                     .collect::<Vec<_>>();
 
+                // Template/script files at the current scope folder
+                let editor_template_files: Vec<Value> = match state
+                    .platform
+                    .projects
+                    .list_pipeline_registry(&owner, &project, &scope_path, &route_base, &editor_base)
+                {
+                    Ok(listing) => listing
+                        .files
+                        .into_iter()
+                        .map(|f| {
+                            let template_path = f
+                                .rel_path
+                                .strip_prefix("pipelines/")
+                                .unwrap_or(&f.rel_path)
+                                .to_string();
+                            let git_status = registry_git_map.get(&f.rel_path).cloned();
+                            json!({
+                                "name": f.name,
+                                "rel_path": f.rel_path,
+                                "kind": f.kind,
+                                "template_path": template_path,
+                                "git_status": git_status,
+                            })
+                        })
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+
                 json!({
                     "scope_path": scope_path,
                     "scope_hierarchy": scope_hierarchy,
@@ -1764,6 +1831,7 @@ async fn render_project_pipelines_with_tab(
                     "parse_error": parse_error,
                     "hits": hit_stats,
                     "pipelines": pipelines,
+                    "template_files": editor_template_files,
                     "nodes": node_catalog,
                     "api": {
                         "registry": format!("/api/projects/{owner}/{project}/pipelines/registry"),
@@ -1773,11 +1841,12 @@ async fn render_project_pipelines_with_tab(
                         "activate": format!("/api/projects/{owner}/{project}/pipelines/activate"),
                         "deactivate": format!("/api/projects/{owner}/{project}/pipelines/deactivate"),
                         "hits": format!("/api/projects/{owner}/{project}/pipelines/hits"),
+                        "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
                         "nodes": format!("/api/projects/{owner}/{project}/nodes"),
                         "credentials": format!("/api/projects/{owner}/{project}/credentials"),
                         "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
                         "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "template_save": format!("/api/projects/{owner}/{project}/templates/save"),
+                        "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
                     },
                     "graphui": {
                         "runtime_src": "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs",
@@ -1809,12 +1878,7 @@ async fn render_project_pipelines_with_tab(
                 "nav": nav,
             });
 
-            let page_id = if is_registry {
-                "platform-project-pipelines-registry"
-            } else {
-                "platform-project-pipelines"
-            };
-            match render_page(&state, page_id, &route, input) {
+            match render_page(&state, "platform-project-pipelines", &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -1824,323 +1888,470 @@ async fn render_project_pipelines_with_tab(
     }
 }
 
-async fn render_project_build_with_tab(
+
+async fn project_editor_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<UnifiedEditorQuery>,
+) -> Response {
+    render_project_editor(state, headers, owner, project, query, "editor").await
+}
+
+fn derive_scope_from_file_path(file: &str) -> String {
+    let stripped = file.strip_prefix("pipelines/").unwrap_or(file);
+    let parent = stripped.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    if parent.is_empty() {
+        "/".to_string()
+    } else {
+        crate::platform::model::normalize_virtual_path(parent)
+    }
+}
+
+async fn render_project_editor(
     state: PlatformAppState,
     headers: HeaderMap,
     owner: String,
     project: String,
-    tab: &str,
-    query: TemplateWorkspaceQuery,
+    query: UnifiedEditorQuery,
+    nav_sub: &str,
 ) -> Response {
-    if tab == "schema" {
-        return Redirect::to(&format!("/projects/{owner}/{project}/build/docs")).into_response();
-    }
-
-    let capability = if tab == "templates" {
-        ProjectCapability::TemplatesRead
-    } else {
-        ProjectCapability::ProjectRead
-    };
-    if let Err(response) =
-        require_project_page_capability(&state, &headers, &owner, &project, capability)
-    {
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
         return response;
     }
 
-    if tab == "templates" {
-        return render_project_build_templates(state, owner, project, query).await;
-    }
-
-    if tab == "docs" {
-        return render_project_build_docs(state, owner, project, query).await;
-    }
-
-    let Some((tab_key, tab_title, tab_desc, action_label, items)) = build_tab_payload(tab) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html("build tab not found".to_string()),
-        )
-            .into_response();
+    let project_info = match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            return (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response()
+        }
+        Err(err) => return internal_error(err),
     };
 
-    match state.platform.projects.get_project(&owner, &project) {
-        Ok(Some(info)) => {
-            let nav = nav_classes(&owner, &project, "build", Some(tab_key));
-            let route = format!("/projects/{owner}/{project}/build/{tab_key}");
-            let input = json!({
-                "seo": {
-                    "title": format!("{} - {}", info.title, tab_title),
-                    "description": tab_desc
-                },
-                "owner": info.owner,
-                "project": info.project,
-                "title": info.title,
-                "project_href": format!("/projects/{owner}/{project}"),
-                "current_menu": format!("Build / {tab_title}"),
-                "page_title": tab_title,
-                "page_subtitle": tab_desc,
-                "items": items,
-                "primary_action": {
-                    "href": route,
-                    "label": action_label
-                },
-                "nav": nav,
-            });
-            match render_page(&state, "platform-project-studio", &route, input) {
-                Ok(html) => Html(html).into_response(),
-                Err(err) => internal_error(err),
-            }
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
+    let editor_base = if nav_sub == "registry" {
+        format!("/projects/{owner}/{project}/pipelines/registry")
+    } else {
+        format!("/projects/{owner}/{project}/editor")
+    };
+    let route_base = format!("/projects/{owner}/{project}/pipelines/registry");
+    let route = editor_base.clone();
 
-async fn render_project_build_templates(
-    state: PlatformAppState,
-    owner: String,
-    project: String,
-    query: TemplateWorkspaceQuery,
-) -> Response {
-    match state.platform.projects.get_project(&owner, &project) {
-        Ok(Some(info)) => {
-            let workspace = match state
-                .platform
-                .projects
-                .list_template_workspace(&owner, &project)
-            {
-                Ok(workspace) => workspace,
-                Err(err) => return internal_error(err),
+    let editor_type = query.editor_type.as_deref().unwrap_or("").to_string();
+    let file_param = query
+        .file
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+
+    // Determine scope path: from ?path param, or derived from file, or root
+    let scope_path = if let Some(path) = query.path.as_deref().filter(|s| !s.trim().is_empty()) {
+        crate::platform::model::normalize_virtual_path(path)
+    } else if let Some(ref file) = file_param {
+        derive_scope_from_file_path(file)
+    } else {
+        "/".to_string()
+    };
+
+    // /docs is a virtual folder — detect it for special handling
+    let is_docs_scope = scope_path == "/docs";
+
+    // Git status map for git indicators
+    let git_map: std::collections::HashMap<String, String> = state
+        .platform
+        .projects
+        .list_repo_git_status(&owner, &project)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| (item.rel_path, item.code))
+        .collect();
+
+    // Registry listing — skip for /docs (virtual folder not in the pipeline tree)
+    let listing = if !is_docs_scope {
+        match state
+            .platform
+            .projects
+            .list_pipeline_registry(&owner, &project, &scope_path, &route_base, &editor_base)
+        {
+            Ok(l) => l,
+            Err(err) => return internal_error(err),
+        }
+    } else {
+        crate::platform::model::PipelineRegistryListing {
+            current_path: "/docs".to_string(),
+            breadcrumbs: vec![],
+            folders: vec![],
+            pipelines: vec![],
+            files: vec![],
+        }
+    };
+
+    // All pipeline rows (for scope folder map)
+    let all_rows = match state
+        .platform
+        .projects
+        .list_pipeline_meta_rows(&owner, &project)
+    {
+        Ok(rows) => rows,
+        Err(err) => return internal_error(err),
+    };
+
+    // Scope hierarchy breadcrumbs
+    let mut scope_hierarchy = vec![json!({
+        "name": "root",
+        "href": format!("{editor_base}?path=/")
+    })];
+    if scope_path != "/" {
+        let mut accum = String::new();
+        for seg in scope_path.trim_start_matches('/').split('/') {
+            if seg.trim().is_empty() {
+                continue;
+            }
+            accum.push('/');
+            accum.push_str(seg);
+            scope_hierarchy.push(json!({
+                "name": seg,
+                "href": format!("{editor_base}?path={accum}")
+            }));
+        }
+    }
+
+    // All virtual paths with counts (for the sidebar folder accordion)
+    let mut folder_counts = std::collections::BTreeMap::<String, usize>::new();
+    for meta in &all_rows {
+        let vpath =
+            crate::platform::model::normalize_virtual_path(&meta.virtual_path);
+        *folder_counts.entry(vpath).or_insert(0) += 1;
+    }
+    let scope_folders = folder_counts
+        .into_iter()
+        .map(|(vpath, count)| {
+            json!({
+                "virtual_path": vpath,
+                "count": count,
+                "href": format!("{editor_base}?path={vpath}")
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Sidebar pipelines — pipelines at current scope with new editor URLs
+    let sidebar_pipelines = listing
+        .pipelines
+        .iter()
+        .map(|item| {
+            let file_id = item.file_rel_path.clone();
+            let is_selected = file_param.as_deref() == Some(file_id.as_str());
+            json!({
+                "id": file_id,
+                "name": item.name,
+                "title": item.title,
+                "trigger_kind": item.trigger_kind,
+                "virtual_path": scope_path,
+                "is_active": item.is_active,
+                "has_draft": item.has_draft,
+                "is_selected": is_selected,
+                "status_label": if item.is_active { "active" } else if item.has_draft { "draft" } else { "inactive" },
+                "editor_href": format!("{editor_base}?type=pipeline&path={scope_path}&file={file_id}"),
+                "git_status": item.git_status,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Sidebar template/doc files — with new editor URLs
+    let sidebar_template_files: Vec<Value> = if is_docs_scope {
+        state
+            .platform
+            .projects
+            .list_project_docs(&owner, &project)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|d| d.kind == "file")
+            .map(|d| {
+                let is_selected = file_param.as_deref() == Some(d.path.as_str());
+                let editor_href = format!("{editor_base}?type=doc&path=/docs&file={}", d.path);
+                json!({
+                    "name": d.name,
+                    "rel_path": format!("docs/{}", d.path),
+                    "template_path": d.path,
+                    "kind": "doc",
+                    "git_status": null,
+                    "is_selected": is_selected,
+                    "editor_href": editor_href,
+                })
+            })
+            .collect()
+    } else {
+        listing
+            .files
+            .iter()
+            .map(|f| {
+                let template_path = f
+                    .rel_path
+                    .strip_prefix("pipelines/")
+                    .unwrap_or(&f.rel_path)
+                    .to_string();
+                let git_status = git_map.get(&f.rel_path).cloned();
+                let is_selected = file_param.as_deref() == Some(template_path.as_str());
+                json!({
+                    "name": f.name,
+                    "rel_path": f.rel_path,
+                    "template_path": template_path,
+                    "kind": f.kind,
+                    "git_status": git_status,
+                    "is_selected": is_selected,
+                    "editor_href": format!("{editor_base}?type=template&path={scope_path}&file={template_path}"),
+                })
+            })
+            .collect()
+    };
+
+    // Child folders for sidebar + folder view
+    // folder.path contains the old registry URL (baked in by list_pipeline_registry);
+    // reconstruct clean virtual path from scope_path + folder.name instead.
+    let mut child_folders: Vec<Value> = listing
+        .folders
+        .iter()
+        .map(|folder| {
+            let virtual_path = if scope_path == "/" {
+                format!("/{}", folder.name)
+            } else {
+                format!("{}/{}", scope_path, folder.name)
+            };
+            json!({
+                "name": folder.name,
+                "virtual_path": virtual_path,
+                "href": format!("{editor_base}?path={virtual_path}"),
+                "count": 0,
+            })
+        })
+        .collect();
+    // At root: inject virtual /docs folder
+    if scope_path == "/" {
+        let docs_count = state
+            .platform
+            .projects
+            .list_project_docs(&owner, &project)
+            .unwrap_or_default()
+            .iter()
+            .filter(|d| d.kind == "file")
+            .count();
+        child_folders.push(json!({
+            "name": "docs",
+            "virtual_path": "/docs",
+            "href": format!("{editor_base}?path=/docs"),
+            "count": docs_count,
+        }));
+    }
+
+    let sidebar = json!({
+        "scope_path": scope_path,
+        "scope_hierarchy": scope_hierarchy,
+        "scope_folders": scope_folders,
+        "child_folders": child_folders,
+        "pipelines": sidebar_pipelines,
+        "template_files": sidebar_template_files,
+    });
+
+    // Determine effective editor type
+    let effective_type = match (editor_type.as_str(), file_param.as_deref()) {
+        ("pipeline", Some(_)) => "pipeline",
+        ("template", Some(_)) => "template",
+        ("doc", Some(_)) => "doc",
+        _ => "folder",
+    };
+
+    // Pipeline payload
+    let pipeline_payload = if effective_type == "pipeline" {
+        let file = file_param.as_deref().unwrap_or("");
+        let meta = all_rows
+            .iter()
+            .find(|r| r.file_rel_path == file)
+            .cloned();
+
+        let (source, graph_json, parse_error, hit_stats, selected_locked) =
+            if let Some(ref meta) = meta {
+                let source = match state.platform.projects.read_pipeline_source(
+                    &owner,
+                    &project,
+                    &meta.file_rel_path,
+                ) {
+                    Ok(s) => s,
+                    Err(err) => return internal_error(err),
+                };
+                let locked = pipeline_source_is_locked(&source);
+                let (graph_json, parse_error) = match serde_json::from_str::<Value>(&source) {
+                    Ok(v) => (v, Value::Null),
+                    Err(err) => (
+                        Value::Null,
+                        Value::String(format!("pipeline JSON parse error: {err}")),
+                    ),
+                };
+                let stats = state.platform.pipeline_hits.get(
+                    &owner,
+                    &project,
+                    &meta.file_rel_path,
+                );
+                (
+                    Value::String(source),
+                    graph_json,
+                    parse_error,
+                    json!(stats),
+                    Value::Bool(locked),
+                )
+            } else {
+                (Value::Null, Value::Null, Value::Null, Value::Null, Value::Bool(false))
             };
 
-            let selected_rel = query
-                .file
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .map(str::to_string)
-                .or_else(|| workspace.default_file.clone());
-
-            let selected_file = selected_rel
-                .as_deref()
-                .map(|rel| {
-                    state
-                        .platform
-                        .projects
-                        .read_template_payload(&owner, &project, rel)
+        let node_catalog = crate::pipeline::nodes::builtin_node_definitions()
+            .into_iter()
+            .map(|def| {
+                json!({
+                    "kind": def.kind,
+                    "title": def.title,
+                    "description": def.description,
+                    "input_pins": def.input_pins,
+                    "output_pins": def.output_pins,
+                    "input_schema": def.input_schema,
+                    "output_schema": def.output_schema
                 })
-                .transpose();
-            let selected_file = match selected_file {
-                Ok(file) => file,
-                Err(err) => return internal_error(err),
-            };
+            })
+            .collect::<Vec<_>>();
 
-            let selected_file =
-                selected_file.unwrap_or_else(|| crate::platform::model::TemplateFilePayload {
-                    rel_path: "pages/home.tsx".to_string(),
-                    name: "home.tsx".to_string(),
-                    file_kind: "page".to_string(),
-                    content: String::new(),
-                    line_count: 1,
-                    is_protected: false,
-                });
-            let selected_rel = selected_file.rel_path.clone();
-            let selected_name = selected_file.name.clone();
-            let selected_kind = selected_file.file_kind.clone();
-            let selected_lines = selected_file.line_count;
-            let selected_content = selected_file.content.clone();
-
-            let template_items = workspace
-                .items
-                .into_iter()
-                .map(|item| {
-                    let href = if item.kind == "file" {
-                        format!(
-                            "/projects/{owner}/{project}/build/templates?file={}",
-                            item.rel_path
-                        )
-                    } else {
-                        String::new()
-                    };
-                    json!({
-                        "name": item.name,
-                        "rel_path": item.rel_path,
-                        "kind": item.kind,
-                        "file_kind": item.file_kind,
-                        "is_protected": item.is_protected,
-                        "indent_px": 12 + (item.depth * 14),
-                        "href": href,
-                        "is_file": item.kind == "file",
-                        "is_folder": item.kind == "folder",
-                        "is_page": item.file_kind == "page",
-                        "is_component": item.file_kind == "component",
-                        "is_script": item.file_kind == "script",
-                        "is_style": item.file_kind == "style",
-                        "is_selected": item.rel_path == selected_rel,
-                        "classes": if item.rel_path == selected_rel { "is-selected" } else { "" },
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            let nav = nav_classes(&owner, &project, "build", Some("templates"));
-            let route = format!("/projects/{owner}/{project}/build/templates");
-            let input = json!({
-                "seo": {
-                    "title": format!("{} - Templates", info.title),
-                    "description": "Project template workspace"
-                },
-                "owner": info.owner,
-                "project": info.project,
-                "title": info.title,
-                "project_href": format!("/projects/{owner}/{project}"),
-                "current_menu": "Build / Templates",
-                "nav": nav,
-                "workspace": {
-                    "items": template_items,
-                    "api": {
-                        "workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
-                        "file": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "save": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "create": format!("/api/projects/{owner}/{project}/templates/create"),
-                        "move": format!("/api/projects/{owner}/{project}/templates/move"),
-                        "delete": format!("/api/projects/{owner}/{project}/templates/file"),
-                        "git_status": format!("/api/projects/{owner}/{project}/templates/git-status"),
-                        "diagnostics": format!("/api/projects/{owner}/{project}/templates/diagnostics"),
-                    },
-                    "selected_file": {
-                        "name": selected_name,
-                        "rel_path": selected_rel,
-                        "file_kind": selected_kind,
-                        "content": selected_content,
-                        "line_count": selected_lines,
-                        "is_protected": selected_file.is_protected,
-                    },
-                    "codemirror": {
-                        "runtime_src": "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
-                        "package_label": "zeb/codemirror@0.1",
-                    }
-                },
-            });
-
-            match render_page(&state, "platform-project-build-templates", &route, input) {
-                Ok(html) => Html(html).into_response(),
-                Err(err) => internal_error(err),
+        json!({
+            "selected_id": file,
+            "selected_meta": meta,
+            "selected_source": source,
+            "selected_graph": graph_json,
+            "parse_error": parse_error,
+            "hits": hit_stats,
+            "selected_locked": selected_locked,
+            "nodes": node_catalog,
+            "api": {
+                "by_id": format!("/api/projects/{owner}/{project}/pipelines/by-id"),
+                "definition": format!("/api/projects/{owner}/{project}/pipelines/definition"),
+                "activate": format!("/api/projects/{owner}/{project}/pipelines/activate"),
+                "deactivate": format!("/api/projects/{owner}/{project}/pipelines/deactivate"),
+                "hits": format!("/api/projects/{owner}/{project}/pipelines/hits"),
+                "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
+                "nodes": format!("/api/projects/{owner}/{project}/nodes"),
+                "credentials": format!("/api/projects/{owner}/{project}/credentials"),
+                "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
+                "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
+                "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
+            },
+            "graphui": {
+                "runtime_src": "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs",
+                "package_label": "zeb/graphui@0.1",
             }
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        })
+    } else {
+        Value::Null
+    };
+
+    // Template payload
+    let template_payload = if effective_type == "template" {
+        let file = file_param.as_deref().unwrap_or("");
+        let file_data = match state
+            .platform
+            .projects
+            .read_template_payload(&owner, &project, file)
+        {
+            Ok(d) => d,
+            Err(_) => crate::platform::model::TemplateFilePayload {
+                rel_path: file.to_string(),
+                name: file.rsplit('/').next().unwrap_or(file).to_string(),
+                file_kind: "template".to_string(),
+                content: String::new(),
+                line_count: 0,
+                is_protected: false,
+            },
+        };
+        json!({
+            "name": file_data.name,
+            "rel_path": file_data.rel_path,
+            "file_kind": file_data.file_kind,
+            "content": file_data.content,
+            "line_count": file_data.line_count,
+            "is_protected": file_data.is_protected,
+            "api": {
+                "file": format!("/api/projects/{owner}/{project}/templates/file"),
+                "save": format!("/api/projects/{owner}/{project}/templates/file"),
+            }
+        })
+    } else {
+        Value::Null
+    };
+
+    // Doc payload — read doc file content for editor
+    let doc_payload = if effective_type == "doc" {
+        let file = file_param.as_deref().unwrap_or("");
+        let content = state
+            .platform
+            .projects
+            .read_project_doc(&owner, &project, file)
+            .unwrap_or_default();
+        let name = file.rsplit('/').next().unwrap_or(file).to_string();
+        json!({
+            "name": name,
+            "rel_path": format!("docs/{}", file),
+            "file_kind": "doc",
+            "content": content,
+            "api": {
+                "file": format!("/api/projects/{owner}/{project}/docs/file"),
+                "save": format!("/api/projects/{owner}/{project}/docs/file"),
+            }
+        })
+    } else {
+        Value::Null
+    };
+
+    // Folder view payload — reuse sidebar data
+    let folder_payload = if effective_type == "folder" {
+        json!({
+            "child_folders": child_folders,
+            "pipelines": sidebar_pipelines,
+            "template_files": sidebar_template_files,
+        })
+    } else {
+        Value::Null
+    };
+
+    let (seo_title, current_menu) = if nav_sub == "registry" {
+        (format!("{} - Pipelines", project_info.title), "Pipelines / Registry")
+    } else {
+        (format!("{} - Editor", project_info.title), "Pipelines / Editor")
+    };
+
+    let input = json!({
+        "seo": {
+            "title": seo_title,
+            "description": "Unified pipeline and template editor"
+        },
+        "owner": project_info.owner,
+        "project": project_info.project,
+        "title": project_info.title,
+        "project_href": format!("/projects/{owner}/{project}"),
+        "current_menu": current_menu,
+        "editor_base": editor_base,
+        "editor_type": effective_type,
+        "selected_file": file_param,
+        "sidebar": sidebar,
+        "pipeline": pipeline_payload,
+        "template": template_payload,
+        "doc": doc_payload,
+        "folder": folder_payload,
+        "nav": nav_classes(&owner, &project, "pipelines", Some(nav_sub)),
+    });
+
+    match render_page(&state, "platform-project-editor", &route, input) {
+        Ok(html) => Html(html).into_response(),
         Err(err) => internal_error(err),
     }
-}
-
-async fn render_project_build_docs(
-    state: PlatformAppState,
-    owner: String,
-    project: String,
-    query: TemplateWorkspaceQuery,
-) -> Response {
-    match state.platform.projects.get_project(&owner, &project) {
-        Ok(Some(info)) => {
-            let docs = match state.platform.projects.list_project_docs(&owner, &project) {
-                Ok(items) => items,
-                Err(err) => return internal_error(err),
-            };
-
-            let selected_path = query
-                .file
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .or_else(|| {
-                    docs.iter()
-                        .find(|item| item.kind == "file")
-                        .map(|item| item.path.clone())
-                });
-
-            let selected_content = selected_path.as_deref().and_then(|path| {
-                state
-                    .platform
-                    .projects
-                    .read_project_doc(&owner, &project, path)
-                    .ok()
-            });
-
-            let file_count = docs.iter().filter(|item| item.kind == "file").count();
-            let folder_count = docs.iter().filter(|item| item.kind == "folder").count();
-
-            let doc_items = docs
-                .iter()
-                .map(|item| {
-                    json!({
-                        "path": item.path,
-                        "name": item.name,
-                        "kind": item.kind,
-                        "href": format!("/projects/{owner}/{project}/build/docs?file={}", item.path)
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            let summary_items = vec![
-                json!({
-                    "title":"Doc Files",
-                    "description": format!("{file_count} file(s) available in app/docs"),
-                }),
-                json!({
-                    "title":"Folders",
-                    "description": format!("{folder_count} folder(s) inside app/docs"),
-                }),
-                json!({
-                    "title":"Operation Context",
-                    "description":"Use list_project_docs/read_project_doc/create_project_doc from API, MCP, or assistant layers.",
-                }),
-            ];
-
-            let nav = nav_classes(&owner, &project, "build", Some("docs"));
-            let route = format!("/projects/{owner}/{project}/build/docs");
-            let input = json!({
-                "seo": {
-                    "title": format!("{} - Docs", info.title),
-                    "description": "Project docs and schema-like design context"
-                },
-                "owner": info.owner,
-                "project": info.project,
-                "title": info.title,
-                "project_href": format!("/projects/{owner}/{project}"),
-                "current_menu": "Build / Docs",
-                "page_title": "Docs",
-                "page_subtitle": "Project docs under app/docs (ERD, README, AGENTS, use cases).",
-                "items": summary_items,
-                "primary_action": {
-                    "href": route,
-                    "label": "Open Docs"
-                },
-                "docs": {
-                    "enabled": true,
-                    "items": doc_items,
-                    "selected_path": selected_path,
-                    "selected_content": selected_content.unwrap_or_default(),
-                    "api": {
-                        "list": format!("/api/projects/{owner}/{project}/docs"),
-                        "read": format!("/api/projects/{owner}/{project}/docs/file"),
-                        "create": format!("/api/projects/{owner}/{project}/docs"),
-                        "agent_list": format!("/api/projects/{owner}/{project}/agent-docs"),
-                        "agent_read": format!("/api/projects/{owner}/{project}/agent-docs/file"),
-                        "agent_save": format!("/api/projects/{owner}/{project}/agent-docs/file"),
-                    }
-                },
-                "nav": nav,
-            });
-            match render_page(&state, "platform-project-docs", &route, input) {
-                Ok(html) => Html(html).into_response(),
-                Err(err) => internal_error(err),
-            }
-        }
-        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn project_design_page(Path((owner, project)): Path<(String, String)>) -> Response {
-    Redirect::to(&format!("/projects/{owner}/{project}/build/templates")).into_response()
 }
 
 async fn project_dashboard_page(
@@ -2270,7 +2481,7 @@ async fn project_db_connections_page(
                         "credential_id": item.credential_id,
                         "updated_at": item.updated_at,
                         "description": if item.database_kind == "sekejap" {
-                            "Project-local SekejapDB used by Simple Tables and runtime data."
+                            "Project-local Sekejap embedded database (graph, vector, full-text, temporal)."
                         } else {
                             "Credential-backed external database connection."
                         },
@@ -2569,8 +2780,23 @@ async fn render_settings_tab_page(
             let tabs = settings_tab_items(&owner, &project, tab);
             let general_cards = settings_general_cards(&owner, &project);
             let policy_cards = settings_policy_cards();
-            let library_cards = settings_library_cards();
             let (node_count, node_groups) = settings_nodes();
+
+            // Build library list: merge embedded manifests with per-project enabled state.
+            let rwe_libs = state.platform.zebflow_cfg.get_rwe_libraries(&owner, &project).unwrap_or_default();
+            let libraries_available = state.platform.library.list().map(|m| {
+                let enabled_entry = rwe_libs.get(&m.name);
+                json!({
+                    "name": m.name,
+                    "description": m.description,
+                    "packed_version": m.packed_version(),
+                    "packed_kind": m.packed_kind(),
+                    "enabled": enabled_entry.is_some(),
+                    "installed_version": enabled_entry.map(|e| e.version.clone()),
+                    "source": enabled_entry.map(|e| e.source.clone())
+                })
+            }).collect::<Vec<_>>();
+            let libraries_api = format!("/api/projects/{owner}/{project}/rwe/libraries");
 
             let assistant_config = match state
                 .platform
@@ -2630,7 +2856,8 @@ async fn render_settings_tab_page(
                 "page_subtitle": tab_subtitle,
                 "cards_general": general_cards,
                 "cards_policy": policy_cards,
-                "cards_libraries": library_cards,
+                "libraries_available": libraries_available,
+                "libraries_api": libraries_api,
                 "node_count": node_count,
                 "node_groups": node_groups,
                 "assistant": {
@@ -2643,6 +2870,10 @@ async fn render_settings_tab_page(
                 "rwe": {
                     "api": format!("/api/projects/{owner}/{project}/settings/rwe"),
                     "config": zebflow_cfg.rwe
+                },
+                "logging": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/logging"),
+                    "config": zebflow_cfg.logging
                 },
                 "mcp": {
                     "active": mcp_session.is_some(),
@@ -2757,40 +2988,6 @@ fn settings_policy_cards() -> Vec<Value> {
     ]
 }
 
-fn settings_library_cards() -> Vec<Value> {
-    vec![
-        json!({
-            "title":"zeb/codemirror",
-            "description":"Platform-managed editor dependency for template and query editing.",
-            "href":"#",
-            "tag":"Official"
-        }),
-        json!({
-            "title":"zeb/graphui",
-            "description":"Graph canvas package for pipeline visualization and editing.",
-            "href":"#",
-            "tag":"Official"
-        }),
-        json!({
-            "title":"zeb/threejs",
-            "description":"Three.js bridge runtime and reusable TSX wrapper modules.",
-            "href":"#",
-            "tag":"Official"
-        }),
-        json!({
-            "title":"zeb/deckgl",
-            "description":"Deck.gl bridge runtime for geospatial data surfaces.",
-            "href":"#",
-            "tag":"Official"
-        }),
-        json!({
-            "title":"zeb/d3",
-            "description":"D3 runtime bridge and chart wrapper catalog.",
-            "href":"#",
-            "tag":"Official"
-        }),
-    ]
-}
 
 fn node_group_rank(kind: &str) -> u8 {
     if kind.starts_with("n.trigger.") { 0 }
@@ -2921,52 +3118,6 @@ fn pipeline_tab_payload(
     }
 }
 
-fn build_tab_payload(
-    tab: &str,
-) -> Option<(
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    Vec<Value>,
-)> {
-    match tab {
-        "templates" => Some((
-            "templates",
-            "Templates",
-            "Route-bound TSX pages, shared components, and template-root styles for the current project.",
-            "Open Templates",
-            vec![
-                json!({"title":"Page Routes","description":"Server-rendered TSX page entrypoints mapped by the project web layer."}),
-                json!({"title":"Shared Components","description":"Reusable TSX modules imported from the template root."}),
-                json!({"title":"Theme Styles","description":"main.css defines project typography, theme tokens, and global surfaces."}),
-            ],
-        )),
-        "assets" => Some((
-            "assets",
-            "Assets",
-            "Project-owned images, icons, brand media, and static resources shipped with the web runtime.",
-            "Manage Assets",
-            vec![
-                json!({"title":"Brand Media","description":"Logos, illustrations, and identity assets consumed by templates."}),
-                json!({"title":"Static Resources","description":"Images, downloads, and shared files served with the project."}),
-                json!({"title":"Design Inputs","description":"Reference material kept close to the shipped frontend surface."}),
-            ],
-        )),
-        "docs" | "schema" => Some((
-            "docs",
-            "Docs",
-            "Structured project docs such as ERD, app design documents, use-case maps, and data contracts.",
-            "Open Docs",
-            vec![
-                json!({"title":"App Design Docs","description":"High-level system and interaction definitions for the project."}),
-                json!({"title":"ERD & Data Models","description":"Database structure and cross-entity relationships."}),
-                json!({"title":"Use Cases & Concepts","description":"Implementation notes, use cases, and conceptual design artifacts."}),
-            ],
-        )),
-        _ => None,
-    }
-}
 
 fn project_nav_map(owner: &str, project: &str) -> String {
     let b = format!("/projects/{owner}/{project}");
@@ -2977,9 +3128,6 @@ fn project_nav_map(owner: &str, project: &str) -> String {
            - Pipelines › Schedules: {pb}/schedules\n\
            - Pipelines › Manual: {pb}/manual\n\
            - Pipelines › Functions: {pb}/functions\n\
-           - Build › Templates: {b}/build/templates\n\
-           - Build › Assets: {b}/build/assets\n\
-           - Build › Docs: {b}/build/docs\n\
            - Dashboard: {b}/dashboard\n\
            - Credentials: {b}/credentials\n\
            - Databases / Tables (lists all connections): {b}/db/connections\n\
@@ -3001,15 +3149,11 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
         "title": "Project Menu",
         "links": {
             "pipelines_registry": format!("{pipelines_base}/registry?path=/"),
-            "pipelines_editor": format!("{pipelines_base}/editor"),
+            "pipelines_editor": format!("/projects/{owner}/{project}/editor"),
             "pipelines_webhooks": format!("{pipelines_base}/webhooks"),
             "pipelines_schedules": format!("{pipelines_base}/schedules"),
             "pipelines_manual": format!("{pipelines_base}/manual"),
             "pipelines_functions": format!("{pipelines_base}/functions"),
-            "build_templates": format!("/projects/{owner}/{project}/build/templates"),
-            "build_assets": format!("/projects/{owner}/{project}/build/assets"),
-            "build_docs": format!("/projects/{owner}/{project}/build/docs"),
-            "build_schema": format!("/projects/{owner}/{project}/build/docs"),
             "dashboard": format!("/projects/{owner}/{project}/dashboard"),
             "credentials": format!("/projects/{owner}/{project}/credentials"),
             "db_connections": format!("/projects/{owner}/{project}/db/connections"),
@@ -3020,7 +3164,6 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
         },
         "classes": {
             "pipelines": if main == "pipelines" { "is-active" } else { "" },
-            "build": if main == "build" { "is-active" } else { "" },
             "dashboard": if main == "dashboard" { "is-active" } else { "" },
             "credentials": if main == "credentials" { "is-active" } else { "" },
             "databases": if main == "databases" { "is-active" } else { "" },
@@ -3034,14 +3177,33 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipeline_schedules": if pipeline_sub == Some("schedules") { "is-active" } else { "" },
             "pipeline_manual": if pipeline_sub == Some("manual") { "is-active" } else { "" },
             "pipeline_functions": if pipeline_sub == Some("functions") { "is-active" } else { "" },
-            "build_templates": if main == "build" && pipeline_sub == Some("templates") { "is-active" } else { "" },
-            "build_assets": if main == "build" && pipeline_sub == Some("assets") { "is-active" } else { "" },
-            "build_docs": if main == "build" && (pipeline_sub == Some("docs") || pipeline_sub == Some("schema")) { "is-active" } else { "" },
-            "build_schema": if main == "build" && (pipeline_sub == Some("docs") || pipeline_sub == Some("schema")) { "is-active" } else { "" },
             "db_connections": if main == "databases" { "is-active" } else { "" },
             "table_connections": if main == "databases" { "is-active" } else { "" },
         }
     })
+}
+
+/// Strip `https?://user:token@` from git stderr before returning to the client.
+fn redact_auth_urls(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(proto_end) = rest.find("://") {
+        let before = &rest[..proto_end + 3];
+        let after = &rest[proto_end + 3..];
+        if let Some(at_pos) = after.find('@') {
+            // Only redact if there's no whitespace between :// and @ (i.e. it's really a URL)
+            if !after[..at_pos].contains(|c: char| c.is_whitespace()) {
+                out.push_str(before);
+                out.push_str("[redacted]@");
+                rest = &after[at_pos + 1..];
+                continue;
+            }
+        }
+        out.push_str(before);
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn content_type_for_path(path: &FsPath) -> &'static str {
@@ -3152,22 +3314,41 @@ const PROJECT_ASSET_LIBRARY_SPECS: &[ProjectAssetLibrarySpec] = &[
         detect_markers: &["/assets/libraries/zeb/d3/", "zeb/d3", "'d3'", "\"d3\""],
     },
     ProjectAssetLibrarySpec {
-        library: "zeb/devicons",
+        library: "zeb/icons",
         version: "0.1",
-        default_entry: "runtime/devicons.bundle.mjs",
+        default_entry: "runtime/icons.bundle.mjs",
         vendor_rel_paths: &[
             "library.json",
             "exports.json",
             "keywords.json",
-            "runtime/devicons.bundle.mjs",
+            "runtime/icons.bundle.mjs",
             "runtime/devicons.css",
         ],
         npm_deps: &[],
         detect_markers: &[
-            "/assets/libraries/zeb/devicons/",
-            "zeb/devicons",
+            "/assets/libraries/zeb/icons/",
+            "zeb/icons",
             "devicon-",
             "zf-devicon",
+        ],
+    },
+    ProjectAssetLibrarySpec {
+        library: "zeb/prosemirror",
+        version: "0.1",
+        default_entry: "runtime/prosemirror.bundle.mjs",
+        vendor_rel_paths: &[
+            "library.json",
+            "exports.json",
+            "keywords.json",
+            "runtime/prosemirror.bundle.mjs",
+            "wrappers/ProseEditor.tsx",
+        ],
+        npm_deps: &[],
+        detect_markers: &[
+            "/assets/libraries/zeb/prosemirror/",
+            "zeb/prosemirror",
+            "mountProseEditor",
+            "ProseEditor",
         ],
     },
     ProjectAssetLibrarySpec {
@@ -3668,7 +3849,7 @@ fn trigger_project_asset_prepare_on_template_save(
     project: &str,
     layout: &crate::platform::model::ProjectFileLayout,
 ) -> Result<(), PlatformError> {
-    let detected_specs = detect_required_project_library_specs(&layout.repo_templates_dir)?;
+    let detected_specs = detect_required_project_library_specs(&layout.repo_pipelines_dir)?;
     for spec in detected_specs {
         let _ = prepare_project_assets_manifest(
             owner,
@@ -4566,6 +4747,7 @@ async fn api_pipeline_registry(
         Err(response) => return response,
     };
     let base_route = format!("/projects/{owner}/{project}/pipelines/registry");
+    let editor_base = format!("/projects/{owner}/{project}/pipelines/editor");
     // Build git status map keyed by file_rel_path (relative to repo/).
     let git_map: std::collections::HashMap<String, String> = state
         .platform
@@ -4583,10 +4765,14 @@ async fn api_pipeline_registry(
                 &project,
                 current_path,
                 &base_route,
+                &editor_base,
             ) {
                 Ok(mut listing) => {
                     for item in &mut listing.pipelines {
                         item.git_status = git_map.get(&item.file_rel_path).cloned();
+                    }
+                    for item in &mut listing.files {
+                        item.git_status = git_map.get(&item.rel_path).cloned();
                     }
                     Json(json!({"ok": true, "scope": "path", "listing": listing})).into_response()
                 }
@@ -4802,16 +4988,18 @@ async fn api_upsert_pipeline_definition(
         return response;
     }
 
-    let existing_meta = match state.platform.projects.get_pipeline_meta(
+    // Check if pipeline exists and is locked.
+    let self_file_rel_path = req.file_rel_path.clone();
+    let existing_meta = match state.platform.projects.get_pipeline_meta_by_file_id(
         &owner,
         &project,
-        &req.virtual_path,
-        &req.name,
+        &self_file_rel_path,
     ) {
         Ok(meta) => meta,
         Err(err) => return internal_error(err),
     };
-    if let Some(meta) = existing_meta {
+
+    if let Some(meta) = &existing_meta {
         let locked = match state.platform.projects.read_pipeline_source(
             &owner,
             &project,
@@ -4835,11 +5023,38 @@ async fn api_upsert_pipeline_definition(
         }
     }
 
+    // Conflict check: reject if any active pipeline already owns the same webhook path.
+    if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&req.source) {
+        let conflicts = state.platform.pipeline_runtime.check_webhook_path_conflict(
+            &owner,
+            &project,
+            &graph,
+            &self_file_rel_path,
+        );
+        if !conflicts.is_empty() {
+            let msg = format!(
+                "{} {} is already registered by pipeline '{}'",
+                conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
+            );
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
+                        "message": msg,
+                        "conflicts": conflicts
+                    }
+                })),
+            )
+                .into_response();
+        }
+    }
+
     match state.platform.projects.upsert_pipeline_definition(
         &owner,
         &project,
-        &req.virtual_path,
-        &req.name,
+        &req.file_rel_path,
         &req.title,
         &req.description,
         &req.trigger_kind,
@@ -4996,12 +5211,43 @@ async fn api_git_commit(
     }
     // optional push
     if req.push {
-        let push_out = match std::process::Command::new("git")
-            .arg("-C")
-            .arg(&layout.repo_dir)
-            .arg("push")
-            .output()
-        {
+        let mut push_cmd = std::process::Command::new("git");
+        push_cmd.arg("-C").arg(&layout.repo_dir).arg("push");
+
+        // Inject credentials into URL if provided — token never written to .git/config
+        if let (Some(cred_id), Some(repo_url)) = (&req.credential_id, &req.repo_url) {
+            let cred = state
+                .platform
+                .credentials
+                .get_project_credential(&owner, &project, cred_id)
+                .ok()
+                .flatten();
+
+            let mut auth_url: Option<String> = None;
+            if let Some(c) = cred {
+                let username = c.secret["username"].as_str().unwrap_or("");
+                let token = c.secret["token"].as_str().unwrap_or("");
+                if !username.is_empty() && !token.is_empty() {
+                    if let Ok(mut parsed) = reqwest::Url::parse(repo_url) {
+                        let _ = parsed.set_username(username);
+                        let _ = parsed.set_password(Some(token));
+                        auth_url = Some(parsed.to_string());
+                    }
+                }
+            }
+
+            if let Some(url) = auth_url {
+                push_cmd.arg(url);
+            }
+        }
+
+        if let Some(branch) = &req.branch {
+            if !branch.is_empty() {
+                push_cmd.arg(branch);
+            }
+        }
+
+        let push_out = match push_cmd.output() {
             Ok(o) => o,
             Err(e) => {
                 return (
@@ -5012,10 +5258,12 @@ async fn api_git_commit(
             }
         };
         if !push_out.status.success() {
-            let stderr = String::from_utf8_lossy(&push_out.stderr).to_string();
+            let raw = String::from_utf8_lossy(&push_out.stderr);
+            // Redact https://user:token@host patterns — never expose credentials in error responses
+            let safe = redact_auth_urls(&raw);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"ok": false, "error": stderr})),
+                Json(json!({"ok": false, "error": safe})),
             )
                 .into_response();
         }
@@ -5042,15 +5290,13 @@ async fn api_activate_pipeline_definition(
     match state.platform.projects.activate_pipeline_definition(
         &owner,
         &project,
-        &req.virtual_path,
-        &req.name,
+        &req.file_rel_path,
     ) {
         Ok(meta) => {
             if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
                 &owner,
                 &project,
-                &req.virtual_path,
-                &req.name,
+                &req.file_rel_path,
             ) {
                 return internal_error(err);
             }
@@ -5079,15 +5325,13 @@ async fn api_deactivate_pipeline_definition(
     match state.platform.projects.deactivate_pipeline_definition(
         &owner,
         &project,
-        &req.virtual_path,
-        &req.name,
+        &req.file_rel_path,
     ) {
         Ok(meta) => {
             if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
                 &owner,
                 &project,
-                &req.virtual_path,
-                &req.name,
+                &req.file_rel_path,
             ) {
                 return internal_error(err);
             }
@@ -5120,11 +5364,10 @@ async fn api_execute_pipeline(
         .logging
         .effective_max_invocations();
 
-    let meta = match state.platform.projects.get_pipeline_meta(
+    let meta = match state.platform.projects.get_pipeline_meta_by_file_id(
         &owner,
         &project,
-        &req.virtual_path,
-        &req.name,
+        &req.file_rel_path,
     ) {
         Ok(Some(meta)) => meta,
         Ok(None) => {
@@ -5162,6 +5405,7 @@ async fn api_execute_pipeline(
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
                     error: Some("pipeline must be activated before execution".to_string()),
+                    trace: vec![],
                 },
                 log_max_n,
             );
@@ -5195,6 +5439,7 @@ async fn api_execute_pipeline(
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
                     error: Some(err.to_string()),
+                    trace: vec![],
                 },
                 log_max_n,
             );
@@ -5225,6 +5470,7 @@ async fn api_execute_pipeline(
                 status: "error".to_string(),
                 trigger: "manual".to_string(),
                 error: Some(err.message.clone()),
+                trace: vec![],
             },
             log_max_n,
         );
@@ -5253,6 +5499,7 @@ async fn api_execute_pipeline(
                 status: "error".to_string(),
                 trigger: "manual".to_string(),
                 error: Some(message.clone()),
+                trace: vec![],
             },
             log_max_n,
         );
@@ -5304,6 +5551,7 @@ async fn api_execute_pipeline(
                     status: "ok".to_string(),
                     trigger: "manual".to_string(),
                     error: None,
+                    trace: output.node_trace.clone(),
                 },
                 log_max_n,
             );
@@ -5332,6 +5580,7 @@ async fn api_execute_pipeline(
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
                     error: Some(err.message.clone()),
+                    trace: vec![],
                 },
                 log_max_n,
             );
@@ -5481,6 +5730,33 @@ async fn api_template_workspace(
         .list_template_workspace(&owner, &project)
     {
         Ok(workspace) => Json(workspace).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_pages(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplatePathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    let path = query.path.as_deref();
+    match state.platform.projects.list_template_pages(&owner, &project, path) {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "path": path.unwrap_or("/"),
+            "items": items,
+        }))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -5692,7 +5968,7 @@ async fn api_template_diagnostics(
         Err(err) => return internal_error(err),
     };
 
-    let response = compile_template_buffer(&state, &layout.repo_templates_dir, &req);
+    let response = compile_template_buffer(&state, &layout.repo_pipelines_dir, &req);
     Json(response).into_response()
 }
 
@@ -5873,6 +6149,7 @@ async fn api_get_settings_section(
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     match section.as_str() {
         "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.rwe})).into_response(),
+        "logging" => Json(json!({"ok": true, "section": "logging", "data": cfg.logging})).into_response(),
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
@@ -5938,6 +6215,13 @@ async fn api_upsert_settings_section(
             cfg.rwe.minify_html = payload.minify_html;
             cfg.rwe.strict_mode = payload.strict_mode;
             json!(cfg.rwe)
+        }
+        "logging" => {
+            let max_inv: Option<u32> = req.data.get("max_invocations")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.min(1000) as u32);
+            cfg.logging.max_invocations = max_inv;
+            json!(cfg.logging)
         }
         _ => {
             return (
@@ -6005,6 +6289,171 @@ async fn api_upsert_settings_section(
         resp["git_error"] = json!(err);
     }
     Json(resp).into_response()
+}
+
+// ─── RWE Library API ─────────────────────────────────────────────────────────
+
+/// `GET /api/projects/{owner}/{project}/rwe/libraries` — list all available
+/// libraries merged with per-project enabled state.
+async fn api_list_rwe_libraries(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::LibrariesRead,
+    ) {
+        return response;
+    }
+    let rwe_libs = state.platform.zebflow_cfg
+        .get_rwe_libraries(&owner, &project)
+        .unwrap_or_default();
+    let items = state.platform.library.list().map(|m| {
+        let enabled_entry = rwe_libs.get(&m.name);
+        json!({
+            "name": m.name,
+            "description": m.description,
+            "packed_version": m.packed_version(),
+            "packed_kind": m.packed_kind(),
+            "enabled": enabled_entry.is_some(),
+            "installed_version": enabled_entry.map(|e| e.version.clone()),
+            "source": enabled_entry.map(|e| e.source.clone())
+        })
+    }).collect::<Vec<_>>();
+    Json(items).into_response()
+}
+
+/// Request body for `POST /api/projects/{owner}/{project}/rwe/libraries/enable`.
+#[derive(serde::Deserialize)]
+struct EnableRweLibraryRequest {
+    name: String,
+    version: String,
+    source: String,
+}
+
+/// `POST /api/projects/{owner}/{project}/rwe/libraries/enable`
+async fn api_enable_rwe_library(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<EnableRweLibraryRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::LibrariesInstall,
+    ) {
+        return response;
+    }
+    if req.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "library name must not be empty"})),
+        ).into_response();
+    }
+    // Verify library exists in embedded registry.
+    if state.platform.library.get(req.name.trim()).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": format!("library '{}' is not registered", req.name)})),
+        ).into_response();
+    }
+    // Get the entry path for the requested version from the manifest.
+    let entry = state.platform.library
+        .get(req.name.trim())
+        .and_then(|m| m.version(req.version.trim()))
+        .map(|v| v.entry.clone())
+        .unwrap_or_default();
+    // Update zebflow.json.
+    if let Err(err) = state.platform.zebflow_cfg.enable_rwe_library(
+        &owner, &project, req.name.trim(), req.version.trim(), req.source.trim(),
+    ) {
+        return internal_error(err);
+    }
+    // Update zeb.lock.
+    if let Err(err) = state.platform.zeb_lock.add_entry(
+        &owner, &project, req.name.trim(),
+        crate::platform::model::ZebLockEntry {
+            version: req.version.trim().to_string(),
+            source: req.source.trim().to_string(),
+            entry,
+            integrity: None,
+        },
+    ) {
+        return internal_error(err);
+    }
+    // Git commit (best-effort).
+    let _ = rwe_library_git_commit(
+        &state, &owner, &project,
+        &format!("chore(rwe): enable library {}", req.name.trim()),
+    );
+    Json(json!({"ok": true})).into_response()
+}
+
+/// Query params for `DELETE /api/projects/{owner}/{project}/rwe/libraries/disable`.
+#[derive(serde::Deserialize)]
+struct DisableRweLibraryQuery {
+    name: String,
+}
+
+/// `DELETE /api/projects/{owner}/{project}/rwe/libraries/disable?name=zeb%2Fthreejs`
+async fn api_disable_rwe_library(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(params): Query<DisableRweLibraryQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::LibrariesRemove,
+    ) {
+        return response;
+    }
+    if params.name.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "library name must not be empty"})),
+        ).into_response();
+    }
+    if let Err(err) = state.platform.zebflow_cfg.disable_rwe_library(&owner, &project, params.name.trim()) {
+        return internal_error(err);
+    }
+    if let Err(err) = state.platform.zeb_lock.remove_entry(&owner, &project, params.name.trim()) {
+        return internal_error(err);
+    }
+    // Git commit (best-effort).
+    let _ = rwe_library_git_commit(
+        &state, &owner, &project,
+        &format!("chore(rwe): disable library {}", params.name.trim()),
+    );
+    Json(json!({"ok": true})).into_response()
+}
+
+/// Stages `zebflow.json` and `zeb.lock`, then commits with the given message.
+/// Best-effort: errors are logged but not propagated to the caller.
+fn rwe_library_git_commit(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    message: &str,
+) -> Result<(), ()> {
+    let owner_slug = crate::platform::model::slug_segment(owner);
+    let project_slug = crate::platform::model::slug_segment(project);
+    let layout = state.platform.file
+        .ensure_project_layout(&owner_slug, &project_slug)
+        .map_err(|_| ())?;
+    let add_ok = std::process::Command::new("git")
+        .arg("-C").arg(&layout.repo_dir)
+        .arg("add").arg("zebflow.json").arg("zeb.lock")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !add_ok {
+        return Err(());
+    }
+    std::process::Command::new("git")
+        .arg("-C").arg(&layout.repo_dir)
+        .arg("commit").arg("-m").arg(message)
+        .output()
+        .map(|_| ())
+        .map_err(|_| ())
 }
 
 /// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.render`
@@ -6217,9 +6666,9 @@ async fn api_project_assistant_chat(
              All actions — creating pipelines, querying databases, reading files, git, tables — go through this tool.\n\n\
              ## How to Do Things\n\
              - **Pipelines**: `register`, `describe pipeline`, `activate`, `execute pipeline`, `run`\n\
-             - **DB queries**: `run | pg.query --credential <slug> -- \"SELECT ...\"` or SekejapQL via `run | n.sjtable.query`\n\
+             - **DB queries**: `run | pg.query --credential <slug> -- \"SELECT ...\"` or SekejapQL via `run | n.sekejap.query`\n\
              - **Explore DB schema**: `describe connection <slug>` before writing any SQL\n\
-             - **Tables**: `get tables`, `create table`, `run | n.sjtable.query --op upsert`\n\
+             - **Tables**: `get tables`, `create table`, `run | n.sekejap.query --op upsert`\n\
              - **Files / docs**: `get files`, `read doc README.md`, `write doc AGENTS.md -- \"...\"`\n\
              - **Git**: `git status`, `git add`, `git commit -- \"message\"`\n\
              After DSL executes the browser navigates automatically to the relevant page.\n\n\
@@ -6660,6 +7109,7 @@ async fn api_describe_db_connection(
     let req = DescribeProjectDbConnectionRequest {
         scope: query.scope,
         schema: query.schema,
+        table: None,
         include_system: query.include_system,
     };
     match state
@@ -6691,6 +7141,7 @@ async fn api_list_db_connection_schemas(
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("schemas".to_string()),
         schema: query.schema,
+        table: None,
         include_system: query.include_system,
     };
     match state
@@ -6722,6 +7173,7 @@ async fn api_list_db_connection_tables(
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("tables".to_string()),
         schema: query.schema,
+        table: None,
         include_system: query.include_system,
     };
     match state
@@ -6753,6 +7205,7 @@ async fn api_list_db_connection_functions(
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("functions".to_string()),
         schema: query.schema,
+        table: None,
         include_system: query.include_system,
     };
     match state
@@ -7242,12 +7695,21 @@ fn verify_webhook_auth(
         "jwt" => {
             use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
+            // Check Authorization: Bearer header first, then Cookie: <cookie_name> fallback.
+            let cookie_name = if auth_credential.is_empty() { "zebflow_session" } else { "zebflow_session" };
             let token = headers
                 .get("Authorization")
                 .and_then(|h| h.to_str().ok())
                 .and_then(|h| h.strip_prefix("Bearer "))
+                .map(ToString::to_string)
+                .or_else(|| {
+                    let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+                    cookie.split(';').map(str::trim).find_map(|part| {
+                        part.strip_prefix(&format!("{cookie_name}=")).map(ToString::to_string)
+                    })
+                })
                 .ok_or_else(|| {
-                    (StatusCode::UNAUTHORIZED, "missing Authorization: Bearer <token>".to_string())
+                    (StatusCode::UNAUTHORIZED, "missing Authorization: Bearer <token> or session cookie".to_string())
                 })?;
 
             let algo_str = credential
@@ -7304,7 +7766,7 @@ fn verify_webhook_auth(
             let mut validation = Validation::new(algorithm);
             validation.validate_exp = true;
 
-            let token_data = decode::<Value>(token, &decoding_key, &validation)
+            let token_data = decode::<Value>(&token, &decoding_key, &validation)
                 .map_err(|e| (StatusCode::UNAUTHORIZED, format!("JWT invalid: {e}")))?;
 
             Ok(Some(token_data.claims))
@@ -7606,6 +8068,7 @@ async fn public_webhook_ingress(
                 status: "error".to_string(),
                 trigger: "webhook".to_string(),
                 error: Some(err.message.clone()),
+                trace: vec![],
             },
             log_max_n,
         );
@@ -7671,6 +8134,7 @@ async fn public_webhook_ingress(
                     status: "error".to_string(),
                     trigger: "webhook".to_string(),
                     error: Some(err.message.clone()),
+                    trace: vec![],
                 },
                 log_max_n,
             );
@@ -7704,9 +8168,32 @@ async fn public_webhook_ingress(
             status: "ok".to_string(),
             trigger: "webhook".to_string(),
             error: None,
+            trace: output.node_trace.clone(),
         },
         log_max_n,
     );
+
+    // ── _set_cookie convention ────────────────────────────────────────────────
+    // If the pipeline output contains `_set_cookie`, build the Set-Cookie header string.
+    // Applied to the final response regardless of response type.
+    let set_cookie_header: Option<String> = output.value
+        .get("_set_cookie")
+        .and_then(|sc| {
+            let name = sc.get("name")?.as_str()?;
+            let value = sc.get("value")?.as_str()?;
+            let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
+            let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
+            let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
+            let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
+            let mut parts = vec![
+                format!("{name}={value}"),
+                format!("Path={path}"),
+                format!("Max-Age={max_age}"),
+                format!("SameSite={same_site}"),
+            ];
+            if http_only { parts.push("HttpOnly".to_string()); }
+            Some(parts.join("; "))
+        });
 
     // ── HTML response (n.web.render output) ──────────────────────────────────
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
@@ -7734,7 +8221,13 @@ async fn public_webhook_ingress(
             .unwrap_or_default();
         let externalized =
             externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project)));
-        return Html(externalized).into_response();
+        let mut resp = Html(externalized).into_response();
+        if let Some(ref cookie) = set_cookie_header {
+            if let Ok(v) = HeaderValue::from_str(cookie) {
+                resp.headers_mut().insert(SET_COOKIE, v);
+            }
+        }
+        return resp;
     }
 
     // ── _status convention ────────────────────────────────────────────────────
@@ -7747,6 +8240,7 @@ async fn public_webhook_ingress(
             let mut error_body = output.value.clone();
             if let Value::Object(ref mut map) = error_body {
                 map.remove("_status");
+                map.remove("_set_cookie");
             }
             if let Some(err_resp) =
                 dispatch_weberror(&state, &owner, &project, code as u16, error_body.clone()).await
@@ -7758,11 +8252,28 @@ async fn public_webhook_ingress(
         let mut body = output.value.clone();
         if let Value::Object(ref mut map) = body {
             map.remove("_status");
+            map.remove("_set_cookie");
         }
-        return (status, Json(body)).into_response();
+        let mut resp = (status, Json(body)).into_response();
+        if let Some(ref cookie) = set_cookie_header {
+            if let Ok(v) = HeaderValue::from_str(cookie) {
+                resp.headers_mut().insert(SET_COOKIE, v);
+            }
+        }
+        return resp;
     }
 
-    Json(json!({"ok": true, "output": output.value, "trace": output.trace})).into_response()
+    let mut out_body = output.value.clone();
+    if let Value::Object(ref mut map) = out_body {
+        map.remove("_set_cookie");
+    }
+    let mut resp = Json(out_body).into_response();
+    if let Some(ref cookie) = set_cookie_header {
+        if let Ok(v) = HeaderValue::from_str(cookie) {
+            resp.headers_mut().insert(SET_COOKIE, v);
+        }
+    }
+    resp
 }
 
 async fn public_webhook_ingress_root(
@@ -8059,7 +8570,7 @@ fn require_project_page_capability(
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
     let Some(session_owner) = session_owner(headers) else {
-        return Err(Redirect::to("/login").into_response());
+        return Err(Redirect::to(LOGIN_PATH).into_response());
     };
     let subject = ProjectAccessSubject::user(&session_owner);
     match state

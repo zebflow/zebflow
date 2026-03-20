@@ -9,8 +9,9 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, CredentialService,
-    DbConnectionService, DbRuntimeService, McpSessionService, PipelineHitsService,
-    PipelineRuntimeService, ProjectService, SimpleTableService, UserService, ZebflowJsonService,
+    DbConnectionService, DbRuntimeService, LibraryService, McpSessionService, PipelineHitsService,
+    PipelineRuntimeService, ProjectService, SimpleTableService, UserService, ZebLockService,
+    ZebflowJsonService,
 };
 use crate::infra::transport::ws::WsHub;
 
@@ -53,6 +54,10 @@ pub struct PlatformService {
     pub mcp_sessions: Arc<McpSessionService>,
     /// WebSocket hub — real-time room management for WS pipelines.
     pub ws_hub: Arc<WsHub>,
+    /// In-memory registry of embedded `zeb/*` library manifests.
+    pub library: Arc<LibraryService>,
+    /// Read/write service for per-project `repo/zeb.lock`.
+    pub zeb_lock: Arc<ZebLockService>,
 }
 
 impl PlatformService {
@@ -65,12 +70,15 @@ impl PlatformService {
         file.initialize()?;
 
         let zebflow_cfg = Arc::new(ZebflowJsonService::new(config.data_root.join("users")));
+        let zeb_lock = Arc::new(ZebLockService::new(config.data_root.join("users")));
+        let library = Arc::new(LibraryService::from_embedded());
         let users = Arc::new(UserService::new(data.clone()));
         let projects = Arc::new(ProjectService::new(
             data.clone(),
             file.clone(),
             project_data.clone(),
             zebflow_cfg.clone(),
+            zeb_lock.clone(),
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
@@ -107,11 +115,20 @@ impl PlatformService {
             simple_tables,
             mcp_sessions,
             ws_hub,
+            library,
+            zeb_lock,
         };
         svc.bootstrap_defaults()?;
-        let _ = svc
-            .pipeline_runtime
-            .refresh_project(&svc.config.default_owner, &svc.config.default_project);
+        // Reload active pipelines for every project across all users.
+        if let Ok(users) = svc.data.list_users() {
+            for user in &users {
+                if let Ok(projects) = svc.projects.list_projects(&user.owner) {
+                    for project in &projects {
+                        let _ = svc.pipeline_runtime.refresh_project(&user.owner, &project.project);
+                    }
+                }
+            }
+        }
         Ok(svc)
     }
 

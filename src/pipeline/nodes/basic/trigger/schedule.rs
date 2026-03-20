@@ -7,6 +7,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
+use crate::pipeline::model::{LayoutItem, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.trigger.schedule";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -31,6 +32,15 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
+        fields: vec![
+            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "cron".to_string(), label: "Cron".to_string(), field_type: NodeFieldType::Text, help: Some("Cron expression for schedule trigger.".to_string()), default_value: Some(serde_json::json!("*/5 * * * *")), ..Default::default() },
+            NodeFieldDef { name: "timezone".to_string(), label: "Timezone".to_string(), field_type: NodeFieldType::Text, help: Some("IANA timezone, for example UTC or Asia/Jakarta.".to_string()), default_value: Some(serde_json::json!("UTC")), ..Default::default() },
+        ],
+        layout: vec![
+            LayoutItem::Field("title".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("cron".to_string()), LayoutItem::Field("timezone".to_string())] },
+        ],
         ai_tool: Default::default(),
     }
 }
