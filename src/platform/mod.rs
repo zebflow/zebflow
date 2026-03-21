@@ -8,6 +8,7 @@
 //!   `login -> home(project list) -> project page`
 
 pub mod adapters;
+pub mod catalog;
 pub mod db;
 pub mod error;
 pub mod interaction;

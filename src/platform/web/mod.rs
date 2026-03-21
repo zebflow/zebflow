@@ -361,6 +361,15 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/assets/prepare",
             post(api_prepare_project_assets),
         )
+        .route(
+            "/api/projects/{owner}/{project}/install/catalog/ui",
+            get(api_list_ui_catalog),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/install/ui",
+            post(api_install_ui_components),
+        )
+        .route("/catalog/ui/preview", get(catalog_ui_preview_page))
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
@@ -563,6 +572,18 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             "platform.design_system",
             &template_root,
             "pages/platform-design-system.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-catalog-ui-preview",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.catalog.ui_preview",
+            &template_root,
+            "pages/platform-catalog-ui-preview.tsx",
             options.clone(),
         )?,
     );
@@ -9214,5 +9235,72 @@ async fn ws_dispatch_event(
             .with_ws_hub(ws_hub);
             let _ = engine.execute_async(&graph, &ctx).await;
         });
+    }
+}
+
+// ── Catalog API handlers ───────────────────────────────────────────────────────
+
+async fn api_list_ui_catalog(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::PipelinesRead,
+    ) {
+        return r;
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    let entries = crate::platform::catalog::CatalogService::list_ui_with_presence(&shared_ui_dir);
+    Json(json!({ "ok": true, "components": entries })).into_response()
+}
+
+async fn api_install_ui_components(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<crate::platform::catalog::InstallUiRequest>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+    ) {
+        return r;
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    match crate::platform::catalog::CatalogService::install_ui(&req.names, &shared_ui_dir, req.overwrite) {
+        Ok(report) => Json(json!({ "ok": true, "report": report })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "error": e })).into_response(),
+    }
+}
+
+async fn catalog_ui_preview_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(_owner) = session_owner(&headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    match render_page(
+        &state,
+        "platform-catalog-ui-preview",
+        "/catalog/ui/preview",
+        json!({
+            "seo": {
+                "title": "UI Component Catalog · Zebflow",
+                "description": "shadcn-compatible Zeb React components",
+            },
+            "components": crate::platform::catalog::CatalogService::list_ui(),
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
     }
 }
