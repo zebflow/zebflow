@@ -1460,6 +1460,9 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "help_examples" => Some(ProjectCapability::ProjectRead),
         "help_nodes" => Some(ProjectCapability::ProjectRead),
         "help_search" => Some(ProjectCapability::ProjectRead),
+        // UI catalog install tools
+        "list_ui_catalog" => Some(ProjectCapability::PipelinesRead),
+        "install_ui_components" => Some(ProjectCapability::PipelinesWrite),
         _ => None,
     }
 }

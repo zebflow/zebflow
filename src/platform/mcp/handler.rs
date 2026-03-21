@@ -204,6 +204,15 @@ struct HelpSearchParams {
     query: String,
 }
 
+#[derive(serde::Deserialize, JsonSchema)]
+struct InstallUiComponentsParams {
+    /// Component names to install, e.g. ["button", "card", "dialog"].
+    names: Vec<String>,
+    /// If true, overwrite existing files. Default: false.
+    #[serde(default)]
+    overwrite: Option<bool>,
+}
+
 /// Zebflow MCP handler with project-scoped tools.
 ///
 /// Sessions are injected via HTTP request extensions by the middleware layer.
@@ -1339,6 +1348,48 @@ impl ZebflowMcpHandler {
                     None,
                 )
             })
+    }
+
+    #[tool(description = "List all available shadcn-compatible Zeb React UI components \
+        that can be installed into shared/ui/. Returns name, category, description, \
+        filename, and whether each component is already installed in this project.")]
+    async fn list_ui_catalog(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "list_ui_catalog")?;
+        let layout = self.platform.file.ensure_project_layout(&session.owner, &session.project)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+        let entries = crate::platform::catalog::CatalogService::list_ui_with_presence(&shared_ui_dir);
+        let out = serde_json::to_string_pretty(&entries)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
+    #[tool(description = "Install shadcn-compatible UI components into shared/ui/. \
+        Pass names like [\"button\",\"card\",\"dialog\"]. \
+        Set overwrite=true to replace existing files. \
+        Returns installed and skipped lists.")]
+    async fn install_ui_components(
+        &self,
+        Parameters(params): Parameters<InstallUiComponentsParams>,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "install_ui_components")?;
+        let layout = self.platform.file.ensure_project_layout(&session.owner, &session.project)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+        let report = crate::platform::catalog::CatalogService::install_ui(
+            &params.names,
+            &shared_ui_dir,
+            params.overwrite.unwrap_or(false),
+        ).map_err(|e| McpError::internal_error(e, None))?;
+        let out = serde_json::to_string_pretty(&report)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
     fn check_tool_capability(&self, session: &McpSession, tool_name: &str) -> Result<(), McpError> {

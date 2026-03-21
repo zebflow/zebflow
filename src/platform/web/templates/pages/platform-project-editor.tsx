@@ -1,5 +1,6 @@
 import ProjectStudioShell from "@/components/layout/project-studio-shell";
 import { loadEditorRuntime } from "@/components/behavior/template-editor-runtime";
+import { initInstallCatalogBehavior } from "@/components/behavior/project-install";
 import { cx, Link, useEffect, useState, useRef } from "zeb";
 import { useSplitPane } from "zeb/use";
 import Button from "@/components/ui/button";
@@ -369,6 +370,10 @@ export default function Page(input) {
     })();
   }, []);
 
+  useEffect(() => {
+    initInstallCatalogBehavior();
+  }, []);
+
   async function handleSaveDoc() {
     if (!docEditorViewRef.current) return;
     setDocSaveState("Saving…");
@@ -544,37 +549,43 @@ export default function Page(input) {
         <div
           ref={pipelineEditorRef}
           className="pipeline-editor-shell"
+          data-pipeline-registry="true"
+          data-owner={input?.owner ?? ""}
+          data-project={input?.project ?? ""}
         >
           {/* ── Sidebar ──────────────────────────────────────────────── */}
           <aside className="pipeline-editor-sidebar">
             <div className="pipeline-editor-sidebar-head">
               <p className="pipeline-editor-title">Editor</p>
-              <DropdownMenu
-                trigger={<Button size="sm" variant="outline">+ New</Button>}
-                align="right"
-              >
-                <DropdownMenuItem
-                  label="Pipeline"
-                  onClick={() => {
-                    setCreateError(null);
-                    if (newPipelineDialogRef.current) newPipelineDialogRef.current.showModal();
-                  }}
-                />
-                <DropdownMenuItem
-                  label="Template file"
-                  onClick={() => {
-                    setCreateError(null);
-                    if (newFileDialogRef.current) newFileDialogRef.current.showModal();
-                  }}
-                />
-                <DropdownMenuItem
-                  label="Folder"
-                  onClick={() => {
-                    setCreateError(null);
-                    if (newFolderDialogRef.current) newFolderDialogRef.current.showModal();
-                  }}
-                />
-              </DropdownMenu>
+              <div className="flex items-center gap-1">
+                <DropdownMenu
+                  trigger={<Button size="sm" variant="outline">+ New</Button>}
+                  align="right"
+                >
+                  <DropdownMenuItem
+                    label="Pipeline"
+                    onClick={() => {
+                      setCreateError(null);
+                      if (newPipelineDialogRef.current) newPipelineDialogRef.current.showModal();
+                    }}
+                  />
+                  <DropdownMenuItem
+                    label="Template file"
+                    onClick={() => {
+                      setCreateError(null);
+                      if (newFileDialogRef.current) newFileDialogRef.current.showModal();
+                    }}
+                  />
+                  <DropdownMenuItem
+                    label="Folder"
+                    onClick={() => {
+                      setCreateError(null);
+                      if (newFolderDialogRef.current) newFolderDialogRef.current.showModal();
+                    }}
+                  />
+                </DropdownMenu>
+                <Button size="sm" variant="ghost" data-install-catalog-open="true" title="Install UI components">⬇</Button>
+              </div>
             </div>
 
             {/* Scrollable sidebar body — folder nav + pipelines + templates always together */}
@@ -978,6 +989,57 @@ export default function Page(input) {
             </form>
           </dialog>
 
+          {/* ── Install Catalog modal ──────────────────────────────────────── */}
+          <div hidden data-install-catalog-dialog="true" className="git-commit-overlay">
+            <div className="git-commit-backdrop" data-install-catalog-close="true" />
+            <div className="git-commit-box" style={{ maxWidth: "540px", width: "100%" }}>
+              <div className="git-commit-header">
+                <h3 className="git-commit-title">Install UI Components</h3>
+                <Button variant="ghost" size="icon" className="git-commit-close" data-install-catalog-close="true" aria-label="Close">✕</Button>
+              </div>
+
+              {/* Tab bar */}
+              <div style={{ display: "flex", gap: "4px", padding: "0 0 12px 0", borderBottom: "1px solid var(--zf-ui-border)" }}>
+                <button type="button" data-install-tab-btn="ui" data-install-tab-active="true" className="pipeline-registry-filter-tab is-active">UI Kit</button>
+                <button type="button" data-install-tab-btn="pipelines" className="pipeline-registry-filter-tab">Pipelines</button>
+                <button type="button" data-install-tab-btn="scripts" className="pipeline-registry-filter-tab">Scripts</button>
+              </div>
+
+              {/* UI Kit tab */}
+              <div data-install-tab-content="ui" style={{ paddingTop: "12px" }}>
+                <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", marginBottom: "10px" }}>
+                  Select components to install into <code>shared/ui/</code>. Installs as Zeb React TSX files.
+                </p>
+                <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
+                  <button type="button" data-install-select-all="true" className="pipeline-registry-filter-tab">Select All</button>
+                  <button type="button" data-install-select-none="true" className="pipeline-registry-filter-tab">None</button>
+                  <button type="button" data-install-select-essentials="true" className="pipeline-registry-filter-tab">Essentials</button>
+                </div>
+                <div
+                  data-install-component-list="true"
+                  style={{ maxHeight: "280px", overflowY: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}
+                >
+                  {/* Populated by project-install.ts behavior */}
+                </div>
+                <p data-install-result="true" hidden style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", marginTop: "8px" }} />
+              </div>
+
+              {/* Pipelines tab (future) */}
+              <div data-install-tab-content="pipelines" hidden style={{ paddingTop: "12px" }}>
+                <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)" }}>Pipeline templates coming soon.</p>
+              </div>
+
+              {/* Scripts tab (future) */}
+              <div data-install-tab-content="scripts" hidden style={{ paddingTop: "12px" }}>
+                <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)" }}>Script templates coming soon.</p>
+              </div>
+
+              <div className="git-commit-actions">
+                <Button size="xs" data-install-submit="true">Install Selected</Button>
+                <Button variant="outline" size="xs" data-install-catalog-close="true">Cancel</Button>
+              </div>
+            </div>
+          </div>
 
         </div>
       </div>
