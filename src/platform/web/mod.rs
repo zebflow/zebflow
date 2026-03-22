@@ -27,6 +27,7 @@ use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::assistant_config::load_project_assistant_llm;
+use crate::infra::scheduler::PipelineScheduler;
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
@@ -59,7 +60,12 @@ const HOME_PATH: &str = "/home";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
-const PLATFORM_MAIN_CSS: &str = include_str!("templates/styles/main.css");
+/// Global tokens + shared UI; studio rules are concatenated from `pages/project-studio/styles.css` (one HTTP stylesheet).
+const PLATFORM_MAIN_CSS: &str = concat!(
+    include_str!("templates/styles/main.css"),
+    "\n\n",
+    include_str!("templates/pages/project-studio/styles.css"),
+);
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
 
@@ -81,14 +87,41 @@ pub struct PlatformAppState {
     /// Shared compile cache for `n.web.render` pipeline nodes.
     /// Keyed by markup content hash — reused across every webhook request.
     web_render_cache: crate::pipeline::engines::basic::WebRenderCache,
+    /// Background cron scheduler — kept alive for the lifetime of the process.
+    scheduler: Arc<PipelineScheduler>,
 }
 
 /// Builds Zebflow platform router.
-pub fn router(platform: Arc<PlatformService>) -> Router {
+pub async fn router(platform: Arc<PlatformService>) -> Router {
     let frontend = build_frontend(&platform.config.data_root).unwrap_or_else(|err| {
         panic!("failed building platform frontend templates: {err}");
     });
     let render_script_cache = build_render_script_cache(&platform.config.data_root);
+
+    // Build a BasicPipelineEngine for the scheduler (script + sekejap nodes).
+    let sched_engine = Arc::new(
+        BasicPipelineEngine::new(
+            Arc::new(DenoSandboxEngine::default()),
+            crate::rwe::resolve_engine_or_default(None),
+            Some(platform.credentials.clone()),
+            Some(platform.simple_tables.clone()),
+        )
+        .with_ws_hub(platform.ws_hub.clone()),
+    );
+
+    let scheduler = PipelineScheduler::start(
+        platform.pipeline_runtime.clone(),
+        sched_engine,
+        platform.pipeline_hits.clone(),
+        platform.data.clone(),
+        platform.zebflow_cfg.clone(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        panic!("failed starting pipeline scheduler: {e}");
+    });
+
+    println!("✅ Pipeline scheduler started");
 
     let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone());
 
@@ -107,7 +140,8 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
-        .route("/design-system", get(design_system_page))
+        .route("/home/project-templates", get(home_project_templates_page))
+        .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
         .route("/home/projects/create", post(home_create_project_submit))
@@ -138,6 +172,10 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route("/projects/{owner}/{project}/files", get(project_files_page))
         .route("/projects/{owner}/{project}/todo", get(project_todo_page))
+        .route(
+            "/projects/{owner}/{project}/settings/clone/ui/preview",
+            get(project_settings_clone_ui_preview_page),
+        )
         .route(
             "/projects/{owner}/{project}/settings",
             get(project_settings_page),
@@ -320,7 +358,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/docs/file",
-            get(api_read_project_doc).put(api_upsert_project_doc_file),
+            get(api_read_project_doc).put(api_upsert_project_doc_file).delete(api_delete_project_doc_file),
         )
         .route(
             "/api/projects/{owner}/{project}/agent-docs",
@@ -369,7 +407,6 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/install/ui",
             post(api_install_ui_components),
         )
-        .route("/catalog/ui/preview", get(catalog_ui_preview_page))
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
@@ -383,6 +420,7 @@ pub fn router(platform: Arc<PlatformService>) -> Router {
             frontend,
             render_script_cache,
             web_render_cache: crate::pipeline::engines::basic::new_web_render_cache(),
+            scheduler,
         })
 }
 
@@ -428,7 +466,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.login",
             &template_root,
-            "pages/platform-login.tsx",
+            "pages/login/page.tsx",
             options.clone(),
         )?,
     );
@@ -440,7 +478,19 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.home",
             &template_root,
-            "pages/platform-home.tsx",
+            "pages/home/page.tsx",
+            options.clone(),
+        )?,
+    );
+
+    pages.insert(
+        "platform-home-project-templates",
+        compile_page(
+            rwe.as_ref(),
+            language.as_ref(),
+            "platform.home.project.templates",
+            &template_root,
+            "pages/home/project-templates/page.tsx",
             options.clone(),
         )?,
     );
@@ -452,7 +502,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.pipelines",
             &template_root,
-            "pages/platform-project-pipelines.tsx",
+            "pages/project-studio/pipelines/page.tsx",
             options.clone(),
         )?,
     );
@@ -463,7 +513,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.editor",
             &template_root,
-            "pages/platform-project-editor.tsx",
+            "pages/project-studio/pipelines/registry/page.tsx",
             options.clone(),
         )?,
     );
@@ -475,7 +525,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.section",
             &template_root,
-            "pages/platform-project-section.tsx",
+            "pages/project-studio/files/page.tsx",
             options.clone(),
         )?,
     );
@@ -487,7 +537,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.dashboard",
             &template_root,
-            "pages/platform-project-dashboard.tsx",
+            "pages/project-studio/dashboard/page.tsx",
             options.clone(),
         )?,
     );
@@ -499,7 +549,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.settings",
             &template_root,
-            "pages/platform-project-settings.tsx",
+            "pages/project-studio/settings/page.tsx",
             options.clone(),
         )?,
     );
@@ -511,7 +561,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.credentials",
             &template_root,
-            "pages/platform-project-credentials.tsx",
+            "pages/project-studio/credentials/page.tsx",
             options.clone(),
         )?,
     );
@@ -523,7 +573,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.tables",
             &template_root,
-            "pages/platform-project-tables.tsx",
+            "pages/project-studio/connections/page.tsx",
             options.clone(),
         )?,
     );
@@ -535,7 +585,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.table_connection",
             &template_root,
-            "pages/platform-project-table-connection.tsx",
+            "pages/project-studio/connections/db/connection/page.tsx",
             options.clone(),
         )?,
     );
@@ -547,7 +597,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.table_connection.postgresql",
             &template_root,
-            "pages/platform-project-table-connection-postgresql.tsx",
+            "pages/project-studio/connections/db/postgresql/page.tsx",
             options.clone(),
         )?,
     );
@@ -559,7 +609,7 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
             language.as_ref(),
             "platform.project.table_connection.sjtable",
             &template_root,
-            "pages/platform-project-table-connection-sjtable.tsx",
+            "pages/project-studio/connections/db/sekejap/page.tsx",
             options.clone(),
         )?,
     );
@@ -569,21 +619,21 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
         compile_page(
             rwe.as_ref(),
             language.as_ref(),
-            "platform.design_system",
+            "platform.dev.design_system",
             &template_root,
-            "pages/platform-design-system.tsx",
+            "pages/dev/design-system/page.tsx",
             options.clone(),
         )?,
     );
 
     pages.insert(
-        "platform-catalog-ui-preview",
+        "platform-project-settings-clone-ui-preview",
         compile_page(
             rwe.as_ref(),
             language.as_ref(),
-            "platform.catalog.ui_preview",
+            "platform.project.settings.clone_ui_preview",
             &template_root,
-            "pages/platform-catalog-ui-preview.tsx",
+            "pages/project-studio/settings/clone/ui/preview/page.tsx",
             options.clone(),
         )?,
     );
@@ -1321,6 +1371,29 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     }
 }
 
+async fn home_project_templates_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(_owner) = session_owner(&headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    match render_page(
+        &state,
+        "platform-home-project-templates",
+        "/home/project-templates",
+        json!({
+            "seo": {
+                "title": "Project templates · Zebflow",
+                "description": "Starter blueprints for new automation projects",
+            },
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn design_system_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -1331,7 +1404,7 @@ async fn design_system_page(
     match render_page(
         &state,
         "platform-design-system",
-        "/design-system",
+        "/dev/design-system",
         json!({
             "seo": {
                 "title": "Design System · Zebflow",
@@ -5321,6 +5394,7 @@ async fn api_activate_pipeline_definition(
             ) {
                 return internal_error(err);
             }
+            state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -5349,13 +5423,8 @@ async fn api_deactivate_pipeline_definition(
         &req.file_rel_path,
     ) {
         Ok(meta) => {
-            if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
-                &owner,
-                &project,
-                &req.file_rel_path,
-            ) {
-                return internal_error(err);
-            }
+            state.platform.pipeline_runtime.evict(&owner, &project, &req.file_rel_path);
+            state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -7439,6 +7508,34 @@ async fn api_upsert_project_doc_file(
     api_upsert_project_doc(State(state), headers, Path((owner, project)), Json(req)).await
 }
 
+async fn api_delete_project_doc_file(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<DocPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesDelete,
+    ) {
+        return response;
+    }
+    let Some(path) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing doc path"}})),
+        )
+            .into_response();
+    };
+    match state.platform.projects.delete_project_doc(&owner, &project, path) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_list_agent_docs(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -9281,26 +9378,48 @@ async fn api_install_ui_components(
     }
 }
 
-async fn catalog_ui_preview_page(
+async fn project_settings_clone_ui_preview_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    let Some(_owner) = session_owner(&headers) else {
-        return Redirect::to(LOGIN_PATH).into_response();
-    };
-    match render_page(
+    if let Err(response) = require_project_page_capability(
         &state,
-        "platform-catalog-ui-preview",
-        "/catalog/ui/preview",
-        json!({
-            "seo": {
-                "title": "UI Component Catalog · Zebflow",
-                "description": "shadcn-compatible Zeb React components",
-            },
-            "components": crate::platform::catalog::CatalogService::list_ui(),
-        }),
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
     ) {
-        Ok(html) => Html(html).into_response(),
+        return response;
+    }
+
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let nav = nav_classes(&owner, &project, "settings", None);
+            let route = format!("/projects/{owner}/{project}/settings/clone/ui/preview");
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - UI catalog preview", info.title),
+                    "description": "shadcn-compatible Zeb React components for this project",
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "components": crate::platform::catalog::CatalogService::list_ui(),
+                "nav": nav,
+            });
+            match render_page(
+                &state,
+                "platform-project-settings-clone-ui-preview",
+                &route,
+                input,
+            ) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
         Err(err) => internal_error(err),
     }
 }
