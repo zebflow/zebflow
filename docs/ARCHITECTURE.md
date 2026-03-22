@@ -26,7 +26,7 @@
 │  ┌──────────────┐  ┌──────────────────────────────────────┐    │
 │  │   automaton  │  │               infra                  │    │
 │  │  Zebtune+LLM │  │  transport/ws  storage  scheduler    │    │
-│  │  agentic loop│  │  (WsHub)      (stubs)   (stubs)     │    │
+│  │  agentic loop│  │  (WsHub)      (stub)  (PipelineSched)│    │
 │  └──────────────┘  └──────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -47,7 +47,7 @@ src/
 │   └── runtime/
 │       └── tool_init.js  Tool.* standard library — shared by n.script AND all RWE contexts
 ├── rwe/                 TSX compile (OXC) + SSR (deno_core) + client hydration
-│   ├── core/compiler.rs TSX parse, import resolve, server+client module split
+│   ├── core/compiler.rs TSX parse, import resolve, bundle_for_client
 │   ├── core/render.rs   SSR render, client module bootstrap, HTML shell assembly
 │   ├── core/deno_worker.rs  singleton V8 thread (deno_core 0.390)
 │   └── engines/rwe.rs   RweReactiveWebEngine (implements ReactiveWebEngine trait)
@@ -56,7 +56,8 @@ src/
 │   ├── web/mod.rs       all routes + webhook + ws handlers
 │   └── services/        PlatformService composition root
 └── infra/
-    └── transport/ws/    WsHub, RoomHandle, RoomCmd
+    ├── transport/ws/    WsHub, RoomHandle, RoomCmd
+    └── scheduler/       PipelineScheduler (tokio-cron-scheduler, cron job runner)
 ```
 
 ---
@@ -68,20 +69,110 @@ GET  /                               → redirect to /home
 GET  /login          POST /login     → login page + submit
 POST /logout
 GET  /home
-GET  /design-system
+GET  /dev/design-system
 
-GET  /projects/{owner}/{project}     → project root (redirects to /pipelines/registry)
+GET  /projects/{owner}/{project}     → redirects to /pipelines/registry
 GET  /projects/{owner}/{project}/pipelines/{tab}
-GET  /projects/{owner}/{project}/build/{tab}     ← template editor
+GET  /projects/{owner}/{project}/build/{tab}         ← template editor
+GET  /projects/{owner}/{project}/editor              ← pipeline editor
 GET  /projects/{owner}/{project}/credentials
 GET  /projects/{owner}/{project}/db/connections
 GET  /projects/{owner}/{project}/db/{kind}/{conn}/{tab}
+GET  /projects/{owner}/{project}/settings/clone/ui/preview
 GET  /projects/{owner}/{project}/settings/{tab}
 GET  /projects/{owner}/{project}/dashboard
+GET  /projects/{owner}/{project}/files
+GET  /projects/{owner}/{project}/todo
 
-GET|POST /api/projects/{owner}/{project}/*    ← CRUD, pipeline, git, MCP, DB, assistant
-GET|POST /api/users
-GET|POST /api/admin/db/*             ← superadmin only
+GET    /api/meta
+GET    /api/system/info
+GET    /api/users
+POST   /api/users
+GET    /api/users/{owner}/projects
+POST   /api/users/{owner}/projects
+
+GET    /api/admin/db/collections
+POST   /api/admin/db/query
+DELETE /api/admin/db/node/{slug}
+
+GET    /api/projects/{owner}/{project}/nodes         ← all node definitions
+GET    /api/projects/{owner}/{project}/pipelines
+GET    /api/projects/{owner}/{project}/pipelines/registry
+GET    /api/projects/{owner}/{project}/pipelines/by-id
+POST   /api/projects/{owner}/{project}/pipelines/definition
+PUT    /api/projects/{owner}/{project}/pipelines/definition
+DELETE /api/projects/{owner}/{project}/pipelines/definition
+POST   /api/projects/{owner}/{project}/pipelines/activate
+POST   /api/projects/{owner}/{project}/pipelines/deactivate
+POST   /api/projects/{owner}/{project}/pipelines/execute
+POST   /api/projects/{owner}/{project}/pipelines/dsl
+
+GET    /api/projects/{owner}/{project}/templates/workspace
+GET    /api/projects/{owner}/{project}/templates/pages
+GET    /api/projects/{owner}/{project}/templates/file
+PUT    /api/projects/{owner}/{project}/templates/file
+POST   /api/projects/{owner}/{project}/templates/create
+POST   /api/projects/{owner}/{project}/templates/move
+DELETE /api/projects/{owner}/{project}/templates/file
+GET    /api/projects/{owner}/{project}/templates/git-status
+
+GET    /api/projects/{owner}/{project}/git/status
+POST   /api/projects/{owner}/{project}/git/commit
+
+GET    /api/projects/{owner}/{project}/credentials
+POST   /api/projects/{owner}/{project}/credentials
+GET    /api/projects/{owner}/{project}/credentials/{credential_id}
+PUT    /api/projects/{owner}/{project}/credentials/{credential_id}
+DELETE /api/projects/{owner}/{project}/credentials/{credential_id}
+
+GET    /api/projects/{owner}/{project}/assistant/config
+POST   /api/projects/{owner}/{project}/assistant/config
+PUT    /api/projects/{owner}/{project}/assistant/config
+POST   /api/projects/{owner}/{project}/assistant/chat
+
+GET    /api/projects/{owner}/{project}/settings/{section}
+PUT    /api/projects/{owner}/{project}/settings/{section}
+
+GET    /api/projects/{owner}/{project}/rwe/libraries
+POST   /api/projects/{owner}/{project}/rwe/libraries/enable
+DELETE /api/projects/{owner}/{project}/rwe/libraries/disable
+
+GET    /api/projects/{owner}/{project}/db/connections
+POST   /api/projects/{owner}/{project}/db/connections
+POST   /api/projects/{owner}/{project}/db/connections/test
+GET    /api/projects/{owner}/{project}/db/connections/{slug}
+PUT    /api/projects/{owner}/{project}/db/connections/{slug}
+DELETE /api/projects/{owner}/{project}/db/connections/{slug}
+GET    /api/projects/{owner}/{project}/db/connections/{slug}/describe
+GET    /api/projects/{owner}/{project}/db/connections/{slug}/schemas
+GET    /api/projects/{owner}/{project}/db/connections/{slug}/tables
+GET    /api/projects/{owner}/{project}/db/connections/{slug}/functions
+GET    /api/projects/{owner}/{project}/db/connections/{slug}/table-preview
+
+GET    /api/projects/{owner}/{project}/docs
+POST   /api/projects/{owner}/{project}/docs
+GET    /api/projects/{owner}/{project}/docs/file
+PUT    /api/projects/{owner}/{project}/docs/file
+GET    /api/projects/{owner}/{project}/agent-docs
+GET    /api/projects/{owner}/{project}/agent-docs/file
+PUT    /api/projects/{owner}/{project}/agent-docs/file
+
+GET    /api/projects/{owner}/{project}/tables
+POST   /api/projects/{owner}/{project}/tables
+GET    /api/projects/{owner}/{project}/tables/{table}
+DELETE /api/projects/{owner}/{project}/tables/{table}
+POST   /api/projects/{owner}/{project}/tables/rows
+POST   /api/projects/{owner}/{project}/tables/query
+
+GET    /api/projects/{owner}/{project}/mcp/session
+POST   /api/projects/{owner}/{project}/mcp/session
+PUT    /api/projects/{owner}/{project}/mcp/session
+DELETE /api/projects/{owner}/{project}/mcp/session
+POST   /api/projects/{owner}/{project}/mcp/session/reset-token
+
+POST   /api/projects/{owner}/{project}/assets/prepare
+
+ANY    /api/projects/{owner}/{project}/mcp              ← MCP protocol (nested router, see §19)
 
 ANY  /wh/{owner}/{project}/{*tail}   ← webhook ingress (pipeline trigger)
 GET  /ws/{owner}/{project}/rooms/{room_id}  ← WebSocket upgrade
@@ -89,11 +180,10 @@ GET  /ws/{owner}/{project}/rooms/{room_id}  ← WebSocket upgrade
 GET  /assets/branding/{asset}
 GET  /assets/platform/{asset}
 GET  /assets/libraries/{*path}
-GET  /assets/rwe/scripts/{hash}                  ← platform page client JS
+GET  /assets/rwe/scripts/{hash}                   ← platform page client JS
 GET  /assets/{owner}/{project}/rwe/scripts/{hash} ← project page client JS
-
-GET    /api/projects/{owner}/{project}/templates/pages  ← list .tsx files; ?path= prefix filter
-ANY    /api/projects/{owner}/{project}/mcp              ← MCP protocol (nested router, see §19)
+GET  /p/{owner}/{project}/assets/{*path}
+GET  /p/{owner}/{project}/lib/{*path}             ← project library bundles (zeb/*)
 ```
 
 All platform pages (login, home, project pages) are pre-compiled at startup by
@@ -194,22 +284,24 @@ BasicPipelineEngine.execute_async(graph, ctx)
                 │   n.trigger.webhook    pass-through; output_pins = ["out"]
                 │   n.trigger.ws         pass-through; output_pins = ["out"]
                 │   n.trigger.manual     pass-through; output_pins = ["out"]
+                │   n.trigger.schedule   pass-through (schedule tick payload); output_pins = ["out"]
                 │   n.script             DenoSandboxEngine.execute(code, input)
                 │   n.http.request       outbound HTTP via reqwest
                 │   n.pg.query           PostgreSQL via CredentialService → rows JSON
-                │   n.sjtable.query      SekejapDB via SimpleTableService → rows JSON
+                │   n.sekejap.query      SekejapDB via SimpleTableService → rows JSON
+                │                        (alias: n.sjtable.query)
                 │   n.sjtable.mutate     SekejapDB row-level mutations (delete)
                 │   n.web.render         compile + SSR (see §6)
                 │   n.ws.emit            WsHub.send_cmd(Emit { event, to, payload })
                 │   n.ws.sync_state      WsHub.send_cmd(PatchState { op, path, value })
                 │   n.trigger.weberror   matches on status_code; pass-through
-                │   n.auth_token.create  JWT sign via CredentialService
-                │   n.crypto.*           hash / encrypt
+                │   n.auth.token.create  JWT sign via CredentialService
+                │   n.crypto             hash / encrypt
                 │   n.logic.if           evaluate condition → "true"/"false" output_pin
                 │   n.logic.switch       multi-branch condition → named output_pin
                 │   n.logic.branch       split payload to multiple downstream pins
                 │   n.logic.merge        wait_all / first_completed / pass_through
-                │   n.zebtune            LLM call (client_from_env)
+                │   n.ai.zebtune         LLM call + agentic tool loop (client_from_env)
                 │
                 ├── last_value = output.payload
                 │
@@ -313,9 +405,8 @@ src/rwe/
 ├── engines/
 │   └── rwe.rs              RweReactiveWebEngine (implements ReactiveWebEngine trait)
 └── runtime/
-    ├── preact_ssr_init.js  SSR globals file — executed ONCE at JsRuntime startup
-    │                       installs all hooks + helpers as globalThis.*
-    └── ssr_worker.mjs      NOT USED — legacy external Deno subprocess (do not edit)
+    └── preact_ssr_init.js  SSR globals file — executed ONCE at JsRuntime startup
+                            installs all hooks + helpers as globalThis.*
 ```
 
 ### 6b. Pipeline Dispatch → Compile → Render
@@ -548,7 +639,7 @@ DSL text: "| trigger.webhook --path /blog | pg.query --credential db -- SELECT .
         │           --expires-in     → "expires_in"
         │           --set-cookie     → "set_cookie"
         │           --cookie-name    → "cookie_name"
-        │         n.sjtable.query:
+        │         n.sekejap.query:
         │           --table          → "table"
         │           --connection     → "connection"
         │           --op             → "operation"      (query|upsert)
@@ -557,6 +648,14 @@ DSL text: "| trigger.webhook --path /blog | pg.query --credential db -- SELECT .
         │           --limit          → "limit"
         │           --where-field    → "where_field"
         │           --where-value    → "where_value_expr"
+        │         n.pg.query:
+        │           --credential     → "credential_id"  (required; PostgreSQL credential slug)
+        │           --params-path    → "params_path"    (dot notation: params.unit_id, query.status)
+        │           --params-expr    → "params_expr"    (JS expr returning array: [input.a, input.b])
+        │           -- SQL text      → "sql"
+        │           NOTE: --params-path uses DOT notation, NOT JSON pointer syntax.
+        │                 "params.unit_id" (correct)  vs  "/params/unit_id" (wrong)
+        │
         │         n.sjtable.mutate:
         │           --table          → "table"
         │           --op             → "operation"      (delete)
@@ -582,9 +681,10 @@ DSL Verb signatures (executor.rs cmd_* methods):
   execute    <file_rel_path> [--input <json>]
   describe   pipeline <file_rel_path>
   patch      pipeline <file_rel_path> node <node_id> [--flag val ...] [-- body]
+  git        <subcommand> [args]   (status, log, diff, add, commit)
 
 All verbs resolve the pipeline via get_pipeline_meta_by_file_id(file_rel_path).
-There is NO lookup by name alone — file_rel_path is the only key. See §21.
+file_rel_path is the only accepted pipeline key. See §21.
 ```
 
 ---
@@ -603,6 +703,8 @@ Layer 2 — Project Config
       project title, assistant LLM settings, rwe options (allow_list, minify_html…)
   repo/pipelines/**/*.zf.json
       pipeline definitions (graph + nodes + edges)
+  repo/zeb.lock
+      pinned library versions + integrity hashes (git-tracked)
   repo/templates/**/*.tsx
       template source files (pages, components, layouts, behaviors, styles)
       written by: ZebflowJsonService, template file APIs
@@ -645,21 +747,32 @@ key on write == key on delete, always.
 PlatformService  (src/platform/services/platform.rs)
   — composition root, Arc<PlatformService> in every Axum handler via State<PlatformAppState>
   │
-  ├── PipelineRuntimeService   load+activate graphs, find matching webhook/WS triggers
-  ├── ProjectService           project CRUD, template file read/write, template_root
-  ├── UserService              user CRUD + password auth
-  ├── AuthService              session cookie issuance + validation
-  ├── CredentialService        encrypted secrets storage + retrieval
-  ├── SimpleTableService       SjTable CRUD via SekejapDB (query, upsert, delete_row)
-  ├── DbConnectionService      PostgreSQL/MySQL connection registry
-  ├── DbRuntimeService         execute SQL against named connections
-  ├── McpSessionService        MCP session create/lookup/expire
-  ├── ZebflowJsonService       zebflow.json read/write
-  ├── AssistantConfigService   LLM settings (reads zebflow.json)
-  ├── AssistantPlatformTools   15 tools for project assistant agentic loop
-  ├── PipelineHitsService      per-pipeline success/failure counters
-  └── WsHub                    in-memory WebSocket room registry
-      (src/infra/transport/ws/)
+  ├── config               PlatformConfig
+  ├── data                 Arc<dyn DataAdapter>  (SekejapDataAdapter — platform catalog)
+  ├── file                 Arc<dyn FileAdapter>  (file/project layout)
+  ├── project_data         Arc<dyn ProjectDataFactory>  (project sekejap/runtime data)
+  ├── users                UserService           user CRUD + password auth
+  ├── auth                 AuthService           session cookie issuance + validation
+  ├── authz                AuthorizationService  project-level capability checks
+  ├── credentials          CredentialService     encrypted secrets storage + retrieval
+  ├── assistant_configs    AssistantConfigService  LLM settings (reads zebflow.json)
+  ├── zebflow_cfg          ZebflowJsonService    zebflow.json read/write
+  ├── db_connections       DbConnectionService   PostgreSQL/MySQL connection registry
+  ├── db_runtime           DbRuntimeService      execute SQL + describe against named connections
+  ├── projects             ProjectService        project CRUD, template file read/write
+  ├── pipeline_runtime     PipelineRuntimeService  load+activate graphs, webhook/WS trigger matching
+  ├── pipeline_hits        PipelineHitsService   per-pipeline success/failure counters
+  ├── simple_tables        SimpleTableService    SjTable CRUD via SekejapDB
+  ├── mcp_sessions         McpSessionService     MCP session create/lookup/expire
+  ├── ws_hub               WsHub                 in-memory WebSocket room registry
+  │                        (src/infra/transport/ws/)
+  ├── library              LibraryService        in-memory registry of embedded zeb/* manifests
+  └── zeb_lock             ZebLockService        per-project repo/zeb.lock read/write
+
+PlatformAppState  (passed as Axum State to all route handlers)
+  ├── platform             Arc<PlatformService>
+  └── scheduler            Arc<PipelineScheduler>   background cron runner
+                           (src/infra/scheduler/)   sync_pipeline() called on activate/deactivate
 ```
 
 ---
@@ -750,14 +863,24 @@ FW_NODE_WS_SYNC_STATE_UNAVAILABLE            ws_hub not attached to engine.
   / FW_NODE_WS_EMIT_UNAVAILABLE              Webhook pipelines don't get ws_hub.
                                               WS nodes only usable in WS pipelines.
 
+Schedule pipeline not firing                 src/infra/scheduler/mod.rs
+                                              Cron must use 6-part format:
+                                              "0 * * * * *" (sec min hour dom month dow).
+                                              5-part "* * * * *" is INVALID and silently skipped.
+                                              Activate the pipeline after registering — scheduler
+                                              calls sync_pipeline() only on activate/deactivate.
+                                              Invocation logs visible in pipeline editor after
+                                              each tick (trigger: "schedule" in log entry).
+
 UI form fields appear white in dark mode       Never use dark: classes — custom Tailwind
                                               compiler does NOT support the dark: variant.
                                               Use bg-[var(--zf-ui-bg)] etc. instead.
                                               See §14 for the full token system.
 
 Node dialog shows wrong/missing fields        Fields come from Rust definition() via
-                                              /docs/node API. Check NodeFieldDef vec in
-                                              the node's definition() return value.
+                                              /api/projects/{owner}/{project}/nodes API.
+                                              Check NodeFieldDef vec in the node's
+                                              definition() return value.
                                               Restart server to pick up changes.
 
 PLATFORM_PIPELINE_MISSING on pipeline load     Physical file at repo/pipelines/… is absent.
@@ -911,7 +1034,7 @@ libraries/zeb/threejs/
   manifest.json                  ← symbol registry + all available versions
   r183/
     bundle.min.mjs               ← embedded in binary (offline default)
-  r190/                          ← would be downloaded on demand
+  r190/                          ← downloaded on demand
     bundle.min.mjs
 
 manifest.json:
@@ -1014,11 +1137,11 @@ GET    /projects/{owner}/{project}/settings/libraries/{library_name}
 GET    /api/projects/{owner}/{project}/rwe/libraries
          JSON: all libraries with status + available versions
 
-POST   /api/projects/{owner}/{project}/rwe/libraries/install
+POST   /api/projects/{owner}/{project}/rwe/libraries/enable
          Body: { name, version }
          Extracts/downloads bundle → .libraries/ → updates zeb.lock + zebflow.json
 
-DELETE /api/projects/{owner}/{project}/rwe/libraries/uninstall
+DELETE /api/projects/{owner}/{project}/rwe/libraries/disable
          Query: ?name=zeb/threejs
          Removes from zeb.lock + zebflow.json + .libraries/
 
@@ -1076,7 +1199,6 @@ EOF
 
 # Copy entry.mjs from the source repo:
 cp /path/to/zebflow/libraries/zeb/prosemirror/0.1/runtime/entry.mjs .
-# OR keep entry.mjs already in /tmp/zeb-pm-build/ from a previous build.
 
 npm install
 node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify \
@@ -1092,14 +1214,6 @@ Output size: ~237KB minified (all PM packages + application code inline).
 The `entry.mjs` source lives at `libraries/zeb/prosemirror/0.1/runtime/` alongside the bundle.
 It contains the full application logic with `import * as _pmX from "prosemirror-X"` at the top.
 esbuild resolves those imports from `node_modules/` and inlines everything into the single output file.
-
-### zeb/threejs (same pattern)
-
-```sh
-# Three.js bundle uses the same offline approach.
-# Source: libraries/zeb/threejs/r183/bundle.min.mjs (pre-built, vendored directly).
-# No build script needed — the bundle is checked into the repo as-is.
-```
 
 ### General rule for all zeb/* libraries
 
@@ -1174,7 +1288,7 @@ Placeholder colors are handled via direct CSS (compiler doesn't support `placeho
 
 ### 14d. Theme Toggle
 
-`project-studio-shell.tsx` holds `const [theme, setTheme] = useState("dark")`.
+`pages/project-studio/components/shell.tsx` holds `const [theme, setTheme] = useState("dark")`.
 The toggle button sets `data-theme` on `.project-studio-frame`. CSS variables cascade
 automatically — no JS needed to restyle individual components.
 
@@ -1212,7 +1326,7 @@ Behaviour:
 ```
 
 `DropdownMenuContent` remains as a standalone styled panel used directly in
-`project-studio-shell.tsx` for the Repo and MCP panels (which manage their own open state).
+`pages/project-studio/components/session-panel.tsx` (and related studio components) for panels that manage their own open state.
 
 ### 14g. Alert Variant Colors
 
@@ -1237,7 +1351,7 @@ form fields in Rust via `definition()`, which returns a `NodeDefinition` contain
 `fields: Vec<NodeFieldDef>`. The frontend never hardcodes per-node field logic.
 
 ```
-GET /api/projects/{owner}/{project}/pipeline/docs/node
+GET /api/projects/{owner}/{project}/nodes
         → Vec<NodeContractItem>  each with  fields: Vec<NodeFieldDef>
         → catalog stored in PipelineEditor JS memory
         → on "E" click: look up fields from catalog, pass to <NodeForm>
@@ -1269,7 +1383,7 @@ NodeFieldDef {
 // Hierarchical layout tree for the config dialog.
 // Serializes as untagged JSON: "field_name" | {"row":[...]} | {"col":[...]}
 // Empty layout → fall back to flat 2-column grid using fields order.
-LayoutItem {
+ LayoutItem {
     Field(String),                  // references a NodeFieldDef by name
     Row { row: Vec<LayoutItem> },   // horizontal group, equal-width flex columns
     Col { col: Vec<LayoutItem> },   // vertical stack inside a row cell
@@ -1278,7 +1392,7 @@ LayoutItem {
 
 `NodeDefinition` and `NodeContractItem` both carry:
 - `fields: Vec<NodeFieldDef>`
-- `layout: Vec<LayoutItem>` — skip_serializing_if empty; all 19 built-in nodes declare layout
+- `layout: Vec<LayoutItem>` — skip_serializing_if empty; all built-in nodes declare layout
 
 ### 15c. Frontend Rendering Layer
 
@@ -1330,13 +1444,13 @@ Uses **OXC AST byte-span surgery**:
 4. Add dispatch arm in `BasicPipelineEngine::build_node()` — deserialize config, construct `NodeDispatch::<Variant>(node)`
 5. Add `<Variant>(Node)` to the `NodeDispatch` enum and a match arm in `execute_async`
 6. If DSL flag names differ from config struct field names, declare explicit `dsl_flags: vec![DslFlag { flag, config_key, .. }]` — the default auto-transform maps `--flag-name` → `flag_name` only for exact matches
-7. No frontend changes — `NodeForm` renders `NodeFieldDef[]` generically from the `/docs/node` API
+7. No frontend changes — `NodeForm` renders `NodeFieldDef[]` generically from the `/api/projects/{owner}/{project}/nodes` endpoint
 
 ---
 
 ## 16. `n.sjtable.mutate` — SjTable Row Mutations
 
-Separate from `n.sjtable.query`. Handles write operations on SjTable rows that are not reads.
+Separate from `n.sekejap.query`. Handles write operations on SjTable rows that are not reads.
 
 ### 16a. Supported Operations
 
@@ -1359,9 +1473,7 @@ Separate from `n.sjtable.query`. Handles write operations on SjTable rows that a
 { "deleted": true, "row_id": "<resolved-id>" }
 ```
 
-HTTP callers should check the HTTP response status (`r.ok`) not a body `ok` field.
-
-### 16d. Example DSL (Graph Mode)
+### 16d. Example DSL
 
 ```
 | trigger.webhook --method DELETE --path /admin/posts/:id
@@ -1402,7 +1514,7 @@ Response selection (in order of priority):
         → direct pipeline output passthrough — no extra envelope
 
    IMPORTANT: Do NOT use `_status: 200` workarounds to return plain JSON.
-   The fallback path already returns plain JSON. Use _status only when you need
+   The default path already returns plain JSON. Use _status only when you need
    a non-200 HTTP status code.
 ```
 
@@ -1436,7 +1548,7 @@ GET  /api/projects/{owner}/{project}/templates/pages
 ### 19a. Source
 
 ```
-src/platform/mcp/handler.rs     ZebflowMcpHandler — all 25 tool implementations
+src/platform/mcp/handler.rs     ZebflowMcpHandler — all 31 tool implementations
 src/platform/model.rs           mcp_tool_capability() — tool slug → ProjectCapability mapping
 src/platform/web/mod.rs         build_mcp_service() — axum router, middleware, service binding
 ```
@@ -1473,7 +1585,62 @@ POST /api/projects/{owner}/{project}/mcp
             → CallToolResult::success(vec![Content::text(json)])
 ```
 
-### 19c. Capability Mapping
+### 19c. Tool Inventory (31 tools)
+
+```
+Orientation:
+  start_here         project overview, docs, connections, template tree
+  help_pipeline      pipeline DSL guide + appended live node reference (`builtin_node_definitions()`)
+  help_web_engine    Web pages & TSX template guide
+  help_examples      project archetype recipes
+  help_nodes         node reference from `builtin_node_definitions()` (full catalog or one `kind`)
+  help_search        full-text search across all skill docs
+
+Pipelines (read):
+  pipeline_list      list all pipelines with status
+  pipeline_get       get pipeline graph JSON
+  pipeline_describe  nodes, edges, trigger config in detail
+
+Pipelines (write):
+  pipeline_register  save new pipeline from DSL body
+  pipeline_patch     update one node config inside a saved pipeline
+  pipeline_activate  promote draft to active → goes live
+  pipeline_deactivate remove from active registry
+
+Pipelines (execute):
+  pipeline_execute   run the active version of a saved pipeline
+  pipeline_run       run ephemeral body — not saved, not logged
+
+Templates:
+  template_list      list all template files
+  template_get       read a template file
+  template_create    scaffold a new template with boilerplate
+  template_write     write (overwrite) a template file
+
+Docs:
+  docs_project_list  list docs in repo/docs/
+  docs_project_read  read a project doc
+  docs_project_write write a project doc
+
+Agent docs:
+  docs_agent_list    list AGENTS.md, SOUL.md, MEMORY.md
+  docs_agent_read    read one agent doc
+  docs_agent_write   write an agent doc
+
+Connections + credentials:
+  connection_list    list DB connections (slug, label, kind)
+  connection_describe describe DB schema — tables, columns, types
+  credential_list    list credentials (id, title, kind — values never exposed)
+
+Knowledge:
+  skill_list         list all available skill docs
+  skill_read         read a skill doc in full
+
+Git:
+  git_command        run git: status, log, diff, add, commit
+```
+
+### 19d. Capability Mapping
 
 `mcp_tool_capability(tool_name)` in `src/platform/model.rs` maps every tool slug to a `ProjectCapability`.
 Every tool call goes through `check_tool_capability` — no tool bypasses authz.
@@ -1482,7 +1649,8 @@ Every tool call goes through `check_tool_capability` — no tool bypasses authz.
 PipelinesRead     → list_pipelines, get_pipeline, describe_pipeline, list_connections,
                     describe_connection, list_credentials, list_project_docs, read_project_doc,
                     list_agent_docs, read_agent_doc, list_skills, read_skill, list_templates,
-                    get_template
+                    get_template, start_here, help_pipeline, help_web_engine, help_examples,
+                    help_nodes, help_search
 PipelinesWrite    → register_pipeline, patch_pipeline, activate_pipeline, deactivate_pipeline,
                     write_doc, write_agent_doc, git_command
 PipelinesExecute  → execute_pipeline, run_ephemeral
@@ -1490,21 +1658,20 @@ TemplatesCreate   → create_template
 TemplatesWrite    → write_template
 ```
 
-### 19f. MCP Tool Param Structs
+### 19e. MCP Tool Param Structs
 
 All pipeline-targeting MCP tools use `file_rel_path` as their sole pipeline identifier.
-There is no `name` or `virtual_path` parameter anywhere in the MCP layer.
 
 ```rust
 PipelineRegisterParams  { file_rel_path: String, title: Option<String>, body: String }
-PipelineGetParams       { file_rel_path: String }   // already was file_rel_path ✓
+PipelineGetParams       { file_rel_path: String }
 PipelineDescribeParams  { file_rel_path: String }
 PipelinePatchParams     { file_rel_path: String, node_id: String,
                           flags: Option<String>, body: Option<String> }
 PipelineActivateParams  { file_rel_path: String }
 PipelineDeactivateParams{ file_rel_path: String }
 PipelineExecuteParams   { file_rel_path: String, input: Option<String> }
-PipelineRunParams       { body: String }            // ephemeral, no identity ✓
+PipelineRunParams       { body: String }            // ephemeral, no identity
 PipelineListParams      { prefix: Option<String> }  // filter by path prefix
 
 DSL strings built by MCP handler:
@@ -1516,15 +1683,7 @@ DSL strings built by MCP handler:
   describe pipeline pipelines/api/my-hook
 ```
 
-### 19d. Adding a New Tool
-
-1. Add `#[derive(serde::Deserialize, JsonSchema)] struct XxxParams { ... }` for typed params
-2. Add `#[tool(description = "...")] async fn xxx_tool(&self, Extension(parts): ..., Parameters(params): ...) -> Result<CallToolResult, McpError>` inside `#[tool_router] impl ZebflowMcpHandler`
-3. Map the tool name to a `ProjectCapability` in `mcp_tool_capability()` in `model.rs`
-4. Capability `ProjectCapability::PipelinesRead` or existing variant — add new variant if needed
-5. No registration call needed — `#[tool_router]` macro collects all `#[tool]` methods at compile time
-
-### 19e. Session Model
+### 19f. Session Model
 
 ```rust
 McpSession {
@@ -1540,6 +1699,13 @@ McpSession {
 Sessions are persisted to `platform/catalog/` SekejapDB (`mcp_session` collection).
 `mcp_sessions.lookup(token)` loads session and lazily expires it if `auto_reset_seconds` elapsed.
 
+### 19g. Adding a New Tool
+
+1. Add `#[derive(serde::Deserialize, JsonSchema)] struct XxxParams { ... }` for typed params
+2. Add `#[tool(description = "...")] async fn xxx_tool(&self, Extension(parts): ..., Parameters(params): ...) -> Result<CallToolResult, McpError>` inside `#[tool_router] impl ZebflowMcpHandler`
+3. Map the tool name to a `ProjectCapability` in `mcp_tool_capability()` in `model.rs`
+4. No registration call needed — `#[tool_router]` macro collects all `#[tool]` methods at compile time
+
 ---
 
 ## 20. Skills System
@@ -1551,16 +1717,29 @@ src/platform/skills/                 embedded markdown skill docs
     agent-core.md                    MCP server instructions (injected into get_info())
     zebflow-overview.md
     pipeline-dsl.md
-    pipeline-nodes.md
+    (node catalog is not a skill file — `help_pipeline` / `help_nodes` render `builtin_node_definitions()`)
     pipeline-authoring.md
-    pipeline-dsl-rwe.md
+    pipeline-dsl-web.md
     pipeline-dsl-web-auto.md
-    rwe-templates.md
+    web-templates.md
     project-operations.md
     full-project-workflow.md
     sekejapql.md
     api-reference.md
+    help-pipeline.md
+    examples/                        project archetype example recipes (include_str! embedded)
+        webhook-restapi-postgres.md  CRUD REST API with pg.query parameterized queries
+        webhook-page-tsx.md          Webhook → TSX page (list, detail, query filter)
+        cookie-jwt-auth.md           Login / JWT cookie / protected routes
+        agentic-scheduling.md        Cron + zebtune AI agent
+        blog-with-admin.md
+        forum-with-chat.md
+        realtime-game.md
+        scraping.md
+        auth-and-authorization.md
 src/platform/skills/mod.rs           Skill struct, all_skills(), get_skill(), format_skills_for_system_prompt()
+                                     Example struct, EXAMPLES array, all_examples(), get_example()
+                                     → `help_examples` MCP tool: list archetypes (no slug) or load full recipe (with slug)
 ```
 
 ### 20b. Embedding
@@ -1647,19 +1826,18 @@ fn name_from_file_rel_path(file_rel_path: &str) -> String {
 
 These are called in `list_pipeline_meta_rows` and `get_pipeline_meta_by_file_id`
 after every DB read, so `PipelineMeta.virtual_path` and `.name` are always populated
-for display purposes even though they are not persisted as the source of truth.
+for display purposes even though they are not stored as source of truth.
 
-### 21c. Lookup by file_rel_path
+### 21c. Lookup
 
 ```rust
 // The only correct way to look up a pipeline by identity:
 projects.get_pipeline_meta_by_file_id(owner, project, file_rel_path)
-
-// NEVER:
-rows.iter().find(|m| m.name == name)  // ← ambiguous: two pipelines can share a name
 ```
 
-The old `get_pipeline_meta(owner, project, virtual_path, name)` function has been deleted.
+Two pipelines can share the same `name` slug as long as they live in different directories
+(e.g. `api/posts` and `admin/posts`) — they are always unambiguous because `file_rel_path`
+is the key at every layer.
 
 ### 21d. Normalization
 
@@ -1695,12 +1873,309 @@ GET /api/projects/{owner}/{project}/pipelines/registry?prefix=api
 GET /api/projects/{owner}/{project}/pipelines?prefix=api&recursive=true
 ```
 
-### 21f. Why This Matters
+---
 
-Before this change, `pipeline_patch` (and activate/deactivate/execute via MCP) resolved
-pipelines with `.find(|m| m.name == name)` — silently picking the alphabetically-first
-match when two pipelines shared the same name under different paths (e.g. `api/posts` and
-`admin/posts` both named `posts`). This was a real data-corruption risk.
+## 22. Git Operations
 
-Now every operation targets exactly one file. Two pipelines can have the same `name` slug
-as long as they live in different directories — they are always unambiguous.
+### 22a. Overview
+
+Git operations run against the project's `repo/` directory.
+The repo is a standard git repository — users initialize it, commit, and push to their
+own remote (GitHub, GitLab, etc.) via the Git panel in the studio UI.
+
+### 22b. Status
+
+```
+GET /api/projects/{owner}/{project}/git/status
+        │
+        └── runs: git -C <repo_dir> status --short
+                  git -C <repo_dir> log --oneline -1
+            Returns: list of changed files with status codes (M, A, D, ??, etc.)
+```
+
+### 22c. Commit + Push
+
+```
+POST /api/projects/{owner}/{project}/git/commit
+        Body: GitCommitRequest {
+            files:         Vec<String>,        // file paths relative to repo/ to stage
+            message:       String,             // commit message
+            push:          bool,               // whether to push after commit
+            credential_id: Option<String>,     // credential ID for authenticated push
+            repo_url:      Option<String>,     // remote HTTPS URL
+            branch:        Option<String>,     // branch name (e.g. "main")
+        }
+
+        Flow:
+        1. git -C <repo_dir> add -- <files...>
+        2. git -C <repo_dir> commit -m <message>
+        3. if push:
+               build push_cmd = git -C <repo_dir> push
+               if credential_id + repo_url present:
+                   look up credential from CredentialService
+                   extract username + token from credential.secret JSON
+                   parse repo_url with reqwest::Url
+                   inject: set_username(username) + set_password(token)
+                   push_cmd.arg(auth_url)  ← token in URL, never written to .git/config
+               if branch present:
+                   push_cmd.arg(branch)
+               run push_cmd → capture stdout/stderr
+        4. Returns { "ok": true } or { "ok": false, "error": "<stderr>" }
+```
+
+### 22d. Credential Storage Format
+
+GitHub and GitLab credentials stored in `CredentialService` use this secret structure:
+
+```json
+{
+  "username": "octocat",
+  "token":    "ghp_xxxxxxxxxxxxxxxxxxxx"
+}
+```
+
+The `credential_id` in `GitCommitRequest` must reference a credential with this shape.
+The frontend reads `credential_id`, `repo_url`, and `branch` from localStorage key
+`zf-repo-{owner}-{project}` (set by the Git panel's repo configuration dialog).
+
+---
+
+## 23. UI Component Catalog & Installation
+
+### 23a. Overview
+
+38 **shadcn-compatible Zeb React TSX components** are embedded at compile time inside the server
+binary. Users install them into their project's `shared/ui/` template directory via the Install
+overlay in the project editor sidebar.
+
+```
+Source (binary)                            Destination (project disk)
+──────────────────────────────────────     ────────────────────────────────────────────────
+src/platform/catalog/ui/*.tsx              repo/templates/shared/ui/{name}.tsx
+(include_str! at compile time)             (written by install handler, gittracked)
+```
+
+Once written, the files are regular project template files — editable, committable, importable
+with `@/components/ui/{name}`.
+
+### 23b. Catalog Source
+
+`src/platform/catalog/mod.rs` uses a `ui_sources!` macro to embed all component TSX files:
+
+```rust
+static UI_SOURCES: &[(&str, &str, &str, &str)] = ui_sources![
+    ("button",   "button.tsx",   "primitives", "Clickable action element"),
+    ("dialog",   "dialog.tsx",   "overlay",    "Modal dialog container"),
+    // … 36 more
+];
+```
+
+6 categories: `primitives` (8), `display` (7), `layout` (6), `navigation` (4),
+`overlay` (8), `complex` (5).
+
+### 23c. API Routes
+
+```
+GET  /api/projects/{owner}/{project}/install/catalog/ui
+         Auth: PipelinesRead
+         Response: { "ok": true, "components": [
+             { "name": "button", "category": "primitives",
+               "description": "...", "installed": true|false }
+         ]}
+         Presence check: shared_ui_dir.join(filename).exists()
+
+POST /api/projects/{owner}/{project}/install/ui
+         Auth: PipelinesWrite
+         Body:   { "names": ["button", "dialog"], "overwrite": false }
+         Response: { "ok": true, "report": { "installed": [...], "skipped": [...] } }
+                   or { "ok": false, "error": "..." }
+```
+
+### 23d. Installation Flow
+
+```
+POST /install/ui
+        │
+        ├── resolve project template root  →  shared_ui_dir = {project}/repo/templates/shared/ui/
+        ├── fs::create_dir_all(shared_ui_dir)  if missing
+        │
+        ├── for each requested name:
+        │       src = UI_SOURCES map lookup  (embedded bytes)
+        │       dest = shared_ui_dir / filename
+        │
+        │       if dest.exists() && !overwrite  →  push to skipped
+        │       else                            →  fs::write(dest, src)  →  push to installed
+        │
+        └── return CloneReport { installed, skipped }
+```
+
+### 23e. Frontend Flow
+
+Install button in the project editor sidebar is pure Preact state — no `<dialog>` element,
+no `data-*` attribute hooks:
+
+```
+onClick  →  setInstallOpen(true) + fetch /install/catalog/ui
+         →  catalogData state populated, checkboxes rendered
+"Install Selected"  →  fetch POST /install/ui { names: [...], overwrite: false }
+         →  if installed.length > 0: close overlay + useNavigate() SPA-refresh (sidebar updates)
+         →  if skipped only: reload catalog (show current presence state)
+```
+
+Essentials preset: `button input textarea label checkbox badge card dialog select tabs separator alert` (12 components).
+
+### 23f. Key Files
+
+```
+src/platform/catalog/mod.rs          catalog registry, install logic, CatalogEntry struct
+src/platform/catalog/ui/*.tsx        38 embedded component source files
+src/platform/web/mod.rs              GET /install/catalog/ui + POST /install/ui handlers
+src/platform/web/templates/pages/project-studio/pipelines/registry/
+  page.tsx                           RWE entry (exports `page` + default editor)
+  components/registry-install-catalog.tsx  Install UI overlay
+  components/unified-registry-editor.tsx   Registry / folder / template / doc / pipeline editor shell
+```
+
+---
+
+## 24. Pipeline Scheduler (`n.trigger.schedule`)
+
+### 24a. Overview
+
+`PipelineScheduler` is the background cron engine for pipelines triggered by `n.trigger.schedule`
+nodes. It runs all schedule pipelines across all owners and projects in a single background process
+launched at server startup.
+
+```
+src/infra/scheduler/mod.rs    PipelineScheduler implementation
+```
+
+### 24b. Struct
+
+```rust
+pub struct PipelineScheduler {
+    sched:   Arc<JobScheduler>,              // tokio-cron-scheduler 0.15+
+    runtime: Arc<PipelineRuntimeService>,    // reads active CompiledPipelines
+    engine:  Arc<BasicPipelineEngine>,       // executes pipeline graph
+    hits:    Arc<PipelineHitsService>,       // records success/failure counters
+    data:    Arc<dyn DataAdapter>,           // writes invocation log entries
+    jobs:    Arc<RwLock<HashMap<String, Uuid>>>,  // job_key → scheduler UUID
+}
+```
+
+### 24c. Startup Flow
+
+```
+build_router() in src/platform/web/mod.rs
+        │
+        ├── Build sched_engine = BasicPipelineEngine::new(language, rwe, credentials, simple_tables)
+        │       .with_ws_hub(ws_hub)
+        │       NOTE: dedicated engine instance — not shared with webhook handler
+        │
+        ├── PipelineScheduler::start(pipeline_runtime, sched_engine, pipeline_hits, data).await
+        │       → JobScheduler::new().await → sched.start().await
+        │       → scheduler.register_all().await
+        │           → for each CompiledPipeline in pipeline_runtime.list_all()
+        │               → for each ScheduleTriggerSpec in pipeline.schedule_triggers
+        │                   → register_job(owner, project, file_rel_path, graph_id, node_id, cron)
+        │
+        └── Arc<PipelineScheduler> stored in PlatformAppState.scheduler
+```
+
+### 24d. Job Execution Flow (per cron tick)
+
+```
+cron fires → Job async closure
+        │
+        ├── runtime.get(owner, project, file_rel_path) → Option<CompiledPipeline>
+        │       if None → pipeline deactivated since registration → skip
+        │
+        ├── fired_at = Utc::now()
+        ├── ctx = PipelineContext {
+        │       owner, project, pipeline: graph_id,
+        │       request_id: "schedule-{uuid}",
+        │       input: { trigger: "schedule", fired_at: rfc3339, node_id }
+        │   }
+        │
+        ├── engine.execute_async(&compiled.graph, &ctx)
+        │
+        ├── OK  → hits.record_success(owner, project, file_rel_path)
+        │         data.log_pipeline_invocation(..., PipelineInvocationEntry {
+        │             status: "ok", trigger: "schedule", duration_ms, trace: output.node_trace
+        │         }, 100)
+        │
+        └── Err → hits.record_failure(owner, project, file_rel_path, "schedule", code, msg)
+                  data.log_pipeline_invocation(..., PipelineInvocationEntry {
+                      status: "error", trigger: "schedule", duration_ms, trace: []
+                  }, 100)
+```
+
+### 24e. Hot-Reload on Activate / Deactivate
+
+```
+POST /api/projects/{owner}/{project}/pipelines/activate
+        │
+        ├── activate_pipeline_definition(file_rel_path)
+        └── state.scheduler.sync_pipeline(owner, project, file_rel_path).await
+                → remove stale UUID jobs from sched + jobs map (key prefix match)
+                → if pipeline still in runtime: re-register from current schedule_triggers
+
+POST /api/projects/{owner}/{project}/pipelines/deactivate
+        │
+        ├── pipeline_runtime.evict(owner, project, file_rel_path)
+        └── state.scheduler.sync_pipeline(owner, project, file_rel_path).await
+                → remove stale UUID jobs (pipeline no longer in runtime → no re-register)
+```
+
+### 24f. Job Key Format
+
+```
+"{owner}/{project}/{file_rel_path}:{node_id}"
+
+Example:
+  "superadmin/default/pipelines/jobs/schedule-log-tick.zf.json:n0"
+
+Allows multiple schedule trigger nodes per pipeline — each node gets its own cron job.
+Stale-job removal on sync uses a prefix match on owner/project/file_rel_path.
+```
+
+### 24g. Cron Expression Format
+
+`tokio-cron-scheduler` uses **6-part cron** format (croner dialect):
+
+```
+sec  min  hour  dom  month  dow
+
+0 * * * * *    every minute (fire at second 0 of each minute)
+0 0 * * * *    every hour
+0 0 9 * * *    daily at 09:00
+0 30 8 * * 1   every Monday at 08:30
+```
+
+Standard 5-part cron (`* * * * *`) is **not accepted** — the leading seconds field is mandatory.
+
+### 24h. DSL Usage
+
+```
+| trigger.schedule --cron "0 * * * * *"
+| trigger.schedule --cron "0 */5 * * * *" --timezone "Asia/Jakarta"
+```
+
+Declared `DslFlag`s on `n.trigger.schedule`:
+- `--cron`      → config key `cron`      (required for schedule to fire)
+- `--timezone`  → config key `timezone`  (optional; IANA timezone string)
+
+`n.trigger.schedule` is a pass-through node — it simply emits the schedule input payload
+(`{ trigger, fired_at, node_id }`) downstream. All processing happens in subsequent nodes.
+
+### 24i. `list_all()` on PipelineRuntimeService
+
+```rust
+// src/platform/services/pipeline_runtime.rs
+pub fn list_all(&self) -> Vec<CompiledPipeline> {
+    self.inner.load().values().cloned().collect()
+}
+```
+
+Scans the entire in-memory active pipeline registry across all owner+project combinations.
+Used only by `PipelineScheduler::register_all()` at startup.
