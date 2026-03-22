@@ -2,6 +2,35 @@
 
 ---
 
+## 0. Implementation Status
+
+Quick reference for developers — what is live, what is partial, what is a stub.
+
+| Module / Feature | Status | Notes |
+|---|---|---|
+| Pipeline engine (BFS, all node types) | ✅ Done | `src/pipeline/engines/basic.rs` |
+| Webhook ingress | ✅ Done | path scoring, JWT/bearer auth, weberror dispatch |
+| WebSocket pipeline flow | ✅ Done | `src/infra/transport/ws/` |
+| Pipeline scheduler | ✅ Done | `src/infra/scheduler/` — 6-part cron, hot-reload |
+| DSL shell (parser + executor) | ✅ Done | `src/platform/shell/` |
+| MCP layer (31 tools) | ✅ Done | `src/platform/mcp/handler.rs` |
+| Data layers (platform + project) | ✅ Done | SekejapDB, zebflow.json, repo/ |
+| Library system (install/uninstall) | ✅ Done | `POST /rwe/libraries/enable`, zeb.lock |
+| Platform UI theming (CSS tokens) | ✅ Done | `--zf-ui-*` tokens, `data-theme` toggle |
+| Server-driven node UI (NodeFieldDef) | ✅ Done | definition() → fields → NodeForm |
+| Git operations (commit + push) | ✅ Done | token-in-URL, no .git/config writes |
+| Skills system | ✅ Done | embedded markdown, MCP exposed |
+| UI component catalog (38 components) | ✅ Done | `src/platform/catalog/ui/` |
+| RWE compiler (OXC, import resolution) | ✅ Done | `src/rwe/core/compiler.rs` |
+| RWE SSR (deno_core embedded V8) | ✅ Done | singleton thread, side module loading |
+| RWE Tailwind processor | 🚧 Partial | `dark:` / `placeholder:` / some variants unsupported — see §14 |
+| RWE SSR runtime injection | 🚧 Partial | `data-rwe-runtime` / `data-rwe-for-template` attrs not yet injected |
+| `infra/storage` | 🚧 Stub | declared in `src/infra/mod.rs`, no implementation |
+| `infra/scheduler` sub-modules | 🚧 Stub | only `mod.rs` exists; no sub-module split yet |
+| automaton as composable nodes | 🚧 Planned | only `n.ai.zebtune` exposed; full agent node system not built |
+
+---
+
 ## 1. System Overview
 
 ```
@@ -51,13 +80,14 @@ src/
 │   ├── core/render.rs   SSR render, client module bootstrap, HTML shell assembly
 │   ├── core/deno_worker.rs  singleton V8 thread (deno_core 0.390)
 │   └── engines/rwe.rs   RweReactiveWebEngine (implements ReactiveWebEngine trait)
-├── automaton/           Zebtune REPL, agentic loop, LLM clients
+├── automaton/           Zebtune REPL, agentic loop, LLM clients  🚧 (only n.ai.zebtune exposed as node)
 ├── platform/            Axum server, services, MCP, DSL shell
 │   ├── web/mod.rs       all routes + webhook + ws handlers
 │   └── services/        PlatformService composition root
 └── infra/
-    ├── transport/ws/    WsHub, RoomHandle, RoomCmd
-    └── scheduler/       PipelineScheduler (tokio-cron-scheduler, cron job runner)
+    ├── transport/ws/    WsHub, RoomHandle, RoomCmd                  ✅
+    ├── scheduler/       PipelineScheduler (tokio-cron-scheduler)    ✅
+    └── storage/         🚧 stub — declared, not implemented
 ```
 
 ---
@@ -390,7 +420,7 @@ WS client protocol:
 
 ---
 
-## 6. n.web.render Node + RWE Flow
+## 6. n.web.render Node + RWE Flow 🚧 Partial (see §0)
 
 ### 6a. RWE Source File Map
 
@@ -917,114 +947,41 @@ transforms:     "zeb/threejs" → lookup zeb.lock → rewrite to versioned bundl
 Browser loads:  /p/{owner}/{project}/lib/zeb/threejs/r183/bundle.min.mjs  (once, cached immutably)
 ```
 
-### 13b. User Flow
+### 13b. Install / Uninstall Mechanism
 
 ```
-Step 1 — Create project
+POST /api/projects/{owner}/{project}/rwe/libraries/enable  { name, version }
+        │
+        ├── source = "offline" (version embedded in binary)
+        │       PLATFORM_LIBRARY_ASSETS lookup → extract bytes via include_bytes!
+        │       write to {project}/.libraries/zeb/{name}/{version}/bundle.min.mjs
+        │
+        ├── source = "online" (not embedded, fetched from registry)
+        │       HTTP GET manifest.versions[version].registry_url
+        │       verify sha256 against manifest.versions[version].integrity
+        │       write to .libraries/ + shared download cache (cross-project reuse)
+        │
+        ├── ZebLockService.add_entry(name, version, integrity) → repo/zeb.lock
+        └── ZebflowJsonService.enable_rwe_library(name, version, source) → zebflow.json
 
-    User: /home → Create "my-3d-app" → Submit
-    Platform: project folder created, empty zeb.lock, empty .libraries/ dir
-    User lands on project studio. No libraries installed.
+DELETE /api/projects/{owner}/{project}/rwe/libraries/disable?name=zeb/{name}
+        → ZebLockService.remove_entry(name)    → repo/zeb.lock
+        → ZebflowJsonService.disable_rwe_library(name) → zebflow.json
+        → delete .libraries/zeb/{name}/{active_version}/
+        → downloaded cache in shared dir retained (allows instant re-install later)
 
-Step 2 — Settings → Libraries tab
+GET /api/projects/{owner}/{project}/rwe/libraries
+        → ZebLockService.read() → currently installed version per library
+        → LibraryService.list() → all embedded manifests with available versions
+        → merge: installed status, version, source per entry
 
-    User sees card grid of all available zeb/* libraries.
-    Each card shows: name, description, status (Not installed / Installed: r183).
-    Each card is a LINK — clicking navigates to the library detail page.
+Version switch: POST enable with a different version of an already-installed library
+        → zeb.lock updated to new version → next compile rewrites import URL
+        → old version bundle stays on disk; URL cache bust is automatic (URL changes)
 
-Step 3 — Library detail page  (/projects/{owner}/{project}/settings/libraries/zeb/threejs)
-
-    Header: zeb/threejs — "3D rendering, scene management, canvas component"
-    Current status: Not installed
-
-    Version selector shows 3 categories of versions:
-
-    ┌─────────────────────────────────────────────────────────────┐
-    │  Available Versions                                         │
-    │                                                             │
-    │  ● r183  ·  bundled (offline)   ·  600KB   →  [Install]    │
-    │                                                             │
-    │  ○ r190  ·  online repo         ·  620KB   →  [Download]   │
-    │  ○ r188  ·  online repo         ·  615KB   →  [Download]   │
-    │                                                             │
-    │  ○ r182  ·  previously cached   ·  598KB   →  [Install]    │
-    └─────────────────────────────────────────────────────────────┘
-
-    Bundled:              embedded in binary, instant install, always available offline
-    Online:               from registry, requires download, shows size estimate
-    Previously cached:    downloaded before, cached on disk, instant re-install
-
-Step 4 — Install r183 (bundled/offline)
-
-    User clicks [Install] on r183.
-    Platform:
-      1. Extracts r183/bundle.min.mjs from binary
-         → {project}/.libraries/zeb/threejs/r183/bundle.min.mjs
-      2. Updates zeb.lock:
-         { "zeb/threejs": { "version": "r183", "integrity": "sha256:..." } }
-      3. Updates zebflow.json:
-         rwe.libraries["zeb/threejs"] = { version: "r183", source: "offline" }
-
-    Card status changes to: Installed — r183 · offline
-    Library is ready to use in templates immediately.
-
-Step 5 — Install r190 (online)
-
-    User clicks [Download] on r190.
-    Progress bar shown.
-    Platform:
-      1. Downloads from registry URL → verifies sha256 integrity
-      2. Writes to {project}/.libraries/zeb/threejs/r190/bundle.min.mjs
-      3. Caches to shared download cache (other projects can reuse)
-      4. Updates zeb.lock + zebflow.json
-    Status changes to: Installed — r190 · online
-
-Step 6 — Switch version
-
-    User goes back to library detail page.
-    Currently installed: r190. User clicks [Install] on r183 instead.
-    Platform swaps: updates zeb.lock to point to r183.
-    Both versions stay on disk in .libraries/. No re-download.
-    Next page compile picks up r183 from the new URL.
-
-Step 7 — Use in template
-
-    import { ThreeCanvas, Scene, BoxGeometry, createSceneRuntime } from "zeb/threejs"
-
-    All symbols — raw Three.js classes, wrapper Preact components, utility functions
-    — come from one import specifier. One bundle. One network request.
-
-Step 8 — Compile + serve
-
-    RWE compiler sees: import { ... } from "zeb/threejs"
-    Reads project zeb.lock → version = "r183"
-    Rewrites import to: /p/{owner}/{project}/lib/zeb/threejs/r183/bundle.min.mjs
-    Browser fetches bundle once (~180KB gzip'd). Cached with immutable headers.
-    Version upgrade → URL changes → automatic cache bust.
-
-Step 9 — Version upgrade
-
-    We ship r190 as new embedded version (or user downloads it).
-    User goes to library detail page → clicks [Install] on r190.
-    zeb.lock updated. Next page compile uses r190 URL.
-    Old browser cache misses on new URL → fetches r190 once → done.
-    No template changes needed. Same import, newer library.
-
-Step 10 — Offline scenario
-
-    User has no internet. Library detail page shows:
-    Bundled versions: available, installable
-    Online versions: greyed out — "Requires internet connection"
-    Previously cached versions: available, installable
-    Everything on disk works. No surprises.
-
-Step 11 — Uninstall
-
-    Library detail page has [Uninstall] button.
-    Removes from zeb.lock + zebflow.json. Removes active version from .libraries/.
-    Downloaded cache stays (for re-install later).
-    If templates still import "zeb/threejs", compiler throws clear error:
-    "Library zeb/threejs is not installed. Enable it in Settings → Libraries."
+Compile-time enforcement:
+        "zeb/threejs" not in zeb.lock → compile error (RWE_IMPORT_NOT_ALLOWED)
+        "zeb/threejs" in zeb.lock → import rewritten to versioned bundle URL at compile time
 ```
 
 ### 13c. Bundle Artifact Structure
@@ -1226,7 +1183,7 @@ esbuild resolves those imports from `node_modules/` and inlines everything into 
 
 ---
 
-## 14. Platform UI Theming
+## 14. Platform UI Theming 🚧 Partial Tailwind (see §0)
 
 ### 14a. Approach — CSS Variable Semantic Tokens
 
