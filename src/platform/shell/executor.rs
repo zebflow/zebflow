@@ -25,6 +25,11 @@ impl DslExecutor {
         }
     }
 
+    /// Execute a run body with an optional initial JSON payload.
+    pub async fn execute_run_with_input(&self, body: &str, input: Option<serde_json::Value>) -> DslOutput {
+        self.cmd_run(body, false, input).await
+    }
+
     /// Execute a full DSL string (may contain multiple `&&`-chained commands).
     pub async fn execute_dsl(&self, dsl: &str) -> DslOutput {
         let commands = split_commands(dsl);
@@ -63,7 +68,7 @@ impl DslExecutor {
             DslVerb::Patch { file_rel_path, node_id, flags, body } => {
                 self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref()).await
             }
-            DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run).await,
+            DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run, None).await,
             DslVerb::Delete { kind, name } => self.cmd_delete(&kind, &name).await,
             DslVerb::Git { subcommand, args, body } => {
                 self.cmd_git(&subcommand, args, body.as_deref()).await
@@ -244,53 +249,44 @@ impl DslExecutor {
         let status = if meta.active_hash.is_some() { "active" } else { "draft" };
         let hash_short = meta.hash.chars().take(8).collect::<String>();
 
-        out.push(DslLine::info(format!(
-            "pipeline: {}  path: {}",
-            meta.name, meta.virtual_path
-        )));
-        out.push(DslLine::info(format!("status: {} (hash: {})", status, hash_short)));
-        out.push(DslLine::info(format!("trigger: {}", meta.trigger_kind)));
+        let hits = self.platform.pipeline_hits.get(
+            &self.owner,
+            &self.project,
+            &meta.file_rel_path,
+        );
 
-        // Try to read source and parse graph for detailed output
+        out.push(DslLine::info(format!("pipeline: {}", meta.file_rel_path)));
+        out.push(DslLine::info(format!(
+            "status: {}  hash: {}  hits: {} ok / {} failed",
+            status, hash_short, hits.success_count, hits.failed_count
+        )));
+
+        // Reconstruct DSL from the stored graph
         if let Ok(source) = self.platform.projects.read_pipeline_source(
             &self.owner,
             &self.project,
             &meta.file_rel_path,
         ) {
             if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
+                let dsl = crate::platform::shell::parser::graph_to_dsl(&graph);
                 out.push(DslLine::blank());
-                out.push(DslLine::muted("nodes:"));
-                for node in &graph.nodes {
-                    let cfg_summary = summarize_config(&node.config);
-                    out.push(DslLine::info(format!(
-                        "  [{}] {}  {}",
-                        node.id, node.kind, cfg_summary
-                    )));
+                for line in dsl.lines() {
+                    out.push(DslLine::info(line.to_string()));
                 }
-                if !graph.edges.is_empty() {
+
+                // Node id reference for pipeline_patch
+                if !graph.nodes.is_empty() {
+                    let ids = graph
+                        .nodes
+                        .iter()
+                        .map(|n| format!("{}({})", n.id, n.kind.strip_prefix("n.").unwrap_or(&n.kind)))
+                        .collect::<Vec<_>>()
+                        .join("  ");
                     out.push(DslLine::blank());
-                    out.push(DslLine::muted("edges:"));
-                    for edge in &graph.edges {
-                        out.push(DslLine::info(format!(
-                            "  [{}]:{} → [{}]:{}",
-                            edge.from_node, edge.from_pin, edge.to_node, edge.to_pin
-                        )));
-                    }
+                    out.push(DslLine::muted(format!("node ids (for patch): {}", ids)));
                 }
             }
         }
-
-        // Hit stats
-        let hits = self.platform.pipeline_hits.get(
-            &self.owner,
-            &self.project,
-            &meta.file_rel_path,
-        );
-        out.push(DslLine::blank());
-        out.push(DslLine::muted(format!(
-            "hits: {} ok / {} failed",
-            hits.success_count, hits.failed_count
-        )));
 
         out
     }
@@ -655,7 +651,7 @@ impl DslExecutor {
         }
     }
 
-    async fn cmd_run(&self, body: &str, dry_run: bool) -> DslOutput {
+    async fn cmd_run(&self, body: &str, dry_run: bool, initial_input: Option<serde_json::Value>) -> DslOutput {
         if body.is_empty() {
             return DslOutput::err(
                 "run: pipeline body is required. Example: run | trigger.manual | script -- return { ok: true };",
@@ -690,7 +686,7 @@ impl DslExecutor {
                             .as_millis()
                     ),
                     route: Default::default(),
-                    input: json!({}),
+                    input: initial_input.unwrap_or_else(|| json!({})),
                 };
 
                 let engine = crate::pipeline::BasicPipelineEngine::new(
@@ -872,6 +868,7 @@ fn validate_graph_flags(graph: &crate::pipeline::PipelineGraph) -> Vec<String> {
     warnings
 }
 
+#[allow(dead_code)]
 fn summarize_config(config: &Value) -> String {
     let Some(map) = config.as_object() else {
         return String::new();
