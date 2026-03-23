@@ -27,7 +27,10 @@ Quick reference for developers — what is live, what is partial, what is a stub
 | RWE SSR runtime injection | 🚧 Partial | `data-rwe-runtime` / `data-rwe-for-template` attrs not yet injected |
 | `infra/storage` | 🚧 Stub | declared in `src/infra/mod.rs`, no implementation |
 | `infra/scheduler` sub-modules | 🚧 Stub | only `mod.rs` exists; no sub-module split yet |
-| automaton as composable nodes | 🚧 Planned | only `n.ai.zebtune` exposed; full agent node system not built |
+| `n.ai.agent` node (direct + strategic) | ✅ Done | `src/pipeline/nodes/basic/agent.rs` — see §26 |
+| Four intelligence surfaces model | ✅ Documented | REST / MCP / Web Assistant / n.ai.agent — see §27 |
+| `n.assistant` bridge node (Telegram, WhatsApp, etc.) | 🚧 Planned | §27e — routes external triggers into existing web assistant |
+| Async execution handle pattern | 🚧 Planned | §25 — execution_id, threshold detection, SSE stream, ETL progress |
 
 ---
 
@@ -80,7 +83,7 @@ src/
 │   ├── core/render.rs   SSR render, client module bootstrap, HTML shell assembly
 │   ├── core/deno_worker.rs  singleton V8 thread (deno_core 0.390)
 │   └── engines/rwe.rs   RweReactiveWebEngine (implements ReactiveWebEngine trait)
-├── automaton/           Zebtune REPL, agentic loop, LLM clients  🚧 (only n.ai.zebtune exposed as node)
+├── automaton/           5-layer agent infrastructure (see §26) — n.ai.agent node exposed
 ├── platform/            Axum server, services, MCP, DSL shell
 │   ├── web/mod.rs       all routes + webhook + ws handlers
 │   └── services/        PlatformService composition root
@@ -331,7 +334,7 @@ BasicPipelineEngine.execute_async(graph, ctx)
                 │   n.logic.switch       multi-branch condition → named output_pin
                 │   n.logic.branch       split payload to multiple downstream pins
                 │   n.logic.merge        wait_all / first_completed / pass_through
-                │   n.ai.zebtune         LLM call + agentic tool loop (client_from_env)
+                │   n.ai.agent           direct (ToolCaller) or strategic (Zebtune) — see §26
                 │
                 ├── last_value = output.payload
                 │
@@ -2136,3 +2139,498 @@ pub fn list_all(&self) -> Vec<CompiledPipeline> {
 
 Scans the entire in-memory active pipeline registry across all owner+project combinations.
 Used only by `PipelineScheduler::register_all()` at startup.
+
+---
+
+## 25. Async Execution — Execution Handle Pattern 🚧 Planned
+
+### 25a. Problem Statement
+
+HTTP request-response is synchronous. Pipeline execution time is non-deterministic — it depends
+on LLM API latency, data volume, network, and agent budget. Three failure modes exist today:
+
+1. **MCP tool timeout** — `pipeline_run` returns empty when a strategic agent call exceeds the
+   MCP client HTTP timeout (~30s). The agent keeps running on the server but the client never
+   receives the response.
+2. **ETL / data engineering** — batch jobs processing large datasets may run for minutes or
+   hours. Blocking a single HTTP request for that duration is unusable.
+3. **No progress visibility** — callers have no way to observe intermediate steps; they get
+   everything or nothing.
+
+### 25b. Design: Optimistic Sync with Async Fallback
+
+Every pipeline execution gets an `execution_id` at the moment it starts (not when it finishes).
+The server detaches execution into a `tokio::spawn` task and waits up to a configurable
+threshold (default **8 seconds**). If the task completes within the threshold, the result is
+returned inline (no change to caller DX for fast pipelines). If the task is still running at
+the threshold, the HTTP response is returned immediately with just the execution handle.
+
+```
+client                          server
+  │── pipeline_run ────────────>│
+  │                             │ execution_id = "exec-abc123"
+  │                             │ spawn execution task (detached)
+  │                             │ wait up to 8s...
+  │                             │
+  │  FAST (done in 2s):         │
+  │<── { result } ──────────────│   ← sync path, backward compatible
+  │
+  │── pipeline_run ────────────>│
+  │                             │ execution_id = "exec-def456"
+  │                             │ spawn, wait 8s... still running
+  │<── { execution_id,          │   ← async path: handle returned
+  │     status: "running",      │
+  │     poll_url: "..." } ──────│
+  │
+  │── GET /executions/def456 ──>│   ← poll when ready
+  │<── { status: "done",        │
+  │     result: {...} } ─────────│
+```
+
+### 25c. Retrieval Modes After Handoff
+
+**Mode 1 — Polling (universal)**
+```
+GET /api/projects/{owner}/{project}/executions/{execution_id}
+→ { status: "running" | "done" | "error", result?, progress?, created_at, updated_at }
+```
+
+**Mode 2 — SSE Stream (live chain steps)**
+```
+GET /api/projects/{owner}/{project}/executions/{execution_id}/stream
+→ SSE stream:
+    event: step   data: { step: "thinking", description: "...", at: "00:00:02" }
+    event: step   data: { step: "tool_call", description: "RUN: ls", at: "00:00:05" }
+    event: done   data: { result: {...}, duration_ms: 12400 }
+    event: error  data: { message: "LLM error: ..." }
+```
+
+The existing `ChainStep` / `StepEvent` system in `ZebtuneAgent` and `BasicPipelineEngine`
+feeds directly into the SSE stream with no new concepts required.
+
+### 25d. Execution Store
+
+Two tiers based on pipeline type:
+
+| Tier | Scope | Backend | TTL |
+|------|-------|---------|-----|
+| Ephemeral | `pipeline_run` (not saved) | In-memory `DashMap` | 1 hour |
+| Persistent | Saved + scheduled pipelines | SekejapDB `executions` collection | 30 days |
+
+```rust
+// Planned model
+pub struct ExecutionRecord {
+    pub execution_id: String,       // "exec-{nanos}"
+    pub owner: String,
+    pub project: String,
+    pub pipeline_file_rel_path: Option<String>,  // None for ephemeral
+    pub status: ExecutionStatus,    // Running | Done | Error
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub result: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub progress: Option<ExecutionProgress>,  // for ETL / data jobs
+}
+
+pub enum ExecutionStatus { Running, Done, Error }
+
+pub struct ExecutionProgress {
+    pub rows_read: u64,
+    pub rows_written: u64,
+    pub total_rows: Option<u64>,
+    pub percent: Option<u8>,
+    pub current_stage: String,
+    pub stages: Vec<String>,
+    pub checkpointed_at: Option<i64>,  // epoch ms; enables resume after crash
+}
+```
+
+### 25e. ETL / Data Engineering Integration
+
+For data engineering pipelines (ETL, large batch transforms), the execution handle pattern
+extends naturally with:
+
+- **Progress reporting** — nodes emit `ExecutionProgress` via a channel as they process rows;
+  the execution store merges updates; callers poll or stream progress.
+- **Checkpointing** — node writes a checkpoint (last processed offset/cursor) to the execution
+  record after each batch. On server restart or node failure, the job resumes from checkpoint
+  rather than restarting from zero.
+- **Stage tracking** — multi-node ETL pipeline stages (extract → transform → load) are
+  mapped to `progress.stages`; current active stage is updated as BFS advances through nodes.
+- **Pause / Resume** — execution task checks a cancellation token before each batch; a
+  `POST /executions/{id}/pause` sets the token; `resume` clears it.
+
+### 25f. MCP Tool Integration
+
+The MCP `pipeline_run` tool behavior changes to:
+1. Try synchronous for the threshold duration
+2. If done → return result inline (current behavior preserved)
+3. If still running → return `{ execution_id, status: "running" }` immediately
+4. New MCP tool `pipeline_execution_get` → poll result
+5. New MCP tool `pipeline_execution_stream` → SSE (if MCP transport supports it)
+
+### 25g. Planned Routes
+
+```
+GET    /api/projects/{owner}/{project}/executions
+GET    /api/projects/{owner}/{project}/executions/{execution_id}
+GET    /api/projects/{owner}/{project}/executions/{execution_id}/stream   ← SSE
+POST   /api/projects/{owner}/{project}/executions/{execution_id}/cancel
+POST   /api/projects/{owner}/{project}/executions/{execution_id}/pause
+POST   /api/projects/{owner}/{project}/executions/{execution_id}/resume
+```
+
+### 25h. Implementation Phases
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| Phase 1 | In-memory store + threshold detection for `pipeline_run` | 🚧 Planned |
+| Phase 2 | SSE stream endpoint for chain steps | 🚧 Planned |
+| Phase 3 | Persistent store (SekejapDB) for saved pipelines | 🚧 Planned |
+| Phase 4 | Progress / checkpointing for ETL nodes | 🚧 Planned |
+| Phase 5 | Pause / Resume / Cancel controls | 🚧 Planned |
+
+> **Root cause of current silent failures**: MCP HTTP timeout fires before strategic agent
+> completes. The execution handle pattern (Phase 1) is the minimal fix: return the id
+> immediately, let the agent finish, let the caller poll or stream.
+
+---
+
+## 26. Automaton Module (`src/automaton/`)
+
+### 26a. Overview
+
+Zebflow's autonomous agent infrastructure. Independent module — no platform or pipeline
+dependencies. Usable as a standalone library.
+
+**Design principle**: lean, no redundancy, single interface per concern. Dead abstractions
+are disposed, not accumulated.
+
+### 26b. 5-Layer Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  AGENTS           reasoning — how the automaton thinks       │
+│  ├── zebtune      full autonomous: execute → adapt → synth   │
+│  └── tool_caller  single-pass structured tool sequence       │
+├──────────────────────────────────────────────────────────────┤
+│  PLANNING         first-class goal decomposition layer       │
+│  └── basic/       HierarchicalPlan, SubGoal, ValidationResult│
+├──────────────────────────────────────────────────────────────┤
+│  MEMORY           first-class context retention layer        │
+│  └── basic/       ConversationHistory, TokenUsage            │
+├──────────────────────────────────────────────────────────────┤
+│  INTELLIGENCE     AI-native capabilities (planned)           │
+│  └── (planned: tts, stt, ocr, vectorize, classify)           │
+├──────────────────────────────────────────────────────────────┤
+│  INFRA            plumbing: LLM clients, REPL, shell tools   │
+│  ├── llm_interface  LlmCall — the ONLY LLM interface         │
+│  ├── http_client    OpenAiHttpClient + AnthropicClient        │
+│  ├── llm.rs         re-export facade (backward-compat path)  │
+│  ├── assistant_config  ProjectAssistantLlm loader            │
+│  ├── model.rs       AutomatonContext, Objective, Plan, Error  │
+│  ├── interface.rs   AutomatonEngine trait                     │
+│  ├── registry.rs    AutomatonEngineRegistry                   │
+│  ├── shell_tools    ToolRegistry: ls, pwd, python             │
+│  └── repl.rs        interactive REPL mode                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 26c. Single LLM Interface: `LlmCall`
+
+`LlmCall` (`src/automaton/infra/llm_interface.rs`) is the **only** LLM interface in the
+codebase. All agents — `ZebtuneAgent`, `ToolCallerAgent`, the web assistant loop — use it.
+
+```rust
+#[async_trait]
+pub trait LlmCall: Send + Sync {
+    async fn call(&self, messages: Vec<Message>) -> Result<String, String>;
+    async fn call_with_tools(&self, messages: Vec<Message>, tools: &[ToolDef]) -> Result<CallResult, String>;
+}
+```
+
+**Implementations** (in `http_client.rs`):
+- `OpenAiHttpClient` — OpenAI / OpenRouter / OpenAI-compatible APIs
+- `AnthropicClient` — Anthropic Claude APIs
+- Factory functions: `client_from_env()`, `client_from_secret()`, `client_from_secret_with_model()`
+
+There is no `LlmClient` interface. That older abstraction was consolidated into `LlmCall`
+(native function calling, single `CallResult` type).
+
+### 26d. Two Agents
+
+#### `ToolCallerAgent` — Direct mode
+
+```
+goal + tools → LLM native function calling → execute sequence → answer
+```
+- No strategic planning phase
+- Deterministic: known tools upfront, single structured pass
+- Exposed as `n.ai.agent --mode direct`
+
+#### `ZebtuneAgent` — Strategic mode
+
+```
+goal → execution loop → tool_calls → execute → feed back → repeat → synthesize
+```
+- Full autonomous execution with native function calling (M7 complete)
+- Budget-bounded: `step_budget` hard cap on LLM + tool iterations
+- `StepCallback` for streaming progress to pipeline clients
+- Exposed as `n.ai.agent --mode strategic`
+- TODO M6: Strategic Planning phase (goal decomposition → HierarchicalPlan → validate → replan)
+
+### 26e. `n.ai.agent` Pipeline Node
+
+**File**: `src/pipeline/nodes/basic/agent.rs`
+
+**DSL flags**:
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--mode` | `direct` \| `strategic` | Agent mode (default: direct) |
+| `--credential` | credential id | OpenAI-compatible credential from project store |
+| `--model` | model name string | Override model from credential (e.g. `gpt-4o-mini`) |
+| `--tools` | comma-separated names | Filter which shell tools the agent may use |
+| `--step-budget` | integer | Max LLM iterations for strategic mode (default: 10) |
+| `--output-mode` | `full` \| `final_only` | Include chain details or just final answer |
+| `--system-prompt` | string | Override default system instructions |
+
+**Input**: payload must contain a `message`, `body`, `text`, or `query` string field
+(or be a raw string).
+
+**Output (direct mode)**:
+```json
+{ "response": "...", "tools_called": [...], "iterations": 2 }
+```
+
+**Output (strategic mode)**:
+```json
+{ "final_content": "...", "chain": [...], "budget_exhausted": false, "trace": [...] }
+```
+
+**Credential secret shape**:
+```json
+{ "api_key": "...", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini" }
+```
+
+### 26f. Tool Registry
+
+Shell tools available to agents: `ls`, `pwd`, `python`. Registered via `default_registry()`
+in `shell_tools.rs`. Agent receives tool definitions as `Vec<ToolDef>` for native function
+calling; the registry executes whatever the LLM requests (budget limits abuse).
+
+### 26g. Web Assistant vs. n.ai.agent
+
+| | Web Assistant | `n.ai.agent` |
+|---|---|---|
+| Surface | SSE stream over HTTP (`/api/.../assistant/chat`) | Pipeline node |
+| Protocol | Server-Sent Events | Pipeline payload |
+| Config | `zebflow.json` assistant config + credentials | DSL flags + credential |
+| LLM | `load_project_assistant_llm()` → dual LlmCall | `build_llm()` → single LlmCall |
+| Loop | `run_assistant_loop()` in `web/mod.rs` | `ToolCallerAgent` / `ZebtuneAgent` |
+
+Both surfaces use the same `LlmCall` interface and the same `http_client.rs` factories.
+The loop logic is near-identical — a future milestone may consolidate them into a shared
+`CoreAgent` primitive.
+
+---
+
+## 27. Four Intelligence Surfaces
+
+### 27a. Conceptual Model
+
+Zebflow exposes agent-grade intelligence through four distinct surfaces. Each has a different
+consumer, a different LLM ownership model, and a different capability set.
+
+```
+┌──────────────────┬──────────────────┬──────────────────────┬──────────────────┐
+│  n.ai.agent      │  REST API        │  MCP                 │  Web Assistant   │
+│  (pipeline node) │  (HTTP JSON)     │  (MCP JSON-RPC)      │  (SSE stream)    │
+├──────────────────┼──────────────────┼──────────────────────┼──────────────────┤
+│ LLM: Zebflow     │ LLM: none        │ LLM: CLIENT agent    │ LLM: Zebflow     │
+│ (ZebtuneAgent or │ (pure CRUD)      │ (Cursor, Claude Code)│ (ZebtuneAgent    │
+│  ToolCallerAgent)│                  │                      │  strategic)      │
+├──────────────────┼──────────────────┼──────────────────────┼──────────────────┤
+│ Consumer:        │ Consumer:        │ Consumer:            │ Consumer:        │
+│ Other pipeline   │ Web UI           │ External AI agents   │ Human user       │
+│ nodes / jobs     │ (project mgmt)   │ (project mgmt)       │ (chat UI)        │
+├──────────────────┼──────────────────┼──────────────────────┼──────────────────┤
+│ Tools:           │ N/A              │ 31 platform tools    │ execute_pipeline │
+│ ls, pwd, python  │                  │ (operations.rs)      │ _dsl → full DSL  │
+│ (shell only)     │                  │                      │ shell access     │
+└──────────────────┴──────────────────┴──────────────────────┴──────────────────┘
+```
+
+### 27b. Surface Comparison Table
+
+| Dimension | REST API | MCP | Web Assistant | n.ai.agent |
+|---|---|---|---|---|
+| **Primary consumer** | Web UI (human via browser) | External AI agents (Cursor, Claude Code) | Human (chat UI) | Pipelines / automation |
+| **Who is the LLM** | None | The MCP client | Zebflow (ZebtuneAgent) | Zebflow (ToolCaller or ZebtuneAgent) |
+| **Protocol** | HTTP JSON | MCP JSON-RPC | SSE stream | Pipeline payload |
+| **Auth** | Session cookie / JWT | MCP session token | Session cookie / JWT | Pipeline trigger auth |
+| **Agent mode** | N/A | N/A | Strategic (ZebtuneAgent) | Direct (ToolCaller) or Strategic (ZebtuneAgent) |
+| **Tool set** | N/A | Platform operations subset | `execute_pipeline_dsl` → full DSL | Shell: `ls`, `pwd`, `python` |
+| **Project management** | Full CRUD | Subset (see §27c) | Via DSL executor | ❌ none currently |
+| **Streaming** | No | No | Yes — SSE per tool step | No (StepEvent channel) |
+| **Conversation memory** | No | Client-managed | Client sends history | No (single shot) |
+| **Source of truth** | `operations.rs` | `operations.rs` + `mcp_tool_capability()` | `DslExecutor` verbs | `shell_tools.rs` |
+
+### 27c. Operation Coverage by Surface
+
+All project management operations are defined in `src/platform/operations.rs` (single source
+of truth). Each `OperationSpec` carries three channel contracts: REST, MCP, and assistant.
+
+| Category | Operation | REST | MCP | Web Assistant (DSL) | n.ai.agent |
+|---|---|---|---|---|---|
+| **pipelines** | list | ✅ | ✅ | ✅ `get pipelines` | ❌ |
+| | get / describe | ✅ | ✅ | ✅ `describe pipeline` | ❌ |
+| | register (upsert) | ✅ | ✅ | ✅ `register \| node \| node` | ❌ |
+| | patch node | ✅ | ✅ | ✅ `patch pipeline` | ❌ |
+| | activate / deactivate | ✅ | ✅ | ✅ | ❌ |
+| | execute (saved) | ✅ | ✅ | ✅ `execute pipeline` | ❌ |
+| | run (ephemeral) | ✅ | ✅ | ✅ `run \| node1 \| node2` | ❌ |
+| **templates** | list / get / save / create / delete | ✅ | ✅ | ❌ | ❌ |
+| **credentials** | list / get / upsert | ✅ | ✅ | ❌ | ❌ |
+| **db** | list / get / describe / query | ✅ | ✅ | ✅ `get connections` | ❌ |
+| **docs** | list / read / write | ✅ | ✅ | ❌ | ❌ |
+| **git** | commit / push | ❌ | ✅ | ✅ `git commit` | ❌ |
+| **skills** | list / read | ❌ | ✅ | ❌ | ❌ |
+| **tables** | list | ✅ | ❌ | ❌ | ❌ |
+| **files** | list / read / write | ✅ | ❌ | ❌ | ❌ |
+| **assistant** | config get / upsert / chat | ✅ | ❌ | ❌ | ❌ |
+| **shell** | ls / pwd / python | ❌ | ❌ | ❌ | ✅ only |
+
+**Key gap**: `n.ai.agent` has no project management capability today. Future milestone:
+expose a filtered `ProjectOperationToolSet` to the agent so it can control pipelines,
+query DBs, and call HTTP — matching web assistant power with configurable scope.
+
+### 27d. ZebtuneAgent Reuse Across Surfaces
+
+`ZebtuneAgent` is the **same code** running in two surfaces with different tool sets:
+
+```
+Web Assistant                         n.ai.agent (--mode strategic)
+──────────────────────────────────    ──────────────────────────────────
+ZebtuneAgent                          ZebtuneAgent
+  tools: AssistantPlatformTools         tools: default_registry()
+    └── execute_pipeline_dsl              └── ls, pwd, python
+         └── DslExecutor
+              └── all platform services
+
+Can: create pipelines, run them,      Can: read filesystem, run .py scripts.
+     query DBs, commit git, etc.           That is all.
+```
+
+This is intentional — the web assistant is session-authenticated and trust-elevated.
+`n.ai.agent` is sandboxed and portable. Future milestone closes this gap via capability
+scoping (see §27c key gap).
+
+### 27e. n.assistant — Bridge Node into the Web Assistant 🚧 Planned
+
+`n.assistant` is **not a new agent**. It is a bridge/routing node that connects external
+channel triggers (Telegram, WhatsApp, Slack, webhook, etc.) into the **existing web assistant**
+of the project — the same assistant configured in `zebflow.json` with its own LLM credential,
+system prompt, and project management capabilities.
+
+The web assistant is the **single brain**. The project studio console panel is just one UI
+surface to it. `n.assistant` is another surface — accessed via pipeline trigger instead of
+a browser.
+
+```
+External channel          Zebflow pipeline          Web assistant (single brain)
+─────────────────         ─────────────────         ────────────────────────────
+Telegram message    ─►  trigger.telegram      ─►  n.assistant  ─►  existing assistant
+WhatsApp message    ─►  trigger.whatsapp      ─►  n.assistant  ─►  (same LLM config)
+Webhook payload     ─►  trigger.webhook       ─►  n.assistant  ─►  (same capabilities)
+Browser console     ─►  /api/.../chat (HTTP)  ─►  ZebtuneAgent ─►  (same context)
+```
+
+**Example pipelines:**
+
+```
+| trigger.telegram --credential telegram-bot
+| n.assistant
+
+| trigger.whatsapp --credential whatsapp-bot
+| n.assistant
+```
+
+`n.assistant` reads the inbound message from the pipeline payload, forwards it to the
+project's web assistant session (per sender ID = per conversation thread), then sends the
+assistant's reply back to the originating channel. No LLM config on the node itself — it
+delegates entirely to the project's configured assistant.
+
+This is distinct from `n.ai.agent`:
+- `n.ai.agent` — standalone agent, own LLM config, own tool set, passes output downstream
+- `n.assistant` — bridge node, no own LLM, routes to web assistant, replies to channel
+
+### 27f. Hypersecure Channel Mechanism 🚧 Planned
+
+Bridging an external channel into the web assistant exposes the project's full assistant
+capabilities to callers who are not session-authenticated. A hardened access control layer
+wraps the bridge before the assistant is ever invoked.
+
+#### Threat model
+
+| Threat | Mitigation |
+|---|---|
+| Unauthorized user sends messages | Per-node allowlist of sender IDs / chat IDs in node config |
+| Prompt injection from channel | Message sanitized before reaching assistant; system prompt not user-controllable |
+| Runaway conversation | Per-sender step budget cap; rate limit on message frequency |
+| Credential exfiltration | Assistant has no tool to read raw credential values; services consume them opaquely |
+| Replay / spoofed webhook | HMAC or token-header validation on every inbound request (per channel kind) |
+| Denial of service | Per-(node, sender) rate limit stored in sekejap; configurable in node config |
+
+#### Security layers (execution order)
+
+```
+Inbound message from channel
+        │
+        ▼
+1. CHANNEL AUTH         webhook HMAC / bot token validation (per trigger node)
+        │
+        ▼
+2. SENDER ALLOWLIST     sender ID checked against per-node allowlist in node config
+        │
+        ▼
+3. RATE LIMITER         per-(node, sender) token bucket — configurable in node config
+        │
+        ▼
+4. MESSAGE SANITIZE     strip control chars, truncate to max_chars, no system prompt injection
+        │
+        ▼
+5. SESSION ROUTING      resolve or create per-sender conversation session in web assistant
+        │
+        ▼
+6. WEB ASSISTANT        existing ZebtuneAgent with project's configured LLM + capabilities
+        │
+        ▼
+7. REPLY AUDIT LOG      every exchange logged to sekejap: sender_id, timestamp, tool_calls, reply
+        │
+        ▼
+Channel reply (Telegram message, WhatsApp message, webhook response, etc.)
+```
+
+#### Why not just expose the existing web assistant HTTP endpoint?
+
+The existing `/api/.../assistant/chat` requires a session cookie — it is tied to an
+authenticated browser session. It cannot be called directly from Telegram or webhooks.
+
+`n.assistant` is the adapter layer that accepts unauthenticated external messages and
+routes them securely into the assistant, enforcing the sender allowlist and rate limits
+before the assistant ever runs.
+
+#### Planned node config shape
+
+```json
+{
+  "allowed_sender_ids": ["123456789", "987654321"],
+  "max_messages_per_minute": 3,
+  "max_message_chars": 2000,
+  "reply_format": "markdown"
+}
+```
+
+No `llm_credential_id`, no `allowed_operations` — those are owned by the web assistant's
+own configuration (`zebflow.json`), not by the bridge node.
