@@ -1,12 +1,15 @@
 //! Pure parser for the Pipeline DSL command language.
 //!
-//! No I/O, no platform imports — only strings in, `DslVerb` out.
+//! `DslFlag.config_key` is the single source of truth for flag→config mapping.
+//! Every flag used in DSL must be declared in the node's `dsl_flags`. Undeclared
+//! flags are a parse error — no auto-rule, no fallback.
 
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
-use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
+use crate::pipeline::model::{DslFlag, DslFlagKind, PipelineEdge, PipelineGraph, PipelineNode};
+use crate::pipeline::nodes::builtin_node_definitions;
 
 /// Parsed DSL command verb ready for execution.
 #[derive(Debug, Clone)]
@@ -124,6 +127,9 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
         "auth.token.create" | "n.auth.token.create" => Some("n.auth.token.create"),
         "crypto" | "n.crypto" => Some("n.crypto"),
+        "ai.agent" | "n.ai.agent" => Some("n.ai.agent"),
+        "browser.run" | "n.browser.run" => Some("n.browser.run"),
+        "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
         _ => None,
     }
 }
@@ -147,6 +153,22 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// Strips matching outer `"..."` or `'...'` from a string.
+/// Returns the byte offset of the first top-level `|` in `raw` (not inside quotes).
+/// Used to extract pipe bodies from raw command strings without losing quote context.
+fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    for (i, ch) in raw.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '|' if !in_single && !in_double => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn strip_outer_quotes(s: &str) -> &str {
     if s.len() >= 2
         && ((s.starts_with('"') && s.ends_with('"'))
@@ -182,7 +204,15 @@ fn coerce_scalar_value(s: &str) -> Value {
 }
 
 /// Parse flag→config key mapping and body from token list after node kind.
-pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>) {
+///
+/// Every `--flag` must be declared in the node's `dsl_flags`. The `config_key`
+/// from the matching `DslFlag` entry is the authoritative destination key.
+/// Unknown flags (not declared in `dsl_flags`) are a hard parse error.
+pub fn parse_node_config(
+    tokens: &[String],
+    raw: &str,
+    dsl_flags: &[DslFlag],
+) -> Result<(Value, Option<String>), String> {
     let mut config = serde_json::Map::new();
     let mut body: Option<String> = None;
     let mut i = 0;
@@ -191,48 +221,34 @@ pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>
         let t = &tokens[i];
 
         if t == "--" {
-            // Extract body from the raw segment string to preserve quotes/whitespace.
             body = extract_raw_body_from(raw);
             break;
         }
 
         if let Some(key) = t.strip_prefix("--") {
-            let val = tokens.get(i + 1).cloned().unwrap_or_default();
-            match key {
-                "path" => { config.insert("path".to_string(), json!(val)); i += 2; }
-                "method" => { config.insert("method".to_string(), json!(val)); i += 2; }
-                "cron" => { config.insert("cron".to_string(), json!(val)); i += 2; }
-                "timezone" => { config.insert("timezone".to_string(), json!(val)); i += 2; }
-                "template" => { config.insert("template".to_string(), json!(val)); i += 2; }
-                "route" => { config.insert("route".to_string(), json!(val)); i += 2; }
-                "credential" => { config.insert("credential_id".to_string(), json!(val)); i += 2; }
-                "url" => { config.insert("url".to_string(), json!(val)); i += 2; }
-                "lang" => { config.insert("language".to_string(), json!(val)); i += 2; }
-                "table" => { config.insert("table".to_string(), json!(val)); i += 2; }
-                "op" => { config.insert("operation".to_string(), json!(val)); i += 2; }
-                "expr" => { config.insert("expression".to_string(), json!(val)); i += 2; }
-                "cases" => {
-                    let arr: Vec<Value> = val.split(',').map(|s| json!(s.trim())).collect();
-                    config.insert("cases".to_string(), Value::Array(arr));
+            let flag_str = format!("--{key}");
+            let dsl_flag = dsl_flags.iter().find(|f| f.flag == flag_str).ok_or_else(|| {
+                format!(
+                    "unknown flag `--{key}` — not declared in this node's dsl_flags"
+                )
+            })?;
+
+            match dsl_flag.kind {
+                DslFlagKind::Scalar => {
+                    let val = tokens.get(i + 1).cloned().unwrap_or_default();
+                    config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
                     i += 2;
                 }
-                "default" => { config.insert("default".to_string(), json!(val)); i += 2; }
-                "fanout" => {
-                    let branches: Vec<Value> = val.split(',').map(|s| json!(s.trim())).collect();
-                    config.insert("branches".to_string(), Value::Array(branches));
-                    config.insert("mode".to_string(), json!("fanout"));
+                DslFlagKind::CommaSeparatedList => {
+                    let val = tokens.get(i + 1).cloned().unwrap_or_default();
+                    let arr: Vec<Value> =
+                        val.split(',').map(|s| json!(s.trim())).collect();
+                    config.insert(dsl_flag.config_key.clone(), Value::Array(arr));
                     i += 2;
                 }
-                "strategy" => { config.insert("strategy".to_string(), json!(val)); i += 2; }
-                "budget" => { config.insert("step_budget".to_string(), json!(val)); i += 2; }
-                _ => {
-                    // Universal rule: --flag-name → flag_name (replace - with _).
-                    // Any flag not explicitly matched above lands here.
-                    // New nodes only need to declare dsl_flags on their NodeDefinition
-                    // for docs/validation — parsing is automatic.
-                    let config_key = key.replace('-', "_");
-                    config.insert(config_key, coerce_scalar_value(&val));
-                    i += 2;
+                DslFlagKind::Bool => {
+                    config.insert(dsl_flag.config_key.clone(), json!(true));
+                    i += 1;
                 }
             }
         } else {
@@ -240,15 +256,41 @@ pub fn parse_node_config(tokens: &[String], raw: &str) -> (Value, Option<String>
         }
     }
 
-    (Value::Object(config), body)
+    Ok((Value::Object(config), body))
+}
+
+/// Parse flags for patch operations without DslFlag validation.
+/// Used only by `parse_patch` where node kind is not known at parse time.
+/// Validation against DslFlags happens later in the executor.
+fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value>, Option<String>) {
+    let mut flags = HashMap::new();
+    let mut body: Option<String> = None;
+    let mut i = 0;
+
+    while i < tokens.len() {
+        let t = &tokens[i];
+        if t == "--" {
+            body = extract_raw_body_from(cmd);
+            break;
+        }
+        if let Some(key) = t.strip_prefix("--") {
+            let val = tokens.get(i + 1).cloned().unwrap_or_default();
+            let config_key = key.replace('-', "_");
+            flags.insert(config_key, coerce_scalar_value(&val));
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    (flags, body)
 }
 
 /// Parse `register <file_rel_path> [--title t] [--as-json] <body>`
-fn parse_register(tokens: &[String]) -> DslVerb {
+fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
     let mut title = String::new();
     let mut as_json = false;
-    let mut body_start = tokens.len();
     let mut i = 2;
 
     while i < tokens.len() {
@@ -261,17 +303,15 @@ fn parse_register(tokens: &[String]) -> DslVerb {
                 as_json = true;
                 i += 1;
             }
-            _ => {
-                body_start = i;
-                break;
-            }
+            _ => break,
         }
     }
 
-    let body = if body_start < tokens.len() {
-        tokens[body_start..].join(" ")
-    } else {
-        String::new()
+    // Extract body from raw string to preserve quoted values (e.g. --cron "* * * * *").
+    // tokens.join(" ") would lose quote boundaries — use raw substring from first top-level `|`.
+    let body = match find_first_pipe_in_raw(cmd) {
+        Some(pos) => cmd[pos..].to_string(),
+        None => String::new(),
     };
 
     DslVerb::Register { file_rel_path, title, as_json, body }
@@ -282,12 +322,7 @@ fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
     let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
     let node_id = tokens.get(4).cloned().unwrap_or_default();
     let flag_tokens = if tokens.len() > 5 { tokens[5..].to_vec() } else { vec![] };
-    let (flags_val, body) = parse_node_config(&flag_tokens, cmd);
-    let flags: HashMap<String, Value> = if let Value::Object(map) = flags_val {
-        map.into_iter().collect()
-    } else {
-        HashMap::new()
-    };
+    let (flags, body) = parse_flags_for_patch(&flag_tokens, cmd);
     DslVerb::Patch { file_rel_path, node_id, flags, body }
 }
 
@@ -352,16 +387,14 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             let input = serde_json::from_str(&input_str).unwrap_or(json!({}));
             DslVerb::Execute { file_rel_path, input }
         }
-        "register" | "reg" => parse_register(&tokens),
+        "register" | "reg" => parse_register(&tokens, cmd),
         "patch" => parse_patch(&tokens, cmd),
         "run" => {
             let dry_run = tokens.iter().any(|t| t == "--dry-run");
-            // body is everything after the first `|`
-            let pipe_pos = tokens.iter().position(|t| t == "|").unwrap_or(tokens.len());
-            let body = if pipe_pos < tokens.len() {
-                tokens[pipe_pos..].join(" ")
-            } else {
-                String::new()
+            // Extract body from raw string to preserve quoted values.
+            let body = match find_first_pipe_in_raw(cmd) {
+                Some(pos) => cmd[pos..].to_string(),
+                None => String::new(),
             };
             DslVerb::Run { body, dry_run }
         }
@@ -503,7 +536,13 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
     let full_kind =
         expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
     let (input_pins, output_pins) = default_pins(full_kind);
-    let (mut config, body_val) = parse_node_config(&tokens[1..], rest);
+    let all_defs = builtin_node_definitions();
+    let dsl_flags = all_defs
+        .iter()
+        .find(|d| d.kind == full_kind)
+        .map(|d| d.dsl_flags.as_slice())
+        .unwrap_or(&[]);
+    let (mut config, body_val) = parse_node_config(&tokens[1..], rest, dsl_flags)?;
     if let Some(bval) = body_val {
         let body_key = match full_kind {
             "n.pg.query" => "query",
@@ -560,6 +599,182 @@ fn parse_node_pin_part(s: &str, default_pin: &str) -> Result<(String, String), S
     Ok((label, pin))
 }
 
+// ─── DSL Reconstruction (inverse of build_pipeline_graph) ───────────────────
+
+/// Reconstruct DSL text from a compiled `PipelineGraph`.
+///
+/// Emits pipe mode (`| node1\n| node2`) for simple linear chains where every
+/// edge uses default "out"→"in" pins and no node has more than one in/out edge.
+/// Emits graph mode (`[label] kind ...\n[a] -> [b]`) for all other topologies.
+pub fn graph_to_dsl(graph: &PipelineGraph) -> String {
+    if is_linear_graph(graph) {
+        graph_to_pipe_mode(graph)
+    } else {
+        graph_to_graph_mode(graph)
+    }
+}
+
+/// True iff the graph is a simple linear chain — no branching, no merging,
+/// all edges on default "out"→"in" pins.
+fn is_linear_graph(graph: &PipelineGraph) -> bool {
+    let mut in_count: HashMap<&str, usize> = HashMap::new();
+    let mut out_count: HashMap<&str, usize> = HashMap::new();
+
+    for edge in &graph.edges {
+        if edge.from_pin != "out" || edge.to_pin != "in" {
+            return false;
+        }
+        *in_count.entry(edge.to_node.as_str()).or_insert(0) += 1;
+        *out_count.entry(edge.from_node.as_str()).or_insert(0) += 1;
+    }
+
+    graph.nodes.iter().all(|n| {
+        *in_count.get(n.id.as_str()).unwrap_or(&0) <= 1
+            && *out_count.get(n.id.as_str()).unwrap_or(&0) <= 1
+    })
+}
+
+/// Reconstruct the DSL segment for one node: `kind --flag val... -- body`
+///
+/// Uses `dsl_flags` as the authoritative reverse-mapping (config_key → flag).
+/// Fields not declared in `dsl_flags` (e.g. `title`, `params_path`) are omitted.
+fn node_to_segment(node: &PipelineNode) -> String {
+    let all_defs = builtin_node_definitions();
+    let dsl_flags = all_defs
+        .iter()
+        .find(|d| d.kind == node.kind)
+        .map(|d| d.dsl_flags.as_slice())
+        .unwrap_or(&[]);
+
+    // Strip "n." prefix for cleaner output; expand_kind accepts both forms.
+    let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
+    let mut parts = vec![kind.to_string()];
+
+    for flag in dsl_flags {
+        let Some(val) = node.config.get(&flag.config_key) else {
+            continue;
+        };
+        match &flag.kind {
+            DslFlagKind::Bool => {
+                if val.as_bool().unwrap_or(false) {
+                    parts.push(flag.flag.clone());
+                }
+            }
+            DslFlagKind::CommaSeparatedList => {
+                if let Some(arr) = val.as_array() {
+                    let csv = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    if !csv.is_empty() {
+                        parts.push(flag.flag.clone());
+                        parts.push(csv);
+                    }
+                }
+            }
+            DslFlagKind::Scalar => {
+                let s = match val {
+                    Value::String(s) if !s.is_empty() => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+                parts.push(flag.flag.clone());
+                // Quote values containing spaces.
+                if s.contains(' ') {
+                    parts.push(format!("\"{}\"", s.replace('"', "\\\"")));
+                } else {
+                    parts.push(s);
+                }
+            }
+        }
+    }
+
+    // Body (SQL / script source / generic body) — stored under a kind-specific key.
+    let body_key = match node.kind.as_str() {
+        "n.pg.query" => "query",
+        "n.script" => "source",
+        _ => "body",
+    };
+    if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
+        let body = body.trim();
+        if !body.is_empty() {
+            // Collapse internal newlines so the segment stays on one line.
+            let inline: String = body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            parts.push("--".to_string());
+            parts.push(inline);
+        }
+    }
+
+    parts.join(" ")
+}
+
+fn graph_to_pipe_mode(graph: &PipelineGraph) -> String {
+    let node_map: HashMap<&str, &PipelineNode> =
+        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let next_map: HashMap<&str, &str> = graph
+        .edges
+        .iter()
+        .map(|e| (e.from_node.as_str(), e.to_node.as_str()))
+        .collect();
+
+    let mut ordered: Vec<&PipelineNode> = Vec::new();
+    if let Some(first_id) = graph.entry_nodes.first() {
+        let mut cur = first_id.as_str();
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            if !visited.insert(cur) {
+                break; // cycle guard
+            }
+            if let Some(&node) = node_map.get(cur) {
+                ordered.push(node);
+            }
+            match next_map.get(cur) {
+                Some(&next) => cur = next,
+                None => break,
+            }
+        }
+    }
+
+    ordered
+        .iter()
+        .map(|n| format!("| {}", node_to_segment(n)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    for node in &graph.nodes {
+        lines.push(format!("[{}] {}", node.id, node_to_segment(node)));
+    }
+
+    if !graph.edges.is_empty() {
+        lines.push(String::new());
+        for edge in &graph.edges {
+            if edge.from_pin == "out" && edge.to_pin == "in" {
+                lines.push(format!("[{}] -> [{}]", edge.from_node, edge.to_node));
+            } else {
+                lines.push(format!(
+                    "[{}]:{} -> [{}]:{}",
+                    edge.from_node, edge.from_pin, edge.to_node, edge.to_pin
+                ));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+// ─── Pipe mode builder ───────────────────────────────────────────────────────
+
 /// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query --credential main`
 fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
     // Strip leading `|` if present
@@ -590,6 +805,8 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         });
     }
 
+    let all_defs = builtin_node_definitions();
+
     for (idx, segment) in segments.iter().enumerate() {
         let seg_tokens = tokenize(segment);
         if seg_tokens.is_empty() {
@@ -602,7 +819,12 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
 
         let node_id = format!("n{idx}");
         let (input_pins, output_pins) = default_pins(full_kind);
-        let (mut config, body_val) = parse_node_config(&seg_tokens[1..], segment);
+        let dsl_flags = all_defs
+            .iter()
+            .find(|d| d.kind == full_kind)
+            .map(|d| d.dsl_flags.as_slice())
+            .unwrap_or(&[]);
+        let (mut config, body_val) = parse_node_config(&seg_tokens[1..], segment, dsl_flags)?;
 
         // Set body using kind-appropriate key
         if let Some(bval) = body_val {
