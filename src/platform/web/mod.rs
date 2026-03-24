@@ -1539,7 +1539,7 @@ async fn render_project_pipelines_with_tab(
         Ok(Some(info)) => {
             let nav = nav_classes(&owner, &project, "pipelines", Some(tab_key));
             let route = format!("/projects/{owner}/{project}/pipelines/{tab_key}");
-            let editor_base = format!("/projects/{owner}/{project}/pipelines/editor");
+            let editor_base = format!("/projects/{owner}/{project}/pipelines/registry");
             let route_base = format!("/projects/{owner}/{project}/pipelines/registry");
             let pipeline_items = if is_registry || is_editor {
                 items
@@ -1590,7 +1590,7 @@ async fn render_project_pipelines_with_tab(
                                 "trigger_kind": meta.trigger_kind,
                                 "virtual_path": virtual_path,
                                 "file_rel_path": file_rel_path,
-                                "editor_href": format!("{editor_base}?path={virtual_path}&id={file_rel_path}"),
+                                "editor_href": format!("{editor_base}?type=pipeline&path={virtual_path}&file={file_rel_path}"),
                                 "webhook_path": webhook_path.unwrap_or_else(|| "/".to_string()),
                                 "webhook_method": webhook_method.unwrap_or_else(|| "GET".to_string()),
                             })
@@ -1821,6 +1821,19 @@ async fn render_project_pipelines_with_tab(
                     let vpath = crate::platform::model::normalize_virtual_path(&meta.virtual_path);
                     *folder_counts.entry(vpath).or_insert(0) += 1;
                 }
+                // Also count template files so folder badges reflect all items, not just pipelines.
+                if let Ok(workspace) = state.platform.projects.list_template_workspace(&owner, &project) {
+                    for item in &workspace.items {
+                        if item.kind == "file" {
+                            let parent = std::path::Path::new(&item.rel_path)
+                                .parent()
+                                .and_then(|p| p.to_str())
+                                .unwrap_or("");
+                            let vpath = crate::platform::model::normalize_virtual_path(parent);
+                            *folder_counts.entry(vpath).or_insert(0) += 1;
+                        }
+                    }
+                }
                 let scope_folders = folder_counts
                     .into_iter()
                     .map(|(vpath, count)| {
@@ -1880,7 +1893,7 @@ async fn render_project_pipelines_with_tab(
                             "has_draft": has_draft,
                             "is_locked": locked,
                             "status_label": if is_active { "active" } else if has_draft { "draft" } else { "inactive" },
-                            "editor_href": format!("{editor_base}?path={scope_path}&id={file_id}")
+                            "editor_href": format!("{editor_base}?type=pipeline&path={scope_path}&file={file_id}")
                         })
                     })
                     .collect::<Vec<_>>();
@@ -2121,6 +2134,19 @@ async fn render_project_editor(
         let vpath =
             crate::platform::model::normalize_virtual_path(&meta.virtual_path);
         *folder_counts.entry(vpath).or_insert(0) += 1;
+    }
+    // Include template files in counts so badges reflect all items per folder.
+    if let Ok(workspace) = state.platform.projects.list_template_workspace(&owner, &project) {
+        for item in &workspace.items {
+            if item.kind == "file" {
+                let parent = std::path::Path::new(&item.rel_path)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
+                let vpath = crate::platform::model::normalize_virtual_path(parent);
+                *folder_counts.entry(vpath).or_insert(0) += 1;
+            }
+        }
     }
     let scope_folders = folder_counts
         .into_iter()
@@ -2968,6 +2994,10 @@ async fn render_settings_tab_page(
                 "logging": {
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
                     "config": zebflow_cfg.logging
+                },
+                "git": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/git"),
+                    "config": zebflow_cfg.git
                 },
                 "mcp": {
                     "active": mcp_session.is_some(),
@@ -4841,7 +4871,7 @@ async fn api_pipeline_registry(
         Err(response) => return response,
     };
     let base_route = format!("/projects/{owner}/{project}/pipelines/registry");
-    let editor_base = format!("/projects/{owner}/{project}/pipelines/editor");
+    let editor_base = format!("/projects/{owner}/{project}/pipelines/registry");
     // Build git status map keyed by file_rel_path (relative to repo/).
     let git_map: std::collections::HashMap<String, String> = state
         .platform
@@ -5214,6 +5244,20 @@ async fn api_repo_git_status(
     }
 }
 
+/// Returns `-c user.name=… -c user.email=…` args when both fields are set; empty otherwise.
+fn git_identity_args(git_cfg: &crate::platform::model::ZebflowJsonGit) -> Vec<String> {
+    if !git_cfg.author_name.is_empty() && !git_cfg.author_email.is_empty() {
+        vec![
+            "-c".to_string(),
+            format!("user.name={}", git_cfg.author_name),
+            "-c".to_string(),
+            format!("user.email={}", git_cfg.author_email),
+        ]
+    } else {
+        vec![]
+    }
+}
+
 async fn api_git_commit(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -5278,14 +5322,12 @@ async fn api_git_commit(
             .into_response();
     }
     // git commit -m <message>
-    let commit_out = match std::process::Command::new("git")
-        .arg("-C")
-        .arg(&layout.repo_dir)
-        .arg("commit")
-        .arg("-m")
-        .arg(req.message.trim())
-        .output()
-    {
+    let git_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project).git;
+    let identity_args = git_identity_args(&git_cfg);
+    let mut commit_cmd = std::process::Command::new("git");
+    for arg in &identity_args { commit_cmd.arg(arg); }
+    commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.message.trim());
+    let commit_out = match commit_cmd.output() {
         Ok(o) => o,
         Err(e) => {
             return (
@@ -6240,6 +6282,7 @@ async fn api_get_settings_section(
     match section.as_str() {
         "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.rwe})).into_response(),
         "logging" => Json(json!({"ok": true, "section": "logging", "data": cfg.logging})).into_response(),
+        "git" => Json(json!({"ok": true, "section": "git", "data": cfg.git})).into_response(),
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
@@ -6313,6 +6356,13 @@ async fn api_upsert_settings_section(
             cfg.logging.max_invocations = max_inv;
             json!(cfg.logging)
         }
+        "git" => {
+            let name = req.data.get("author_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let email = req.data.get("author_email").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            cfg.git.author_name = name;
+            cfg.git.author_email = email;
+            json!(cfg.git)
+        }
         _ => {
             return (
                 StatusCode::NOT_FOUND,
@@ -6327,7 +6377,9 @@ async fn api_upsert_settings_section(
     }
 
     // Git: stage zebflow.json and commit with the user-provided message.
+    // Uses identity from cfg.git (already updated in memory) so first-time saves work.
     // Failure is non-fatal — settings are already saved; we report the git outcome.
+    let identity_args = git_identity_args(&cfg.git);
     let (committed, git_error) = {
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
@@ -6344,10 +6396,10 @@ async fn api_upsert_settings_section(
                 if !add_ok {
                     (false, Some("git add failed".to_string()))
                 } else {
-                    let commit_out = std::process::Command::new("git")
-                        .arg("-C").arg(&layout.repo_dir)
-                        .arg("commit").arg("-m").arg(req.commit_message.trim())
-                        .output();
+                    let mut commit_cmd = std::process::Command::new("git");
+                    for arg in &identity_args { commit_cmd.arg(arg); }
+                    commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.commit_message.trim());
+                    let commit_out = commit_cmd.output();
                     match commit_out {
                         Err(e) => (false, Some(e.to_string())),
                         Ok(o) => {
@@ -6538,12 +6590,12 @@ fn rwe_library_git_commit(
     if !add_ok {
         return Err(());
     }
-    std::process::Command::new("git")
-        .arg("-C").arg(&layout.repo_dir)
-        .arg("commit").arg("-m").arg(message)
-        .output()
-        .map(|_| ())
-        .map_err(|_| ())
+    let git_cfg = state.platform.zebflow_cfg.read_or_default(owner, project).git;
+    let identity_args = git_identity_args(&git_cfg);
+    let mut cmd = std::process::Command::new("git");
+    for arg in &identity_args { cmd.arg(arg); }
+    cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(message);
+    cmd.output().map(|_| ()).map_err(|_| ())
 }
 
 /// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.render`

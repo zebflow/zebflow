@@ -325,7 +325,7 @@ export function initPipelineRegistryBehavior() {
       }
       const data = await resp.json() as any;
       const fileId: string = data?.meta?.file_rel_path ?? "";
-      window.location.href = `/projects/${owner}/${project}/pipelines/editor?path=${encodeURIComponent(virtualPath)}&id=${encodeURIComponent(fileId)}`;
+      window.location.href = `/projects/${owner}/${project}/pipelines/registry?type=pipeline&path=${encodeURIComponent(virtualPath)}&file=${encodeURIComponent(fileId)}`;
     }
   });
 }

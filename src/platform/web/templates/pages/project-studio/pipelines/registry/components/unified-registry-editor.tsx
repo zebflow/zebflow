@@ -100,6 +100,7 @@ export default function UnifiedRegistryEditor(input) {
   const newPipelineDialogRef = useRef(null);
   const newFileDialogRef = useRef(null);
   const newFolderDialogRef = useRef(null);
+  const newDocDialogRef = useRef(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null as string | null);
 
@@ -318,15 +319,17 @@ export default function UnifiedRegistryEditor(input) {
     const fd = new FormData(e.currentTarget);
     const triggerKind = String(fd.get("trigger_kind") || "webhook");
     const name = peSanitizeSegment(fd.get("name"));
-    const virtualPath = peNormalizeVirtualPath(fd.get("virtual_path") || currentPath);
+    const virtualPath = peNormalizeVirtualPath(currentPath);
     const title = String(fd.get("title") || "");
     const source = JSON.stringify(peEmptyPipelineGraph(name, triggerKind), null, 2);
+    const cleanVp = (virtualPath || "/").replace(/^\//, "");
+    const fileRelPath = cleanVp ? `pipelines/${cleanVp}/${name}.zf.json` : `pipelines/${name}.zf.json`;
     setCreating(true);
     setCreateError(null);
     try {
       const payload = await requestJson(`${projectApiBase}/pipelines/definition`, {
         method: "POST",
-        body: JSON.stringify({ virtual_path: virtualPath, name, title, description: "", trigger_kind: triggerKind, source }),
+        body: JSON.stringify({ file_rel_path: fileRelPath, title, description: "", trigger_kind: triggerKind, source }),
       });
       const id = payload?.meta?.file_rel_path;
       if (id) {
@@ -383,6 +386,29 @@ export default function UnifiedRegistryEditor(input) {
       const newFolderVPath = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
       nav(`${editorBase}?path=${encodeURIComponent(newFolderVPath)}`);
       if (newFolderDialogRef.current) newFolderDialogRef.current.close();
+    } catch (err: any) {
+      setCreateError(String(err?.message || err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleCreateDoc(e) {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const rawName = String(fd.get("name") || "").trim().replace(/\.md$/i, "");
+    if (!rawName) return;
+    const filename = `${rawName}.md`;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await fetch(`${projectApiBase}/docs/file?path=${encodeURIComponent(filename)}`, {
+        method: "PUT",
+        body: "",
+        headers: { "Content-Type": "text/plain" },
+      });
+      if (newDocDialogRef.current) newDocDialogRef.current.close();
+      nav(`${editorBase}?type=doc&path=%2Fdocs&file=docs%2F${encodeURIComponent(filename)}`);
     } catch (err: any) {
       setCreateError(String(err?.message || err));
     } finally {
@@ -530,6 +556,13 @@ export default function UnifiedRegistryEditor(input) {
                     onClick={() => {
                       setCreateError(null);
                       if (newFolderDialogRef.current) newFolderDialogRef.current.showModal();
+                    }}
+                  />
+                  <DropdownMenuItem
+                    label="Documentation"
+                    onClick={() => {
+                      setCreateError(null);
+                      if (newDocDialogRef.current) newDocDialogRef.current.showModal();
                     }}
                   />
                 </DropdownMenu>
@@ -950,10 +983,6 @@ export default function UnifiedRegistryEditor(input) {
                 <Input name="name" type="text" placeholder="my-pipeline" required />
               </label>
               <label className="pipeline-editor-field">
-                <span>Folder path</span>
-                <Input name="virtual_path" type="text" placeholder="/blog/admin" defaultValue={currentPath} />
-              </label>
-              <label className="pipeline-editor-field">
                 <span>Title</span>
                 <Input name="title" type="text" placeholder="My Pipeline" />
               </label>
@@ -1008,6 +1037,23 @@ export default function UnifiedRegistryEditor(input) {
               {createError ? <p className="pipeline-editor-dialog-error">{createError}</p> : null}
               <div className="pipeline-editor-dialog-actions">
                 <Button variant="outline" size="xs" type="button" onClick={() => { if (newFolderDialogRef.current) newFolderDialogRef.current.close(); }}>Cancel</Button>
+                <Button size="xs" type="submit" disabled={creating}>{creating ? "Creating…" : "Create"}</Button>
+              </div>
+            </form>
+          </dialog>
+
+          {/* ── New documentation dialog ─────────────────────────────────── */}
+          <dialog ref={newDocDialogRef} className="pipeline-editor-dialog">
+            <form className="pipeline-editor-dialog-form" onSubmit={handleCreateDoc}>
+              <h3 className="pipeline-editor-dialog-title">New Documentation</h3>
+              <label className="pipeline-editor-field">
+                <span>File name</span>
+                <Input name="name" type="text" placeholder="guide" required />
+                <small className="pipeline-editor-field-help">Saved as <code>docs/{"{name}"}.md</code></small>
+              </label>
+              {createError ? <p className="pipeline-editor-dialog-error">{createError}</p> : null}
+              <div className="pipeline-editor-dialog-actions">
+                <Button variant="outline" size="xs" type="button" onClick={() => { if (newDocDialogRef.current) newDocDialogRef.current.close(); }}>Cancel</Button>
                 <Button size="xs" type="submit" disabled={creating}>{creating ? "Creating…" : "Create"}</Button>
               </div>
             </form>

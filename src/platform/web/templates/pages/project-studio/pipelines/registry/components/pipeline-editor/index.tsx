@@ -365,7 +365,7 @@ export default function PipelineEditor({
     }
     const id = result?.meta?.file_rel_path || selectedId;
     const path = result?.meta?.virtual_path || currentMeta.virtual_path || scopePath || "/";
-    const redirectUrl = `/projects/${owner}/${project}/pipelines/editor?path=${encodeURIComponent(path)}&id=${encodeURIComponent(id)}`;
+    const redirectUrl = `/projects/${owner}/${project}/pipelines/registry?type=pipeline&path=${encodeURIComponent(path)}&file=${encodeURIComponent(id)}`;
 
     // Check git status and show commit dialog
     try {
