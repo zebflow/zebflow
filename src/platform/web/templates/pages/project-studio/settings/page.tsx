@@ -406,6 +406,103 @@ function LibrariesPanel({ items, api }) {
   );
 }
 
+// ─── Git Identity Panel ──────────────────────────────────────────────────────
+
+function GitPanel({ api, initialConfig }) {
+  const [authorName, setAuthorName] = useState(String(initialConfig?.author_name ?? ""));
+  const [authorEmail, setAuthorEmail] = useState(String(initialConfig?.author_email ?? ""));
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [saving, setSaving] = useState(false);
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [pendingData, setPendingData] = useState(null);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setPendingData({ author_name: authorName.trim(), author_email: authorEmail.trim() });
+    setCommitOpen(true);
+  }
+
+  async function handleCommit(commitMessage) {
+    setCommitOpen(false);
+    setSaving(true);
+    setStatusMsg("Saving...");
+    setStatusTone("info");
+    try {
+      const resp = await requestJson(api, {
+        method: "PUT",
+        body: JSON.stringify({ commit_message: commitMessage, data: pendingData }),
+      });
+      if (resp?.committed) {
+        setStatusMsg("Saved & committed.");
+        setStatusTone("ok");
+      } else if (resp?.git_error) {
+        setStatusMsg(`Saved (git: ${resp.git_error})`);
+        setStatusTone("info");
+      } else {
+        setStatusMsg("Saved.");
+        setStatusTone("ok");
+      }
+    } catch (err) {
+      setStatusMsg(`Failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setSaving(false);
+      setPendingData(null);
+    }
+  }
+
+  return (
+    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+      <CommitDialog
+        open={commitOpen}
+        section="git"
+        defaultMessage="settings(git): set git identity"
+        onConfirm={handleCommit}
+        onCancel={() => { setCommitOpen(false); setPendingData(null); }}
+      />
+      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
+        <div>
+          <h3 className="project-card-title">Git Identity</h3>
+          <p className="project-card-copy">
+            Author name and email used for all git commits in this project.
+            Required for commits to succeed.
+          </p>
+        </div>
+        <span className="project-inline-chip">Git</span>
+      </header>
+      <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={handleSubmit}>
+        <Field label="Author Name">
+          <Input
+            name="author_name"
+            placeholder="Your Name"
+            value={authorName}
+            onInput={(e) => setAuthorName(e.currentTarget.value)}
+          />
+        </Field>
+        <Field label="Author Email">
+          <Input
+            name="author_email"
+            placeholder="you@example.com"
+            value={authorEmail}
+            onInput={(e) => setAuthorEmail(e.currentTarget.value)}
+          />
+        </Field>
+        <div className="col-span-full flex items-center gap-[0.7rem]">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={saving}
+            label={saving ? "Saving..." : "Save Git Identity"}
+          />
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--studio-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-[var(--studio-text-soft)]")}>{statusMsg}</span>
+        </div>
+      </form>
+    </article>
+  );
+}
+
 // ─── Node Registry Panel ─────────────────────────────────────────────────────
 
 function NodeRegistryPanel({ groups, count }) {
@@ -681,6 +778,11 @@ export default function Page(input) {
               {tabFlags?.policy ? (
                 <section className="project-content-section">
                   <div className="project-content-body">
+                    <GitPanel
+                      api={input?.git?.api ?? ""}
+                      initialConfig={input?.git?.config ?? {}}
+                    />
+                    <Separator className="my-6" />
                     <RwePanel
                       api={input?.rwe?.api ?? ""}
                       initialConfig={input?.rwe?.config ?? {}}

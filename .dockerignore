@@ -1,0 +1,43 @@
+# ── Build context only (smaller/faster `docker build`; image layers = COPY in Dockerfile) ──
+
+target
+.git
+**/.git
+.gitignore
+.disposed
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+*.log
+
+# Root-level screenshots / dumps (not used by Rust build)
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+
+node_modules
+
+# Docs, UX, tests — not part of cargo compile
+docs/
+uxui/
+tests/
+.github/
+
+# Markdown repo-wide, except skills shipped in the binary (include_str!)
+**/*.md
+!src/platform/skills/**/*.md
+
+# Library READMEs / notes — not referenced by include_bytes!
+libraries/**/*.md
+
+# JS tooling at repo root (platform is Rust + embedded assets only)
+package.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+tsconfig.json

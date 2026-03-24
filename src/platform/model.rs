@@ -1096,6 +1096,20 @@ pub struct ZebflowJson {
     pub logging: ZebflowJsonLogging,
     #[serde(default)]
     pub rwe: ZebflowJsonRwe,
+    #[serde(default)]
+    pub git: ZebflowJsonGit,
+}
+
+/// Git identity section of `zebflow.json`.
+/// Provides author name and email for all git commits in this project.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonGit {
+    /// Git author/committer display name (e.g. "Jane Doe").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author_name: String,
+    /// Git author/committer email (e.g. "jane@example.com").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub author_email: String,
 }
 
 /// RWE settings section of `zebflow.json`.
