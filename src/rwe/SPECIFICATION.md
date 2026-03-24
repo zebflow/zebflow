@@ -417,7 +417,7 @@ This pattern works in **every file** — pages, components, layouts. No exceptio
 | Rule | Detail | Status |
 |------|--------|--------|
 | `import X from "@/components/ui/button"` | `@/` resolves to template root, works in all files | ✅ |
-| `import X from "@/components/layout/shell"` | Nested imports cascade correctly | ✅ |
+| `import X from "@/pages/home/components/chrome-header"` | Nested imports cascade correctly | ✅ |
 | No relative `../` imports | `../../foo` is forbidden — use `@/` always | ✅ enforced |
 | `import X from "npm:somelib"` | Allowed npm packages per allowlist | ✅ |
 | `import X from "jsr:somelib"` | JSR packages allowed | ✅ |
@@ -556,7 +556,7 @@ templates/
 |------|--------|
 | Pages are entry points | One `pages/*.tsx` per route. Defines the page root. |
 | UI components are stateless-first | Prefer pure render — no behavior wiring |
-| Layout components wrap pages | `project-studio-shell.tsx` wraps all admin pages |
+| Layout components wrap pages | Platform studio: `pages/project-studio/components/shell.tsx` wraps project-studio routes |
 | Behavior files are pure `.ts` | No JSX, no render(). Wire DOM events, export init functions. |
 | Shared reactive state | Goes in layout (entry page context) via `usePageState` |
 | Components that need hooks | Can live anywhere — `"rwe"` import is a compile-time signal, stripped during bundling |

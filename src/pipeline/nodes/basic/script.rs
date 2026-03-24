@@ -79,7 +79,18 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("title".to_string()),
             LayoutItem::Field("source".to_string()),
         ],
-        ai_tool: Default::default(),
+        ai_tool: crate::pipeline::model::NodeAiToolDefinition {
+            registered: true,
+            tool_name: "run_script".to_string(),
+            tool_description: "Execute a JavaScript snippet in the Deno sandbox. Args: code (required).".to_string(),
+            tool_input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "code": { "type": "string", "description": "JavaScript code to execute" }
+                },
+                "required": ["code"]
+            }),
+        },
     }
 }
 

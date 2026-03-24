@@ -3,16 +3,30 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
+  "description": "VRM 0.x/1.0 avatar viewer for RWE templates. Three.js r0.171 + @pixiv/three-vrm 3.x bundled offline. Auto-mount, expression controls, animation mixer, look-at targeting, spring bone simulation.",
   "source": {
     "provider": "zebflow",
-    "package": "three-vrm",
-    "package_version": "bridge",
+    "package": "@pixiv/three-vrm",
+    "package_version": "3.x",
+    "packed_version": "full-3.x",
+    "packed_kind": "full",
     "entry": "runtime/threejs-vrm.bundle.mjs"
   },
-  "exports": {
-    "raw": ["vrm", "mountVrmViewer"],
-    "wrappers": ["VrmViewer"]
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-threejs-vrm-{version}.bundle.mjs"
   },
+  "exports": {
+    "raw": [
+      "vrm",
+      "mountVrmViewer"
+    ],
+    "wrappers": [
+      "VrmViewer"
+    ]
+  },
+
   "runtime": {
     "format": "esm",
     "entry": "runtime/threejs-vrm.bundle.mjs"

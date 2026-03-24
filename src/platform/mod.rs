@@ -37,7 +37,7 @@ pub use services::{
 };
 
 /// Builds platform router + service graph from config.
-pub fn build_router(config: PlatformConfig) -> Result<Router, PlatformError> {
+pub async fn build_router(config: PlatformConfig) -> Result<Router, PlatformError> {
     let platform = Arc::new(PlatformService::from_config(config)?);
-    Ok(web::router(platform))
+    Ok(web::router(platform).await)
 }

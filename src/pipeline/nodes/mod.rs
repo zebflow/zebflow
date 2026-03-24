@@ -371,7 +371,107 @@ mod interface;
 
 pub use interface::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 
+use crate::pipeline::model::{DslFlagKind, NodeDefinition};
+
 /// Returns all built-in node definitions.
 pub fn builtin_node_definitions() -> Vec<crate::pipeline::NodeDefinition> {
     basic::builtin_node_definitions()
+}
+
+fn format_node_definition_markdown(def: &NodeDefinition) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("### `{}` — {}\n\n", def.kind, def.title));
+    s.push_str(def.description.trim());
+    s.push_str("\n\n");
+    let ip = if def.input_pins.is_empty() {
+        "*(none — trigger / entry)*".to_string()
+    } else {
+        format!("`{}`", def.input_pins.join("`, `"))
+    };
+    let op = if def.output_pins.is_empty() {
+        "*(dynamic / graph-defined)*".to_string()
+    } else {
+        format!("`{}`", def.output_pins.join("`, `"))
+    };
+    s.push_str(&format!("- **Input pins:** {ip}\n- **Output pins:** {op}\n\n"));
+    if !def.dsl_flags.is_empty() {
+        s.push_str("| DSL flag | Config key | Required | Kind | Description |\n");
+        s.push_str("|----------|------------|----------|------|-------------|\n");
+        for f in &def.dsl_flags {
+            let req = if f.required { "yes" } else { "no" };
+            let kind_s = match f.kind {
+                DslFlagKind::Scalar => "scalar",
+                DslFlagKind::CommaSeparatedList => "comma-list",
+                DslFlagKind::Bool => "bool",
+            };
+            let desc = f.description.replace('|', "\\|");
+            s.push_str(&format!(
+                "| `{}` | `{}` | {} | {} | {} |\n",
+                f.flag, f.config_key, req, kind_s, desc
+            ));
+        }
+        s.push_str("\n");
+    }
+    if !def.input_schema.is_null() {
+        s.push_str("**Input payload (schema):**\n```json\n");
+        if let Ok(pretty) = serde_json::to_string_pretty(&def.input_schema) {
+            s.push_str(&pretty);
+        }
+        s.push_str("\n```\n\n");
+    }
+    if !def.output_schema.is_null() {
+        s.push_str("**Output payload (schema):**\n```json\n");
+        if let Ok(pretty) = serde_json::to_string_pretty(&def.output_schema) {
+            s.push_str(&pretty);
+        }
+        s.push_str("\n```\n\n");
+    }
+    s.push_str(&format!(
+        "**MCP:** `help_nodes` with `kind=\"{}\"` for this section only.\n\n",
+        def.kind
+    ));
+    s
+}
+
+fn kind_query_matches_def(def: &NodeDefinition, query: &str) -> bool {
+    let q = query.trim();
+    if q.is_empty() {
+        return false;
+    }
+    let kn = def.kind.to_lowercase();
+    let qn = q.to_lowercase();
+    if kn == qn {
+        return true;
+    }
+    if qn.starts_with("n.") {
+        return kn == qn;
+    }
+    if kn == format!("n.{qn}") {
+        return true;
+    }
+    kn.strip_prefix("n.").is_some_and(|tail| tail == qn)
+}
+
+/// One node section — same source as [`builtin_node_definitions`].
+pub fn node_markdown_by_kind_query(query: &str) -> Option<String> {
+    basic::builtin_node_definitions()
+        .into_iter()
+        .find(|d| kind_query_matches_def(d, query))
+        .map(|d| format_node_definition_markdown(&d))
+}
+
+/// Full catalog for `help_pipeline` / `help_nodes` — generated from Rust `definition()`, not hand-written markdown.
+pub fn builtin_nodes_markdown_reference() -> String {
+    let mut s = String::from(
+        "## Node kinds (live — from `builtin_node_definitions()`)\n\n\
+         This block matches the pipeline editor / node API: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
+         - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
+         - **One kind:** `help_nodes` with `kind=\"n.script\"` (or `script`, `trigger.webhook`, etc.).\n\n\
+         ---\n\n",
+    );
+    for def in basic::builtin_node_definitions() {
+        s.push_str(&format_node_definition_markdown(&def));
+        s.push_str("---\n\n");
+    }
+    s
 }

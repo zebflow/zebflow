@@ -585,12 +585,9 @@ fn internal_error(msg: String) -> (StatusCode, String) {
 
 // ── DX Foundation integration test router ────────────────────────────────────
 
-const DX_TEST_PAGE: &str =
-    include_str!("../../tests/rwe/fixtures/dx_test/page.tsx");
-const DX_TEST_NAVBAR: &str =
-    include_str!("../../tests/rwe/fixtures/dx_test/components/navbar.tsx");
-const DX_TEST_COUNTER: &str =
-    include_str!("../../tests/rwe/fixtures/dx_test/components/counter.tsx");
+const DX_TEST_PAGE: &str = include_str!("fixtures/dx_test/page.tsx");
+const DX_TEST_NAVBAR: &str = include_str!("fixtures/dx_test/components/navbar.tsx");
+const DX_TEST_COUNTER: &str = include_str!("fixtures/dx_test/components/counter.tsx");
 
 /// Builds a router that serves a complex DX-test page from a real template root.
 ///

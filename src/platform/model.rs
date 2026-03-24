@@ -1456,7 +1456,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         // Help and orientation tools
         "start_here" => Some(ProjectCapability::ProjectRead),
         "help_pipeline" => Some(ProjectCapability::ProjectRead),
-        "help_rwe" => Some(ProjectCapability::ProjectRead),
+        "help_web_engine" => Some(ProjectCapability::ProjectRead),
         "help_examples" => Some(ProjectCapability::ProjectRead),
         "help_nodes" => Some(ProjectCapability::ProjectRead),
         "help_search" => Some(ProjectCapability::ProjectRead),

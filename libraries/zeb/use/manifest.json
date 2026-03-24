@@ -1,0 +1,28 @@
+{
+  "name": "zeb/use",
+  "description": "RWE hooks collection. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
+  "exports": [
+    "useDebounce",
+    "useThrottle",
+    "useLocalStorage",
+    "useClipboard",
+    "useTemporaryState",
+    "useWindowEvent",
+    "useLazyModule",
+    "useSearchParams",
+    "useSplitPane",
+    "useClickAway",
+    "useInterval",
+    "useGeolocation",
+    "useTree"
+  ],
+  "versions": {
+    "full-0.1": {
+      "entry": "0.1/runtime/use.bundle.mjs",
+      "source": "offline",
+      "package_version": "0.1",
+      "size_bytes": 11754,
+      "integrity": ""
+    }
+  }
+}

@@ -31,7 +31,7 @@ list_tables
 
 ```
 read_skill  name=pipeline-dsl
-read_skill  name=rwe-templates
+read_skill  name=web-templates
 read_skill  name=project-operations
 ```
 

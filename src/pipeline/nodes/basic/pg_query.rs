@@ -13,7 +13,7 @@ use crate::pipeline::{
 use crate::language::LanguageEngine;
 use crate::platform::services::CredentialService;
 
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
 
 pub const NODE_KIND: &str = "n.pg.query";
@@ -45,7 +45,9 @@ pub fn definition() -> NodeDefinition {
             enabled: false,
         }),
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use.".to_string(), kind: DslFlagKind::Scalar, required: true },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SidebarSection, SidebarItem};
             vec![
@@ -84,7 +86,18 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("query".to_string()),
             LayoutItem::Field("params_path".to_string()),
         ],
-        ai_tool: Default::default(),
+        ai_tool: crate::pipeline::model::NodeAiToolDefinition {
+            registered: true,
+            tool_name: "database_query".to_string(),
+            tool_description: "Execute a SQL query against the configured PostgreSQL database. Args: query (required).".to_string(),
+            tool_input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "SQL query to execute" }
+                },
+                "required": ["query"]
+            }),
+        },
     }
 }
 

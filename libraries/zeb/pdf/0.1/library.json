@@ -1,0 +1,46 @@
+{
+  "name": "zeb/pdf",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Browser-native PDF generation library. Zero dependencies, 42 KB raw / 13 KB gzip. Build structured PDFs from a declarative IR tree with text flow, tables, multi-column layout, floats, headers/footers, and automatic page-break handling.",
+  "source": {
+    "provider": "zebflow",
+    "package": "zeb-pdf",
+    "package_version": "0.1",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/pdf.bundle.mjs",
+    "src": "src/"
+  },
+  "exports": {
+    "raw": [
+      "createDocument",
+      "createTable",
+      "DocumentBuilder",
+      "TableBuilder",
+      "IrRenderer",
+      "NODE_TYPES",
+      "PAGE_SIZES",
+      "validateNode"
+    ],
+    "wrappers": [
+      "PdfRenderer"
+    ]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/pdf.bundle.mjs"
+  },
+  "capabilities": {
+    "text_flow": true,
+    "tables": true,
+    "columns": true,
+    "floats": true,
+    "header_footer": true,
+    "multi_page": true,
+    "page_sizes": ["A4", "A3", "A5", "Letter", "Legal", "Tabloid"],
+    "fonts": ["Helvetica", "Times-Roman", "Courier"],
+    "unicode": "WinAnsi"
+  }
+}

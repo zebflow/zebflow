@@ -7,7 +7,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::{LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.trigger.schedule";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -31,7 +31,10 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--cron".to_string(), config_key: "cron".to_string(), description: "Cron expression (e.g. '* * * * *' = every minute, '0 * * * *' = hourly).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--timezone".to_string(), config_key: "timezone".to_string(), description: "IANA timezone, e.g. UTC or Asia/Jakarta.".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: vec![
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef { name: "cron".to_string(), label: "Cron".to_string(), field_type: NodeFieldType::Text, help: Some("Cron expression for schedule trigger.".to_string()), default_value: Some(serde_json::json!("*/5 * * * *")), ..Default::default() },

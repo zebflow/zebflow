@@ -3,15 +3,27 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
+  "description": "CodeMirror 6 runtime for rich code editing experiences in TSX templates.",
   "source": {
     "provider": "esm.sh",
     "package": "codemirror",
     "package_version": "6.0.1",
-    "entry": "https://esm.sh/codemirror@6.0.1/es2022/codemirror.bundle.mjs"
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/codemirror.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-codemirror-{version}.bundle.mjs"
   },
   "exports": {
-    "raw": ["codemirror"],
-    "wrappers": ["CodeEditor"]
+    "raw": [
+      "codemirror"
+    ],
+    "wrappers": [
+      "CodeEditor"
+    ]
   },
   "runtime": {
     "format": "esm",

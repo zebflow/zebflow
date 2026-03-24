@@ -1,3 +1,4 @@
+import { useEffect, cx } from "zeb";
 import Button from "@/components/ui/button";
 import Kbd from "@/components/ui/kbd";
 import Checkbox from "@/components/ui/checkbox";
@@ -7,16 +8,27 @@ import Checkbox from "@/components/ui/checkbox";
  *
  * Rendered inside #__rwe_root by the shell template, then teleported to
  * document.body by project-shell.ts so it survives SPA navigations.
- * JS finds elements via data-cli-* attributes.
+ * Open/close driven by isOpen prop from StudioChromeContext via shell.tsx ConsoleSlot.
  */
-export default function ConsolePanel({ owner, project, children }) {
+export default function ConsolePanel({ owner, project, isOpen, children }) {
+  // Focus the CLI input after the panel becomes visible
+  useEffect(() => {
+    if (!isOpen) return;
+    const input = document.querySelector<HTMLInputElement>("[data-cli-input]");
+    setTimeout(() => input?.focus(), 40);
+  }, [isOpen]);
+
   return (
     <div
-      className="zf-console-panel bg-[#080b10] border-t border-white/10"
+      className={cx(
+        "fixed bottom-0 left-0 right-0 z-[1000] flex flex-col bg-[#080b10] border-t border-white/10 transition",
+        isOpen ? "max-h-[40vh]" : "max-h-0 overflow-hidden",
+      )}
+      tw-variants="max-h-0 overflow-hidden max-h-[40vh]"
       data-console-panel
       data-owner={owner}
       data-project={project}
-      aria-hidden="true"
+      aria-hidden={isOpen ? "false" : "true"}
     >
       {/* Header row */}
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-white/[0.06] min-h-[2rem] select-none">
@@ -40,7 +52,7 @@ export default function ConsolePanel({ owner, project, children }) {
       </div>
 
       {/* Output area — ConsoleOutput Preact component rendered as children from layout */}
-      <div data-cli-output>{children}</div>
+      <div data-cli-output className="flex-1 min-h-0 overflow-y-auto">{children}</div>
 
       {/* Autocomplete suggestions — shown above the input row when typing */}
       <div data-cli-autocomplete hidden />
@@ -58,7 +70,7 @@ export default function ConsolePanel({ owner, project, children }) {
         {/* Raw input — avoids Input component's bg-white base class overriding bg-transparent */}
         <input
           type="text"
-          className="cli-cmd-input"
+          className="flex-1 min-w-0 bg-transparent border-none outline-none font-mono text-[0.82rem] text-green-300 placeholder:text-slate-600 caret-green-400"
           data-cli-input
           placeholder="ask or type commands"
           autoComplete="off"

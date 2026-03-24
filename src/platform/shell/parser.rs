@@ -130,6 +130,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "ai.agent" | "n.ai.agent" => Some("n.ai.agent"),
         "browser.run" | "n.browser.run" => Some("n.browser.run"),
         "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
+        "trigger.function" | "n.trigger.function" => Some("n.trigger.function"),
+        "function.call" | "n.function.call" => Some("n.function.call"),
         _ => None,
     }
 }
@@ -137,7 +139,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
 /// Default input/output pins per node kind.
 pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
     match kind {
-        "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" => {
+        "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
         "n.pg.query" | "n.sekejap.query" | "n.sjtable.query" | "n.script" | "n.http.request"
@@ -148,6 +150,10 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.web.render" => (vec!["in".to_string()], vec![]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "n.function.call" => (
+            vec!["in".to_string()],
+            vec!["out".to_string(), "error".to_string()],
+        ),
         _ => (vec!["in".to_string()], vec!["out".to_string()]),
     }
 }

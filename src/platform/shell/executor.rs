@@ -392,6 +392,7 @@ impl DslExecutor {
             .map(|n| {
                 if n.kind.contains("webhook") { "webhook" }
                 else if n.kind.contains("schedule") { "schedule" }
+                else if n.kind.contains("function") { "function" }
                 else { "manual" }
             })
             .unwrap_or("manual");
@@ -487,6 +488,7 @@ impl DslExecutor {
             .map(|n| {
                 if n.kind.contains("webhook") { "webhook" }
                 else if n.kind.contains("schedule") { "schedule" }
+                else if n.kind.contains("function") { "function" }
                 else { "manual" }
             })
             .unwrap_or("manual");
@@ -611,7 +613,8 @@ impl DslExecutor {
             crate::rwe::resolve_engine_or_default(None),
             Some(self.platform.credentials.clone()),
             Some(self.platform.simple_tables.clone()),
-        );
+        )
+        .with_platform(self.platform.clone());
 
         use crate::pipeline::PipelineEngine;
         match engine.execute_async(&graph, &ctx).await {
@@ -694,7 +697,8 @@ impl DslExecutor {
                     crate::rwe::resolve_engine_or_default(None),
                     Some(self.platform.credentials.clone()),
                     Some(self.platform.simple_tables.clone()),
-                );
+                )
+                .with_platform(self.platform.clone());
 
                 use crate::pipeline::PipelineEngine;
                 match engine.execute_async(&graph, &ctx).await {

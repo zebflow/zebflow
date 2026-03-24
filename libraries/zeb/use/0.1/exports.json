@@ -1,0 +1,20 @@
+{
+  "package": "zeb/use",
+  "version": "0.1",
+  "raw": {
+    "useDebounce": { "kind": "hook", "description": "Debounced state value. Updates after delay ms of inactivity." },
+    "useThrottle": { "kind": "hook", "description": "Throttled state value. Updates at most once per delay ms." },
+    "useLocalStorage": { "kind": "hook", "description": "localStorage-backed state. Returns [value, setter]." },
+    "useClipboard": { "kind": "hook", "description": "Copy to clipboard with auto-reset. Returns { copied, copy }." },
+    "useTemporaryState": { "kind": "hook", "description": "State that auto-resets to initialValue after duration ms. Returns [value, set]." },
+    "useWindowEvent": { "kind": "hook", "description": "window.addEventListener with automatic cleanup on unmount." },
+    "useLazyModule": { "kind": "hook", "description": "Dynamic import with loading state. Returns [module, loading, error]." },
+    "useSearchParams": { "kind": "hook", "description": "Read/write URL search params via history.replaceState. Returns [URLSearchParams, setter]." },
+    "useSplitPane": { "kind": "hook", "description": "Pointer-drag resizable split pane. Attach returned ref to container element." },
+    "useClickAway": { "kind": "hook", "description": "Fires handler when click/touch occurs outside returned ref element." },
+    "useInterval": { "kind": "hook", "description": "setInterval with cleanup. Pass null to delay to pause." },
+    "useGeolocation": { "kind": "hook", "description": "Device position watcher. Returns { loading, error, coords }." },
+    "useTree": { "kind": "hook", "description": "Tree node expansion state. Returns { expanded, isExpanded, toggle, expand, collapse, expandAll, collapseAll }." }
+  },
+  "wrappers": {}
+}

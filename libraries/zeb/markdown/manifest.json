@@ -1,0 +1,17 @@
+{
+  "name": "zeb/markdown",
+  "description": "Markdown rendering for RWE templates using marked + DOMPurify. Includes Markdown component.",
+  "exports": [
+    "renderMarkdown",
+    "Markdown"
+  ],
+  "versions": {
+    "full-0.1": {
+      "entry": "0.1/runtime/markdown.bundle.mjs",
+      "source": "offline",
+      "package_version": "0.1",
+      "size_bytes": 62808,
+      "integrity": ""
+    }
+  }
+}

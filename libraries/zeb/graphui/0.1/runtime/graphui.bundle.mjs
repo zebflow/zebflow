@@ -202,6 +202,40 @@ const BASE_STYLE = `
   color: #a3a3a3;
 }
 .zgu-port-row.out { justify-content: flex-end; }
+/* Paired rows: same index input/output share one vertical slot (node-editor style) */
+.zgu-port-list.zgu-port-pairs { gap: 10px; }
+.zgu-port-row.zgu-pair {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 22px;
+}
+.zgu-pair-in,
+.zgu-pair-out {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #a3a3a3;
+}
+.zgu-pair-in { justify-content: flex-start; }
+.zgu-pair-out { justify-content: flex-end; }
+/* Same vertical axis for in/out on one row: stretch columns, center pins on row midline */
+.zgu-pair-in .zgu-port.in {
+  left: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.zgu-pair-out .zgu-port.out {
+  right: -18px;
+  top: 50%;
+  transform: translateY(-50%);
+}
 .zgu-port {
   width: 12px;
   height: 12px;
@@ -211,7 +245,12 @@ const BASE_STYLE = `
   position: absolute;
   cursor: crosshair;
 }
-.zgu-port:hover { transform: scale(1.5); background: var(--zgu-wire-active); }
+.zgu-port:hover { background: var(--zgu-wire-active); }
+.zgu-port-row:not(.zgu-pair) .zgu-port:hover { transform: scale(1.5); }
+.zgu-pair-in .zgu-port.in:hover,
+.zgu-pair-out .zgu-port.out:hover {
+  transform: translateY(-50%) scale(1.5);
+}
 .zgu-port.in { left: -18px; }
 .zgu-port.out { right: -18px; }
 .zgu-custom-input { width: 100%; accent-color: #10b981; }
@@ -361,36 +400,54 @@ export class GraphNode {
     const body = document.createElement("div");
     body.className = "zgu-node-body";
 
-    if (this.inputs.length > 0) {
-      const inList = document.createElement("div");
-      inList.className = "zgu-port-list";
-      this.inputs.forEach((input, i) => {
-        const row = document.createElement("div");
-        row.className = "zgu-port-row";
-        row.innerHTML = `<div class=\"zgu-port in\" data-type=\"in\" data-index=\"${i}\"></div><span>${input.name}</span>`;
-        inList.appendChild(row);
-      });
-      body.appendChild(inList);
-    }
-
     const custom = document.createElement("div");
     this.buildCustomHTML(custom);
-    if (custom.innerHTML.trim() !== "") {
+    const customVisible = custom.innerHTML.trim() !== "";
+    if (customVisible) {
       custom.style.margin = "10px 0";
-      body.appendChild(custom);
+    }
+    const outputsOnly = this.inputs.length === 0 && this.outputs.length > 0;
+
+    const pinCount = Math.max(this.inputs.length, this.outputs.length);
+    const list = document.createElement("div");
+    if (pinCount > 0) {
+      list.className = "zgu-port-list zgu-port-pairs";
+      for (let i = 0; i < pinCount; i++) {
+        const row = document.createElement("div");
+        row.className = "zgu-port-row zgu-pair";
+
+        const left = document.createElement("div");
+        left.className = "zgu-pair-in";
+        if (i < this.inputs.length) {
+          const input = this.inputs[i];
+          left.innerHTML = `<div class="zgu-port in" data-type="in" data-index="${i}"></div><span>${input.name}</span>`;
+        } else {
+          left.innerHTML = '<span class="zgu-pair-placeholder" aria-hidden="true">\u00a0</span>';
+        }
+
+        const right = document.createElement("div");
+        right.className = "zgu-pair-out";
+        if (i < this.outputs.length) {
+          const output = this.outputs[i];
+          right.innerHTML = `<span>${output.name}</span><div class="zgu-port out" data-type="out" data-index="${i}"></div>`;
+        } else {
+          right.innerHTML = '<span class="zgu-pair-placeholder" aria-hidden="true">\u00a0</span>';
+        }
+
+        row.appendChild(left);
+        row.appendChild(right);
+        list.appendChild(row);
+      }
     }
 
-    if (this.outputs.length > 0) {
-      const outList = document.createElement("div");
-      outList.className = "zgu-port-list";
-      outList.style.marginTop = "10px";
-      this.outputs.forEach((output, i) => {
-        const row = document.createElement("div");
-        row.className = "zgu-port-row out";
-        row.innerHTML = `<span>${output.name}</span><div class=\"zgu-port out\" data-type=\"out\" data-index=\"${i}\"></div>`;
-        outList.appendChild(row);
-      });
-      body.appendChild(outList);
+    if (outputsOnly && customVisible) {
+      body.appendChild(custom);
+    }
+    if (pinCount > 0) {
+      body.appendChild(list);
+    }
+    if (!outputsOnly && customVisible) {
+      body.appendChild(custom);
     }
 
     node.appendChild(body);
@@ -1302,6 +1359,272 @@ export function createGraphUI(root, options = {}) {
   return app;
 }
 
+// ── PipelineGraph — Preact wrapper ─────────────────────────────────────────
+export const PipelineGraph = (() => {
+  const _h = globalThis.h;
+  const _useRef = globalThis.useRef;
+  const _useEffect = globalThis.useEffect;
+  const _forwardRef = globalThis.forwardRef;
+  const _useImperativeHandle = globalThis.useImperativeHandle;
+
+  if (!_h || !_useRef || !_forwardRef) {
+    // Hooks not yet available (should not happen in browser context).
+    // Return a sentinel stub so the module can still be imported.
+    const stub = function PipelineGraph(props) {
+      return _h
+        ? _h("div", {
+            "data-zeb-lib": "graphui",
+            "data-zeb-wrapper": "PipelineGraph",
+            id: props && props.id,
+            className: (props && props.className) || "w-full h-full",
+          })
+        : null;
+    };
+    globalThis.PipelineGraph = stub;
+    return stub;
+  }
+
+  // ── internal helpers ──────────────────────────────────────────────────────
+
+  function _pgSanitizeSlug(raw) {
+    return (
+      String(raw || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "") || "node"
+    );
+  }
+
+  function _pgGenerateSlug(kind, nodes) {
+    const base = _pgSanitizeSlug(
+      String(kind || "node")
+        .split(".")
+        .filter(Boolean)
+        .slice(1)
+        .join("-") || "node"
+    );
+    const count = (nodes || []).filter(
+      (n) => String(n.zfKind || "") === String(kind)
+    ).length;
+    return count <= 0 ? base : `${base}-${count}`;
+  }
+
+  function _pgAttachEditButtons(app, onNodeEdit) {
+    const root = app.root;
+    if (!root) return;
+    const nodeMap = new Map(app.graph.nodes.map((n) => [String(n.id), n]));
+    root.querySelectorAll(".zgu-node").forEach((el) => {
+      if (el.querySelector(".zf-node-edit")) return;
+      const nodeData = nodeMap.get(el.getAttribute("data-id") || "");
+      if (!nodeData) return;
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "zf-node-edit";
+      btn.setAttribute("data-zgu-nodrag", "true");
+      btn.textContent = "E";
+      btn.title = "Edit Node";
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (onNodeEdit)
+          onNodeEdit({
+            graphNodeId: nodeData.id,
+            zfKind: nodeData.zfKind || "",
+            zfPipelineNodeId: nodeData.zfPipelineNodeId || "",
+            zfConfig: nodeData.zfConfig || {},
+            title: nodeData.title,
+            x: nodeData.x,
+            y: nodeData.y,
+            inputs: nodeData.inputs || [],
+            outputs: nodeData.outputs || [],
+            _raw: nodeData,
+          });
+      });
+      el.appendChild(btn);
+
+      let badge = el.querySelector(".zf-node-slug");
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.className = "zf-node-slug";
+        el.appendChild(badge);
+      }
+      const slug = nodeData.zfPipelineNodeId || "";
+      badge.textContent = slug || "node";
+    });
+  }
+
+  function _pgEnsureObserver(stateRef, app, onNodeEdit) {
+    stateRef.current.observer?.disconnect();
+    const obs = new MutationObserver(() =>
+      _pgAttachEditButtons(app, onNodeEdit)
+    );
+    obs.observe(app.root, { childList: true, subtree: true });
+    stateRef.current.observer = obs;
+  }
+
+  function _pgLoadScene(app, pipeline, kindColors) {
+    if (!pipeline) return;
+    const scene = createPipelineScene(pipeline, {
+      kindColors: { ...DEFAULT_NODE_KIND_COLORS, ...(kindColors || {}) },
+    });
+    app.registerScene("__pg", scene);
+    app.loadScene("__pg");
+  }
+
+  function _pgCollect(app) {
+    const used = new Set();
+    const nodes = app.graph.nodes.map((node) => {
+      const kind = node.zfKind || "n.script";
+      let id = _pgSanitizeSlug(
+        node.zfPipelineNodeId || kind.split(".").pop() || "node"
+      );
+      let candidate = id,
+        seq = 2;
+      while (used.has(candidate)) {
+        candidate = `${id}_${seq}`;
+        seq++;
+      }
+      used.add(candidate);
+      node.zfPipelineNodeId = candidate;
+      return {
+        id: candidate,
+        kind,
+        input_pins: (node.inputs || []).map((p) => p.name),
+        output_pins: (node.outputs || []).map((p) => p.name),
+        config: {
+          ...(node.zfConfig || {}),
+          ui: { x: Math.round(node.x), y: Math.round(node.y) },
+        },
+      };
+    });
+    const byId = new Map(app.graph.nodes.map((n) => [n.id, n]));
+    const edges = app.graph.links
+      .map((link) => {
+        const from = byId.get(link.fromNode),
+          to = byId.get(link.toNode);
+        if (!from || !to) return null;
+        return {
+          from_node: from.zfPipelineNodeId,
+          from_pin: (from.outputs[link.fromSlot] || {}).name || "out",
+          to_node: to.zfPipelineNodeId,
+          to_pin: (to.inputs[link.toSlot] || {}).name || "in",
+        };
+      })
+      .filter(Boolean);
+    const entry = nodes
+      .filter((n) => String(n.kind).startsWith("n.trigger."))
+      .map((n) => n.id);
+    return {
+      kind: "zebflow.pipeline",
+      version: "0.1",
+      id: app._pgId || "pipeline",
+      entry_nodes:
+        entry.length ? entry : nodes[0] ? [nodes[0].id] : [],
+      nodes,
+      edges,
+    };
+  }
+
+  // ── Component ─────────────────────────────────────────────────────────────
+
+  const PipelineGraphComponent = _forwardRef(function PipelineGraph(props, ref) {
+    const hostRef = _useRef(null);
+    const appRef = _useRef(null);
+    const stateRef = _useRef({ observer: null });
+
+    _useImperativeHandle(ref, function () {
+      return {
+        addNode: function (kind, entry) {
+          const app = appRef.current;
+          if (!app) return;
+          const { ui } = app;
+          const x =
+            (-ui.transform.x + ui.workspaceEl.clientWidth / 2) /
+              ui.transform.k -
+            90;
+          const y =
+            (-ui.transform.y + ui.workspaceEl.clientHeight / 2) /
+              ui.transform.k -
+            50;
+          const node = app.factory.custom(x, y, {
+            title: entry.title || kind,
+            color:
+              entry.color ||
+              DEFAULT_NODE_KIND_COLORS[kind] ||
+              "#334155",
+            inputs: entry.input_pins || ["in"],
+            outputs: entry.output_pins || ["out"],
+          });
+          node.zfKind = kind;
+          node.zfConfig = {};
+          node.zfPipelineNodeId = _pgGenerateSlug(kind, app.graph.nodes);
+          app.addNode(node);
+          _pgAttachEditButtons(app, props.onNodeEdit);
+        },
+        collectPipeline: function () {
+          return _pgCollect(appRef.current);
+        },
+        getApp: function () {
+          return appRef.current;
+        },
+      };
+    });
+
+    _useEffect(function () {
+      if (!hostRef.current) return;
+      const app = createGraphUI(hostRef.current, {
+        showHeader: false,
+        showToolbox: false,
+        readOnly: props.readOnly || false,
+        snapToGrid: props.snapToGrid !== false,
+        gridSize: props.gridSize || 30,
+      });
+      app._pgId = props.id || "pipeline";
+      appRef.current = app;
+      _pgLoadScene(app, props.pipeline, props.kindColors);
+      setTimeout(function () {
+        _pgAttachEditButtons(app, props.onNodeEdit);
+      }, 0);
+      setTimeout(function () {
+        _pgAttachEditButtons(app, props.onNodeEdit);
+      }, 120);
+      _pgEnsureObserver(stateRef, app, props.onNodeEdit);
+      if (props.onReady) props.onReady(app);
+      return function () {
+        stateRef.current.observer?.disconnect();
+        app.destroy();
+        appRef.current = null;
+      };
+    }, []);
+
+    _useEffect(function () {
+      const app = appRef.current;
+      if (!app) return;
+      app.ui.readOnly = props.readOnly || false;
+      _pgLoadScene(app, props.pipeline, props.kindColors);
+      setTimeout(function () {
+        _pgAttachEditButtons(app, props.onNodeEdit);
+      }, 0);
+      _pgEnsureObserver(stateRef, app, props.onNodeEdit);
+    }, [props.pipeline, props.readOnly]);
+
+    return _h("div", {
+      ref: hostRef,
+      id: props.id,
+      className: props.className || "w-full h-full",
+    });
+  });
+
+  Object.defineProperty(PipelineGraphComponent, "name", {
+    value: "PipelineGraph",
+  });
+  globalThis.PipelineGraph = PipelineGraphComponent;
+  return PipelineGraphComponent;
+})();
+
 export const graphui = {
   createGraphUI,
   createSeedScenes,
@@ -1313,6 +1636,7 @@ export const graphui = {
   AddNode,
   DisplayNode,
   GraphCanvasUI,
+  PipelineGraph,
 };
 
 export default graphui;

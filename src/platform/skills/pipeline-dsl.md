@@ -523,4 +523,4 @@ describe pipeline blog-home && activate pipeline blog-home
 | MCP tool | `execute_pipeline_dsl` tool with `dsl` param |
 | Assistant | Natural language → assistant generates and submits DSL |
 
-See also: **pipeline-dsl-rwe** (web.render deep dive), **pipeline-dsl-web-auto** (web.auto language).
+See also: **pipeline-dsl-web** (HTML pages + `n.web.render`), **pipeline-dsl-web-auto** (web.auto language).

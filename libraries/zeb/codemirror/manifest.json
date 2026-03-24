@@ -1,0 +1,17 @@
+{
+  "name": "zeb/codemirror",
+  "description": "CodeMirror 6 editor runtime. Rich code editing with syntax highlighting, autocompletion, and markdown support.",
+  "exports": [
+    "codemirror",
+    "CodeEditor"
+  ],
+  "versions": {
+    "full-0.1": {
+      "entry": "0.1/runtime/codemirror.bundle.mjs",
+      "source": "offline",
+      "package_version": "0.1",
+      "size_bytes": 527146,
+      "integrity": ""
+    }
+  }
+}

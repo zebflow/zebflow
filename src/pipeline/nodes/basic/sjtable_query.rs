@@ -131,7 +131,18 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row { row: vec![LayoutItem::Field("limit".to_string()), LayoutItem::Field("limit_expr".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("data_path".to_string()), LayoutItem::Field("data_expr".to_string())] },
         ],
-        ai_tool: Default::default(),
+        ai_tool: crate::pipeline::model::NodeAiToolDefinition {
+            registered: true,
+            tool_name: "table_query".to_string(),
+            tool_description: "Query the embedded Sekejap table store using SekejapQL. Args: query (required).".to_string(),
+            tool_input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "SekejapQL query string" }
+                },
+                "required": ["query"]
+            }),
+        },
     }
 }
 

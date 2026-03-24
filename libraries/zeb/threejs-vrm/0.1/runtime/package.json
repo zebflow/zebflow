@@ -1,0 +1,10 @@
+{
+  "type": "module",
+  "dependencies": {
+    "three": "^0.171.0",
+    "@pixiv/three-vrm": "^3.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

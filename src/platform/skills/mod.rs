@@ -60,14 +60,9 @@ static SKILLS: &[Skill] = &[
         content: include_str!("pipeline-authoring.md"),
     },
     Skill {
-        name: "pipeline-nodes",
-        title: "Pipeline Node Catalog",
-        content: include_str!("pipeline-nodes.md"),
-    },
-    Skill {
-        name: "pipeline-dsl-rwe",
-        title: "Pipeline DSL — RWE & web.render",
-        content: include_str!("pipeline-dsl-rwe.md"),
+        name: "pipeline-dsl-web",
+        title: "Pipeline DSL — Web pages (web.render)",
+        content: include_str!("pipeline-dsl-web.md"),
     },
     Skill {
         name: "pipeline-dsl-web-auto",
@@ -80,9 +75,9 @@ static SKILLS: &[Skill] = &[
         content: include_str!("sekejapql.md"),
     },
     Skill {
-        name: "rwe-templates",
-        title: "RWE Template Authoring",
-        content: include_str!("rwe-templates.md"),
+        name: "web-templates",
+        title: "Web templates (TSX pages)",
+        content: include_str!("web-templates.md"),
     },
     Skill {
         name: "project-operations",

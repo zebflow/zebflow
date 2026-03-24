@@ -35,7 +35,7 @@ import { render } from "npm:preact";  // NEVER call render() manually
 // ✓ CORRECT
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
-import ProjectStudioShell from "@/components/layout/project-studio-shell";
+import ProjectStudioShell from "@/pages/project-studio/components/shell";
 
 // ✗ WRONG — relative paths break
 import Button from "../../components/ui/button";
@@ -186,10 +186,10 @@ const badge = tv({
 
 ## Layout Files
 
-Layout files under `components/layout/` wrap every page. The platform layout is `project-studio-shell.tsx`. To add a component that appears on every admin page, put it in the layout — not in individual pages.
+**Platform project studio:** wrap project routes with `ProjectStudioShell` from `pages/project-studio/components/shell` (studio-only; not under generic `components/`). **Truly global** pieces stay in `components/` (e.g. `components/ui/*`). To add chrome that appears on every studio page, extend that shell tree — not random one-off pages.
 
 ```tsx
-import ProjectStudioShell from "@/components/layout/project-studio-shell";
+import ProjectStudioShell from "@/pages/project-studio/components/shell";
 
 export default function MyPage(input) {
   const state = usePageState(input.state ?? {});

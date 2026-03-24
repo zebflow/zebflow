@@ -1,6 +1,6 @@
 # Zebflow Agent Core
 
-Zebflow is a pipeline-based reactive web platform. Pipelines connect trigger nodes to action nodes — they produce REST APIs, web pages, scheduled jobs, and webhooks with zero build step and zero deploy. The RWE engine compiles TSX templates server-side, hydrates them client-side, and serves them through activated pipelines.
+Zebflow is a pipeline-based platform. Pipelines connect triggers to actions — REST APIs, **web pages (TSX)**, cron jobs, and webhooks, without a separate frontend build step in the project. TSX files under the project are rendered to HTML on the server and can hydrate in the browser.
 
 ---
 
@@ -35,7 +35,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 |------|-------------|
 | `start_here` | First call — returns overview, project context, doc list, connections, template tree |
 | `help_pipeline` | Pipeline DSL guide — syntax, pipe mode, web patterns, examples |
-| `help_rwe` | RWE guide — TSX templates, SSR, hooks, passing data from pipeline |
+| `help_web_engine` | Web pages — TSX templates, server render, hooks, pipeline `input` |
 | `help_examples` | Project archetypes — blog, forum, game, scheduling, scraping, auth (with full DSL) |
 | `help_nodes` | Node catalog — list all nodes or get docs for a specific node kind |
 | `help_search` | Search all skill docs for a concept, node name, or DSL syntax |
@@ -104,10 +104,10 @@ Master these before building anything:
 | Domain | Tool | Covers |
 |--------|------|--------|
 | **Pipeline DSL** | `help_pipeline` or `skill_read pipeline-dsl` | All commands, pipe mode, graph mode, branching, git, connections |
-| **RWE Templates** | `help_rwe` or `skill_read rwe-templates` | TSX structure, hooks, component library, import rules, hydration |
+| **Web templates** | `help_web_engine` or `skill_read web-templates` | TSX layout, hooks, UI kit install, import rules, hydration |
 | **Project Operations** | `skill_read project-operations` | File layout, agent docs, build loop, channels, git workflow |
 
-Supporting skills: `pipeline-nodes`, `pipeline-authoring`, `pipeline-dsl-rwe`, `sekejapql`, `api-reference`
+Supporting skills: `pipeline-authoring`, `pipeline-dsl-web`, `sekejapql`, `api-reference` — node details: **`help_nodes`** / **`help_pipeline`** (generated from code)
 
 ---
 
@@ -146,10 +146,10 @@ See `skill_read sekejapql` for the full query language reference.
 ```
 | trigger.webhook --path /blog --method GET
 | pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
-| web.render --template pages/blog-home --route /blog
+| n.web.render --template-path pages/blog-home
 ```
 
-Pass this as `body` to `pipeline_register file_rel_path=pipelines/pages/blog-home`.
+Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g. `pipelines/pages/blog-home.zf.json`).
 
 ### 2. Create the template
 
@@ -158,7 +158,7 @@ template_create  kind=page  name=blog-home
 ```
 
 Then `template_write rel_path=pages/blog-home.tsx` with TSX content.
-See `help_rwe` or `skill_read rwe-templates` for TSX conventions.
+See `help_web_engine` or `skill_read web-templates` for TSX conventions.
 
 ### 3. Activate and commit
 

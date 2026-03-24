@@ -1,15 +1,36 @@
 {
   "name": "zeb/graphui",
   "version": "0.1",
+  "kind": "web-library",
   "trust": "official",
-  "surface": "web",
+  "description": "Interactive graph canvas primitives for pipeline visualization and editing seed UIs.",
+  "source": {
+    "provider": "zebflow",
+    "package": "graphui",
+    "package_version": "bridge",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/graphui.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-graphui-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "graphui",
+      "createGraphUI",
+      "createSeedScenes",
+      "createPipelineScene"
+    ],
+    "wrappers": [
+      "GraphCanvas",
+      "PipelineGraph"
+    ]
+  },
   "runtime": {
     "entry": "runtime/graphui.bundle.mjs",
     "format": "esm"
-  },
-  "exports": {
-    "raw": ["graphui", "createGraphUI", "createSeedScenes", "createPipelineScene"],
-    "wrappers": ["GraphCanvas"]
-  },
-  "description": "Interactive graph canvas primitives for pipeline visualization and editing seed UIs."
+  }
 }

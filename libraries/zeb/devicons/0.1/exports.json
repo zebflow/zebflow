@@ -1,8 +1,0 @@
-{
-  "raw": [
-    { "name": "ensureDevicons", "kind": "function" },
-    { "name": "dbKindIconClass", "kind": "function" },
-    { "name": "dbObjectIconClass", "kind": "function" }
-  ],
-  "wrappers": []
-}

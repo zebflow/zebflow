@@ -95,7 +95,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.crypto";
 const INPUT_PIN_IN: &str = "in";
@@ -149,7 +149,14 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--op".to_string(), config_key: "op".to_string(), description: "Cryptographic operation: sha256, sha512, bcrypt_hash, bcrypt_verify, argon2_hash, argon2_verify, hmac_sha256, base64_encode, base64_decode, random_hex.".to_string(), kind: DslFlagKind::Scalar, required: true },
+            DslFlag { flag: "--input-path".to_string(), config_key: "input_path".to_string(), description: "JSON pointer for primary input value (default: payload.input).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--hash-path".to_string(), config_key: "hash_path".to_string(), description: "JSON pointer for stored hash for verify operations (default: payload.hash).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--key-path".to_string(), config_key: "key_path".to_string(), description: "JSON pointer for HMAC secret key (default: payload.key).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--cost".to_string(), config_key: "cost".to_string(), description: "bcrypt cost factor 4-31 (default 12).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--length".to_string(), config_key: "length".to_string(), description: "Random byte count for random_hex (default 32).".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![

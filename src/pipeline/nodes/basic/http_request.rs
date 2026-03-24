@@ -14,7 +14,7 @@ use crate::pipeline::{
 };
 use crate::language::LanguageEngine;
 
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use super::util::{eval_deno_expr, resolve_path_cloned};
 
 pub const NODE_KIND: &str = "n.http.request";
@@ -46,7 +46,10 @@ pub fn definition() -> NodeDefinition {
             enabled: false,
         }),
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--url".to_string(), config_key: "url".to_string(), description: "Target URL for the HTTP request.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--method".to_string(), config_key: "method".to_string(), description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
@@ -70,7 +73,21 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("headers_expr".to_string()),
             LayoutItem::Field("body_expr".to_string()),
         ],
-        ai_tool: Default::default(),
+        ai_tool: crate::pipeline::model::NodeAiToolDefinition {
+            registered: true,
+            tool_name: "http_request".to_string(),
+            tool_description: "Make an HTTP request. Args: url (required), method (GET/POST/etc.), body (string), headers (object).".to_string(),
+            tool_input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url":     { "type": "string", "description": "Target URL" },
+                    "method":  { "type": "string", "description": "HTTP method (default GET)" },
+                    "body":    { "type": "string", "description": "Request body (optional)" },
+                    "headers": { "type": "object", "description": "Additional headers (optional)" }
+                },
+                "required": ["url"]
+            }),
+        },
     }
 }
 

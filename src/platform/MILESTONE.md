@@ -22,7 +22,7 @@
 - **Capability checks**: `McpSessionCreate`, `McpSessionRevoke` enforced on session API endpoints
 - **Token validation**: MCP handler validates tokens and injects session context
 - **Subject-based authz**: MCP sessions are first-class subjects in authorization service
-- **Documentation**: Adapter pattern fully documented in `docs/PLATFORM_WEB.md`
+- **Documentation**: Platform web / adapter overview in `docs/developer-guide/platform-web.md`
 - **Compile-time safety**: All implementations pass `cargo check`
 
 ### MCP Transport Integration ✓
