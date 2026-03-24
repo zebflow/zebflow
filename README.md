@@ -1,409 +1,83 @@
-# Zebflow
+# zebflow
 
-Deploy once, evolve safely
+**[zebflow.com](https://zebflow.com)** · [Documentation](docs/README.md)
 
-Primary docs:
+> **Ship once. Build forever.**
 
-1. [Zebflow Overview](./docs/OVERVIEW.md)
-2. [Zebflow RWE](./docs/RWE.md)
-3. [Zebflow Platform Web](./docs/PLATFORM_WEB.md)
+Zebflow is an open-source platform for building and serving full-stack reactive web apps — without a build toolchain. Write pipelines, render React pages (SSR + SPA), add real-time WebSocket rooms, connect databases, and run scheduled jobs — all from a single binary or Docker container.
 
-Zebflow is a framework runtime for:
+Keep building from your laptop: connect your IDE or any MCP-compatible AI agent directly to the running instance. Changes go live instantly and sync to git automatically.
 
-1. Pin-based pipeline orchestration.
-2. Sandboxed user scripting.
-3. Reactive web rendering.
-4. Platform web shell (login/home/project flow) with swappable adapters.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
+[![Docker](https://img.shields.io/badge/docker-~450MB-informational.svg)](https://hub.docker.com/r/zebflow/zebflow)
 
-The crate is library-first. `main.rs` (Axum/app boot) can stay thin and call exported APIs from `lib.rs`.
+---
 
-## What Is Zebflow
+## What it does
 
-Zebflow is an observable automation + fullstack runtime with one core design:
+- **Full-stack React, no build step** — write TSX components directly in the app. They compile and render server-side, live. No `npm install`, no Webpack, no Vite.
+- **Pipeline automation** — connect webhooks, databases, HTTP calls, schedules, script transforms, and AI agents in a pipe-chained DSL or visual editor.
+- **SSR + SPA out of the box** — pages are server-rendered, hydrated on the client with Preact. Navigation is intercepted client-side for instant transitions. No configuration.
+- **Real-time WebSocket rooms** — built-in multi-client rooms with shared state. Trigger pipelines on WS events, sync state, broadcast to all or targeted sessions.
+- **Build from your laptop via MCP** — connect Claude Code, Cursor, or any MCP client to the running instance. Create pipelines, write templates, query data — changes go live without touching the server. Everything commits to git.
+- **Git-synced by default** — every pipeline and template is a file on disk, version-controlled and reviewable.
 
-1. pipeline orchestration is Rust-first (`*.zf.json`)
-2. scripting is sandboxed and portable (`language` engines)
-3. web rendering is SSR-first and reactive (`*.tsx`)
-4. global project CSS is compile-scoped from the template tree (`styles/main.css`)
+---
 
-In practice:
+## Who it's for
 
-1. `framework` executes graph/pipeline nodes
-2. `language` executes script logic for nodes/pages
-3. `rwe` compiles and renders web templates with lean hydration
-4. `platform` composes adapters/services/web for multi-user project management
+You have a running server. You want to build internal tools, dashboards, or lightweight web apps on top of your data — without spinning up a separate frontend project, CI pipeline, or build server.
 
-This crate contains the runtime primitives for all three, not a heavy app server by itself.
+Zebflow runs alongside your stack. You write a TSX page, wire it to a database query in a pipeline, and it's live at a URL. You keep iterating from wherever you are — browser, terminal, or IDE.
 
-## Product Focus Areas
+---
 
-1. Lean fullstack reactive web development.
-    - Web API
-    - Fullstack reactive website
-2. Data engineering and analysis.
-    - Long-running worker mode
-    - Adhoc analysis and visualization
-3. AI workflow management.
-4. Real-time data processing.
-    - Game
-    - IoT
-
-## Core Modules
-
-1. `framework`
-Responsibility: orchestration engine for `*.zf.json` graph execution.
-What it owns: node/edge graph model, pin routing, graph validation, execution contract, run trace envelope.
-What it does not own: JavaScript sandbox internals, HTML rendering internals.
-
-2. `language`
-Responsibility: portable script runtime and compilation pipeline.
-What it owns: parse/compile/run interface, engine registry, sandbox implementations.
-Current engine: Deno sandbox with policy config, loop guards, allow-listed fetch, process-level limits.
-
-3. `rwe` (Reactive Web Engine)
-Responsibility: template compile/render layer that can depend on `language`.
-What it owns: template contracts, render contracts, RWE engine registry.
-What it does not own: graph traversal logic.
-
-4. `platform`
-Responsibility: web app shell and service composition for Zebflow runtime operations.
-What it owns: login flow, user/project services, adapter factories, filesystem project layout, platform routes.
-What it does not own: low-level pipeline execution internals or template compiler internals.
-It also owns product policy such as Zeb Libraries catalog/version management.
-
-## What `framework` Means Here
-
-`framework` is not a UI framework.
-`framework` is the orchestration runtime layer for node graphs:
-
-1. Read a pipeline graph.
-2. Validate node/pin connectivity.
-3. Execute nodes in graph flow.
-4. Emit deterministic traces/observability events.
-
-It is the execution control plane above `language` and `rwe`.
-
-## Folder Responsibilities
-
-`Cargo.toml`
-Crate package and dependency boundary.
-
-`docs/conventions/`
-Canonical examples and file conventions used by Zebflow contracts.
-
-`docs/conventions/pipelines/`
-Example pipeline contracts (`*.zf.json`), pin-based (`from_pin` -> `to_pin`).
-
-`docs/conventions/templates/`
-Example template sources (`*.tsx`) used by RWE.
-
-`libraries/`
-Platform-managed Zeb Libraries source catalog.
-Current use: first-party web library packages such as `zeb/codemirror`.
-
-`runtime/`
-Runtime assets required by engines.
-Current use: Deno sandbox JS runner (`secure_js_runner.js`).
-
-`src/lib.rs`
-Top-level assembly point and engine kit wiring.
-
-`src/framework/`
-Pipeline orchestration module.
-
-`src/framework/interface.rs`
-Framework engine trait contract (`validate_graph`, `execute`).
-
-`src/framework/model.rs`
-Pipeline graph domain model (`PipelineGraph`, `PipelineNode`, `PipelineEdge`).
-
-`src/framework/registry.rs`
-Framework engine registry for variant implementations.
-
-`src/framework/engines/`
-Concrete framework engine implementations.
-
-`src/framework/nodes/`
-Framework-level node interfaces and node implementations.
-This is where pipeline node contracts live (not in `rwe` or `language`).
-
-`src/framework/nodes/basic/`
-Built-in/basic node set.
-
-`src/framework/nodes/basic/web_render/mod.rs`
-`x.n.web.render` node interface and adapter that composes pure `rwe` + pure `language`.
-
-`src/language/`
-Script/runtime module.
-
-`src/language/interface.rs`
-Language engine trait (`parse`, `compile`, `run`).
-
-`src/language/model.rs`
-Language domain model (IR, compiled artifact, execution context/output).
-
-`src/language/registry.rs`
-Language engine registry for pluggable runtimes.
-
-`src/language/engines/`
-Concrete language engines.
-
-`src/language/engines/deno_sandbox/`
-Sandboxed Deno engine internals.
-
-`src/language/engines/deno_sandbox/config.rs`
-Security config model and layered patch merge.
-
-`src/language/engines/deno_sandbox/instrument.rs`
-Source policy checks and loop guard instrumentation.
-
-`src/language/engines/deno_sandbox/runner.rs`
-Subprocess execution boundary to Deno runtime.
-
-`src/language/engines/deno_sandbox/engine.rs`
-Public engine surface and `LanguageEngine` integration.
-
-`src/rwe/`
-Reactive Web Engine module.
-
-`src/platform/`
-Platform module (adapters + services + web routes).
-
-`src/platform/adapters/`
-Swappable adapter layer:
-- `data` adapters (`sekejap`, `sqlite` placeholder, `dynamodb` placeholder, `firebase` placeholder)
-- `file` adapters (`filesystem` current default, git-sync friendly)
-
-`src/platform/services/`
-Service layer:
-- `platform` bootstrap composition
-- `auth` login/session checks
-- `user` user management
-- `project` project management + directory provisioning
-
-`src/platform/web/`
-Axum handlers and HTML pages for platform flow:
-- `/login`
-- `/home`
-- `/projects/{owner}/{project}`
-- `/api/...`
-
-`src/bin/zebflow_platform.rs`
-Runnable Zebflow platform server entrypoint (thin `main` that calls library module).
-
-`src/rwe/interface.rs`
-RWE trait contract (`ReactiveWebEngine`) for template compile/render only.
-
-`src/rwe/model.rs`
-Template, compile artifact, render output, and RWE option contracts:
-- style engine mode (`tailwind-like` / off)
-- runtime mode (dev/prod runtime bundle)
-- reactive mode (`@click`, `z-text`, `z-model`, `z-attr:*` extraction)
-- resource allow-list (`css`, `scripts`, `urls`)
-- language run patch pass-through (`language.run_patch`) for sandbox control
-- processor pipeline (`processors`) for feature toggles (`tailwind`, `markdown`)
-
-`src/rwe/registry.rs`
-RWE engine registry for pluggable render backends.
-
-`src/rwe/engines/`
-Concrete RWE engine implementations.
-
-`src/rwe/processors/`
-Compile-stage processor pipeline resolver. This is where feature toggles are applied.
-
-`src/rwe/processors/tailwind/`
-Tailwind-like style compiler module used by the processor pipeline.
-
-`src/rwe/processors/tailwind/mod.rs`
-Tailwind processor facade and API surface.
-
-`src/rwe/processors/tailwind/compiler.rs`
-Token scanner + utility compiler, including:
-- responsive/pseudo variants (`md:`, `hover:`, etc.)
-- arbitrary values (`w-[24rem]`, etc.)
-- CSS injection into `<style data-rwe-tw>`
-
-`src/rwe/processors/markdown/`
-Markdown processor module for compile-time conversion of `<markdown>...</markdown>` blocks.
-
-`src/rwe/MILESTONE.md`
-RWE roadmap focused on modularity, SSR-first rendering, and lean hydration.
-
-`src/rwe/ADAPTER.md`
-Cross-language integration guide (for FastAPI/Node/etc.) using JSON protocol envelopes.
-
-`tests/`
-Integration test entrypoint split by domain.
-
-`tests/framework/`
-Framework-specific tests.
-
-`tests/language/`
-Language-specific tests.
-
-`tests/platform/`
-Platform-specific tests (bootstrap + login/home/project flow).
-
-`tests/rwe/`
-RWE-specific tests.
-
-## File Conventions
-
-1. `*.zf.json`
-Pipeline graph contract file.
-Must be pin-based edges (`from_node`, `from_pin`, `to_node`, `to_pin`).
-
-2. `*.tsx`
-Template/reactive source file for RWE input.
-Use TSX module shape:
-```tsx
-export const page = {
-  head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
-    links: [
-      { rel: "canonical", href: "{{input.seo.canonical}}" }
-    ],
-    meta: [
-      { property: "og:title", content: "{{input.seo.title}}" }
-    ],
-  },
-  html: {
-    lang: "en",
-  },
-  body: {
-    className: "min-h-screen bg-zinc-50 text-gray-900 font-sans",
-  },
-  navigation: "history",
-};
-
-export const app = {
-  state: { ... },
-  actions: { ... },
-  memo: { ... },
-  effect: { ... }
-};
-
-export default function Page(input) {
-  return (
-    <Page>
-      <main>...</main>
-    </Page>
-  );
-}
-```
-
-## RWE Keyword Reference (Current)
-
-This list reflects what the current `rwe.noop` engine actually supports.
-
-TSX module contracts:
-
-1. `export const page = { ... }` for page-level document metadata (`head.title`, `head.description`, `head.meta`, `head.links`, `head.scripts`, `html`, `body`, `navigation`)
-2. `export const app = { ... }` for state/actions/memo/effect
-3. `export default function Page(input) { return <Page>...</Page>; }` for page markup
-4. `<markdown>...</markdown>` (processed when `markdown` processor is enabled)
-
-Reactive attributes in TSX:
-
-1. `onClick`, `onInput`, `onChange`, `onSubmit`
-2. `zText="path.to.value"`
-3. `zModel="path.to.value"`
-4. `zAttrClass="path.to.value"`
-5. `zShow="path.to.bool"`
-6. `zHide="path.to.bool"`
-7. `zFor="item in some.list.path"` (keyed list rendering)
-8. `zKey="item.id"` (stable key selector for `zFor`)
-9. `hydrate="off|interaction|visible|idle|immediate"` (hydration island mode)
-
-SSR placeholders in TSX expressions:
-
-1. `{input.path.to.value}`
-2. `{ctx.route}`
-3. `{ctx.requestId}`
-4. `{ctx.metadata.someField}`
-
-Component keywords:
-
-1. PascalCase imported components, e.g. `<Button />`
-2. compile option: `ReactiveWebOptions.templates.template_root`
-3. compile option: `ReactiveWebOptions.components.strict`
-
-Adapter protocol keywords:
-
-1. `RWE_PROTOCOL_VERSION` (`rwe.v1`)
-2. `CompileTemplateRequest` / `CompileTemplateResponse`
-3. `RenderTemplateRequest` / `RenderTemplateResponse`
-4. `ProtocolError`
-
-Control-script return keys (runtime convention):
-
-1. `state`
-2. `actions`
-3. `memo`
-4. `effect`
-
-Not implemented yet (planned in `src/rwe/MILESTONE.md`):
-
-1. `.ts` helper-module import graph
-2. directive-level branching (`zIf`, `zElse`)
-
-## RWE Processor Features
-
-RWE compile features are toggleable via `ReactiveWebOptions.processors`.
-
-```rust
-let options = ReactiveWebOptions {
-    processors: vec!["tailwind".to_string(), "markdown".to_string()],
-    ..Default::default()
-};
-```
-
-Rules:
-
-1. if `processors` is empty, legacy behavior applies (Tailwind follows `style_engine`)
-2. if `processors` is non-empty, only listed processors run (in listed order)
-3. current built-in processors: `tailwind`, `markdown`
-4. `tailwind` injects a Tailwind-compatible preflight/reset base plus utility rules
-
-Example templates:
-- `docs/conventions/templates/pages/blog-home.tsx`
-- `docs/conventions/templates/pages/blog-post.tsx`
-- `docs/conventions/templates/pages/blog-home-composed.tsx`
-- `docs/conventions/templates/pages/state-sharing-composed.tsx`
-- `docs/conventions/templates/pages/list-hydration.tsx`
-- `docs/conventions/templates/components/blog-header.tsx`
-- `docs/conventions/templates/components/blog-hero.tsx`
-- `docs/conventions/templates/components/tree-a.tsx`
-- `docs/conventions/templates/components/tree-b.tsx`
-- `docs/conventions/templates/components/tree-c.tsx`
-- `docs/conventions/templates/components/tree-d.tsx`
-- `docs/conventions/templates/components/tree-f.tsx`
-
-## Current Status
-
-1. Framework, language, and RWE are scaffolded with interface-first boundaries.
-2. Pin-based pipeline sample exists at `docs/conventions/pipelines/common_backend.zf.json`.
-3. Deno sandbox language engine is wired and reusable.
-4. Axum demo bootstrap is available via `axum_rwe_demo` binary.
-
-## Axum Browser Demo
-
-You can run a local Axum server that renders real TSX pages:
+## Quick start
 
 ```bash
-cargo run -p zebflow --bin axum_rwe_demo
+docker run -p 10610:10610 zebflow/zebflow
 ```
 
-Open in browser:
+Open `http://localhost:10610` — default login: `superadmin` / `admin`.
 
-1. `http://127.0.0.1:8787/`
-2. `http://127.0.0.1:8787/showcase`
-3. `http://127.0.0.1:8787/recycling`
-4. `http://127.0.0.1:8787/todo`
-5. `http://127.0.0.1:8787/list-hydration`
-6. `http://127.0.0.1:8787/state-sharing?seed=7`
-7. `http://127.0.0.1:8787/blog`
-8. `http://127.0.0.1:8787/blog/post-a`
-9. `http://127.0.0.1:8787/blog/composed`
+---
+
+## How development works
+
+1. **Create a pipeline** — write the DSL in the in-app console or use the visual editor. One line connects a trigger to a query to a rendered page.
+2. **Write a React page** — open the template editor, write TSX, save — it's live at the pipeline's path immediately.
+3. **Connect your data** — add a database credential, drop a query node before the render node. The query result flows in as the page's `input` prop.
+4. **Keep building from anywhere** — connect your IDE or AI agent via MCP. Register pipelines, write templates, commit to git — all from your laptop, without SSH or redeploy.
+
+No rebuild. No redeploy. The running instance is the development environment.
+
+---
+
+## Stack
+
+| Layer | What it is |
+|-------|-----------|
+| Runtime | Rust — single binary, ~90 MB Docker image |
+| Script engine | Embedded V8 via `deno_core` — no Node.js required |
+| React rendering | TSX → SSR via embedded Deno, hydrated with Preact |
+| Pipelines | 20+ built-in nodes: triggers, HTTP, SQL, WebSocket, AI, logic, web render |
+| Data | Sekejap (embedded graph-first multimodel db engine), PostgreSQL, MySQL, simple tables |
+| Real-time | WebSocket rooms with shared state, event dispatch, broadcast |
+| AI | BYOK — OpenAI-compatible or Anthropic, MCP protocol |
+
+---
+
+## Documentation
+
+- [Getting Started](docs/GETTING_STARTED.md)
+- [Pipeline Reference](docs/PIPELINES.md)
+- [RWE — Reactive Web Engine](docs/RWE.md)
+- [MCP Integration](docs/MCP.md)
+- [Platform Web](docs/developer-guide/platform-web.md)
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
