@@ -26,7 +26,7 @@ use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
-use crate::automaton::assistant_config::load_project_assistant_llm;
+use crate::automaton::infra::assistant_config::load_project_assistant_llm;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
@@ -58,8 +58,8 @@ const LOGIN_PATH: &str = "/login";
 /// Platform home path — redirect target after successful login.
 const HOME_PATH: &str = "/home";
 
-const BRAND_LOGO_SVG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.svg");
-const BRAND_LOGO_PNG: &[u8] = include_bytes!("../../../docs/conventions/assets/branding/logo.png");
+const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
+const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
 /// Global tokens + shared UI; studio rules are concatenated from `pages/project-studio/styles.css` (one HTTP stylesheet).
 const PLATFORM_MAIN_CSS: &str = concat!(
     include_str!("templates/styles/main.css"),
@@ -6746,22 +6746,27 @@ async fn api_project_assistant_chat(
         };
 
         let system = format!(
-            "You are the Zebflow project assistant.\n\
-             Project: {owner}/{project}{page_context}{time_context}\n\n\
+            "You are the Zebflow project operator — an autonomous assistant for project {owner}/{project}.{page_context}{time_context}\n\n\
              ## Your Memory\n{memory}\n\n\
              ## Your Soul\n{soul}\n\n\
              ## Project Context\n{agents}{readme_section}\n\n\
-             ## Your Only Tool: execute_pipeline_dsl\n\
-             You have exactly one tool: `execute_pipeline_dsl`. It runs any Pipeline DSL command.\n\
-             All actions — creating pipelines, querying databases, reading files, git, tables — go through this tool.\n\n\
-             ## How to Do Things\n\
-             - **Pipelines**: `register`, `describe pipeline`, `activate`, `execute pipeline`, `run`\n\
-             - **DB queries**: `run | pg.query --credential <slug> -- \"SELECT ...\"` or SekejapQL via `run | n.sekejap.query`\n\
-             - **Explore DB schema**: `describe connection <slug>` before writing any SQL\n\
-             - **Tables**: `get tables`, `create table`, `run | n.sekejap.query --op upsert`\n\
-             - **Files / docs**: `get files`, `read doc README.md`, `write doc AGENTS.md -- \"...\"`\n\
-             - **Git**: `git status`, `git add`, `git commit -- \"message\"`\n\
-             After DSL executes the browser navigates automatically to the relevant page.\n\n\
+             ## Your Tools\n\
+             You have 33 native tools covering every project management operation:\n\
+             - **Orientation**: `start_here` — call at the start of every session for a live project overview\n\
+             - **Pipelines**: `pipeline_list`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`\n\
+             - **Templates**: `template_list`, `template_get`, `template_create`, `template_write`\n\
+             - **Docs**: `docs_project_list`, `docs_project_read`, `docs_project_write`, `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
+             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query` or `n.sekejap.query` nodes to execute queries\n\
+             - **Credentials**: `credential_list`\n\
+             - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\
+             - **UI Components**: `list_ui_catalog`, `install_ui_components`\n\
+             - **Knowledge**: `help_pipeline`, `help_web_engine`, `help_examples`, `help_nodes`, `help_search`, `skill_list`, `skill_read`\n\n\
+             ## Workflow\n\
+             1. Call `start_here` to orient yourself when starting a new task\n\
+             2. Use `connection_describe` before writing any SQL queries\n\
+             3. Use `pipeline_run` with pipe-chained nodes to execute one-off queries or test pipelines\n\
+             4. After registering or patching pipelines, always call `pipeline_activate` to make them live\n\
+             5. Always commit changes with `git_command subcommand=add` then `git_command subcommand=commit`\n\n\
              Available pages:\n\
              {nav_map}\n\n\
              ## Zebflow Knowledge\n\n{skills_text}"
@@ -6944,14 +6949,14 @@ enum AssistantStepEvent {
 }
 
 async fn run_assistant_loop(
-    llm: std::sync::Arc<dyn crate::automaton::llm_interface::LlmCall>,
+    llm: std::sync::Arc<dyn crate::automaton::infra::llm_interface::LlmCall>,
     tools: &crate::platform::services::AssistantPlatformTools,
-    tool_defs: Vec<crate::automaton::llm_interface::ToolDef>,
+    tool_defs: Vec<crate::automaton::infra::llm_interface::ToolDef>,
     mut messages: Vec<Value>,
     max_steps: u32,
     step_tx: &tokio::sync::mpsc::UnboundedSender<AssistantStepEvent>,
 ) -> String {
-    use crate::automaton::llm_interface::CallResult;
+    use crate::automaton::infra::llm_interface::CallResult;
 
     for step in 1..=max_steps {
         let result = match llm.call_with_tools(messages.clone(), &tool_defs).await {

@@ -12,7 +12,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.logic.merge";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -29,7 +29,9 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--strategy".to_string(), config_key: "strategy".to_string(), description: "Merge strategy: first (first arriving), all (wait all), merge (deep-merge).".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![

@@ -1,0 +1,65 @@
+import ProjectStudioShell from "@/pages/project-studio/components/shell";
+
+export const page = {
+  head: {
+    title: ctx?.seo?.title ?? "",
+    description: ctx?.seo?.description ?? "",
+  },
+  html: {
+    lang: "en",
+  },
+  body: {
+    className: "font-sans",
+  },
+  navigation: "history",
+};
+
+
+export default function Page(input) {
+  const cards = Array.isArray(input?.cards) ? input.cards : [];
+  return (
+<Page>
+    <ProjectStudioShell
+      projectHref={input.project_href}
+      projectLabel={input.title}
+      currentMenu={input.current_menu}
+      owner={input.owner}
+      project={input.project}
+      nav={input.nav}
+    >
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <div className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]"></div>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+          <div className="project-content-wrap">
+            <section className="project-content-section">
+              <div className="project-content-head">
+                <div>
+                  <p className="project-content-title">{input.page_title}</p>
+                  <p className="project-content-copy">{input.page_subtitle}</p>
+                </div>
+              </div>
+            </section>
+            <section className="project-content-section">
+              <div className="project-content-body">
+                <div className="project-card-grid cols-2">
+                  {cards.map((item, index) => (
+                    <a key={`${item?.href ?? "card"}-${index}`} href={item?.href ?? "#"} className="project-card block">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="project-card-title">{item?.title}</h3>
+                          <p className="project-card-copy">{item?.description}</p>
+                        </div>
+                        {item?.tag ? <span className="project-inline-chip">{item.tag}</span> : null}
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </ProjectStudioShell>
+</Page>
+  );
+}

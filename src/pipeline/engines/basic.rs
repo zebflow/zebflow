@@ -13,10 +13,12 @@ use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
-    auth_token_create, crypto, http_request, logic, pg_query, script, sjtable_mutate, sjtable_query,
-    trigger::{manual, schedule, webhook, weberror},
-    web_render, ws_emit, ws_sync_state, ws_trigger, zebtune,
+    agent, auth_token_create, browser_run, crypto, function_call, http_request, logic, pg_query,
+    script, sjtable_mutate, sjtable_query,
+    trigger::{function as trigger_function, manual, schedule, webhook, weberror},
+    web_render, ws_emit, ws_sync_state, ws_trigger,
 };
+use crate::platform::services::PlatformService;
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::{CredentialService, SimpleTableService};
@@ -51,6 +53,7 @@ pub struct BasicPipelineEngine {
     simple_tables: Option<Arc<SimpleTableService>>,
     web_render_cache: Option<WebRenderCache>,
     ws_hub: Option<Arc<WsHub>>,
+    platform: Option<Arc<PlatformService>>,
 }
 
 impl Default for BasicPipelineEngine {
@@ -63,6 +66,7 @@ impl Default for BasicPipelineEngine {
             simple_tables: None,
             web_render_cache: None,
             ws_hub: None,
+            platform: None,
         }
     }
 }
@@ -81,6 +85,7 @@ impl BasicPipelineEngine {
             simple_tables,
             web_render_cache: None,
             ws_hub: None,
+            platform: None,
         }
     }
 
@@ -94,6 +99,12 @@ impl BasicPipelineEngine {
     /// Attach the WS hub so ws_sync_state and ws_emit nodes can access rooms.
     pub fn with_ws_hub(mut self, hub: Arc<WsHub>) -> Self {
         self.ws_hub = Some(hub);
+        self
+    }
+
+    /// Attach the platform service so n.function.call nodes can invoke sub-pipelines.
+    pub fn with_platform(mut self, platform: Arc<PlatformService>) -> Self {
+        self.platform = Some(platform);
         self
     }
 
@@ -155,6 +166,19 @@ impl BasicPipelineEngine {
                     self.language.clone(),
                 )?))
             }
+            browser_run::NODE_KIND => {
+                let Some(credentials) = &self.credentials else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_BROWSER_RUN_UNAVAILABLE",
+                        "credential service is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::BrowserRun(browser_run::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string()))?,
+                    credentials.clone(),
+                )?))
+            }
             pg_query::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
@@ -183,11 +207,10 @@ impl BasicPipelineEngine {
                     config,
                 })
             }
-            zebtune::NODE_KIND | "n.zebtune" => {
-                let config: zebtune::Config =
+            agent::NODE_KIND => {
+                let config: agent::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
-                let llm = crate::automaton::llm::client_from_env();
-                Ok(NodeDispatch::Zebtune(zebtune::Node::new(config, llm)))
+                Ok(NodeDispatch::Agent(agent::Node::new(config, self.credentials.clone(), self.platform.clone())))
             }
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
@@ -267,6 +290,19 @@ impl BasicPipelineEngine {
                 serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_CRYPTO_CONFIG", err.to_string()))?,
             )?)),
+            trigger_function::NODE_KIND => {
+                let config: trigger_function::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                Ok(NodeDispatch::TriggerFunction(trigger_function::Node::new(config)))
+            }
+            function_call::NODE_KIND => {
+                let config: function_call::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                Ok(NodeDispatch::FunctionCall(function_call::Node::new(
+                    config,
+                    self.platform.clone(),
+                )))
+            }
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -410,6 +446,7 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::Manual(node) => node.execute_async(input).await,
                 NodeDispatch::Script(node) => node.execute_async(input).await,
                 NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
+                NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
                 NodeDispatch::SimpleTable(node) => node.execute_async(input).await,
                 NodeDispatch::SimpleTableMutate(node) => node.execute_async(input).await,
                 NodeDispatch::Postgres(node) => node.execute_async(input).await,
@@ -473,7 +510,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         })
                     }
                 }
-                NodeDispatch::Zebtune(node) => node.execute_async(input).await,
+                NodeDispatch::Agent(node) => node.execute_async(input).await,
                 NodeDispatch::LogicIf(node) => node.execute_async(input).await,
                 NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
                 NodeDispatch::LogicBranch(node) => node.execute_async(input).await,
@@ -484,6 +521,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::WsSyncState(node) => node.execute_async(input).await,
                 NodeDispatch::WsEmit(node) => node.execute_async(input).await,
                 NodeDispatch::Crypto(node) => node.execute_async(input).await,
+                NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
+                NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
             };
 
             let output = match exec_result {
@@ -602,6 +641,7 @@ enum NodeDispatch {
     Manual(manual::Node),
     Script(script::Node),
     HttpRequest(http_request::Node),
+    BrowserRun(browser_run::Node),
     SimpleTable(sjtable_query::Node),
     SimpleTableMutate(sjtable_mutate::Node),
     Postgres(pg_query::Node),
@@ -609,7 +649,7 @@ enum NodeDispatch {
         node_id: String,
         config: web_render::Config,
     },
-    Zebtune(zebtune::Node),
+    Agent(agent::Node),
     LogicIf(logic::if_::Node),
     LogicSwitch(logic::switch::Node),
     LogicBranch(logic::branch::Node),
@@ -620,6 +660,8 @@ enum NodeDispatch {
     WsSyncState(ws_sync_state::Node),
     WsEmit(ws_emit::Node),
     Crypto(crypto::Node),
+    TriggerFunction(trigger_function::Node),
+    FunctionCall(function_call::Node),
 }
 
 enum MergeStrategy {

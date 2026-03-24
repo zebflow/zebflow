@@ -2,6 +2,8 @@
 
 Pipelines are the core of Zebflow. A pipeline is a linear or branching chain of nodes that handles an HTTP request, WebSocket event, or scheduled trigger — and produces a response (HTML page, JSON, redirect, or side effects).
 
+When you call **`help_pipeline`** over MCP, the platform **appends a live node appendix** after this file: every node `kind`, description, pins, DSL flags, and input/output schemas come from the same Rust `definition()` as the pipeline editor node API (not from hand-written docs).
+
 ---
 
 ## Two Modes
@@ -33,6 +35,27 @@ Label each node with `[id]`, then declare edges with `->`. Use for conditional r
 [b]:urgent -> [d]
 [b]:other -> [e]
 ```
+
+---
+
+## Nodes
+
+A **node** is one step in the pipeline. Each node has a **kind** (trigger, query, render, logic, …). The previous node’s JSON output becomes the next node’s **`input`**.
+
+- **Triggers** start a run (`trigger.webhook`, `trigger.schedule`, …).
+- **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `logic.if`, …).
+- **Last nodes** often produce the HTTP response (`web.render` / `n.web.render` for HTML, or a `script` that returns JSON / redirect fields).
+
+### How to open the full node reference — `help_nodes`
+
+You already have **`help_nodes`** — use it instead of guessing flags:
+
+| Call | What you get |
+|------|----------------|
+| **`help_nodes`** with **no `kind`** | The **entire** node catalog (same generated appendix as `help_pipeline`). |
+| **`help_nodes`** with **`kind=…`** | **One** node only — e.g. `kind=n.trigger.webhook`, `kind=trigger.webhook`, `kind=n.script`, `kind=script`. |
+
+Use **`help_search`** for keywords across remaining skill markdown (node bodies are not duplicated there — use **`help_nodes`** for node flags and schemas).
 
 ---
 
@@ -145,24 +168,8 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 
 ---
 
-## Node Quick Reference
+## Next steps
 
-| Node | Use |
-|------|-----|
-| `trigger.webhook --path /x --method GET` | HTTP endpoint |
-| `trigger.schedule --cron "* * * * *"` | Cron job |
-| `pg.query --credential slug -- "SQL"` | PostgreSQL query |
-| `sekejap.query --table x --op query/upsert` | Sekejap embedded DB (graph, vector, full-text) |
-| `script -- "return {...}"` | JS transform |
-| `http.request --url x --method GET/POST` | Outbound HTTP |
-| `web.render --template-path pages/x.tsx --route /x` | Render HTML page |
-| `logic.if --expr "input.role === 'admin'"` | Conditional branch |
-| `logic.switch --expr "input.type" --cases a,b --default c` | Multi-branch |
-
----
-
-## Next Steps
-
-- `help_nodes` — full node catalog with all flags and examples
-- `help_rwe` — how to write TSX templates that receive pipeline data
-- `help_examples` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)
+- **`help_nodes`** — same live catalog as the appendix on `help_pipeline`, or one node via `kind=…`
+- **`help_web_engine`** — TSX pages and `n.web.render` / `input`
+- **`help_examples`** — full archetype recipes (blog, chat, game, scheduling, scraping, auth)

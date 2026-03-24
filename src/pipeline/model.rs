@@ -196,14 +196,16 @@ pub enum DslFlagKind {
 
 /// One DSL flag declaration owned by a [`NodeDefinition`].
 ///
-/// Each node declares the DSL flags it accepts.  The parser uses these for:
+/// Each node declares the DSL flags it accepts.  The parser uses these as the
+/// **single source of truth** for flag→config mapping:
+///
+/// - **Parsing**: `config_key` is the authoritative destination key. Undeclared flags are a parse error.
+/// - **Value coercion**: `kind` controls how the value is interpreted (scalar, list, bool).
 /// - **Help text**: `pipeline --help n.web.render` lists all flags with descriptions.
 /// - **Required validation**: flags with `required: true` must be present when registering.
 /// - **LLM context**: surfaced in `/docs/node` so agents know exactly what flags to emit.
 ///
-/// The parser does NOT need this list to parse — it applies the universal rule
-/// `--flag-name` → `flag_name` for any undeclared flag too.  Declarations exist for
-/// documentation and validation only.
+/// Every flag used in DSL MUST be declared here. No fallback, no auto-rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DslFlag {
     /// CLI flag name including `--` prefix (e.g. `"--template-path"`).
@@ -246,6 +248,9 @@ pub enum NodeFieldType {
     CopyUrl,
     Checkbox,
     Section,
+    /// Multi-select checkbox list. Options come from `data_source` (live) or `options` (static).
+    /// Config value is stored as `Vec<String>`.
+    MultiCheckbox,
 }
 
 impl Default for NodeFieldType {
@@ -264,6 +269,16 @@ pub enum NodeFieldDataSource {
     CredentialsJwt,
     /// Live project page templates.
     TemplatesPages,
+    /// Live project browser credentials (kind prefix: browser_).
+    CredentialsBrowser,
+    /// Live project OpenAI-compatible credentials (kind = "openai").
+    CredentialsOpenAi,
+    /// All node kinds registered as AI tools (`ai_tool.registered = true` in NodeDefinition).
+    /// Returns `{ tool_name, tool_description }` pairs for checklist rendering.
+    AiTools,
+    /// Active function pipelines (trigger_kind = "function") in the current project.
+    /// Returns pipeline slugs for datalist rendering in `n.function.call`.
+    FunctionPipelines,
 }
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.

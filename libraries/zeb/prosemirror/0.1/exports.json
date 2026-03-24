@@ -1,0 +1,18 @@
+[
+  {
+    "name": "mountProseEditor",
+    "kind": "function",
+    "signature": "async (container: HTMLElement, config?: ProseEditorConfig) => ProseEditorInstance",
+    "description": "Mount a ProseMirror editor into a DOM container. Returns an instance with getHTML, getJSON, setHTML, setJSON, destroy."
+  },
+  {
+    "name": "prosemirror",
+    "kind": "namespace",
+    "description": "Namespace re-exporting mountProseEditor."
+  },
+  {
+    "name": "ProseEditor",
+    "kind": "component",
+    "description": "RWE wrapper component. Renders a placeholder div hydrated by mountProseEditor. Props: config, className."
+  }
+]

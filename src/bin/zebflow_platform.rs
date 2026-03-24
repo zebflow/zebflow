@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.data_adapter = DataAdapterKind::Sekejap;
     config.file_adapter = FileAdapterKind::Filesystem;
 
-    let app = build_router(config).map_err(std::io::Error::other)?;
+    let app = build_router(config).await.map_err(std::io::Error::other)?;
 
     let host = std::env::var("ZEBFLOW_PLATFORM_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let port = std::env::var("ZEBFLOW_PLATFORM_PORT")

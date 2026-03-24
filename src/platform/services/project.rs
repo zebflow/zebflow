@@ -1070,6 +1070,17 @@ export default function Page(input) {
             )?;
         }
 
+        // Scaffold shared/ directories for cross-module shared code.
+        // @/shared/ui, @/shared/layout, @/shared/lib — import path: @/shared/ui/button
+        for subdir in ["shared/ui", "shared/layout", "shared/lib"] {
+            let dir = layout.repo_pipelines_dir.join(subdir);
+            fs::create_dir_all(&dir)?;
+            let gitkeep = dir.join(".gitkeep");
+            if !gitkeep.exists() {
+                fs::write(&gitkeep, "")?;
+            }
+        }
+
         Ok(())
     }
 
@@ -1188,6 +1199,26 @@ export default function Page(input) {
             name,
             kind: "file".to_string(),
         })
+    }
+
+    /// Deletes one project doc file by path under `repo/docs`.
+    pub fn delete_project_doc(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MISSING",
+                format!("doc file '{}' not found", rel_path),
+            ));
+        }
+        fs::remove_file(&abs).map_err(PlatformError::from)
     }
 
     /// Lists the three agent doc files (AGENTS.md, SOUL.md, MEMORY.md), creating defaults if absent.

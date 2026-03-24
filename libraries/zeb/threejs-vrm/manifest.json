@@ -1,0 +1,19 @@
+{
+  "name": "zeb/threejs-vrm",
+  "description": "VRM 0.x/1.0 avatar viewer for RWE templates. Three.js + @pixiv/three-vrm bundled offline. Auto-mount, expression control, animation mixer, look-at, spring bones.",
+  "exports": [
+    "mountVrmViewer",
+    "vrm",
+    "VrmViewer"
+  ],
+  "versions": {
+    "full-3.x": {
+      "entry": "0.1/runtime/threejs-vrm.bundle.mjs",
+      "source": "offline",
+      "package_version": "3.x",
+      "size_bytes": 882754,
+      "integrity": "",
+      "note": "Three.js r0.171 + @pixiv/three-vrm 3.x via esbuild. Build: cd /tmp/zeb-threejs-vrm-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=threejs-vrm.bundle.mjs"
+    }
+  }
+}

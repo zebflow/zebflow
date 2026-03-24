@@ -10,7 +10,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
@@ -33,7 +33,9 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--expr".to_string(), config_key: "expression".to_string(), description: "JS expression returning truthy/falsy to route to true or false pin.".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![

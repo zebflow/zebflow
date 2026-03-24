@@ -1,0 +1,27 @@
+{
+  "name": "zeb/graphui",
+  "description": "Interactive graph canvas for pipeline and node visualisation in RWE templates.",
+  "exports": [
+    "GraphStore",
+    "GraphNode",
+    "CustomNode",
+    "NumberNode",
+    "AddNode",
+    "DisplayNode",
+    "GraphCanvasUI",
+    "createGraphUI",
+    "createPipelineScene",
+    "createSeedScenes",
+    "graphui",
+    "GraphCanvas"
+  ],
+  "versions": {
+    "full-0.1": {
+      "entry": "0.1/runtime/graphui.bundle.mjs",
+      "source": "offline",
+      "package_version": "0.1",
+      "size_bytes": 38435,
+      "integrity": ""
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "zeb/prosemirror",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "ProseMirror 1.41 rich text editor for RWE templates. Full editing API: mountProseEditor, schema, history, keymaps. ProseEditor wrapper component included.",
+  "source": {
+    "provider": "zebflow",
+    "package": "prosemirror-view",
+    "package_version": "1.41.6",
+    "packed_version": "full-1.41",
+    "packed_kind": "full",
+    "entry": "runtime/prosemirror.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-prosemirror-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "mountProseEditor",
+      "prosemirror"
+    ],
+    "wrappers": [
+      "ProseEditor"
+    ]
+  },
+  "runtime": {
+    "format": "esm",
+    "entry": "runtime/prosemirror.bundle.mjs"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

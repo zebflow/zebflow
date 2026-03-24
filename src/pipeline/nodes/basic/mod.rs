@@ -2,8 +2,11 @@
 
 use crate::pipeline::NodeDefinition;
 
+pub mod agent;
 pub mod auth_token_create;
+pub mod browser_run;
 pub mod crypto;
+pub mod function_call;
 pub mod http_request;
 pub mod logic;
 pub mod pg_query;
@@ -16,12 +19,15 @@ pub mod web_render;
 pub mod ws_emit;
 pub mod ws_sync_state;
 pub mod ws_trigger;
-pub mod zebtune;
 
 /// Returns built-in node definitions sorted by kind.
 pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
     let mut items = vec![
+        agent::definition(),
         auth_token_create::definition(),
+        browser_run::definition(),
+        function_call::definition(),
+        trigger::function::definition(),
         trigger::webhook::definition(),
         trigger::schedule::definition(),
         trigger::manual::definition(),
@@ -34,7 +40,6 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         web_render::definition(),
         ws_sync_state::definition(),
         ws_emit::definition(),
-        zebtune::definition(),
         logic::if_::definition(),
         logic::switch::definition(),
         logic::branch::definition(),

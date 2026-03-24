@@ -3,15 +3,32 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
+  "description": "Deck.gl 9.x for geospatial and large-scale data visualisation in RWE templates. @deck.gl/core + @deck.gl/layers bundled offline. DeckMap component, reactive stateKey/layerKey bridge, JSON declarative layers, imperative instance registry.",
   "source": {
     "provider": "zebflow",
     "package": "deck.gl",
-    "package_version": "bridge",
+    "package_version": "9.x",
+    "packed_version": "full-9.x",
+    "packed_kind": "full",
     "entry": "runtime/deckgl.bundle.mjs"
   },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-deckgl-{version}.bundle.mjs"
+  },
   "exports": {
-    "raw": ["deckgl", "ensureDeck", "createDeckMapRuntime", "mountDeckMap"],
-    "wrappers": ["DeckMap"]
+    "raw": [
+      "ensureDeck",
+      "createDeckMapRuntime",
+      "mountDeckMap",
+      "buildLayer",
+      "buildLayers",
+      "deckgl"
+    ],
+    "wrappers": [
+      "DeckMap"
+    ]
   },
   "runtime": {
     "format": "esm",

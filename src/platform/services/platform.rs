@@ -132,6 +132,72 @@ impl PlatformService {
         Ok(svc)
     }
 
+    /// Execute an active function pipeline by slug and return its output value.
+    ///
+    /// Called from `n.function.call` nodes during pipeline execution.
+    /// The slug is matched against active pipelines that have an `n.trigger.function` entry node.
+    pub async fn execute_function_pipeline(
+        &self,
+        owner: &str,
+        project: &str,
+        slug: &str,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::pipeline::PipelineError> {
+        use crate::pipeline::PipelineEngine;
+        use crate::platform::services::project::name_from_file_rel_path;
+
+        const FUNCTION_TRIGGER_KIND: &str = "n.trigger.function";
+
+        // Find the active function pipeline by slug.
+        let compiled = self
+            .pipeline_runtime
+            .list_project(owner, project)
+            .into_iter()
+            .find(|c| {
+                name_from_file_rel_path(&c.file_rel_path) == slug
+                    && c.graph
+                        .nodes
+                        .iter()
+                        .any(|n| n.kind == FUNCTION_TRIGGER_KIND)
+            })
+            .ok_or_else(|| {
+                crate::pipeline::PipelineError::new(
+                    "FW_FUNCTION_NOT_FOUND",
+                    format!(
+                        "function pipeline '{}' not found or not active in {}/{}",
+                        slug, owner, project
+                    ),
+                )
+            })?;
+
+        let ctx = crate::pipeline::PipelineContext {
+            owner: owner.to_string(),
+            project: project.to_string(),
+            pipeline: compiled.graph.id.clone(),
+            request_id: format!(
+                "fn-call-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
+            route: Default::default(),
+            input,
+        };
+
+        let engine = crate::pipeline::BasicPipelineEngine::new(
+            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+            crate::rwe::resolve_engine_or_default(None),
+            Some(self.credentials.clone()),
+            Some(self.simple_tables.clone()),
+        )
+        .with_platform(std::sync::Arc::new(self.clone()));
+
+        let output = engine.execute_async(&compiled.graph, &ctx).await?;
+
+        Ok(output.value)
+    }
+
     /// Creates default superadmin + default project if missing.
     pub fn bootstrap_defaults(&self) -> Result<(), PlatformError> {
         if self.config.default_password.trim().is_empty() {

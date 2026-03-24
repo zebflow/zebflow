@@ -43,7 +43,7 @@ export default function Button({
         className
       )}
     >
-      <span>{content}</span>
+      <span className="inline-flex items-center gap-2">{content}</span>
     </Element>
   );
 }

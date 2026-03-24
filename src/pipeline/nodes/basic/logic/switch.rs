@@ -10,7 +10,7 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::pipeline::model::LayoutItem;
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
@@ -31,7 +31,11 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            DslFlag { flag: "--expr".to_string(), config_key: "expression".to_string(), description: "JS expression returning a string to match against case pins.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--cases".to_string(), config_key: "cases".to_string(), description: "Comma-separated case values; each becomes an output pin.".to_string(), kind: DslFlagKind::CommaSeparatedList, required: false },
+            DslFlag { flag: "--default".to_string(), config_key: "default".to_string(), description: "Pin name to route to when no case matches.".to_string(), kind: DslFlagKind::Scalar, required: false },
+        ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![

@@ -516,6 +516,16 @@ fn variant_media_query(v: &str) -> Option<&'static str> {
         "lg" => Some("(min-width: 1024px)"),
         "xl" => Some("(min-width: 1280px)"),
         "2xl" => Some("(min-width: 1536px)"),
+        "motion-reduce" => Some("(prefers-reduced-motion: reduce)"),
+        "motion-safe"   => Some("(prefers-reduced-motion: no-preference)"),
+        "dark"          => Some("(prefers-color-scheme: dark)"),
+        "light"         => Some("(prefers-color-scheme: light)"),
+        "max-sm"        => Some("(max-width: 639px)"),
+        "max-md"        => Some("(max-width: 767px)"),
+        "max-lg"        => Some("(max-width: 1023px)"),
+        "max-xl"        => Some("(max-width: 1279px)"),
+        "max-2xl"       => Some("(max-width: 1535px)"),
+        "print"         => Some("print"),
         _ => None,
     }
 }
@@ -540,6 +550,22 @@ fn variant_pseudo(v: &str) -> Option<&'static str> {
         "active" => Some(":active"),
         "disabled" => Some(":disabled"),
         "last" => Some(":last-child"),
+        "first"       => Some(":first-child"),
+        "odd"         => Some(":nth-child(odd)"),
+        "even"        => Some(":nth-child(even)"),
+        "checked"     => Some(":checked"),
+        "empty"       => Some(":empty"),
+        "required"    => Some(":required"),
+        "valid"       => Some(":valid"),
+        "invalid"     => Some(":invalid"),
+        "read-only"   => Some(":read-only"),
+        "not-last"    => Some(":not(:last-child)"),
+        "not-first"   => Some(":not(:first-child)"),
+        "before"      => Some("::before"),
+        "after"       => Some("::after"),
+        "placeholder" => Some("::placeholder"),
+        "selection"   => Some("::selection"),
+        "file"        => Some("::file-selector-button"),
         _ => None,
     }
 }
@@ -761,6 +787,9 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     if let Some(v) = utility.strip_prefix("m-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "margin:auto;", important));
+        }
         let value = spacing_value(v)?;
         return Some(simple_rule(
             base_selector,
@@ -1327,8 +1356,358 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             return Some(simple_rule(base_selector, &format!("line-height:{};", raw), important));
         }
     }
+    // cursor-{value}
+    if let Some(v) = utility.strip_prefix("cursor-") {
+        let valid = matches!(v,
+            "auto"|"default"|"pointer"|"wait"|"text"|"move"|"help"|"not-allowed"|"none"|
+            "context-menu"|"progress"|"cell"|"crosshair"|"vertical-text"|"alias"|"copy"|
+            "no-drop"|"grab"|"grabbing"|"all-scroll"|"col-resize"|"row-resize"|
+            "n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|
+            "se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize"|
+            "zoom-in"|"zoom-out"
+        );
+        if valid {
+            return Some(simple_rule(base_selector, &format!("cursor:{};", v), important));
+        }
+    }
+    // accent-{color}
+    if let Some(v) = utility.strip_prefix("accent-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "accent-color:auto;", important));
+        }
+        if let Some(c) = color_value(v) {
+            return Some(simple_rule(base_selector, &format!("accent-color:{};", c), important));
+        }
+    }
+    // caret-{color}
+    if let Some(v) = utility.strip_prefix("caret-") {
+        if let Some(c) = color_value(v) {
+            return Some(simple_rule(base_selector, &format!("caret-color:{};", c), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("caret-color:{};", raw), important));
+        }
+    }
+    // underline-offset-{n|auto|arbitrary}
+    if let Some(v) = utility.strip_prefix("underline-offset-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "text-underline-offset:auto;", important));
+        }
+        if let Ok(n) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("text-underline-offset:{}px;", n), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("text-underline-offset:{};", raw), important));
+        }
+    }
+    // decoration-{style|thickness|color}
+    if let Some(v) = utility.strip_prefix("decoration-") {
+        match v {
+            "solid"     => return Some(simple_rule(base_selector, "text-decoration-style:solid;", important)),
+            "double"    => return Some(simple_rule(base_selector, "text-decoration-style:double;", important)),
+            "dotted"    => return Some(simple_rule(base_selector, "text-decoration-style:dotted;", important)),
+            "dashed"    => return Some(simple_rule(base_selector, "text-decoration-style:dashed;", important)),
+            "wavy"      => return Some(simple_rule(base_selector, "text-decoration-style:wavy;", important)),
+            "auto"      => return Some(simple_rule(base_selector, "text-decoration-thickness:auto;", important)),
+            "from-font" => return Some(simple_rule(base_selector, "text-decoration-thickness:from-font;", important)),
+            _ => {}
+        }
+        if let Ok(n) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("text-decoration-thickness:{}px;", n), important));
+        }
+        if let Some(c) = color_value(v) {
+            return Some(simple_rule(base_selector, &format!("text-decoration-color:{};", c), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("text-decoration-color:{};", raw), important));
+        }
+    }
+    // content-{value}
+    if let Some(v) = utility.strip_prefix("content-") {
+        if let Some(raw) = arbitrary_value(v) {
+            let inner = raw.trim_matches('\'');
+            return Some(simple_rule(base_selector, &format!("content:'{}';", inner), important));
+        }
+        match v {
+            "none"     => return Some(simple_rule(base_selector, "content:none;", important)),
+            "normal"   => return Some(simple_rule(base_selector, "align-content:normal;", important)),
+            "start"    => return Some(simple_rule(base_selector, "align-content:start;", important)),
+            "end"      => return Some(simple_rule(base_selector, "align-content:end;", important)),
+            "center"   => return Some(simple_rule(base_selector, "align-content:center;", important)),
+            "between"  => return Some(simple_rule(base_selector, "align-content:space-between;", important)),
+            "around"   => return Some(simple_rule(base_selector, "align-content:space-around;", important)),
+            "evenly"   => return Some(simple_rule(base_selector, "align-content:space-evenly;", important)),
+            "stretch"  => return Some(simple_rule(base_selector, "align-content:stretch;", important)),
+            "baseline" => return Some(simple_rule(base_selector, "align-content:baseline;", important)),
+            _ => {}
+        }
+    }
+    // scrollbar-{value}
+    if let Some(v) = utility.strip_prefix("scrollbar-") {
+        match v {
+            "none"        => return Some(simple_rule(base_selector, "scrollbar-width:none;", important)),
+            "thin"        => return Some(simple_rule(base_selector, "scrollbar-width:thin;", important)),
+            "auto"        => return Some(simple_rule(base_selector, "scrollbar-width:auto;", important)),
+            "stable"      => return Some(simple_rule(base_selector, "scrollbar-gutter:stable;", important)),
+            "stable-both" => return Some(simple_rule(base_selector, "scrollbar-gutter:stable both-edges;", important)),
+            _ => {}
+        }
+    }
+    // grid-rows-{n|arbitrary}
+    if let Some(v) = utility.strip_prefix("grid-rows-") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n > 0 {
+                return Some(simple_rule(base_selector,
+                    &format!("grid-template-rows:repeat({}, minmax(0, 1fr));", n), important));
+            }
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("grid-template-rows:{};", raw), important));
+        }
+    }
+    // row-span-{n}
+    if let Some(v) = utility.strip_prefix("row-span-") {
+        if let Ok(n) = v.parse::<u32>() {
+            if n > 0 {
+                return Some(simple_rule(base_selector,
+                    &format!("grid-row:span {} / span {};", n, n), important));
+            }
+        }
+    }
+    // col-start-{n|auto}, col-end-{n|auto}, row-start-{n|auto}, row-end-{n|auto}
+    if let Some(v) = utility.strip_prefix("col-start-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "grid-column-start:auto;", important));
+        }
+        if let Ok(n) = v.parse::<i32>() {
+            return Some(simple_rule(base_selector, &format!("grid-column-start:{};", n), important));
+        }
+    }
+    if let Some(v) = utility.strip_prefix("col-end-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "grid-column-end:auto;", important));
+        }
+        if let Ok(n) = v.parse::<i32>() {
+            return Some(simple_rule(base_selector, &format!("grid-column-end:{};", n), important));
+        }
+    }
+    if let Some(v) = utility.strip_prefix("row-start-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "grid-row-start:auto;", important));
+        }
+        if let Ok(n) = v.parse::<i32>() {
+            return Some(simple_rule(base_selector, &format!("grid-row-start:{};", n), important));
+        }
+    }
+    if let Some(v) = utility.strip_prefix("row-end-") {
+        if v == "auto" {
+            return Some(simple_rule(base_selector, "grid-row-end:auto;", important));
+        }
+        if let Ok(n) = v.parse::<i32>() {
+            return Some(simple_rule(base_selector, &format!("grid-row-end:{};", n), important));
+        }
+    }
+    // ease-{value}
+    if let Some(v) = utility.strip_prefix("ease-") {
+        let timing = match v {
+            "linear" => "linear",
+            "in"     => "cubic-bezier(0.4,0,1,1)",
+            "out"    => "cubic-bezier(0,0,0.2,1)",
+            "in-out" => "cubic-bezier(0.4,0,0.2,1)",
+            _ => return None,
+        };
+        return Some(simple_rule(base_selector,
+            &format!("transition-timing-function:{};", timing), important));
+    }
+    // duration-{n}
+    if let Some(v) = utility.strip_prefix("duration-") {
+        if let Ok(n) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("transition-duration:{}ms;", n), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("transition-duration:{};", raw), important));
+        }
+    }
+    // delay-{n}
+    if let Some(v) = utility.strip_prefix("delay-") {
+        if let Ok(n) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("transition-delay:{}ms;", n), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("transition-delay:{};", raw), important));
+        }
+    }
+    // indent-{n}
+    if let Some(v) = utility.strip_prefix("indent-") {
+        if let Some(val) = spacing_value(v) {
+            return Some(simple_rule(base_selector, &format!("text-indent:{};", val), important));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(base_selector, &format!("text-indent:{};", raw), important));
+        }
+    }
+    // will-change-{value}
+    if let Some(v) = utility.strip_prefix("will-change-") {
+        let val = match v {
+            "auto"      => "auto",
+            "scroll"    => "scroll-position",
+            "contents"  => "contents",
+            "transform" => "transform",
+            _ => return None,
+        };
+        return Some(simple_rule(base_selector, &format!("will-change:{};", val), important));
+    }
     match utility {
-        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:0.375rem;", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:0.5rem;", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:0.75rem;", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:1rem;", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:1.5rem;", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:2rem;", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;border-style:solid;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;border-style:solid;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;border-style:solid;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;border-top-style:solid;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;border-right-style:solid;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;border-bottom-style:solid;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;border-left-style:solid;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }), _ => None }
+        "flex" => Some(simple_rule(base_selector, "display:flex;", important)), "grid" => Some(simple_rule(base_selector, "display:grid;", important)), "block" => Some(simple_rule(base_selector, "display:block;", important)), "inline" => Some(simple_rule(base_selector, "display:inline;", important)), "inline-block" => Some(simple_rule(base_selector, "display:inline-block;", important)), "hidden" => Some(simple_rule(base_selector, "display:none;", important)), "flex-col" => Some(simple_rule(base_selector, "flex-direction:column;", important)), "flex-row" => Some(simple_rule(base_selector, "flex-direction:row;", important)), "flex-wrap" => Some(simple_rule(base_selector, "flex-wrap:wrap;", important)), "flex-1" => Some(simple_rule(base_selector, "flex:1 1 0%;", important)), "flex-0" => Some(simple_rule(base_selector, "flex:0 0 auto;", important)), "flex-none" => Some(simple_rule(base_selector, "flex:none;", important)), "shrink-0" => Some(simple_rule(base_selector, "flex-shrink:0;", important)), "basis-0" => Some(simple_rule(base_selector, "flex-basis:0;", important)), "items-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "items-center" => Some(simple_rule(base_selector, "align-items:center;", important)), "items-end" => Some(simple_rule(base_selector, "align-items:flex-end;", important)), "items-stretch" => Some(simple_rule(base_selector, "align-items:stretch;", important)), "items-baseline" => Some(simple_rule(base_selector, "align-items:baseline;", important)), "align-start" => Some(simple_rule(base_selector, "align-items:flex-start;", important)), "justify-start" => Some(simple_rule(base_selector, "justify-content:flex-start;", important)), "justify-center" => Some(simple_rule(base_selector, "justify-content:center;", important)), "justify-end" => Some(simple_rule(base_selector, "justify-content:flex-end;", important)), "justify-between" => Some(simple_rule(base_selector, "justify-content:space-between;", important)), "justify-around" => Some(simple_rule(base_selector, "justify-content:space-around;", important)), "justify-evenly" => Some(simple_rule(base_selector, "justify-content:space-evenly;", important)), "justify-stretch" => Some(simple_rule(base_selector, "justify-content:stretch;", important)), "rounded" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-sm" => Some(simple_rule(base_selector, "border-radius:0.25rem;", important)), "rounded-md" => Some(simple_rule(base_selector, "border-radius:0.375rem;", important)), "rounded-lg" => Some(simple_rule(base_selector, "border-radius:0.5rem;", important)), "rounded-xl" => Some(simple_rule(base_selector, "border-radius:0.75rem;", important)), "rounded-2xl" => Some(simple_rule(base_selector, "border-radius:1rem;", important)), "rounded-3xl" => Some(simple_rule(base_selector, "border-radius:1.5rem;", important)), "rounded-4xl" => Some(simple_rule(base_selector, "border-radius:2rem;", important)), "rounded-full" => Some(simple_rule(base_selector, "border-radius:9999px;", important)), "rounded-none" => Some(simple_rule(base_selector, "border-radius:0;", important)), "rounded-xs" => Some(simple_rule(base_selector, "border-radius:0.125rem;", important)), "shadow" | "shadow-sm" => Some(simple_rule(base_selector, "box-shadow:0 1px 2px rgba(0,0,0,0.05);", important)), "shadow-md" => Some(simple_rule(base_selector, "box-shadow:0 4px 12px rgba(0,0,0,0.08);", important)), "shadow-lg" => Some(simple_rule(base_selector, "box-shadow:0 12px 32px rgba(0,0,0,0.12);", important)), "shadow-2xl" => Some(simple_rule(base_selector, "box-shadow:0 20px 48px rgba(0,0,0,0.2);", important)), "shadow-xs" => Some(simple_rule(base_selector, "box-shadow:0 1px 1px rgba(0,0,0,0.04);", important)), "font-thin" => Some(simple_rule(base_selector, "font-weight:100;", important)), "font-extralight" => Some(simple_rule(base_selector, "font-weight:200;", important)), "font-light" => Some(simple_rule(base_selector, "font-weight:300;", important)), "font-normal" => Some(simple_rule(base_selector, "font-weight:400;", important)), "font-medium" => Some(simple_rule(base_selector, "font-weight:500;", important)), "font-semibold" => Some(simple_rule(base_selector, "font-weight:600;", important)), "font-bold" => Some(simple_rule(base_selector, "font-weight:700;", important)), "font-extrabold" => Some(simple_rule(base_selector, "font-weight:800;", important)), "font-black" => Some(simple_rule(base_selector, "font-weight:900;", important)), "font-mono" => Some(simple_rule(base_selector, "font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;", important)), "font-sans" => Some(simple_rule(base_selector, "font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;", important)), "font-serif" => Some(simple_rule(base_selector, "font-family:ui-serif,Georgia,Cambria,'Times New Roman',Times,serif;", important)), "italic" => Some(simple_rule(base_selector, "font-style:italic;", important)), "text-left" => Some(simple_rule(base_selector, "text-align:left;", important)), "text-center" => Some(simple_rule(base_selector, "text-align:center;", important)), "text-right" => Some(simple_rule(base_selector, "text-align:right;", important)), "text-justify" => Some(simple_rule(base_selector, "text-align:justify;", important)), "leading-none" => Some(simple_rule(base_selector, "line-height:1;", important)), "leading-tight" => Some(simple_rule(base_selector, "line-height:1.25;", important)), "leading-snug" => Some(simple_rule(base_selector, "line-height:1.375;", important)), "leading-normal" => Some(simple_rule(base_selector, "line-height:1.5;", important)), "leading-relaxed" => Some(simple_rule(base_selector, "line-height:1.625;", important)), "tracking-tight" => Some(simple_rule(base_selector, "letter-spacing:-0.025em;", important)), "tracking-normal" => Some(simple_rule(base_selector, "letter-spacing:0;", important)), "tracking-wide" => Some(simple_rule(base_selector, "letter-spacing:0.025em;", important)), "tracking-wider" => Some(simple_rule(base_selector, "letter-spacing:0.05em;", important)), "tracking-widest" => Some(simple_rule(base_selector, "letter-spacing:0.1em;", important)), "border" => Some(simple_rule(base_selector, "border-width:1px;border-style:solid;", important)), "border-0" => Some(simple_rule(base_selector, "border-width:0;", important)), "border-2" => Some(simple_rule(base_selector, "border-width:2px;border-style:solid;", important)), "border-4" => Some(simple_rule(base_selector, "border-width:4px;border-style:solid;", important)), "border-t" => Some(simple_rule(base_selector, "border-top-width:1px;border-top-style:solid;", important)), "border-r" => Some(simple_rule(base_selector, "border-right-width:1px;border-right-style:solid;", important)), "border-b" => Some(simple_rule(base_selector, "border-bottom-width:1px;border-bottom-style:solid;", important)), "border-l" => Some(simple_rule(base_selector, "border-left-width:1px;border-left-style:solid;", important)), "border-x" => Some(simple_rule(base_selector, "border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;", important)), "border-y" => Some(simple_rule(base_selector, "border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;", important)), "border-dashed" => Some(simple_rule(base_selector, "border-style:dashed;", important)), "border-solid" => Some(simple_rule(base_selector, "border-style:solid;", important)), "relative" => Some(simple_rule(base_selector, "position:relative;", important)), "absolute" => Some(simple_rule(base_selector, "position:absolute;", important)), "fixed" => Some(simple_rule(base_selector, "position:fixed;", important)), "sticky" => Some(simple_rule(base_selector, "position:sticky;", important)), "min-h-screen" => Some(simple_rule(base_selector, "min-height:100vh;", important)), "h-full" => Some(simple_rule(base_selector, "height:100%;", important)), "w-full" => Some(simple_rule(base_selector, "width:100%;", important)), "w-auto" => Some(simple_rule(base_selector, "width:auto;", important)), "h-auto" => Some(simple_rule(base_selector, "height:auto;", important)), "overflow-hidden" => Some(simple_rule(base_selector, "overflow:hidden;", important)), "overflow-auto" => Some(simple_rule(base_selector, "overflow:auto;", important)), "overflow-scroll" => Some(simple_rule(base_selector, "overflow:scroll;", important)), "overflow-visible" => Some(simple_rule(base_selector, "overflow:visible;", important)), "overflow-x-auto" => Some(simple_rule(base_selector, "overflow-x:auto;", important)), "overflow-y-auto" => Some(simple_rule(base_selector, "overflow-y:auto;", important)), "overflow-x-hidden" => Some(simple_rule(base_selector, "overflow-x:hidden;", important)), "overflow-y-hidden" => Some(simple_rule(base_selector, "overflow-y:hidden;", important)), "whitespace-normal" => Some(simple_rule(base_selector, "white-space:normal;", important)), "whitespace-nowrap" => Some(simple_rule(base_selector, "white-space:nowrap;", important)), "transition" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-all" => Some(simple_rule(base_selector, "transition-property:all;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-colors" => Some(simple_rule(base_selector, "transition-property:background-color,border-color,color,fill,stroke;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-none" => Some(simple_rule(base_selector, "transition-property:none;", important)), "transition-opacity" => Some(simple_rule(base_selector, "transition-property:opacity;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "transition-transform" => Some(simple_rule(base_selector, "transition-property:transform;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);", important)), "cursor-pointer" => Some(simple_rule(base_selector, "cursor:pointer;", important)), "cursor-default" => Some(simple_rule(base_selector, "cursor:default;", important)), "uppercase" => Some(simple_rule(base_selector, "text-transform:uppercase;", important)), "lowercase" => Some(simple_rule(base_selector, "text-transform:lowercase;", important)), "capitalize" => Some(simple_rule(base_selector, "text-transform:capitalize;", important)), "underline" => Some(simple_rule(base_selector, "text-decoration:underline;", important)), "inline-flex" => Some(simple_rule(base_selector, "display:inline-flex;", important)), "list-disc" => Some(simple_rule(base_selector, "list-style-type:disc;", important)), "list-inside" => Some(simple_rule(base_selector, "list-style-position:inside;", important)), "break-words" => Some(simple_rule(base_selector, "overflow-wrap:break-word;", important)), "appearance-none" => Some(simple_rule(base_selector, "appearance:none;", important)), "backdrop-blur-sm" => Some(simple_rule(base_selector, "backdrop-filter:blur(4px);", important)), "backdrop-blur" => Some(simple_rule(base_selector, "backdrop-filter:blur(8px);", important)), "backdrop-blur-md" => Some(simple_rule(base_selector, "backdrop-filter:blur(12px);", important)), "backdrop-blur-lg" => Some(simple_rule(base_selector, "backdrop-filter:blur(16px);", important)), "backdrop-blur-xl" => Some(simple_rule(base_selector, "backdrop-filter:blur(24px);", important)), "backdrop-blur-none" => Some(simple_rule(base_selector, "backdrop-filter:none;", important)), "antialiased" => Some(simple_rule(base_selector, "-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;", important)), "pointer-events-none" => Some(simple_rule(base_selector, "pointer-events:none;", important)), "pointer-events-auto" => Some(simple_rule(base_selector, "pointer-events:auto;", important)), "select-none" => Some(simple_rule(base_selector, "user-select:none;", important)), "fill-current" => Some(simple_rule(base_selector, "fill:currentColor;", important)), "align-top" => Some(simple_rule(base_selector, "vertical-align:top;", important)), "align-middle" => Some(simple_rule(base_selector, "vertical-align:middle;", important)), "resize-y" => Some(simple_rule(base_selector, "resize:vertical;", important)), "touch-pan-y" => Some(simple_rule(base_selector, "touch-action:pan-y;", important)), "tabular-nums" => Some(simple_rule(base_selector, "font-variant-numeric:tabular-nums;", important)), "sr-only" => Some(simple_rule(base_selector, "position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border-width:0;", important)), "prose-sm" => Some(simple_rule(base_selector, "font-size:0.875rem;line-height:1.7142857;", important)), "bg-center" => Some(simple_rule(base_selector, "background-position:center;", important)), "bg-bottom" => Some(simple_rule(base_selector, "background-position:bottom;", important)), "bg-repeat" => Some(simple_rule(base_selector, "background-repeat:repeat;", important)), "bg-repeat-x" => Some(simple_rule(base_selector, "background-repeat:repeat-x;", important)), "bg-repeat-y" => Some(simple_rule(base_selector, "background-repeat:repeat-y;", important)), "bg-no-repeat" => Some(simple_rule(base_selector, "background-repeat:no-repeat;", important)), "bg-cover" => Some(simple_rule(base_selector, "background-size:cover;", important)), "bg-contain" => Some(simple_rule(base_selector, "background-size:contain;", important)), "bg-gradient-to-r" => Some(simple_rule(base_selector, "background-image:linear-gradient(to right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-b" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "bg-gradient-to-br" => Some(simple_rule(base_selector, "background-image:linear-gradient(to bottom right,var(--tw-gradient-from),var(--tw-gradient-to));", important)), "outline-none" => Some(simple_rule(base_selector, "outline:2px solid transparent;outline-offset:2px;", important)), "outline-hidden" => Some(simple_rule(base_selector, "outline:none;", important)), "ring" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-1" => Some(simple_rule(base_selector, "box-shadow:0 0 0 1px rgba(59,130,246,0.5);", important)), "ring-2" => Some(simple_rule(base_selector, "box-shadow:0 0 0 2px rgba(59,130,246,0.5);", important)), "ring-4" => Some(simple_rule(base_selector, "box-shadow:0 0 0 4px rgba(59,130,246,0.5);", important)), "max-w-none" => Some(simple_rule(base_selector, "max-width:none;", important)), "w-px" => Some(simple_rule(base_selector, "width:1px;", important)), "size-full" => Some(simple_rule(base_selector, "width:100%;height:100%;", important)), "list-decimal" => Some(simple_rule(base_selector, "list-style-type:decimal;", important)), "animate-spin" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-spin 1s linear infinite;", important), prelude: Some("@keyframes zebflow-spin{to{transform:rotate(360deg);}}".to_string()) }), "animate-ping" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-ping 1s cubic-bezier(0,0,0.2,1) infinite;", important), prelude: Some("@keyframes zebflow-ping{75%,100%{transform:scale(2);opacity:0;}}".to_string()) }), "animate-pulse" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite;", important), prelude: Some("@keyframes zebflow-pulse{0%,100%{opacity:1;}50%{opacity:.5;}}".to_string()) }), "animate-bounce" => Some(UtilityRule { selector: base_selector.to_string(), declarations: maybe_important("animation:zebflow-bounce 1s infinite;", important), prelude: Some("@keyframes zebflow-bounce{0%,100%{transform:translateY(-25%);animation-timing-function:cubic-bezier(.8,0,1,1);}50%{transform:none;animation-timing-function:cubic-bezier(0,0,.2,1);}}".to_string()) }),
+        // Overflow
+        "overflow-x-scroll"   => Some(simple_rule(base_selector, "overflow-x:scroll;", important)),
+        "overflow-y-scroll"   => Some(simple_rule(base_selector, "overflow-y:scroll;", important)),
+        "overflow-x-visible"  => Some(simple_rule(base_selector, "overflow-x:visible;", important)),
+        "overflow-y-visible"  => Some(simple_rule(base_selector, "overflow-y:visible;", important)),
+        "overflow-clip"       => Some(simple_rule(base_selector, "overflow:clip;", important)),
+        "overflow-x-clip"     => Some(simple_rule(base_selector, "overflow-x:clip;", important)),
+        "overflow-y-clip"     => Some(simple_rule(base_selector, "overflow-y:clip;", important)),
+        // Display
+        "contents"    => Some(simple_rule(base_selector, "display:contents;", important)),
+        "table"       => Some(simple_rule(base_selector, "display:table;", important)),
+        "table-cell"  => Some(simple_rule(base_selector, "display:table-cell;", important)),
+        "table-row"   => Some(simple_rule(base_selector, "display:table-row;", important)),
+        "flow-root"   => Some(simple_rule(base_selector, "display:flow-root;", important)),
+        "list-item"   => Some(simple_rule(base_selector, "display:list-item;", important)),
+        "inline-grid" => Some(simple_rule(base_selector, "display:inline-grid;", important)),
+        // Whitespace
+        "whitespace-pre"          => Some(simple_rule(base_selector, "white-space:pre;", important)),
+        "whitespace-pre-wrap"     => Some(simple_rule(base_selector, "white-space:pre-wrap;", important)),
+        "whitespace-pre-line"     => Some(simple_rule(base_selector, "white-space:pre-line;", important)),
+        "whitespace-break-spaces" => Some(simple_rule(base_selector, "white-space:break-spaces;", important)),
+        // Text overflow
+        "text-ellipsis" => Some(simple_rule(base_selector, "text-overflow:ellipsis;", important)),
+        "text-clip"     => Some(simple_rule(base_selector, "text-overflow:clip;", important)),
+        "truncate"      => Some(simple_rule(base_selector, "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", important)),
+        // Text wrap
+        "text-wrap"    => Some(simple_rule(base_selector, "text-wrap:wrap;", important)),
+        "text-nowrap"  => Some(simple_rule(base_selector, "text-wrap:nowrap;", important)),
+        "text-balance" => Some(simple_rule(base_selector, "text-wrap:balance;", important)),
+        "text-pretty"  => Some(simple_rule(base_selector, "text-wrap:pretty;", important)),
+        // Box sizing
+        "box-border"  => Some(simple_rule(base_selector, "box-sizing:border-box;", important)),
+        "box-content" => Some(simple_rule(base_selector, "box-sizing:content-box;", important)),
+        // Box decoration break
+        "box-decoration-clone" => Some(simple_rule(base_selector, "box-decoration-break:clone;-webkit-box-decoration-break:clone;", important)),
+        "box-decoration-slice" => Some(simple_rule(base_selector, "box-decoration-break:slice;-webkit-box-decoration-break:slice;", important)),
+        // Isolation
+        "isolate"        => Some(simple_rule(base_selector, "isolation:isolate;", important)),
+        "isolation-auto" => Some(simple_rule(base_selector, "isolation:auto;", important)),
+        // Object fit
+        "object-contain"    => Some(simple_rule(base_selector, "object-fit:contain;", important)),
+        "object-cover"      => Some(simple_rule(base_selector, "object-fit:cover;", important)),
+        "object-fill"       => Some(simple_rule(base_selector, "object-fit:fill;", important)),
+        "object-none"       => Some(simple_rule(base_selector, "object-fit:none;", important)),
+        "object-scale-down" => Some(simple_rule(base_selector, "object-fit:scale-down;", important)),
+        // Visibility
+        "visible"   => Some(simple_rule(base_selector, "visibility:visible;", important)),
+        "invisible" => Some(simple_rule(base_selector, "visibility:hidden;", important)),
+        "collapse"  => Some(simple_rule(base_selector, "visibility:collapse;", important)),
+        // Typography
+        "not-italic"      => Some(simple_rule(base_selector, "font-style:normal;", important)),
+        "no-underline"    => Some(simple_rule(base_selector, "text-decoration:none;", important)),
+        "line-through"    => Some(simple_rule(base_selector, "text-decoration:line-through;", important)),
+        "overline"        => Some(simple_rule(base_selector, "text-decoration:overline;", important)),
+        "normal-nums"     => Some(simple_rule(base_selector, "font-variant-numeric:normal;", important)),
+        "appearance-auto" => Some(simple_rule(base_selector, "appearance:auto;", important)),
+        // User select
+        "select-all"  => Some(simple_rule(base_selector, "user-select:all;", important)),
+        "select-text" => Some(simple_rule(base_selector, "user-select:text;", important)),
+        "select-auto" => Some(simple_rule(base_selector, "user-select:auto;", important)),
+        // Touch action
+        "touch-none"         => Some(simple_rule(base_selector, "touch-action:none;", important)),
+        "touch-auto"         => Some(simple_rule(base_selector, "touch-action:auto;", important)),
+        "touch-pan-x"        => Some(simple_rule(base_selector, "touch-action:pan-x;", important)),
+        "touch-manipulation" => Some(simple_rule(base_selector, "touch-action:manipulation;", important)),
+        "touch-pinch-zoom"   => Some(simple_rule(base_selector, "touch-action:pinch-zoom;", important)),
+        // Resize
+        "resize-none" => Some(simple_rule(base_selector, "resize:none;", important)),
+        "resize-x"    => Some(simple_rule(base_selector, "resize:horizontal;", important)),
+        "resize"      => Some(simple_rule(base_selector, "resize:both;", important)),
+        // Vertical align
+        "align-bottom"      => Some(simple_rule(base_selector, "vertical-align:bottom;", important)),
+        "align-text-top"    => Some(simple_rule(base_selector, "vertical-align:text-top;", important)),
+        "align-text-bottom" => Some(simple_rule(base_selector, "vertical-align:text-bottom;", important)),
+        "align-sub"         => Some(simple_rule(base_selector, "vertical-align:sub;", important)),
+        "align-super"       => Some(simple_rule(base_selector, "vertical-align:super;", important)),
+        "align-baseline"    => Some(simple_rule(base_selector, "vertical-align:baseline;", important)),
+        // Grid
+        "col-span-full"       => Some(simple_rule(base_selector, "grid-column:1 / -1;", important)),
+        "row-span-full"       => Some(simple_rule(base_selector, "grid-row:1 / -1;", important)),
+        "col-auto"            => Some(simple_rule(base_selector, "grid-column:auto;", important)),
+        "row-auto"            => Some(simple_rule(base_selector, "grid-row:auto;", important)),
+        "auto-rows-auto"      => Some(simple_rule(base_selector, "grid-auto-rows:auto;", important)),
+        "auto-rows-min"       => Some(simple_rule(base_selector, "grid-auto-rows:min-content;", important)),
+        "auto-rows-max"       => Some(simple_rule(base_selector, "grid-auto-rows:max-content;", important)),
+        "auto-rows-fr"        => Some(simple_rule(base_selector, "grid-auto-rows:minmax(0,1fr);", important)),
+        "auto-cols-auto"      => Some(simple_rule(base_selector, "grid-auto-columns:auto;", important)),
+        "auto-cols-min"       => Some(simple_rule(base_selector, "grid-auto-columns:min-content;", important)),
+        "auto-cols-max"       => Some(simple_rule(base_selector, "grid-auto-columns:max-content;", important)),
+        "auto-cols-fr"        => Some(simple_rule(base_selector, "grid-auto-columns:minmax(0,1fr);", important)),
+        "grid-flow-row"       => Some(simple_rule(base_selector, "grid-auto-flow:row;", important)),
+        "grid-flow-col"       => Some(simple_rule(base_selector, "grid-auto-flow:column;", important)),
+        "grid-flow-dense"     => Some(simple_rule(base_selector, "grid-auto-flow:dense;", important)),
+        "grid-flow-row-dense" => Some(simple_rule(base_selector, "grid-auto-flow:row dense;", important)),
+        "grid-flow-col-dense" => Some(simple_rule(base_selector, "grid-auto-flow:column dense;", important)),
+        // Flex additions
+        "flex-auto"         => Some(simple_rule(base_selector, "flex:1 1 auto;", important)),
+        "flex-row-reverse"  => Some(simple_rule(base_selector, "flex-direction:row-reverse;", important)),
+        "flex-col-reverse"  => Some(simple_rule(base_selector, "flex-direction:column-reverse;", important)),
+        "flex-wrap-reverse" => Some(simple_rule(base_selector, "flex-wrap:wrap-reverse;", important)),
+        "flex-nowrap"       => Some(simple_rule(base_selector, "flex-wrap:nowrap;", important)),
+        "grow"              => Some(simple_rule(base_selector, "flex-grow:1;", important)),
+        "grow-0"            => Some(simple_rule(base_selector, "flex-grow:0;", important)),
+        "shrink"            => Some(simple_rule(base_selector, "flex-shrink:1;", important)),
+        // Justify / align self
+        "justify-items-start"   => Some(simple_rule(base_selector, "justify-items:start;", important)),
+        "justify-items-end"     => Some(simple_rule(base_selector, "justify-items:end;", important)),
+        "justify-items-center"  => Some(simple_rule(base_selector, "justify-items:center;", important)),
+        "justify-items-stretch" => Some(simple_rule(base_selector, "justify-items:stretch;", important)),
+        "justify-self-auto"     => Some(simple_rule(base_selector, "justify-self:auto;", important)),
+        "justify-self-start"    => Some(simple_rule(base_selector, "justify-self:start;", important)),
+        "justify-self-end"      => Some(simple_rule(base_selector, "justify-self:end;", important)),
+        "justify-self-center"   => Some(simple_rule(base_selector, "justify-self:center;", important)),
+        "justify-self-stretch"  => Some(simple_rule(base_selector, "justify-self:stretch;", important)),
+        "self-auto"     => Some(simple_rule(base_selector, "align-self:auto;", important)),
+        "self-start"    => Some(simple_rule(base_selector, "align-self:flex-start;", important)),
+        "self-end"      => Some(simple_rule(base_selector, "align-self:flex-end;", important)),
+        "self-center"   => Some(simple_rule(base_selector, "align-self:center;", important)),
+        "self-stretch"  => Some(simple_rule(base_selector, "align-self:stretch;", important)),
+        "self-baseline" => Some(simple_rule(base_selector, "align-self:baseline;", important)),
+        // Place utilities
+        "place-items-start"   => Some(simple_rule(base_selector, "place-items:start;", important)),
+        "place-items-end"     => Some(simple_rule(base_selector, "place-items:end;", important)),
+        "place-items-center"  => Some(simple_rule(base_selector, "place-items:center;", important)),
+        "place-items-stretch" => Some(simple_rule(base_selector, "place-items:stretch;", important)),
+        "place-self-auto"     => Some(simple_rule(base_selector, "place-self:auto;", important)),
+        "place-self-start"    => Some(simple_rule(base_selector, "place-self:start;", important)),
+        "place-self-end"      => Some(simple_rule(base_selector, "place-self:end;", important)),
+        "place-self-center"   => Some(simple_rule(base_selector, "place-self:center;", important)),
+        "place-self-stretch"  => Some(simple_rule(base_selector, "place-self:stretch;", important)),
+        // Word break / overflow
+        "break-all"          => Some(simple_rule(base_selector, "word-break:break-all;", important)),
+        "break-keep"         => Some(simple_rule(base_selector, "word-break:keep-all;", important)),
+        "break-normal"       => Some(simple_rule(base_selector, "overflow-wrap:normal;word-break:normal;", important)),
+        "overscroll-auto"    => Some(simple_rule(base_selector, "overscroll-behavior:auto;", important)),
+        "overscroll-contain" => Some(simple_rule(base_selector, "overscroll-behavior:contain;", important)),
+        "overscroll-none"    => Some(simple_rule(base_selector, "overscroll-behavior:none;", important)),
+        // Float / clear
+        "float-right" => Some(simple_rule(base_selector, "float:right;", important)),
+        "float-left"  => Some(simple_rule(base_selector, "float:left;", important)),
+        "float-none"  => Some(simple_rule(base_selector, "float:none;", important)),
+        "clear-left"  => Some(simple_rule(base_selector, "clear:left;", important)),
+        "clear-right" => Some(simple_rule(base_selector, "clear:right;", important)),
+        "clear-both"  => Some(simple_rule(base_selector, "clear:both;", important)),
+        "clear-none"  => Some(simple_rule(base_selector, "clear:none;", important)),
+        // Misc
+        "inset-auto"   => Some(simple_rule(base_selector, "inset:auto;", important)),
+        "leading-wide" => Some(simple_rule(base_selector, "line-height:1.75;", important)),
+        _ => None }
 }
 
 fn simple_rule(s: &str, d: &str, i: bool) -> UtilityRule {

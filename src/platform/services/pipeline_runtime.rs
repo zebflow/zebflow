@@ -330,6 +330,11 @@ impl PipelineRuntimeService {
             .collect()
     }
 
+    /// Returns all active compiled pipelines across every owner/project.
+    pub fn list_all(&self) -> Vec<CompiledPipeline> {
+        self.inner.load().values().cloned().collect()
+    }
+
     /// Returns any active pipelines that already claim the same `{method, path}` webhook
     /// combination as the incoming graph.  Pass `self_file_rel_path` so a pipeline updating
     /// itself is not reported as a conflict.

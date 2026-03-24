@@ -1,0 +1,46 @@
+{
+  "name": "zeb/use",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "RWE hooks collection for templates. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
+  "source": {
+    "provider": "zebflow",
+    "package": "use",
+    "package_version": "bridge",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/use.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-use-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "useDebounce",
+      "useThrottle",
+      "useLocalStorage",
+      "useClipboard",
+      "useTemporaryState",
+      "useWindowEvent",
+      "useLazyModule",
+      "useSearchParams",
+      "useSplitPane",
+      "useClickAway",
+      "useInterval",
+      "useGeolocation",
+      "useTree"
+    ],
+    "wrappers": []
+  },
+  "runtime": {
+    "entry": "runtime/use.bundle.mjs",
+    "format": "esm"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}
