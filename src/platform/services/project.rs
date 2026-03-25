@@ -554,7 +554,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let mut items = Vec::new();
         let mut default_file = None;
@@ -585,7 +584,6 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        self.ensure_default_template_workspace(&layout)?;
 
         let root = &layout.repo_pipelines_dir;
         let search_root = if let Some(p) = path.filter(|p| !p.is_empty() && p != &"/") {

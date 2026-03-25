@@ -62,6 +62,13 @@ impl DataAdapter for DynamoDbDataAdapter {
         ))
     }
 
+    fn delete_project(&self, _owner: &str, _project: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "dynamodb adapter is not implemented yet",
+        ))
+    }
+
     fn get_project_credential(
         &self,
         _owner: &str,

@@ -48,10 +48,10 @@ export function GitRepoPanel({ owner, project }) {
   const [credSaving, setCredSaving] = useState(false);
   const [credSaveError, setCredSaveError] = useState("");
 
-  const storageKey = `zf-repo-${owner}-${project}`;
   const statusUrl = `/api/projects/${owner}/${project}/git/status`;
   const commitUrl = `/api/projects/${owner}/${project}/git/commit`;
   const credApiUrl = `/api/projects/${owner}/${project}/credentials`;
+  const remoteUrl = `/api/projects/${owner}/${project}/git/remote`;
 
   // ── Git helpers ──────────────────────────────────────────────────────────
   async function fetchStatus() {
@@ -70,6 +70,8 @@ export function GitRepoPanel({ owner, project }) {
   useEffect(() => {
     if (!owner || !project) return;
     fetchStatus();
+    fetchCreds();
+    fetchRemote();
     if (repoEpochBoot.current) setSynced(false);
     repoEpochBoot.current = true;
   }, [owner, project, repoEpoch]);
@@ -86,27 +88,15 @@ export function GitRepoPanel({ owner, project }) {
     setBusy(true);
     setCommitError("");
 
-    let pushExtra: Record<string, string> = {};
-    if (push) {
-      try {
-        const cfg = JSON.parse(localStorage.getItem(storageKey) || "null");
-        if (cfg) {
-          if (cfg.credential_id) pushExtra.credential_id = cfg.credential_id;
-          if (cfg.repo_url)      pushExtra.repo_url = cfg.repo_url;
-          if (cfg.branch)        pushExtra.branch = cfg.branch;
-        }
-      } catch (_) {}
-    }
-
     try {
       const res = await fetch(commitUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ files: checked, message: message.trim(), push, ...pushExtra }),
+        body: JSON.stringify({ files: checked, message: message.trim(), push }),
       });
       if (res.status === 401) { nav("/login"); return; }
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error?.message || body?.message || "Failed");
+      if (!res.ok) throw new Error(body?.error?.message || body?.error || body?.message || "Failed");
       setMessage("");
       if (push) setSynced(true);
       await fetchStatus();
@@ -124,19 +114,17 @@ export function GitRepoPanel({ owner, project }) {
     return "";
   }
 
-  function loadSaved() {
+  async function fetchRemote() {
+    if (!owner || !project) return;
     try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
-      if (saved) {
-        setSelectedId(saved.credential_id ?? "");
-        if (saved.slug) {
-          setSlug(saved.slug);
-        } else if (saved.repo_url) {
-          const m = String(saved.repo_url).match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/);
-          setSlug(m ? m[1] : saved.repo_url);
-        }
-        setBranch(saved.branch ?? "main");
+      const res = await fetch(remoteUrl, { headers: { Accept: "application/json" } });
+      const data = await res.json().catch(() => ({}));
+      if (data.credential_id) setSelectedId(data.credential_id);
+      if (data.repo_url) {
+        const m = String(data.repo_url).match(/^https?:\/\/[^/]+\/(.+?)(?:\.git)?$/);
+        setSlug(m ? m[1] : data.repo_url);
       }
+      if (data.branch) setBranch(data.branch);
     } catch (_) {}
   }
 
@@ -154,21 +142,21 @@ export function GitRepoPanel({ owner, project }) {
     setRepoLoading(false);
   }
 
-  function handleConnect() {
+  async function handleConnect() {
     if (!selectedId || !slug.trim()) {
       setSaveMsg("Select a credential and enter the repo path.");
       setSaveState("error");
       return;
     }
     const host = getCredHost(creds.find((c) => c.credential_id === selectedId) ?? null);
-    const repoUrl = host ? `https://${host}/${slug.trim()}.git` : slug.trim();
+    const repo_url = host ? `https://${host}/${slug.trim()}.git` : slug.trim();
     try {
-      localStorage.setItem(storageKey, JSON.stringify({
-        credential_id: selectedId,
-        slug: slug.trim(),
-        repo_url: repoUrl,
-        branch: branch.trim() || "main",
-      }));
+      const res = await fetch(remoteUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential_id: selectedId, repo_url, branch: branch.trim() || "main" }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
       setSaveState("saved");
       setSaveMsg("Connected.");
       setTimeout(() => { setSaveState("idle"); setSaveMsg(""); }, 2500);
@@ -178,8 +166,12 @@ export function GitRepoPanel({ owner, project }) {
     }
   }
 
-  function handleDisconnect() {
-    try { localStorage.removeItem(storageKey); } catch (_) {}
+  async function handleDisconnect() {
+    await fetch(remoteUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential_id: "", repo_url: "", branch: "main" }),
+    }).catch(() => {});
     setSelectedId("");
     setSlug("");
     setBranch("main");
@@ -206,7 +198,7 @@ export function GitRepoPanel({ owner, project }) {
       });
       if (res.status === 401) { nav("/login"); return; }
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body?.error?.message || body?.message || "Failed");
+      if (!res.ok) throw new Error(body?.error?.message || body?.error || body?.message || "Failed");
       setShowCredDialog(false);
       setNewCredId(""); setNewCredTitle(""); setNewCredKind("github");
       setNewCredUsername(""); setNewCredToken(""); setNewCredGitName(""); setNewCredGitEmail("");
@@ -223,7 +215,7 @@ export function GitRepoPanel({ owner, project }) {
     if (!open) {
       fetchStatus();
       fetchCreds();
-      loadSaved();
+      fetchRemote();
       openHeaderPanel("git-repo");
     }
     setOpen((o) => !o);
@@ -234,7 +226,7 @@ export function GitRepoPanel({ owner, project }) {
   const unstaged = files.filter((f) => { const x = (f.code ?? " ")[0]; const y = (f.code ?? " ")[1]; return x === "?" || (y && y !== " "); });
   const count = files.length;
   const checkedCount = files.filter((f) => f.checked).length;
-  const connected = (() => { try { return !!JSON.parse(localStorage.getItem(storageKey) || "null"); } catch (_) { return false; } })();
+  const connected = selectedId !== "";
   const selectedCred = creds.find((c) => c.credential_id === selectedId) ?? null;
   const credHost = getCredHost(selectedCred);
 

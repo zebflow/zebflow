@@ -56,6 +56,9 @@ export default function Page(input) {
           Sign in
         </button>
       </form>
+      {input?.app_version ? (
+        <p className="mt-6 text-[0.7rem] text-slate-400 tracking-wide">v{input.app_version}</p>
+      ) : null}
     </div>
   );
 }

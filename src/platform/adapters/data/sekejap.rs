@@ -313,6 +313,15 @@ impl DataAdapter for SekejapDataAdapter {
         Ok(())
     }
 
+    fn delete_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
+        let slug = Self::project_slug(owner, project);
+        self.db
+            .nodes()
+            .remove(&slug)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE", e.to_string()))?;
+        Ok(())
+    }
+
     fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
         let rows = self.query_payloads(vec![
             json!({"op":"collection","name":"project"}),
