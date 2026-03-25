@@ -99,6 +99,21 @@ static SKILLS: &[Skill] = &[
         title: "Pipeline System Guide",
         content: include_str!("help-pipeline.md"),
     },
+    Skill {
+        name: "web-zeb-hooks",
+        title: "Zeb React Hooks — Globals Reference",
+        content: include_str!("web-zeb-hooks.md"),
+    },
+    Skill {
+        name: "web-zeb-libraries",
+        title: "Zeb Libraries (zeb/*) — Bundled Add-ons",
+        content: include_str!("web-zeb-libraries.md"),
+    },
+    Skill {
+        name: "web-tailwind",
+        title: "Tailwind in Zeb Templates",
+        content: include_str!("web-tailwind.md"),
+    },
 ];
 
 static EXAMPLES: &[Example] = &[
@@ -161,6 +176,44 @@ static EXAMPLES: &[Example] = &[
 /// Returns all available platform skills.
 pub fn all_skills() -> &'static [Skill] {
     SKILLS
+}
+
+/// Maps user-facing `help_docs` topic slugs to skill names.
+/// Topic slugs are short, memorable aliases (e.g. "hooks", "tailwind", "zeb/use").
+static HELP_DOCS_TOPICS: &[(&str, &str)] = &[
+    // Hooks / React globals
+    ("hooks",     "web-zeb-hooks"),
+    ("zeb/use",   "web-zeb-hooks"),
+    ("globals",   "web-zeb-hooks"),
+    // Zeb/* libraries
+    ("libraries", "web-zeb-libraries"),
+    ("zeb/icons", "web-zeb-libraries"),
+    ("zeb/libs",  "web-zeb-libraries"),
+    ("zeb/*",     "web-zeb-libraries"),
+    // Tailwind / styling
+    ("tailwind",  "web-tailwind"),
+    ("tw",        "web-tailwind"),
+    ("css",       "web-tailwind"),
+    ("tw-variants","web-tailwind"),
+    ("styling",   "web-tailwind"),
+    // General web templates (existing skill)
+    ("web",       "web-templates"),
+    ("templates", "web-templates"),
+    ("tsx",       "web-templates"),
+];
+
+/// Resolve a help_docs topic slug to a skill name.
+pub fn resolve_help_docs_topic(topic: &str) -> Option<&'static Skill> {
+    let topic_lower = topic.to_lowercase();
+    HELP_DOCS_TOPICS
+        .iter()
+        .find(|(t, _)| *t == topic_lower)
+        .and_then(|(_, skill_name)| get_skill(skill_name))
+}
+
+/// List all available help_docs topics.
+pub fn list_help_docs_topics() -> Vec<(&'static str, &'static str)> {
+    HELP_DOCS_TOPICS.iter().copied().collect()
 }
 
 /// Find a skill by name.

@@ -257,6 +257,16 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
             "../../../libraries/zeb/prosemirror/0.1/wrappers/ProseEditor.tsx"
         ),
     },
+    EmbeddedAsset {
+        path: "zeb/preact/0.1/library.json",
+        bytes: include_bytes!("../../../libraries/zeb/preact/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/preact/0.1/runtime/preact.bundle.mjs",
+        bytes: include_bytes!(
+            "../../../libraries/zeb/preact/0.1/runtime/preact.bundle.mjs"
+        ),
+    },
 ];
 
 pub fn platform_library_asset(path: &str) -> Option<&'static [u8]> {

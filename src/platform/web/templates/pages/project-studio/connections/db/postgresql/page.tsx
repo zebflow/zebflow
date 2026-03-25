@@ -1,6 +1,7 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
 import { useState, useEffect, cx } from "zeb";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
@@ -221,13 +222,13 @@ export default function Page(input) {
       nav={input.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <a href={navLinks.db_connections ?? "#"} className="project-tab-link">Connections</a>
+        <StudioTabNav>
+          <StudioTabLink href={navLinks.db_connections ?? "#"}>Connections</StudioTabLink>
           {suiteTabs.map((item, index) => (
-            <a key={`${item?.href ?? "tab"}-${index}`} href={item?.href ?? "#"} className={cx("project-tab-link", item?.classes)}>{item?.label}</a>
+            <StudioTabLink key={`${item?.href ?? "tab"}-${index}`} href={item?.href ?? "#"} active={item?.classes === "is-active"}>{item?.label}</StudioTabLink>
           ))}
-        </nav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)] db-suite-page" data-db-suite="true"
+        </StudioTabNav>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg db-suite-page" data-db-suite="true"
           data-owner={input.owner}
           data-project={input.project}
           data-db-kind={connection.kind ?? ""}

@@ -2,6 +2,7 @@ import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initProjectCredentialsBehavior } from "@/pages/project-studio/credentials/credentials-behavior";
 import HelpTooltip from "@/components/ui/help-tooltip";
 import { StudioTable, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
@@ -40,10 +41,10 @@ export default function Page(input) {
       nav={input.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <span className="project-tab-link is-active">Credentials</span>
-        </nav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+        <StudioTabNav>
+          <StudioTabLink active>Credentials</StudioTabLink>
+        </StudioTabNav>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
           <div className="project-content-wrap">
             <section className="project-content-section">
               <div className="project-content-head">

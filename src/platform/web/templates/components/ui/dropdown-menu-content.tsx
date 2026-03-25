@@ -11,9 +11,9 @@ export default function DropdownMenuContent({ align, className, children, ...res
   return (
     <div className={cx(
       "absolute z-50 mt-2 min-w-[8rem] overflow-hidden rounded-md p-1 shadow-md animate-in fade-in-80 zoom-in-95",
-      "border border-[var(--studio-border,#2b3648)]",
-      "bg-[var(--studio-panel,#111827)]",
-      "text-[var(--studio-text,#e5edf7)]",
+      "border border-border",
+      "bg-surface",
+      "text-body",
       alignClass, className)} {...rest}>
       {children}
     </div>

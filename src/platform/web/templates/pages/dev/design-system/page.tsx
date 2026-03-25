@@ -15,7 +15,7 @@ import CardTitle from "@/components/ui/card-title";
 import CardDescription from "@/components/ui/card-description";
 import CardContent from "@/components/ui/card-content";
 import CardFooter from "@/components/ui/card-footer";
-import Dialog from "@/components/ui/dialog";
+import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
 import DialogHeader from "@/components/ui/dialog-header";
 import DialogTitle from "@/components/ui/dialog-title";
@@ -50,18 +50,18 @@ export const page = {
 function SectionHeading({ title, description }) {
   return (
     <div className="mb-8">
-      <h2 className="text-2xl font-bold tracking-tight text-[var(--studio-text)]">{title}</h2>
+      <h2 className="text-2xl font-bold tracking-tight text-body">{title}</h2>
       {description ? (
-        <p className="mt-1.5 text-sm text-[var(--studio-text-soft)]">{description}</p>
+        <p className="mt-1.5 text-sm text-body-soft">{description}</p>
       ) : null}
-      <div className="mt-5 h-px bg-[var(--studio-border)]" />
+      <div className="mt-5 h-px bg-border" />
     </div>
   );
 }
 
 function SubHeading({ title }) {
   return (
-    <h3 className="text-[0.68rem] font-bold uppercase tracking-widest text-[var(--studio-text-soft)] mb-4 mt-10 first:mt-0">
+    <h3 className="text-[0.68rem] font-bold uppercase tracking-widest text-body-soft mb-4 mt-10 first:mt-0">
       {title}
     </h3>
   );
@@ -71,7 +71,7 @@ function DemoBox({ children, className }) {
   return (
     <div
       className={cx(
-        "rounded-xl border border-[var(--studio-border)] bg-[var(--studio-panel)] p-6",
+        "rounded-xl border border-border bg-surface p-6",
         className,
       )}
     >
@@ -83,12 +83,12 @@ function DemoBox({ children, className }) {
 function CodeBlock({ code }) {
   return (
     <div className="relative mt-3" data-code-wrapper="true">
-      <pre className="rounded-xl bg-[var(--studio-panel-2)] border border-[var(--studio-border)] px-5 py-4 overflow-x-auto text-[0.78rem] font-mono text-[var(--studio-text)] leading-6 whitespace-pre">
+      <pre className="rounded-xl bg-surface-2 border border-border px-5 py-4 overflow-x-auto text-[0.78rem] font-mono text-body leading-6 whitespace-pre">
         <code data-code-block="true">{code}</code>
       </pre>
       <button
         data-copy-btn="true"
-        className="absolute top-2.5 right-3 text-[0.65rem] font-mono text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] bg-[var(--studio-panel-3)] border border-[var(--studio-border)] rounded px-2 py-1 transition-colors"
+        className="absolute top-2.5 right-3 text-[0.65rem] font-mono text-body-soft hover:text-body bg-surface-3 border border-border rounded px-2 py-1 transition-colors"
       >
         copy
       </button>
@@ -98,9 +98,9 @@ function CodeBlock({ code }) {
 
 function RuleAlert({ children }) {
   return (
-    <div className="rounded-lg border border-[var(--studio-border)] bg-[var(--studio-panel)] px-4 py-3 mb-5 flex gap-3 items-start">
-      <span className="text-[var(--zf-color-brand-orange)] mt-px shrink-0">⚠</span>
-      <p className="text-sm text-[var(--studio-text-soft)] leading-relaxed">{children}</p>
+    <div className="rounded-lg border border-border bg-surface px-4 py-3 mb-5 flex gap-3 items-start">
+      <span className="text-brand-orange mt-px shrink-0">⚠</span>
+      <p className="text-sm text-body-soft leading-relaxed">{children}</p>
     </div>
   );
 }
@@ -110,12 +110,12 @@ function ComponentRow({ name, importPath, description, children, code }) {
     <div className="mb-12">
       <div className="flex items-start gap-4 mb-3">
         <div className="flex-1">
-          <h3 className="text-base font-semibold text-[var(--studio-text)]">{name}</h3>
+          <h3 className="text-base font-semibold text-body">{name}</h3>
           {description ? (
-            <p className="text-sm text-[var(--studio-text-soft)] mt-0.5">{description}</p>
+            <p className="text-sm text-body-soft mt-0.5">{description}</p>
           ) : null}
         </div>
-        <code className="shrink-0 text-[0.68rem] font-mono text-[var(--studio-text-soft)] bg-[var(--studio-panel-2)] border border-[var(--studio-border)] px-2 py-1 rounded whitespace-nowrap">
+        <code className="shrink-0 text-[0.68rem] font-mono text-body-soft bg-surface-2 border border-border px-2 py-1 rounded whitespace-nowrap">
           {importPath}
         </code>
       </div>
@@ -162,29 +162,29 @@ function TokensSection() {
       <SubHeading title="Typography" />
       <div className="space-y-6 mb-10">
         <div>
-          <p className="text-[0.68rem] font-mono text-[var(--studio-text-soft)] uppercase tracking-widest mb-2">
+          <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
             --zf-font-display · Pathway Extreme + Roboto
           </p>
           <p
-            className="text-3xl font-black tracking-tight text-[var(--studio-text)]"
-            style={{ fontFamily: "var(--zf-font-display)" }}
+            className="text-3xl font-black tracking-tight text-body"
+            style={{ fontFamily: "var(--font-display)" }}
           >
             ZEBFLOW Platform Studio
           </p>
         </div>
         <div>
-          <p className="text-[0.68rem] font-mono text-[var(--studio-text-soft)] uppercase tracking-widest mb-2">
+          <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
             --zf-font-sans · Roboto (body default)
           </p>
-          <p className="text-base text-[var(--studio-text)]" style={{ fontFamily: "var(--zf-font-sans)" }}>
+          <p className="text-base text-body" style={{ fontFamily: "var(--font-sans)" }}>
             The quick brown fox jumps over the lazy dog. 0123456789 AaBbCc
           </p>
         </div>
         <div>
-          <p className="text-[0.68rem] font-mono text-[var(--studio-text-soft)] uppercase tracking-widest mb-2">
+          <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
             --zf-font-mono · Roboto Mono (code + CLI)
           </p>
-          <p className="text-sm text-[var(--studio-text)]" style={{ fontFamily: "var(--zf-font-mono)" }}>
+          <p className="text-sm text-body" style={{ fontFamily: "var(--font-mono)" }}>
             register blog-api | trigger.webhook --path /api --method GET | pg.query --credential main-db
           </p>
         </div>
@@ -193,24 +193,24 @@ function TokensSection() {
       <SubHeading title="Spacing & Radius" />
       <DemoBox className={null}>
         <div className="flex items-center gap-4 flex-wrap">
-          <div className="flex items-center gap-2 text-sm text-[var(--studio-text-soft)]">
-            <div className="rounded bg-[var(--studio-accent)] w-4 h-4" />
+          <div className="flex items-center gap-2 text-sm text-body-soft">
+            <div className="rounded bg-accent w-4 h-4" />
             <span className="font-mono text-xs">rounded (4px)</span>
           </div>
-          <div className="flex items-center gap-2 text-sm text-[var(--studio-text-soft)]">
-            <div className="rounded-lg bg-[var(--studio-accent)] w-4 h-4" />
+          <div className="flex items-center gap-2 text-sm text-body-soft">
+            <div className="rounded-lg bg-accent w-4 h-4" />
             <span className="font-mono text-xs">rounded-lg (8px) — buttons</span>
           </div>
-          <div className="flex items-center gap-2 text-sm text-[var(--studio-text-soft)]">
-            <div className="rounded-xl bg-[var(--studio-accent)] w-4 h-4" />
+          <div className="flex items-center gap-2 text-sm text-body-soft">
+            <div className="rounded-xl bg-accent w-4 h-4" />
             <span className="font-mono text-xs">rounded-xl (12px) — panels</span>
           </div>
-          <div className="flex items-center gap-2 text-sm text-[var(--studio-text-soft)]">
-            <div className="rounded-full bg-[var(--studio-accent)] w-4 h-4" />
+          <div className="flex items-center gap-2 text-sm text-body-soft">
+            <div className="rounded-full bg-accent w-4 h-4" />
             <span className="font-mono text-xs">rounded-full — pills, badges</span>
           </div>
-          <div className="flex items-center gap-2 text-sm text-[var(--studio-text-soft)]">
-            <div style={{ borderRadius: "var(--zf-radius-panel)" }} className="bg-[var(--studio-accent)] w-4 h-4" />
+          <div className="flex items-center gap-2 text-sm text-body-soft">
+            <div style={{ borderRadius: "var(--radius-panel)" }} className="bg-accent w-4 h-4" />
             <span className="font-mono text-xs">--zf-radius-panel (1.25rem) — modals</span>
           </div>
         </div>
@@ -304,15 +304,15 @@ function ComponentsSection() {
       >
         <div className="space-y-5">
           <div>
-            <p className="text-xs text-[var(--studio-text-soft)] mb-2">Horizontal</p>
+            <p className="text-xs text-body-soft mb-2">Horizontal</p>
             <Separator />
           </div>
           <div>
-            <p className="text-xs text-[var(--studio-text-soft)] mb-2">Vertical</p>
+            <p className="text-xs text-body-soft mb-2">Vertical</p>
             <div className="flex items-center gap-3 h-8">
-              <span className="text-sm text-[var(--studio-text-soft)]">Left</span>
+              <span className="text-sm text-body-soft">Left</span>
               <Separator orientation="vertical" />
-              <span className="text-sm text-[var(--studio-text-soft)]">Right</span>
+              <span className="text-sm text-body-soft">Right</span>
             </div>
           </div>
         </div>
@@ -442,7 +442,7 @@ import CardFooter from "@/components/ui/card-footer";
               <CardDescription>Manage your project configuration.</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-[var(--studio-text-soft)]">Card body content goes here.</p>
+              <p className="text-sm text-body-soft">Card body content goes here.</p>
             </CardContent>
             <CardFooter>
               <Button variant="primary" label="Save changes" />
@@ -461,39 +461,35 @@ import CardFooter from "@/components/ui/card-footer";
 
 <Button variant="outline" label="Open dialog" onClick={() => setOpen(true)} />
 
-{open ? (
-  <Dialog open>
+<Dialog open={open} onOpenChange={setOpen}>
+  <DialogContent>
     <DialogHeader>
       <DialogTitle>Confirm action</DialogTitle>
       <DialogDescription>This cannot be undone.</DialogDescription>
     </DialogHeader>
-    <DialogContent>
-      <p>Are you sure you want to continue?</p>
-    </DialogContent>
+    <p>Are you sure you want to continue?</p>
     <DialogFooter>
       <Button variant="outline" label="Cancel" onClick={() => setOpen(false)} />
       <Button variant="destructive" label="Continue" onClick={() => setOpen(false)} />
     </DialogFooter>
-  </Dialog>
-) : null}`}
+  </DialogContent>
+</Dialog>`}
       >
         <div className="flex flex-col gap-4">
           <Button variant="outline" label="Open dialog" onClick={() => setDialogOpen(true)} />
-          {dialogOpen ? (
-            <Dialog open>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogContent>
               <DialogHeader>
                 <DialogTitle>Confirm action</DialogTitle>
                 <DialogDescription>This cannot be undone.</DialogDescription>
               </DialogHeader>
-              <DialogContent>
-                <p className="text-sm">Are you sure you want to continue?</p>
-              </DialogContent>
+              <p className="text-sm">Are you sure you want to continue?</p>
               <DialogFooter>
                 <Button variant="outline" label="Cancel" onClick={() => setDialogOpen(false)} />
                 <Button variant="destructive" label="Continue" onClick={() => setDialogOpen(false)} />
               </DialogFooter>
-            </Dialog>
-          ) : null}
+            </DialogContent>
+          </Dialog>
         </div>
       </ComponentRow>
 
@@ -529,13 +525,13 @@ import CardFooter from "@/components/ui/card-footer";
             <TabsTrigger label="Members" active={activeTab === "tab3"} onClick={() => setActiveTab("tab3")} />
           </TabsList>
           <TabsContent active={activeTab === "tab1"}>
-            <p className="text-sm text-[var(--studio-text-soft)] p-2">Overview content — configure your project from here.</p>
+            <p className="text-sm text-body-soft p-2">Overview content — configure your project from here.</p>
           </TabsContent>
           <TabsContent active={activeTab === "tab2"}>
-            <p className="text-sm text-[var(--studio-text-soft)] p-2">Settings content — adjust plan, billing, and preferences.</p>
+            <p className="text-sm text-body-soft p-2">Settings content — adjust plan, billing, and preferences.</p>
           </TabsContent>
           <TabsContent active={activeTab === "tab3"}>
-            <p className="text-sm text-[var(--studio-text-soft)] p-2">Members content — invite collaborators and manage roles.</p>
+            <p className="text-sm text-body-soft p-2">Members content — invite collaborators and manage roles.</p>
           </TabsContent>
         </Tabs>
       </ComponentRow>
@@ -589,7 +585,7 @@ panel.className = isOk
   : "bg-red-500/10 text-red-400 border border-red-500/20";
 
 // For CSS-var-based dynamic values, use inline style instead:
-btn.style.background = isActive ? "var(--studio-panel-2)" : "";`;
+btn.style.background = isActive ? "var(--color-surface-2)" : "";`;
 
   const behaviorFileCode = `// src/platform/web/templates/pages/my-area/components/my-feature-behavior.ts
 // Behavior files wire DOM events. No render(), no npm:preact imports.
@@ -648,8 +644,8 @@ function MyComponent() {
 // cx() is a runtime global — no import needed, no import from "zeb" required.
 function MyWidget({ label, variant = "default", className }) {
   const cls = variant === "accent"
-    ? "bg-[var(--studio-accent)] text-white"
-    : "bg-[var(--studio-panel)] text-[var(--studio-text)]";
+    ? "bg-accent text-white"
+    : "bg-surface text-body";
 
   return (
     <div className={cx("rounded-lg px-3 py-2 text-sm", cls, className)}>
@@ -682,7 +678,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Imports */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           Import paths: @/ alias and rwe globals
         </h3>
         <RuleAlert>
@@ -696,7 +692,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Rule 1 */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           Always use components/ui/
         </h3>
         <RuleAlert>
@@ -709,7 +705,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Rule 2 */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           tw-variants for behavior-file Tailwind classes
         </h3>
         <RuleAlert>
@@ -722,7 +718,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Rule 3 */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           No document.querySelector in .tsx components
         </h3>
         <RuleAlert>
@@ -734,7 +730,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Rule 4 */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           Behavior file anatomy
         </h3>
         <RuleAlert>
@@ -747,7 +743,7 @@ import { initMyFeatureBehavior } from "@/pages/my-area/components/my-feature-beh
 
       {/* Rule 5 */}
       <div className="mb-12">
-        <h3 className="text-base font-semibold text-[var(--studio-text)] mb-2">
+        <h3 className="text-base font-semibold text-body mb-2">
           main.css is global only
         </h3>
         <RuleAlert>
@@ -776,26 +772,26 @@ export default function Page(input) {
   return (
     <div className="project-studio-frame h-screen overflow-hidden flex flex-col">
       {/* Top header */}
-      <header className="shrink-0 flex items-center gap-4 px-6 h-12 border-b border-[var(--studio-border)] bg-[var(--studio-panel)]">
+      <header className="shrink-0 flex items-center gap-4 px-6 h-12 border-b border-border bg-surface">
         <a
           href="/home"
-          className="text-xs font-mono text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] transition-colors flex items-center gap-1.5"
+          className="text-xs font-mono text-body-soft hover:text-body transition-colors flex items-center gap-1.5"
         >
           ← home
         </a>
-        <div className="w-px h-4 bg-[var(--studio-border)]" />
+        <div className="w-px h-4 bg-border" />
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-bold tracking-tight text-[var(--studio-text)]">
+          <span className="text-sm font-bold tracking-tight text-body">
             Design System
           </span>
-          <span className="text-[0.65rem] font-mono text-[var(--studio-text-soft)] uppercase tracking-widest">
+          <span className="text-[0.65rem] font-mono text-body-soft uppercase tracking-widest">
             Zebflow Platform
           </span>
         </div>
         <div className="flex-1" />
         <a
           href="https://github.com/mecha-id/zebflow"
-          className="text-xs font-mono text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] transition-colors"
+          className="text-xs font-mono text-body-soft hover:text-body transition-colors"
         >
           agent-readable
         </a>
@@ -804,7 +800,7 @@ export default function Page(input) {
       {/* Body */}
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar */}
-        <nav className="shrink-0 w-48 border-r border-[var(--studio-border)] bg-[var(--studio-panel)] flex flex-col pt-4 pb-6 gap-0.5 px-2">
+        <nav className="shrink-0 w-48 border-r border-border bg-surface flex flex-col pt-4 pb-6 gap-0.5 px-2">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
@@ -812,8 +808,8 @@ export default function Page(input) {
               className={cx(
                 "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors w-full text-left",
                 activeSection === item.id
-                  ? "bg-[var(--studio-panel-2)] text-[var(--studio-text)] font-semibold"
-                  : "text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] hover:bg-[var(--studio-panel-3)]",
+                  ? "bg-surface-2 text-body font-semibold"
+                  : "text-body-soft hover:text-body hover:bg-surface-3",
               )}
             >
               <span className="text-base leading-none opacity-70">{item.icon}</span>
@@ -823,7 +819,7 @@ export default function Page(input) {
 
           <div className="mt-auto pt-6 px-1">
             <Separator />
-            <p className="text-[0.65rem] font-mono text-[var(--studio-text-soft)] opacity-50 mt-4 leading-relaxed">
+            <p className="text-[0.65rem] font-mono text-body-soft opacity-50 mt-4 leading-relaxed">
               Platform-level reference.{"\n"}Not project-scoped.
             </p>
           </div>
@@ -833,7 +829,7 @@ export default function Page(input) {
         <main
           data-ds-content="true"
           className="flex-1 overflow-y-auto px-10 py-8"
-          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--studio-border) transparent" }}
+          style={{ scrollbarWidth: "thin", scrollbarColor: "var(--color-border) transparent" }}
         >
           <section hidden={activeSection !== "tokens"}>
             <TokensSection />

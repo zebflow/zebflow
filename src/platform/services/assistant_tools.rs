@@ -61,69 +61,33 @@ impl AssistantPlatformTools {
             },
             // ── Help / Knowledge ───────────────────────────────────────────────
             ToolDef {
-                name: "help_pipeline".to_string(),
-                description: "Pipeline system guide — DSL syntax, pipe mode, how to register \
-                    and activate, common fullstack web patterns (GET page, POST API, auth gate, redirect, cron). \
-                    Call this before writing your first pipeline.".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
-            },
-            ToolDef {
-                name: "help_web_engine".to_string(),
-                description: "Web pages guide — TSX templates, server HTML render + optional browser hydration, \
-                    passing pipeline data via the input object, hooks, and the n.web.render node. \
-                    Call this before writing TSX templates.".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
-            },
-            ToolDef {
-                name: "help_examples".to_string(),
-                description: "Project archetypes with full DSL recipes. Without slug: lists available \
-                    archetypes (blog, forum, game, scheduling, scraping, auth). \
-                    With slug: returns full pipeline architecture and DSL bodies.".to_string(),
+                name: "help".to_string(),
+                description: "Hierarchical docs browser. No topic = full index with all available paths. \
+                    Paths: 'pipeline' (DSL + web patterns), 'pipeline/dsl', 'pipeline/authoring', \
+                    'pipeline/web', 'pipeline/nodes' (live node catalog), 'pipeline/nodes/{kind}' (one node), \
+                    'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
+                    'web' (TSX pages + imports), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
+                    'tool' (Tool.time/arr/stat/geo globals), \
+                    'db' (database overview), 'db/sekejap' (SekejapQL), \
+                    'platform' (overview), 'platform/agent', 'platform/api', 'platform/operations', 'platform/workflow'. \
+                    Call help() before writing pipelines or templates.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "slug": { "type": "string", "description": "Archetype slug to load. Omit to list all." }
-                    }
-                }),
-            },
-            ToolDef {
-                name: "help_nodes".to_string(),
-                description: "Node reference catalog. Without kind: full catalog with pins, DSL flags, \
-                    input/output schemas. With kind: one node only — e.g. kind='n.script', kind='trigger.webhook'.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "kind": { "type": "string", "description": "Node kind to look up. Omit for full catalog." }
+                        "topic": { "type": "string", "description": "Help path to load. Omit for the full index." }
                     }
                 }),
             },
             ToolDef {
                 name: "help_search".to_string(),
                 description: "Search Zebflow docs. Returns matching chunks from pipeline docs, \
-                    web template docs, node catalog, and skill files. \
+                    web template docs, node catalog, and all help files. \
                     Use for any concept, node name, DSL flag, or syntax question.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["query"],
                     "properties": {
                         "query": { "type": "string", "description": "Search query — node name, DSL flag, concept, or keyword." }
-                    }
-                }),
-            },
-            ToolDef {
-                name: "skill_list".to_string(),
-                description: "List all available Zebflow platform skills (operational knowledge docs).".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
-            },
-            ToolDef {
-                name: "skill_read".to_string(),
-                description: "Read the full content of a Zebflow platform skill by name. \
-                    Use skill_list to see available skill names.".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "required": ["name"],
-                    "properties": {
-                        "name": { "type": "string", "description": "Skill name to read (e.g. 'pipeline-authoring', 'web-templates')." }
                     }
                 }),
             },
@@ -439,13 +403,8 @@ impl AssistantPlatformTools {
             "start_here" => ops.start_here().await,
 
             // ── Help / Knowledge ───────────────────────────────────────────────
-            "help_pipeline" => ops.help_pipeline(),
-            "help_web_engine" => ops.help_web_engine(),
-            "help_examples" => ops.help_examples(args.get("slug").and_then(|v| v.as_str())),
-            "help_nodes" => ops.help_nodes(args.get("kind").and_then(|v| v.as_str())),
+            "help" => ops.help(args.get("topic").and_then(|v| v.as_str()).unwrap_or("")),
             "help_search" => ops.help_search(args["query"].as_str().unwrap_or("")),
-            "skill_list" => ops.skill_list(),
-            "skill_read" => ops.skill_read(args["name"].as_str().unwrap_or("")),
 
             // ── Pipelines ──────────────────────────────────────────────────────
             "pipeline_list" => ops.pipeline_list(),

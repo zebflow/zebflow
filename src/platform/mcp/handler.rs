@@ -39,9 +39,10 @@ struct DocsProjectReadParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct SkillReadParams {
-    /// Skill name to read (e.g. "pipeline-authoring", "web-templates").
-    name: String,
+struct HelpParams {
+    /// Help path to load (e.g. "pipeline", "web/hooks", "pipeline/nodes", "tool").
+    /// Omit for the full index.
+    topic: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -194,20 +195,6 @@ struct ConnectionDescribeParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
-struct HelpExamplesParams {
-    /// Archetype slug to load (e.g. "blog-with-admin", "forum-with-chat").
-    /// Omit to list all available archetypes.
-    slug: Option<String>,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct HelpNodesParams {
-    /// Node kind to look up (e.g. "n.sekejap.query", "script", "trigger.webhook").
-    /// Omit to return the full node catalog.
-    kind: Option<String>,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
 struct HelpSearchParams {
     /// Search query — node name, DSL flag, concept, or keyword.
     query: String,
@@ -261,46 +248,23 @@ impl ZebflowMcpHandler {
 
     // ── Help / Knowledge ─────────────────────────────────────────────────────
 
-    #[tool(description = "Pipeline system guide — DSL syntax, pipe mode, how to register \
-        and activate, common fullstack web patterns (GET page, POST API, auth gate, redirect, cron). \
-        Call this before writing your first pipeline.")]
-    async fn help_pipeline(
+    #[tool(description = "Hierarchical docs browser. No topic = full index. \
+        Paths: 'pipeline' (DSL + web patterns), 'pipeline/dsl', 'pipeline/authoring', 'pipeline/web', \
+        'pipeline/nodes' (live catalog), 'pipeline/nodes/{kind}' (one node), \
+        'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
+        'web' (TSX pages), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
+        'tool' (Tool.time/arr/stat/geo), 'db', 'db/sekejap', \
+        'platform', 'platform/agent', 'platform/api', 'platform/operations', 'platform/workflow'. \
+        Call help() before writing pipelines or templates.")]
+    async fn help(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<HelpParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "help_pipeline")?;
+        self.check_tool_capability(&session, "help")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.help_pipeline();
-        Ok(CallToolResult::success(vec![Content::text(result.text)]))
-    }
-
-    #[tool(description = "Web pages guide — TSX templates, server HTML render + optional browser hydration, \
-        passing pipeline data via the input object, hooks, and the n.web.render node. \
-        Call this before writing TSX templates.")]
-    async fn help_web_engine(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "help_web_engine")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.help_web_engine();
-        Ok(CallToolResult::success(vec![Content::text(result.text)]))
-    }
-
-    #[tool(description = "Project archetypes with full DSL recipes. Without slug: lists 6 available \
-        archetypes (blog, forum, game, scheduling, scraping, auth). With slug: returns full pipeline \
-        architecture, DSL bodies, and nodes used for that archetype.")]
-    async fn help_examples(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<HelpExamplesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "help_examples")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.help_examples(params.slug.as_deref());
+        let result = ops.help(params.topic.as_deref().unwrap_or(""));
         if result.text.starts_with("Error:") {
             Err(McpError::invalid_params(result.text, None))
         } else {
@@ -308,23 +272,8 @@ impl ZebflowMcpHandler {
         }
     }
 
-    #[tool(description = "Node reference catalog from Rust definitions (same as pipeline editor API). \
-        Without kind: full catalog with pins, DSL flags, input/output schemas. \
-        With kind: one node only — e.g. kind='n.script', kind='script', kind='n.trigger.webhook'.")]
-    async fn help_nodes(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<HelpNodesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "help_nodes")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.help_nodes(params.kind.as_deref());
-        Ok(CallToolResult::success(vec![Content::text(result.text)]))
-    }
-
     #[tool(description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
-        Web template docs, node catalog, and skill files. Use for any concept, node name, DSL flag, \
+        web template docs, node catalog, and all help files. Use for any concept, node name, DSL flag, \
         or syntax question. Example: query='jwt', query='sekejap upsert', query='web.render'.")]
     async fn help_search(
         &self,
@@ -336,37 +285,6 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.help_search(&params.query);
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
-    }
-
-    #[tool(description = "List all available Zebflow platform skills (operational knowledge docs)")]
-    async fn skill_list(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "skill_list")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.skill_list();
-        Ok(CallToolResult::success(vec![Content::text(result.text)]))
-    }
-
-    #[tool(description = "Read the full content of a Zebflow platform skill by name. \
-        Use skill_list to see available skill names. Prefer help_pipeline, help_web_engine, help_nodes \
-        for guided docs — use skill_read for raw reference material.")]
-    async fn skill_read(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<SkillReadParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "skill_read")?;
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.skill_read(&params.name);
-        if result.text.starts_with("Error:") {
-            Err(McpError::invalid_params(result.text, None))
-        } else {
-            Ok(CallToolResult::success(vec![Content::text(result.text)]))
-        }
     }
 
     // ── Pipelines ────────────────────────────────────────────────────────────
@@ -840,12 +758,11 @@ impl ZebflowMcpHandler {
 #[tool_handler]
 impl ServerHandler for ZebflowMcpHandler {
     fn get_info(&self) -> ServerInfo {
-        let instructions = crate::platform::skills::get_skill("agent-core")
-            .map(|s| s.content.to_string())
+        let instructions = crate::platform::help::get_help_content("platform/agent")
             .unwrap_or_else(|| {
                 "Zebflow project management tools. Call start_here first. \
-                 Use help_pipeline, help_web_engine, help_examples, help_nodes for guided docs. \
-                 Use skill_list then skill_read for reference material."
+                 Use help(topic) for docs — no topic = full index. \
+                 Use help_search(query) to search across all docs."
                     .to_string()
             });
         ServerInfo {

@@ -25,7 +25,7 @@ export default function NodeFieldMultiCheckbox({ field, value, onChange }: Props
 
   if (options.length === 0) {
     return (
-      <div className="text-xs text-[var(--studio-text-muted)] py-1">
+      <div className="text-xs text-body-muted py-1">
         No tools available.
       </div>
     );
@@ -41,9 +41,9 @@ export default function NodeFieldMultiCheckbox({ field, value, onChange }: Props
             className="mt-0.5 shrink-0"
           />
           <span className="flex flex-col min-w-0">
-            <span className="text-sm text-[var(--studio-text)]">{opt.label}</span>
+            <span className="text-sm text-body">{opt.label}</span>
             {opt.description && (
-              <span className="text-xs text-[var(--studio-text-muted)] leading-tight">{opt.description}</span>
+              <span className="text-xs text-body-muted leading-tight">{opt.description}</span>
             )}
           </span>
         </label>

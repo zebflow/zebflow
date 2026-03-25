@@ -606,4 +606,40 @@
   // Internal helpers called by Rust after loading each page module.
   globalThis.__rweRenderToString = renderToString;
   globalThis.__rweWrapWithPageState = wrapWithPageState;
+
+  // ---------------------------------------------------------------------------
+  // Island support for SSR — mirrors the client-side h() interceptor.
+  // SSR versions always render children but emit the data-island-id marker so
+  // the DOM structure matches the client vdom (preventing hydration mismatches).
+  // __islandCounter is also reset from Rust in deno_worker.rs before each render.
+  // ---------------------------------------------------------------------------
+  globalThis.__islandCounter = 0;
+
+  var __origSSRh = globalThis.h;
+
+  function __IslandOff(p) { return p.children; }
+
+  function __IslandOnView(p) {
+    return __origSSRh('div', { 'data-island-id': p.id, 'data-hydrate': 'onview' }, p.children);
+  }
+
+  function __IslandOnInteract(p) {
+    return __origSSRh('div', { 'data-island-id': p.id, 'data-hydrate': 'oninteract' }, p.children);
+  }
+
+  globalThis.h = function(type, props) {
+    var args = Array.prototype.slice.call(arguments, 2);
+    if (props && props.hydrate && props.hydrate !== 'onload') {
+      var mode = props.hydrate;
+      var id = 'island-' + (globalThis.__islandCounter++);
+      var newProps = Object.assign({}, props);
+      delete newProps.hydrate;
+      newProps['data-island-id'] = id;
+      var el = __origSSRh.apply(null, [type, newProps].concat(args));
+      if (mode === 'off')        return __IslandOff({ children: el });
+      if (mode === 'onview')     return __IslandOnView({ id: id, children: el });
+      if (mode === 'oninteract') return __IslandOnInteract({ id: id, children: el });
+    }
+    return __origSSRh.apply(null, [type, props].concat(args));
+  };
 })();

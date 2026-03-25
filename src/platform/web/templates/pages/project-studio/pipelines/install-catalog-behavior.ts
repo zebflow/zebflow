@@ -60,7 +60,7 @@ export function initInstallCatalogBehavior() {
     // ── Load catalog from API ─────────────────────────────────────────────────
     async function loadCatalog() {
       if (!componentList) return;
-      componentList.innerHTML = '<div style="padding:16px;color:var(--zf-ui-text-muted);font-size:12px;">Loading…</div>';
+      componentList.innerHTML = '<div style="padding:16px;color:var(--color-ui-text-muted);font-size:12px;">Loading…</div>';
       try {
         const res = await fetch(catalogApiUrl, { headers: { "Accept": "application/json" } });
         const json = await res.json();
@@ -68,22 +68,22 @@ export function initInstallCatalogBehavior() {
         loaded = true;
         renderList();
       } catch {
-        componentList.innerHTML = '<div style="padding:16px;color:var(--zf-ui-text-muted);font-size:12px;">Failed to load catalog.</div>';
+        componentList.innerHTML = '<div style="padding:16px;color:var(--color-ui-text-muted);font-size:12px;">Failed to load catalog.</div>';
       }
     }
 
     function renderList() {
       if (!componentList) return;
       if (catalogData.length === 0) {
-        componentList.innerHTML = '<div style="padding:16px;color:var(--zf-ui-text-muted);font-size:12px;">No components found.</div>';
+        componentList.innerHTML = '<div style="padding:16px;color:var(--color-ui-text-muted);font-size:12px;">No components found.</div>';
         return;
       }
       componentList.innerHTML = catalogData.map(comp => `
-        <label style="display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:5px;cursor:pointer;font-size:12px;background:${comp.installed ? 'var(--zf-ui-bg-subtle)' : ''}" title="${comp.description}">
-          <input type="checkbox" data-component-name="${comp.name}" ${comp.installed ? "" : ""} style="accent-color:var(--zf-color-brand-blue);" />
-          <span style="flex:1;color:var(--zf-ui-text)">${comp.name}</span>
+        <label style="display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:5px;cursor:pointer;font-size:12px;background:${comp.installed ? 'var(--color-ui-bg-subtle)' : ''}" title="${comp.description}">
+          <input type="checkbox" data-component-name="${comp.name}" ${comp.installed ? "" : ""} style="accent-color:var(--color-brand-blue);" />
+          <span style="flex:1;color:var(--color-ui-text)">${comp.name}</span>
           ${comp.installed ? '<span style="font-size:10px;color:#22c55e;">✓</span>' : ''}
-          <span style="font-size:10px;color:var(--zf-ui-text-muted);text-transform:capitalize;">${comp.category}</span>
+          <span style="font-size:10px;color:var(--color-ui-text-muted);text-transform:capitalize;">${comp.category}</span>
         </label>
       `).join("");
     }

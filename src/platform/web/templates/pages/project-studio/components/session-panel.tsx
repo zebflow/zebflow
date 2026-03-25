@@ -38,24 +38,37 @@ function buildGuideSnippet(clientId, mcpUrl, token) {
   }
 }
 
+// Only capabilities that are actually enforced by a real MCP tool
 const DEFAULT_CAPABILITIES = [
-  { key: "project.read",      label: "Project Read",      defaultOn: true  },
-  { key: "pipelines.read",    label: "Pipelines Read",    defaultOn: true  },
-  { key: "pipelines.write",   label: "Pipelines Write",   defaultOn: false },
-  { key: "pipelines.execute", label: "Pipelines Execute", defaultOn: false },
-  { key: "templates.read",    label: "Templates Read",    defaultOn: true  },
-  { key: "templates.write",   label: "Templates Write",   defaultOn: false },
-  { key: "templates.create",  label: "Templates Create",  defaultOn: false },
-  { key: "settings.read",     label: "Settings Read",     defaultOn: true  },
-  { key: "settings.write",    label: "Settings Write",    defaultOn: false },
-  { key: "credentials.read",  label: "Credentials Read",  defaultOn: false },
-  { key: "tables.read",       label: "Tables Read",       defaultOn: true  },
+  // Core
+  { key: "project.read",       label: "Project Read",      defaultOn: true  },
+  // Pipelines
+  { key: "pipelines.read",     label: "Pipelines Read",    defaultOn: true  },
+  { key: "pipelines.write",    label: "Pipelines Write",   defaultOn: false },
+  { key: "pipelines.execute",  label: "Pipelines Execute", defaultOn: false },
+  // Templates
+  { key: "templates.read",     label: "Templates Read",    defaultOn: true  },
+  { key: "templates.write",    label: "Templates Write",   defaultOn: false },
+  { key: "templates.create",   label: "Templates Create",  defaultOn: false },
+  { key: "templates.delete",   label: "Templates Delete",  defaultOn: false },
+  // Files
+  { key: "files.write",        label: "Files Write",       defaultOn: false },
+  // Tables / DB
+  { key: "tables.read",        label: "Tables Read",       defaultOn: true  },
+  { key: "tables.write",       label: "Tables Write",      defaultOn: false },
+  // Credentials
+  { key: "credentials.read",   label: "Credentials Read",  defaultOn: false },
+  { key: "credentials.write",  label: "Credentials Write", defaultOn: false },
+  // Settings
+  { key: "settings.read",      label: "Settings Read",     defaultOn: true  },
+  { key: "settings.write",     label: "Settings Write",    defaultOn: false },
 ];
 
 export function SessionPanel({ owner, project }) {
   const { activePanel, openHeaderPanel } = useStudioChrome();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [token, setToken] = useState(null);
   const [mcpUrl, setMcpUrl] = useState(null);
@@ -64,9 +77,11 @@ export function SessionPanel({ owner, project }) {
   );
   const [resetting, setResetting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
   const [error, setError] = useState("");
   const [guideClient, setGuideClient] = useState("claude-code");
   const [guideCopied, setGuideCopied] = useState(false);
+  const [deactivating, setDeactivating] = useState(false);
   const sessionDetailsRef = useRef(null);
 
   const sessionUrl = `/api/projects/${owner}/${project}/mcp/session`;
@@ -88,6 +103,10 @@ export function SessionPanel({ owner, project }) {
     } catch (_) {}
     setLoading(false);
   }
+
+  useEffect(() => {
+    fetchSession();
+  }, []);
 
   useEffect(() => {
     if (open) fetchSession();
@@ -144,10 +163,44 @@ export function SessionPanel({ owner, project }) {
           body: JSON.stringify({ enabled: next }),
         });
       } catch (_) {
-        setEnabled(!next); // revert on error
+        setEnabled(!next);
         setError("Failed to update session");
       }
     }
+  }
+
+  async function handleDeactivate() {
+    if (deactivating) return;
+    setDeactivating(true);
+    setError("");
+    try {
+      await fetch(sessionUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ enabled: false }),
+      });
+      setEnabled(false);
+    } catch (_) {
+      setError("Failed to deactivate session");
+    }
+    setDeactivating(false);
+  }
+
+  async function handleActivate() {
+    if (activating) return;
+    setActivating(true);
+    setError("");
+    try {
+      await fetch(sessionUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      await fetchSession();
+    } catch (_) {
+      setError("Failed to activate session");
+    }
+    setActivating(false);
   }
 
   async function handleCapabilityChange(key, checked) {
@@ -156,7 +209,6 @@ export function SessionPanel({ owner, project }) {
       : capabilities.filter((c) => c !== key);
     setCapabilities(next);
 
-    // If session exists, update capabilities immediately (idempotent POST keeps token)
     if (token) {
       try {
         await fetch(sessionUrl, {
@@ -190,7 +242,7 @@ export function SessionPanel({ owner, project }) {
     setResetting(false);
   }
 
-  async function handleCopy() {
+  async function handleCopyToken() {
     if (!token) return;
     try {
       await navigator.clipboard.writeText(token);
@@ -199,14 +251,26 @@ export function SessionPanel({ owner, project }) {
     } catch (_) {}
   }
 
+  async function handleCopyUrl() {
+    if (!mcpUrl) return;
+    try {
+      await navigator.clipboard.writeText(mcpUrl);
+      setUrlCopied(true);
+      setTimeout(() => setUrlCopied(false), 2000);
+    } catch (_) {}
+  }
+
+  const labelCls = "text-[0.65rem] font-semibold tracking-widest text-body-soft uppercase";
+  const sectionCls = "px-4 py-3 border-b border-border";
+
   return (
     <details ref={sessionDetailsRef} className="relative inline-block group" data-dropdown-menu="true">
       <summary
         className={cx(
           "list-none cursor-pointer outline-none",
           "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border transition-all text-sm",
-          "border-[var(--studio-border)] bg-[var(--studio-panel-2)]",
-          "text-[var(--studio-text-soft)] hover:text-[var(--studio-text)] hover:bg-[var(--studio-panel-3)]",
+          "border-border bg-surface-2",
+          "text-body-soft hover:text-body hover:bg-surface-3",
           enabled && "border-green-800/60 text-green-400 hover:text-green-300"
         )}
         onClick={() => {
@@ -221,52 +285,76 @@ export function SessionPanel({ owner, project }) {
 
       <DropdownMenuContent
         align="right"
-        className="mcp-session-panel w-[540px] border-[var(--studio-border)] bg-[var(--studio-panel)]"
+        className="w-[760px] border-border bg-surface"
       >
-        {/* Header — full width */}
-        <div className="mcp-session-header">
-          <div className="min-w-0">
+        {/* ── Header ── */}
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-[var(--studio-text)]">MCP Session</p>
+              <p className="text-sm font-semibold text-body">MCP Session</p>
               <span className={cx(
                 "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.6rem] font-semibold tracking-wide",
                 enabled
                   ? "bg-green-900/40 text-green-400 border border-green-800/60"
-                  : "bg-[var(--studio-panel-3)] text-[var(--studio-text-soft)] border border-[var(--studio-border)]"
+                  : "bg-surface-3 text-body-soft border border-border"
               )}>
                 <span className={cx("w-1.5 h-1.5 rounded-full", enabled ? "bg-green-500" : "bg-slate-500")} />
                 {enabled ? "Active" : "Inactive"}
               </span>
             </div>
-            <p className="text-[0.68rem] text-[var(--studio-text-soft)] mt-0.5 leading-snug">
+            <p className="text-[0.68rem] text-body-soft mt-0.5 leading-snug">
               Remote control for LLM agents (Cursor, Claude Code, etc.)
             </p>
           </div>
-          <Toggle
-            checked={enabled}
-            onChange={handleToggle}
-            disabled={loading}
-            aria-label="Enable MCP session"
-          />
+          <div className="flex items-center gap-2 shrink-0">
+            {!enabled && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={handleActivate}
+                disabled={activating}
+                className="text-green-400 border-green-800/50 hover:bg-green-900/20 hover:text-green-300"
+              >
+                {activating ? "Activating…" : "Activate"}
+              </Button>
+            )}
+            {enabled && token && (
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={handleDeactivate}
+                disabled={deactivating}
+                className="text-red-400 border-red-800/50 hover:bg-red-900/20 hover:text-red-300"
+              >
+                {deactivating ? "Deactivating…" : "Deactivate"}
+              </Button>
+            )}
+            <Toggle
+              checked={enabled}
+              onChange={handleToggle}
+              disabled={loading}
+              aria-label="Enable MCP session"
+            />
+          </div>
         </div>
 
-        {/* Split body — left: connection + guide · right: permissions */}
-        <div className="mcp-split-body">
+        {/* ── Split body ── */}
+        <div className="flex items-stretch">
 
-          {/* ── Left column ── */}
-          <div className="mcp-split-left">
+          {/* Left column */}
+          <div className="flex-1 min-w-0 flex flex-col">
 
             {/* Token */}
-            <div className="mcp-session-section">
+            <div className={sectionCls}>
               <div className="flex items-center justify-between mb-1.5">
-                <label htmlFor="mcp-token-input" className="mcp-session-label">Token</label>
+                <label htmlFor="mcp-token-input" className={labelCls}>Token</label>
                 {token && (
                   <Button
                     variant="ghost"
                     size="xs"
                     onClick={handleResetToken}
                     disabled={resetting}
-                    className="mcp-reset-btn"
+                    className="text-[0.68rem] text-body-soft hover:text-body"
                   >
                     {resetting ? "Resetting…" : "↺ Reset"}
                   </Button>
@@ -284,9 +372,9 @@ export function SessionPanel({ owner, project }) {
                 <Button
                   variant={copied ? "default" : "outline"}
                   size="sm"
-                  onClick={handleCopy}
+                  onClick={handleCopyToken}
                   disabled={!token}
-                  className="mcp-copy-btn shrink-0"
+                  className="shrink-0"
                   aria-label="Copy token to clipboard"
                 >
                   {copied ? "✓" : "Copy"}
@@ -295,8 +383,8 @@ export function SessionPanel({ owner, project }) {
             </div>
 
             {/* MCP URL */}
-            <div className="mcp-session-section">
-              <label htmlFor="mcp-url-input" className="mcp-session-label block mb-1.5">MCP URL</label>
+            <div className={sectionCls}>
+              <label htmlFor="mcp-url-input" className={cx(labelCls, "block mb-1.5")}>MCP URL</label>
               <div className="flex gap-1.5">
                 <input
                   id="mcp-url-input"
@@ -307,22 +395,21 @@ export function SessionPanel({ owner, project }) {
                   className="mcp-token-input flex-1"
                 />
                 <Button
-                  variant="outline"
+                  variant={urlCopied ? "default" : "outline"}
                   size="sm"
-                  onClick={async () => {
-                    if (!mcpUrl) return;
-                    try { await navigator.clipboard.writeText(mcpUrl); } catch (_) {}
-                  }}
+                  onClick={handleCopyUrl}
                   disabled={!mcpUrl}
-                  className="mcp-copy-btn shrink-0"
+                  className="shrink-0"
                   aria-label="Copy MCP URL"
-                >URL</Button>
+                >
+                  {urlCopied ? "✓" : "URL"}
+                </Button>
               </div>
             </div>
 
             {/* Install Guide */}
-            <div className="mcp-session-section mcp-guide-section">
-              <p className="mcp-session-label mb-2">Install Guide</p>
+            <div className={cx(sectionCls, "border-b-0 flex-1")}>
+              <p className={cx(labelCls, "mb-2")}>Install Guide</p>
               <div className="mcp-guide-tabs">
                 {GUIDE_CLIENTS.map((c) => (
                   <button
@@ -347,32 +434,31 @@ export function SessionPanel({ owner, project }) {
               >{guideCopied ? "✓ Copied" : "Copy"}</Button>
             </div>
 
-          </div>{/* /mcp-split-left */}
+          </div>{/* /left */}
 
-          {/* ── Divider ── */}
-          <div className="mcp-split-divider" />
+          {/* Divider */}
+          <div className="w-px bg-border flex-shrink-0" />
 
-          {/* ── Right column: Permissions ── */}
-          <div className="mcp-split-right">
-            <p className="mcp-session-label mb-2.5">Permissions</p>
-            <div className="flex flex-col gap-0.5">
+          {/* Right column: Permissions */}
+          <div className="w-[340px] flex-shrink-0 p-3 flex flex-col">
+            <p className={cx(labelCls, "mb-2.5")}>Permissions</p>
+            <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 overflow-y-auto max-h-[380px]">
               {DEFAULT_CAPABILITIES.map((cap) => (
                 <Checkbox
                   key={cap.key}
                   label={cap.label}
                   checked={capabilities.includes(cap.key)}
                   onChange={(e) => handleCapabilityChange(cap.key, e.target.checked)}
-                  className="mcp-cap-check"
                 />
               ))}
             </div>
           </div>
 
-        </div>{/* /mcp-split-body */}
+        </div>{/* /split */}
 
-        {/* Error — full width */}
+        {/* Error */}
         {error && (
-          <p className="px-4 pb-3 text-[0.68rem] text-red-400 border-t border-[var(--studio-border)]" role="alert">{error}</p>
+          <p className="px-4 pb-3 text-[0.68rem] text-red-400 border-t border-border" role="alert">{error}</p>
         )}
       </DropdownMenuContent>
     </details>

@@ -1923,7 +1923,7 @@ fn color_value(v: &str) -> Option<String> {
         h.to_string()
     } else if is_semantic_color_token(b) {
         let k = b.replace('_', "-");
-        format!("var(--zebflow-color-{},{})", k, k)
+        format!("var(--color-{})", k)
     } else {
         return None;
     };

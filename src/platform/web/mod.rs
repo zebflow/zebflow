@@ -145,6 +145,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
         .route("/home/projects/create", post(home_create_project_submit))
+        .route("/home/projects/clone", post(home_clone_project_submit))
         .route("/projects/{owner}/{project}", get(project_root_page))
         .route(
             "/projects/{owner}/{project}/pipelines/{tab}",
@@ -1434,6 +1435,172 @@ async fn home_create_project_submit(
         Ok(_) => Redirect::to(HOME_PATH).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+/// Form payload for cloning a remote git repository into a new project.
+#[derive(serde::Deserialize)]
+struct CloneProjectFormRequest {
+    project: String,
+    #[serde(default)]
+    title: String,
+    provider: String,
+    #[serde(default)]
+    instance_url: String,
+    repo_url: String,
+    username: String,
+    token: String,
+    #[serde(default)]
+    git_name: String,
+    #[serde(default)]
+    git_email: String,
+}
+
+async fn home_clone_project_submit(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Form(req): Form<CloneProjectFormRequest>,
+) -> Response {
+    let Some(owner) = session_owner(&headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+
+    let project = crate::platform::model::slug_segment(&req.project);
+    if project.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Project slug is required").into_response();
+    }
+
+    // Build clone target path: data_root/users/{owner}/{project}/repo
+    let repo_dir = state.platform.config.data_root
+        .join("users")
+        .join(crate::platform::model::slug_segment(&owner))
+        .join(&project)
+        .join("repo");
+
+    // Build authenticated clone URL
+    let auth_url = match build_git_clone_auth_url(&req.provider, &req.instance_url, &req.repo_url, &req.username, &req.token) {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+
+    // Ensure parent dir exists before cloning
+    if let Some(parent) = repo_dir.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return internal_error(crate::platform::error::PlatformError::new("CLONE_MKDIR", e.to_string()));
+        }
+    }
+
+    // Run git clone
+    let clone_out = std::process::Command::new("git")
+        .arg("clone")
+        .arg("--")
+        .arg(&auth_url)
+        .arg(&repo_dir)
+        .output();
+
+    match clone_out {
+        Err(e) => return internal_error(crate::platform::error::PlatformError::new("CLONE_SPAWN", e.to_string())),
+        Ok(out) if !out.status.success() => {
+            let stderr = scrub_token_from_str(String::from_utf8_lossy(&out.stderr).as_ref(), &req.token);
+            let msg = format!("git clone failed: {stderr}");
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+        Ok(_) => {}
+    }
+
+    // Create project record + layout dirs (git init is skipped since .git already exists)
+    let title = if req.title.trim().is_empty() { project.clone() } else { req.title.clone() };
+    let create_req = crate::platform::model::CreateProjectRequest {
+        project: project.clone(),
+        title: Some(title.clone()),
+    };
+    if let Err(e) = state.platform.projects.create_or_update_project(&owner, &create_req) {
+        return internal_error(e);
+    }
+
+    // Set git identity in zebflow.json if provided
+    if !req.git_name.trim().is_empty() || !req.git_email.trim().is_empty() {
+        let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+            if !req.git_name.trim().is_empty() {
+                cfg.git.author_name = req.git_name.trim().to_string();
+            }
+            if !req.git_email.trim().is_empty() {
+                cfg.git.author_email = req.git_email.trim().to_string();
+            }
+        });
+    }
+
+    // Save git credential for this project
+    let cred_id = format!("{}-origin", req.provider);
+    let cred_title = format!("{} origin", req.provider);
+    let secret = serde_json::json!({
+        "username": req.username,
+        "token": req.token,
+        "git_name": req.git_name,
+        "git_email": req.git_email,
+        "repo_url": req.repo_url,
+        "instance_url": req.instance_url,
+    });
+    let upsert_req = UpsertProjectCredentialRequest {
+        credential_id: cred_id,
+        title: cred_title,
+        kind: req.provider.clone(),
+        secret,
+        notes: format!("Auto-created on project clone from {}", req.repo_url),
+    };
+    let _ = state.platform.credentials.upsert_project_credential(&owner, &project, &upsert_req);
+
+    Redirect::to(HOME_PATH).into_response()
+}
+
+/// Builds an authenticated HTTPS git clone URL for the given provider.
+/// Returns an error string on malformed input.
+fn build_git_clone_auth_url(
+    _provider: &str,
+    instance_url: &str,
+    repo_url: &str,
+    username: &str,
+    token: &str,
+) -> Result<String, String> {
+    let enc_user = percent_encode_userinfo(username);
+    let enc_token = percent_encode_userinfo(token);
+
+    // Determine base host from repo_url if possible, otherwise fall back to instance_url
+    let base = if repo_url.starts_with("http://") || repo_url.starts_with("https://") {
+        repo_url.to_string()
+    } else if !instance_url.is_empty() {
+        // Treat repo_url as a path relative to instance
+        let base = instance_url.trim_end_matches('/');
+        let path = repo_url.trim_start_matches('/');
+        format!("{}/{}", base, path)
+    } else {
+        return Err(format!("Invalid repo URL: {repo_url}"));
+    };
+
+    // Insert credentials into the URL
+    if let Some(after_scheme) = base.strip_prefix("https://") {
+        Ok(format!("https://{}:{}@{}", enc_user, enc_token, after_scheme))
+    } else if let Some(after_scheme) = base.strip_prefix("http://") {
+        Ok(format!("http://{}:{}@{}", enc_user, enc_token, after_scheme))
+    } else {
+        Err(format!("Repo URL must start with https:// or http://: {base}"))
+    }
+}
+
+/// Percent-encodes characters not allowed in userinfo (RFC 3986).
+fn percent_encode_userinfo(s: &str) -> String {
+    s.chars().flat_map(|c| {
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~' | '!' | '$' | '\'' | '(' | ')' | '*' | '+' | ',' | ';') {
+            vec![c as u8]
+        } else {
+            format!("%{:02X}", c as u32).into_bytes()
+        }
+    }).map(|b| b as char).collect()
+}
+
+/// Replaces occurrences of `token` in `s` with `***` (for safe error messages).
+fn scrub_token_from_str(s: &str, token: &str) -> String {
+    if token.is_empty() { return s.to_string(); }
+    s.replace(token, "***")
 }
 
 async fn project_root_page(
@@ -6771,8 +6938,7 @@ async fn api_project_assistant_chat(
 
     let mut messages: Vec<Value> = Vec::new();
     {
-        let skills = crate::platform::skills::all_skills();
-        let skills_text = crate::platform::skills::format_skills_for_system_prompt(skills);
+        let skills_text = crate::platform::help::format_for_system_prompt();
         let page_context = req.current_page
             .as_deref()
             .filter(|p| !p.is_empty())

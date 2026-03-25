@@ -41,7 +41,12 @@ export function Dialog({ open, defaultOpen = false, onOpenChange, children }: Di
     return { ...child, props: { ...child.props, _isOpen: isOpen, _onOpen: () => toggle(true), _onClose: () => toggle(false) } };
   });
 
-  return <>{enhanced}</>;
+  return (
+    <>
+      {enhanced}
+      <span hidden tw-variants="fixed inset-0 z-50 flex items-center justify-center bg-black/80 relative grid max-w-lg gap-4 border-gray-200 bg-white p-6 shadow-lg rounded-xl opacity-70 ring-offset-white transition-opacity hover:opacity-100 focus:ring-2 focus:ring-gray-950 focus:ring-offset-2 right-4 top-4 rounded-sm absolute space-y-1.5 flex-col sm:text-left flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 text-lg font-semibold leading-none tracking-tight text-sm text-gray-500" />
+    </>
+  );
 }
 
 export function DialogTrigger({ children, _onOpen, asChild, className, ...rest }: any) {

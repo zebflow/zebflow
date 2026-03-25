@@ -41,7 +41,7 @@ export default function Input(props) {
       onBlur={onBlur}
       onFocus={onFocus}
       className={cx(
-        "flex h-9 w-full rounded-md border border-[var(--zf-ui-border)] bg-[var(--zf-ui-bg)] text-[var(--zf-ui-text)] px-3 py-1 text-sm shadow-sm transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--zf-color-brand-blue)]/40 focus-visible:border-[var(--zf-color-brand-blue)]/40 disabled:cursor-not-allowed disabled:opacity-50",
+        "flex h-9 w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-1 text-sm shadow-sm transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 focus-visible:border-brand-blue/40 disabled:cursor-not-allowed disabled:opacity-50",
         className
       )}
       min={min}

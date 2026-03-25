@@ -1,6 +1,7 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { loadEditorRuntime } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/template-editor-runtime";
 import { cx, Link, useEffect, useState, useRef, useNavigate } from "zeb";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import { useSplitPane } from "zeb/use";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
@@ -514,13 +515,13 @@ export default function UnifiedRegistryEditor(input) {
       nav={input?.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <Link href={navLinks.pipelines_registry ?? "#"} className={cx("project-tab-link", navClasses.pipeline_registry)}>Registry</Link>
-          <Link href={navLinks.pipelines_webhooks ?? "#"} className={cx("project-tab-link", navClasses.pipeline_webhooks)}>Webhooks</Link>
-          <Link href={navLinks.pipelines_schedules ?? "#"} className={cx("project-tab-link", navClasses.pipeline_schedules)}>Schedules</Link>
-          <Link href={navLinks.pipelines_manual ?? "#"} className={cx("project-tab-link", navClasses.pipeline_manual)}>Manual</Link>
-          <Link href={navLinks.pipelines_functions ?? "#"} className={cx("project-tab-link", navClasses.pipeline_functions)}>Functions</Link>
-        </nav>
+        <StudioTabNav>
+          <StudioTabLink href={navLinks.pipelines_registry ?? "#"} active={!!navClasses.pipeline_registry}>Registry</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_webhooks ?? "#"} active={!!navClasses.pipeline_webhooks}>Webhooks</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_schedules ?? "#"} active={!!navClasses.pipeline_schedules}>Schedules</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_manual ?? "#"} active={!!navClasses.pipeline_manual}>Manual</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_functions ?? "#"} active={!!navClasses.pipeline_functions}>Functions</StudioTabLink>
+        </StudioTabNav>
         <div
           ref={pipelineEditorRef}
           className="pipeline-editor-shell"
@@ -644,7 +645,7 @@ export default function UnifiedRegistryEditor(input) {
                     >
                       <div className="pipeline-editor-item-head">
                         <div className="flex items-center gap-1.5">
-                          <PipelineIcon className="w-3.5 h-3.5 text-[var(--studio-accent)]" />
+                          <PipelineIcon className="w-3.5 h-3.5 text-accent" />
                           <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
                           <span className="pipeline-editor-item-name">{item?.name}</span>
                         </div>
@@ -732,7 +733,7 @@ export default function UnifiedRegistryEditor(input) {
                         className="pipeline-registry-row pipeline-registry-folder-row"
                       >
                         <Link href={f?.href ?? "#"} className="pipeline-registry-row-link">
-                          <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><FolderIcon /></span>
+                          <span className="shrink-0 flex items-center text-body-soft"><FolderIcon /></span>
                           <span className="pipeline-registry-row-name">{f?.name}/</span>
                         </Link>
                         <button
@@ -755,7 +756,7 @@ export default function UnifiedRegistryEditor(input) {
                       href={f?.href ?? "#"}
                       className={cx("pipeline-registry-row pipeline-registry-folder-row pipeline-registry-special-folder", specialFolderEditorClass(f?.name ?? ""))}
                     >
-                      <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><FolderIcon /></span>
+                      <span className="shrink-0 flex items-center text-body-soft"><FolderIcon /></span>
                       <span className="pipeline-registry-row-name">{f?.name}/</span>
                     </Link>
                   ))}
@@ -772,7 +773,7 @@ export default function UnifiedRegistryEditor(input) {
                       data-rel-path={item?.id ?? ""}
                     >
                       <Link href={item?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><PipelineIcon /></span>
+                        <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
                         <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
                         <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
                         <Badge variant="secondary">{item?.trigger_kind}</Badge>
@@ -800,7 +801,7 @@ export default function UnifiedRegistryEditor(input) {
                       data-rel-path={file?.rel_path ?? ""}
                     >
                       <Link href={file?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><FileKindIcon name={file?.name ?? ""} /></span>
+                        <span className="shrink-0 flex items-center text-body-soft"><FileKindIcon name={file?.name ?? ""} /></span>
                         <span className="pipeline-registry-row-name">{file?.name}</span>
                       </Link>
                       <button
@@ -815,7 +816,7 @@ export default function UnifiedRegistryEditor(input) {
                   ))}
 
                   {(dynFolderNormalFolders.length + dynFolderSpecialFolders.length) === 0 && dynFolderPipelines.length === 0 && dynFolderTemplates.length === 0 ? (
-                    <p className="p-6 text-center text-[0.78rem] text-[var(--studio-text-soft)]">Empty folder. Use <strong>+ New</strong> to add pipelines.</p>
+                    <p className="p-6 text-center text-[0.78rem] text-body-soft">Empty folder. Use <strong>+ New</strong> to add pipelines.</p>
                   ) : null}
                 </div>
               </div>
@@ -923,8 +924,8 @@ export default function UnifiedRegistryEditor(input) {
 
             {/* ── No-selection placeholder (folder mode with no folder content) ── */}
             {!isPipeline && !isTemplate && !isDoc && !isFolder && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[var(--studio-muted)]">
-                <p className="text-sm font-medium text-[var(--studio-text)]">Select a file to edit</p>
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-body-muted">
+                <p className="text-sm font-medium text-body">Select a file to edit</p>
               </div>
             )}
           </section>

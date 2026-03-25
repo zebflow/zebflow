@@ -167,7 +167,7 @@ async fn do_render_ssr(
     let ctx_json = serde_json::to_string(ctx)
         .map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
     let input_init_code = format!(
-        "globalThis.ctx = {ctx_json}; globalThis.input = globalThis.ctx;",
+        "globalThis.ctx = {ctx_json}; globalThis.input = globalThis.ctx; globalThis.__islandCounter = 0;",
     );
     js_rt
         .execute_script("<rwe_ctx_init>", input_init_code)

@@ -49,7 +49,7 @@ export function RegistryInstallCatalog({
           </div>
           {installTab === "ui" ? (
             <div className="install-catalog-tab-panel">
-              <p className="text-xs text-[var(--studio-text-soft)] m-0">
+              <p className="text-xs text-body-soft m-0">
                 Select components to install into <code>shared/ui/</code>.
               </p>
               <div className="flex flex-wrap gap-2 shrink-0">
@@ -62,7 +62,7 @@ export function RegistryInstallCatalog({
               </div>
               <div className="git-install-component-list-host">
                 {catalogData.map((comp) => (
-                  <label key={comp.name} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer text-xs bg-[var(--studio-panel-2)]">
+                  <label key={comp.name} className="flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer text-xs bg-surface-2">
                     <Checkbox
                       checked={selectedComponents.has(comp.name)}
                       onChange={(checked: boolean) => {
@@ -75,15 +75,15 @@ export function RegistryInstallCatalog({
                     />
                     <span className="flex-1">{comp.name}</span>
                     {comp.installed && <span className="text-green-500 text-[10px]">✓</span>}
-                    <span className="text-[10px] text-[var(--studio-text-soft)] capitalize">{comp.category}</span>
+                    <span className="text-[10px] text-body-soft capitalize">{comp.category}</span>
                   </label>
                 ))}
               </div>
-              {installResult ? <p className="text-xs text-[var(--studio-text-soft)] m-0 shrink-0">{installResult}</p> : null}
+              {installResult ? <p className="text-xs text-body-soft m-0 shrink-0">{installResult}</p> : null}
             </div>
           ) : (
             <div className="install-catalog-tab-panel">
-              <p className="text-xs text-[var(--studio-text-soft)] m-0">Coming soon.</p>
+              <p className="text-xs text-body-soft m-0">Coming soon.</p>
             </div>
           )}
         </div>

@@ -35,6 +35,7 @@ export function Select({ value, defaultValue, onValueChange, disabled, children 
   return (
     <div ref={containerRef} className="relative">
       {enhanced}
+      <span hidden tw-variants="absolute z-50 max-h-96 min-w-[8rem] w-full overflow-auto rounded-md border border-gray-200 bg-white text-gray-900 shadow-md mt-1 p-1 relative flex cursor-pointer select-none items-center rounded-sm py-1.5 pl-8 pr-2 outline-none pointer-events-none opacity-50 hover:bg-gray-100 bg-gray-100 font-medium left-2 h-3.5 w-3.5" />
     </div>
   );
 }

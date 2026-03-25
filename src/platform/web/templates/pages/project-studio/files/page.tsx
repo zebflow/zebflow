@@ -1,4 +1,5 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
@@ -28,8 +29,10 @@ export default function Page(input) {
       nav={input.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <div className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]"></div>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+        <StudioTabNav>
+          <StudioTabLink href={input.nav?.links?.files ?? "#"} active={true}>Files</StudioTabLink>
+        </StudioTabNav>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
           <div className="project-content-wrap">
             <section className="project-content-section">
               <div className="project-content-head">

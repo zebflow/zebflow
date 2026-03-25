@@ -2,11 +2,11 @@ import { cx } from "zeb";
 
 const VARIANT_CLASSES = {
   primary: "bg-slate-900 text-white hover:opacity-90",
-  outline: "border border-[var(--studio-border)] bg-transparent hover:bg-[var(--studio-panel-3)] text-[var(--studio-text)]",
-  secondary: "bg-[var(--studio-panel-3)] text-[var(--studio-text)] hover:opacity-80",
-  ghost: "hover:bg-[var(--studio-panel-3)] text-[var(--studio-text-soft)] hover:text-[var(--studio-text)]",
+  outline: "border border-border bg-transparent hover:bg-surface-3 text-body",
+  secondary: "bg-surface-3 text-body hover:opacity-80",
+  ghost: "hover:bg-surface-3 text-body-soft hover:text-body",
   destructive: "bg-red-500/10 text-red-500 border border-red-500/20 hover:bg-red-500/20",
-  link: "text-[var(--zf-color-brand-blue)] underline-offset-4 hover:underline",
+  link: "text-brand-blue underline-offset-4 hover:underline",
 };
 
 const SIZE_CLASSES = {
