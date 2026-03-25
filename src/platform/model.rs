@@ -1098,6 +1098,10 @@ pub struct ZebflowJson {
     pub rwe: ZebflowJsonRwe,
     #[serde(default)]
     pub git: ZebflowJsonGit,
+    #[serde(default)]
+    pub remote: ZebflowJsonGitRemote,
+    #[serde(default)]
+    pub assets: ZebflowJsonAssets,
 }
 
 /// Git identity section of `zebflow.json`.
@@ -1110,6 +1114,33 @@ pub struct ZebflowJsonGit {
     /// Git author/committer email (e.g. "jane@example.com").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author_email: String,
+}
+
+/// Git remote section of `zebflow.json`.
+/// Stores remote repository configuration for push/sync operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonGitRemote {
+    /// Credential ID for authenticated push (references `ProjectCredential.credential_id`).
+    #[serde(default)]
+    pub credential_id: String,
+    /// Remote repository URL (e.g. `"https://gitlab.com/user/repo.git"`).
+    #[serde(default)]
+    pub repo_url: String,
+    /// Default branch to push to (e.g. `"main"`).
+    #[serde(default)]
+    pub branch: String,
+}
+
+/// Asset management section of `zebflow.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonAssets {
+    /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
+    #[serde(default = "default_max_asset_size_mb")]
+    pub max_asset_size_mb: u32,
+}
+
+fn default_max_asset_size_mb() -> u32 {
+    10
 }
 
 /// RWE settings section of `zebflow.json`.

@@ -62,6 +62,13 @@ impl DataAdapter for FirebaseDataAdapter {
         ))
     }
 
+    fn delete_project(&self, _owner: &str, _project: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "firebase adapter is not implemented yet",
+        ))
+    }
+
     fn get_project_credential(
         &self,
         _owner: &str,

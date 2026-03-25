@@ -726,6 +726,220 @@ function LoggingPanel({ api, initialConfig }) {
   );
 }
 
+// ─── Runtime Defaults Panel ──────────────────────────────────────────────────
+
+function RuntimeDefaultsPanel({ api, initialConfig }) {
+  const [maxMb, setMaxMb] = useState(Number(initialConfig?.max_asset_size_mb ?? 10));
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [saving, setSaving] = useState(false);
+  const [commitOpen, setCommitOpen] = useState(false);
+  const [pendingData, setPendingData] = useState(null);
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    setPendingData({ max_asset_size_mb: maxMb });
+    setCommitOpen(true);
+  }
+
+  async function handleCommit(commitMessage) {
+    setCommitOpen(false);
+    setSaving(true);
+    setStatusMsg("Saving...");
+    setStatusTone("info");
+    try {
+      const resp = await requestJson(api, {
+        method: "PUT",
+        body: JSON.stringify({ commit_message: commitMessage, data: pendingData }),
+      });
+      if (resp?.committed) {
+        setStatusMsg("Saved & committed.");
+        setStatusTone("ok");
+      } else if (resp?.git_error) {
+        setStatusMsg(`Saved (git: ${resp.git_error})`);
+        setStatusTone("info");
+      } else {
+        setStatusMsg("Saved.");
+        setStatusTone("ok");
+      }
+    } catch (err) {
+      setStatusMsg(`Failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setSaving(false);
+      setPendingData(null);
+    }
+  }
+
+  return (
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+      <CommitDialog
+        open={commitOpen}
+        section="assets"
+        defaultMessage="settings(assets): update runtime defaults"
+        onConfirm={handleCommit}
+        onCancel={() => { setCommitOpen(false); setPendingData(null); }}
+      />
+      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
+        <div>
+          <h3 className="project-card-title">Runtime Defaults</h3>
+          <p className="project-card-copy">Upload size and asset serving limits for this project.</p>
+        </div>
+        <span className="project-inline-chip">Assets</span>
+      </header>
+      <form className="flex flex-col gap-[0.65rem]" onSubmit={handleSubmit}>
+        <label className="pipeline-editor-field">
+          <span>Max asset upload size: <strong>{maxMb} MB</strong></span>
+          <input
+            type="range"
+            name="max_asset_size_mb"
+            min={5}
+            max={50}
+            step={1}
+            value={maxMb}
+            onInput={(e) => setMaxMb(Number((e.target as HTMLInputElement).value))}
+            className="w-full accent-[var(--color-accent)] cursor-pointer"
+          />
+          <small className="pipeline-editor-field-help">
+            Maximum file size per uploaded asset (5–50 MB). Aligns with git hosting soft-warning threshold.
+          </small>
+        </label>
+        <div className="flex items-center gap-[0.7rem]">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={saving}
+            label={saving ? "Saving..." : "Save Defaults"}
+          />
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+        </div>
+      </form>
+    </article>
+  );
+}
+
+// ─── Files ────────────────────────────────────────────────────────────────────
+
+function FilesPanel() {
+  return (
+    <div className="project-settings-panel">
+      <div className="project-settings-panel-head">
+        <p className="project-card-label">Object Storage</p>
+        <Badge variant="outline">Coming soon</Badge>
+      </div>
+      <div className="project-settings-panel-body flex flex-col gap-6 pt-2">
+
+        {/* S3 */}
+        <Card className="opacity-60">
+          <CardContent className="flex items-start gap-4 pt-5">
+            <div className="mt-0.5 rounded bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] p-2 text-accent">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 8V16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/>
+                <path d="M3 8l9-5 9 5"/>
+                <path d="M12 3v18"/>
+              </svg>
+            </div>
+            <div className="flex-1">
+              <p className="text-[0.88rem] font-semibold text-body">Amazon S3 / S3-Compatible</p>
+              <p className="mt-0.5 text-[0.78rem] text-body-soft">
+                Connect an S3 bucket (or any compatible store — Cloudflare R2, MinIO, Backblaze B2) as the
+                primary file backend for this project. Uploaded assets will be stored in the bucket and served
+                via pre-signed or public URLs.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {["AWS S3", "Cloudflare R2", "MinIO", "Backblaze B2", "Tigris"].map((label) => (
+                  <Badge key={label} variant="secondary" className="text-[0.72rem]">{label}</Badge>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <p className="text-[0.78rem] text-body-soft">
+          File storage integration is on the roadmap. When available, you'll be able to bind a credential
+          profile here and choose a bucket. Existing assets in <code className="font-mono text-[0.75rem]">repo/pipelines/assets/</code> will be
+          migrated automatically.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Danger Zone ─────────────────────────────────────────────────────────────
+
+function DangerZone({ owner, project }) {
+  const [confirmName, setConfirmName] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const canDelete = confirmName.trim() === project && password.length > 0;
+
+  async function handleDelete(e) {
+    e.preventDefault();
+    if (!canDelete || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await requestJson(`/api/users/${owner}/projects/${project}`, {
+        method: "DELETE",
+        body: JSON.stringify({ project_name: confirmName.trim(), password }),
+      });
+      if (res?.ok) {
+        window.location.href = "/home";
+      }
+    } catch (e) {
+      setError((e as any)?.message || "Deletion failed");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="border border-red-500/40 rounded-xl bg-surface p-[0.85rem] mt-[0.9rem]">
+      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
+        <div>
+          <h3 className="project-card-title text-red-400">Danger Zone</h3>
+          <p className="project-card-copy">
+            Permanently delete this project and all its data. This cannot be undone.
+          </p>
+        </div>
+      </header>
+      <form onSubmit={handleDelete} className="flex flex-col gap-3 max-w-sm">
+        <Field label={`Type "${project}" to confirm`} id="danger-confirm-name">
+          <Input
+            id="danger-confirm-name"
+            type="text"
+            value={confirmName}
+            onInput={(e) => setConfirmName((e.target as HTMLInputElement).value)}
+            placeholder={project}
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="Your password" id="danger-password">
+          <Input
+            id="danger-password"
+            type="password"
+            value={password}
+            onInput={(e) => setPassword((e.target as HTMLInputElement).value)}
+            placeholder="Enter your password"
+            autoComplete="current-password"
+          />
+        </Field>
+        {error && <p className="text-[0.72rem] text-red-400">{error}</p>}
+        <Button
+          type="submit"
+          variant="destructive"
+          disabled={!canDelete || busy}
+          className="self-start"
+        >
+          {busy ? "Deleting…" : "Delete project"}
+        </Button>
+      </form>
+    </article>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function Page(input) {
@@ -772,6 +986,11 @@ export default function Page(input) {
                 <section className="project-content-section">
                   <div className="project-content-body">
                     <div className="project-card-grid cols-2">{renderCardGrid(input?.cards_general)}</div>
+                    <RuntimeDefaultsPanel
+                      api={input?.assets?.settings_api ?? ""}
+                      initialConfig={input?.assets?.config ?? {}}
+                    />
+                    <DangerZone owner={input.owner} project={input.project} />
                   </div>
                 </section>
               ) : null}
@@ -846,6 +1065,14 @@ export default function Page(input) {
                       groups={input?.node_groups ?? []}
                       count={input?.node_count ?? 0}
                     />
+                  </div>
+                </section>
+              ) : null}
+
+              {tabFlags?.files ? (
+                <section className="project-content-section">
+                  <div className="project-content-body">
+                    <FilesPanel />
                   </div>
                 </section>
               ) : null}

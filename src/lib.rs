@@ -18,6 +18,7 @@ pub mod pipeline;
 pub mod language;
 pub mod platform;
 pub mod rwe;
+pub mod version;
 
 use std::sync::Arc;
 

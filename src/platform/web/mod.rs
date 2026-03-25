@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
     HeaderMap, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL, header::CONTENT_TYPE,
     header::SET_COOKIE,
@@ -26,6 +26,7 @@ use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
+use crate::version::APP_VERSION;
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
@@ -172,6 +173,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(project_db_suite_page),
         )
         .route("/projects/{owner}/{project}/files", get(project_files_page))
+        .route("/projects/{owner}/{project}/files/{tab}", get(project_files_tab_page))
         .route("/projects/{owner}/{project}/todo", get(project_todo_page))
         .route(
             "/projects/{owner}/{project}/settings/clone/ui/preview",
@@ -204,6 +206,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_projects).post(api_create_project),
         )
         .route(
+            "/api/users/{owner}/projects/{project}",
+            delete(api_delete_project),
+        )
+        .route(
             "/api/projects/{owner}/{project}/pipelines/registry",
             get(api_pipeline_registry),
         )
@@ -226,6 +232,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/git/commit",
             post(api_git_commit),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/git/remote",
+            get(api_git_get_remote).put(api_git_put_remote),
         )
         .route(
             "/api/projects/{owner}/{project}/pipelines/activate",
@@ -399,6 +409,16 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/assets/prepare",
             post(api_prepare_project_assets),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/assets",
+            get(api_list_assets).post(api_upload_asset).layer(
+                axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024),
+            ),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/assets/{*path}",
+            delete(api_delete_asset),
         )
         .route(
             "/api/projects/{owner}/{project}/install/catalog/ui",
@@ -1184,18 +1204,26 @@ async fn project_asset(
     if !abs.starts_with(&root) {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
     }
-    if !abs.is_file() {
-        return (StatusCode::NOT_FOUND, "asset not found").into_response();
-    }
-    let bytes = match std::fs::read(&abs) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return internal_error(PlatformError::new("PLATFORM_ASSET_READ", err.to_string()));
+    // Try compiled web-assets first; fall back to repo/pipelines/assets/.
+    let (serve_bytes, serve_path) = if abs.is_file() {
+        match std::fs::read(&abs) {
+            Ok(b) => (b, abs),
+            Err(err) => return internal_error(PlatformError::new("PLATFORM_ASSET_READ", err.to_string())),
+        }
+    } else {
+        let static_root = layout.repo_pipelines_dir.join("assets");
+        let static_abs = static_root.join(&normalized);
+        if !static_abs.starts_with(&static_root) || !static_abs.is_file() {
+            return (StatusCode::NOT_FOUND, "asset not found").into_response();
+        }
+        match std::fs::read(&static_abs) {
+            Ok(b) => (b, static_abs),
+            Err(err) => return internal_error(PlatformError::new("PLATFORM_STATIC_ASSET_READ", err.to_string())),
         }
     };
-    let mut resp = Response::new(Body::from(bytes));
+    let mut resp = Response::new(Body::from(serve_bytes));
     *resp.status_mut() = StatusCode::OK;
-    if let Ok(v) = HeaderValue::from_str(content_type_for_path(&abs)) {
+    if let Ok(v) = HeaderValue::from_str(content_type_for_path(&serve_path)) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
     resp.headers_mut().insert(
@@ -1283,6 +1311,7 @@ fn render_login_page(
             },
             "error": error.unwrap_or(""),
             "default_identifier": state.platform.config.default_owner,
+            "app_version": APP_VERSION,
         }),
     )?;
     Ok((status, Html(html)).into_response())
@@ -1362,6 +1391,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     },
                     "owner": owner,
                     "projects": projects,
+                    "app_version": APP_VERSION,
                 }),
             ) {
                 Ok(html) => Html(html).into_response(),
@@ -1507,6 +1537,14 @@ async fn home_clone_project_submit(
         Ok(_) => {}
     }
 
+    // Detect whether the cloned repo has any commits (empty remote repos have no HEAD)
+    let has_commits = std::process::Command::new("git")
+        .arg("-C").arg(&repo_dir)
+        .arg("rev-parse").arg("HEAD")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
     // Create project record + layout dirs (git init is skipped since .git already exists)
     let title = if req.title.trim().is_empty() { project.clone() } else { req.title.clone() };
     let create_req = crate::platform::model::CreateProjectRequest {
@@ -1517,20 +1555,19 @@ async fn home_clone_project_submit(
         return internal_error(e);
     }
 
-    // Set git identity in zebflow.json if provided
-    if !req.git_name.trim().is_empty() || !req.git_email.trim().is_empty() {
-        let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-            if !req.git_name.trim().is_empty() {
-                cfg.git.author_name = req.git_name.trim().to_string();
-            }
-            if !req.git_email.trim().is_empty() {
-                cfg.git.author_email = req.git_email.trim().to_string();
-            }
-        });
-    }
-
-    // Save git credential for this project
+    // Save git credential + identity + remote config in zebflow.json
     let cred_id = format!("{}-origin", req.provider);
+    let git_name = req.git_name.trim().to_string();
+    let git_email = req.git_email.trim().to_string();
+    let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+        if !git_name.is_empty() { cfg.git.author_name = git_name.clone(); }
+        if !git_email.is_empty() { cfg.git.author_email = git_email.clone(); }
+        cfg.remote.credential_id = cred_id.clone();
+        cfg.remote.repo_url = req.repo_url.clone();
+        cfg.remote.branch = "main".to_string();
+    });
+
+    // Save credential record so git push can look it up later
     let cred_title = format!("{} origin", req.provider);
     let secret = serde_json::json!({
         "username": req.username,
@@ -1541,13 +1578,59 @@ async fn home_clone_project_submit(
         "instance_url": req.instance_url,
     });
     let upsert_req = UpsertProjectCredentialRequest {
-        credential_id: cred_id,
+        credential_id: cred_id.clone(),
         title: cred_title,
         kind: req.provider.clone(),
         secret,
         notes: format!("Auto-created on project clone from {}", req.repo_url),
     };
     let _ = state.platform.credentials.upsert_project_credential(&owner, &project, &upsert_req);
+
+    // Empty repo: create initial commit + push so the remote gets a default branch
+    if !has_commits {
+        let project_slug = crate::platform::model::slug_segment(&project);
+        let identity_fallback_name = if git_name.is_empty() { project_slug.clone() } else { git_name.clone() };
+        let identity_fallback_email = if git_email.is_empty() {
+            format!("{project_slug}@zebflow.local")
+        } else {
+            git_email.clone()
+        };
+
+        // Stage everything scaffolded by create_or_update_project
+        let _ = std::process::Command::new("git")
+            .arg("-C").arg(&repo_dir)
+            .arg("add").arg("-A")
+            .output();
+
+        let commit_out = std::process::Command::new("git")
+            .arg("-c").arg(format!("user.name={identity_fallback_name}"))
+            .arg("-c").arg(format!("user.email={identity_fallback_email}"))
+            .arg("-C").arg(&repo_dir)
+            .arg("commit").arg("-m").arg("Initial commit")
+            .output();
+
+        if commit_out.map(|o| o.status.success()).unwrap_or(false) {
+            // Push to establish the default branch on the remote
+            let push_out = std::process::Command::new("git")
+                .arg("-C").arg(&repo_dir)
+                .arg("push").arg("--set-upstream")
+                .arg(&auth_url).arg("main")
+                .output();
+            if let Ok(ref o) = push_out {
+                if !o.status.success() {
+                    let stderr = scrub_token_from_str(
+                        &String::from_utf8_lossy(&o.stderr),
+                        &req.token,
+                    );
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!("Initial push to empty repo failed: {stderr}"),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
 
     Redirect::to(HOME_PATH).into_response()
 }
@@ -1795,7 +1878,17 @@ async fn render_project_pipelines_with_tab(
                         let current_path = listing.current_path;
                         let breadcrumbs = listing.breadcrumbs;
                         let folders = listing.folders;
-                        let template_files = listing.files;
+                        let template_files: Vec<Value> = listing.files.into_iter().map(|f| {
+                            let template_path = f.rel_path.strip_prefix("pipelines/").unwrap_or(&f.rel_path).to_string();
+                            let git_status = registry_git_map.get(&f.rel_path).cloned();
+                            json!({
+                                "name": f.name,
+                                "rel_path": template_path,
+                                "kind": f.kind,
+                                "edit_href": f.edit_href,
+                                "git_status": git_status,
+                            })
+                        }).collect();
                         let pipelines = listing
                             .pipelines
                             .into_iter()
@@ -2083,7 +2176,7 @@ async fn render_project_pipelines_with_tab(
                             let git_status = registry_git_map.get(&f.rel_path).cloned();
                             json!({
                                 "name": f.name,
-                                "rel_path": f.rel_path,
+                                "rel_path": template_path,
                                 "kind": f.kind,
                                 "template_path": template_path,
                                 "git_status": git_status,
@@ -2386,7 +2479,7 @@ async fn render_project_editor(
                 let is_selected = file_param.as_deref() == Some(template_path.as_str());
                 json!({
                     "name": f.name,
-                    "rel_path": f.rel_path,
+                    "rel_path": template_path,
                     "template_path": template_path,
                     "kind": f.kind,
                     "git_status": git_status,
@@ -2632,6 +2725,9 @@ async fn render_project_editor(
         "template": template_payload,
         "doc": doc_payload,
         "folder": folder_payload,
+        "assets": {
+            "api": format!("/api/projects/{owner}/{project}/assets"),
+        },
         "nav": nav_classes(&owner, &project, "pipelines", Some(nav_sub)),
     });
 
@@ -2979,21 +3075,70 @@ async fn project_files_page(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    render_section_page(
-        state,
-        headers,
-        owner,
-        project,
-        "files",
-        ProjectCapability::FilesRead,
-        "Files",
-        "Git-sync friendly project files and assets.",
-        vec![
-            json!({"title":"File Browser","description":"Browse templates, scripts, and static assets."}),
-            json!({"title":"Git Sync","description":"Track and sync project files with git repositories."}),
-        ],
-    )
-    .await
+    render_files_page(state, headers, owner, project, "files").await
+}
+
+async fn project_files_tab_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, tab)): Path<(String, String, String)>,
+) -> Response {
+    let tab = match tab.trim() {
+        "s3" => "s3",
+        _ => "files",
+    };
+    render_files_page(state, headers, owner, project, tab).await
+}
+
+async fn render_files_page(
+    state: PlatformAppState,
+    headers: HeaderMap,
+    owner: String,
+    project: String,
+    tab: &str,
+) -> Response {
+    if let Err(response) =
+        require_project_page_capability(&state, &headers, &owner, &project, ProjectCapability::FilesRead)
+    {
+        return response;
+    }
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let nav = nav_classes(&owner, &project, "files", None);
+            let route = format!("/projects/{owner}/{project}/files");
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - Files", info.title),
+                    "description": "Git-sync friendly project files and assets."
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "current_menu": "Files",
+                "page_title": if tab == "s3" { "Object Storage" } else { "Files" },
+                "page_subtitle": if tab == "s3" {
+                    "Connect an S3-compatible object store as the file backend for this project."
+                } else {
+                    "Git-sync friendly project files and assets."
+                },
+                "active_tab": tab,
+                "cards": if tab == "s3" { vec![] } else {
+                    vec![
+                        json!({"title":"File Browser","description":"Browse templates, scripts, and static assets."}),
+                        json!({"title":"Git Sync","description":"Track and sync project files with git repositories."}),
+                    ]
+                },
+                "nav": nav,
+            });
+            match render_page(&state, "platform-project-section", &route, input) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn project_todo_page(
@@ -3137,7 +3282,8 @@ async fn render_settings_tab_page(
                     "policy": tab == "policy",
                     "automatons": tab == "automatons",
                     "libraries": tab == "libraries",
-                    "nodes": tab == "nodes"
+                    "nodes": tab == "nodes",
+                    "files": tab == "files"
                 },
                 "page_title": tab_title,
                 "page_subtitle": tab_subtitle,
@@ -3166,6 +3312,11 @@ async fn render_settings_tab_page(
                     "api": format!("/api/projects/{owner}/{project}/settings/git"),
                     "config": zebflow_cfg.git
                 },
+                "assets": {
+                    "api": format!("/api/projects/{owner}/{project}/assets"),
+                    "settings_api": format!("/api/projects/{owner}/{project}/settings/assets"),
+                    "config": zebflow_cfg.assets
+                },
                 "mcp": {
                     "active": mcp_session.is_some(),
                     "status_label": if mcp_session.is_some() { "active" } else { "inactive" },
@@ -3193,6 +3344,7 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
         "automatons" => "automatons",
         "libraries" => "libraries",
         "nodes" => "nodes",
+        "files" => "files",
         _ => "general",
     }
 }
@@ -3203,6 +3355,7 @@ fn settings_tab_title(tab: &str) -> &'static str {
         "automatons" => "Automatons",
         "libraries" => "Libraries",
         "nodes" => "Nodes",
+        "files" => "Files",
         _ => "General",
     }
 }
@@ -3213,6 +3366,7 @@ fn settings_tab_subtitle(tab: &str) -> &'static str {
         "automatons" => "Assistant and automation runtime configuration per project.",
         "libraries" => "Installed web libraries and runtime package contracts.",
         "nodes" => "Live node contracts and script/tool availability.",
+        "files" => "External file storage backends — S3, R2, and compatible object stores.",
         _ => "Core project defaults and shared runtime switches.",
     }
 }
@@ -3225,6 +3379,7 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
         ("automatons", "Automatons"),
         ("libraries", "Libraries"),
         ("nodes", "Nodes"),
+        ("files", "Files"),
     ];
     entries
         .iter()
@@ -3504,6 +3659,17 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml; charset=utf-8",
         Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("ico") => "image/x-icon",
+        Some("pdf") => "application/pdf",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("mp4") => "video/mp4",
+        Some("mp3") => "audio/mpeg",
+        Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
@@ -4966,6 +5132,102 @@ async fn api_create_project(
     }
 }
 
+/// Request body for `DELETE /api/users/{owner}/projects/{project}`.
+#[derive(serde::Deserialize)]
+struct DeleteProjectRequest {
+    /// Must exactly match the project slug as a confirmation.
+    project_name: String,
+    /// Authenticated user's password — re-verified before deletion.
+    password: String,
+}
+
+/// `DELETE /api/users/{owner}/projects/{project}` — irreversibly deletes a project.
+///
+/// Requires:
+/// - The caller is authenticated as `{owner}` (session cookie).
+/// - `project_name` in the body matches the project slug.
+/// - `password` in the body authenticates the current user.
+///
+/// Deletes:
+/// - Project metadata node from the platform DB.
+/// - Entire `data_root/users/{owner}/{project}/` directory tree from disk.
+async fn api_delete_project(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<DeleteProjectRequest>,
+) -> Response {
+    // Must be authenticated as the project owner
+    let Some(session_owner) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "Not authenticated"}))).into_response();
+    };
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+
+    if crate::platform::model::slug_segment(&session_owner) != owner_slug {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "Forbidden"}))).into_response();
+    }
+
+    // Confirm project name matches
+    let confirmed_slug = crate::platform::model::slug_segment(&req.project_name);
+    if confirmed_slug != project_slug || project_slug.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Project name does not match"})),
+        )
+            .into_response();
+    }
+
+    // Re-verify password
+    match state.platform.users.authenticate(&owner_slug, &req.password) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Incorrect password"})),
+            )
+                .into_response();
+        }
+        Err(e) => return internal_error(e),
+    }
+
+    // Verify project exists
+    match state.platform.data.get_project(&owner_slug, &project_slug) {
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": "Project not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => return internal_error(e),
+        Ok(Some(_)) => {}
+    }
+
+    // Delete metadata from the platform DB
+    if let Err(e) = state.platform.data.delete_project(&owner_slug, &project_slug) {
+        return internal_error(e);
+    }
+
+    // Delete the entire project directory from disk
+    let project_root = state
+        .platform
+        .config
+        .data_root
+        .join("users")
+        .join(&owner_slug)
+        .join(&project_slug);
+
+    if project_root.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&project_root) {
+            // DB record already gone — log but don't fail the response
+            eprintln!("WARN: Failed to remove project dir {:?}: {e}", project_root);
+        }
+    }
+
+    Json(json!({"ok": true})).into_response()
+}
+
 async fn api_prepare_project_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -5411,18 +5673,25 @@ async fn api_repo_git_status(
     }
 }
 
-/// Returns `-c user.name=… -c user.email=…` args when both fields are set; empty otherwise.
-fn git_identity_args(git_cfg: &crate::platform::model::ZebflowJsonGit) -> Vec<String> {
-    if !git_cfg.author_name.is_empty() && !git_cfg.author_email.is_empty() {
-        vec![
-            "-c".to_string(),
-            format!("user.name={}", git_cfg.author_name),
-            "-c".to_string(),
-            format!("user.email={}", git_cfg.author_email),
-        ]
+/// Returns `-c user.name=… -c user.email=…` args for git.
+/// Falls back to project slug / `{slug}@zebflow.local` when identity not configured.
+fn git_identity_args(git_cfg: &crate::platform::model::ZebflowJsonGit, project_slug: &str) -> Vec<String> {
+    let name = if git_cfg.author_name.is_empty() {
+        project_slug.to_string()
     } else {
-        vec![]
-    }
+        git_cfg.author_name.clone()
+    };
+    let email = if git_cfg.author_email.is_empty() {
+        format!("{project_slug}@zebflow.local")
+    } else {
+        git_cfg.author_email.clone()
+    };
+    vec![
+        "-c".to_string(),
+        format!("user.name={name}"),
+        "-c".to_string(),
+        format!("user.email={email}"),
+    ]
 }
 
 async fn api_git_commit(
@@ -5489,8 +5758,9 @@ async fn api_git_commit(
             .into_response();
     }
     // git commit -m <message>
-    let git_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project).git;
-    let identity_args = git_identity_args(&git_cfg);
+    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let git_cfg = &zebflow_cfg.git;
+    let identity_args = git_identity_args(git_cfg, &project_slug);
     let mut commit_cmd = std::process::Command::new("git");
     for arg in &identity_args { commit_cmd.arg(arg); }
     commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.message.trim());
@@ -5514,64 +5784,175 @@ async fn api_git_commit(
     }
     // optional push
     if req.push {
-        let mut push_cmd = std::process::Command::new("git");
-        push_cmd.arg("-C").arg(&layout.repo_dir).arg("push");
+        // Resolve push target: prefer explicit request fields, fall back to zebflow.json remote
+        let (cred_id, repo_url, branch) = {
+            let remote_cfg = &zebflow_cfg.remote;
+            let cid = req.credential_id.clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| remote_cfg.credential_id.clone());
+            let url = req.repo_url.clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| remote_cfg.repo_url.clone());
+            let br = req.branch.clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if remote_cfg.branch.is_empty() { "main".to_string() } else { remote_cfg.branch.clone() }
+                });
+            (cid, url, br)
+        };
 
-        // Inject credentials into URL if provided — token never written to .git/config
-        if let (Some(cred_id), Some(repo_url)) = (&req.credential_id, &req.repo_url) {
+        if cred_id.is_empty() || repo_url.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "No remote configured. Connect a remote in the Git panel first."})),
+            )
+                .into_response();
+        }
+
+        // Build authenticated push URL
+        let auth_url = {
             let cred = state
                 .platform
                 .credentials
-                .get_project_credential(&owner, &project, cred_id)
+                .get_project_credential(&owner, &project, &cred_id)
                 .ok()
                 .flatten();
-
-            let mut auth_url: Option<String> = None;
+            let mut url_opt: Option<String> = None;
             if let Some(c) = cred {
                 let username = c.secret["username"].as_str().unwrap_or("");
                 let token = c.secret["token"].as_str().unwrap_or("");
                 if !username.is_empty() && !token.is_empty() {
-                    if let Ok(mut parsed) = reqwest::Url::parse(repo_url) {
+                    if let Ok(mut parsed) = reqwest::Url::parse(&repo_url) {
                         let _ = parsed.set_username(username);
                         let _ = parsed.set_password(Some(token));
-                        auth_url = Some(parsed.to_string());
+                        url_opt = Some(parsed.to_string());
                     }
                 }
             }
-
-            if let Some(url) = auth_url {
-                push_cmd.arg(url);
+            match url_opt {
+                Some(u) => u,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"ok": false, "error": "Could not build authenticated push URL — check credential username/token."})),
+                    )
+                        .into_response();
+                }
             }
+        };
+
+        // Pull --rebase before push to handle diverged remote
+        let pull_out = std::process::Command::new("git")
+            .arg("-C").arg(&layout.repo_dir)
+            .arg("pull").arg("--rebase")
+            .arg(&auth_url).arg(&branch)
+            .output();
+        match pull_out {
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": format!("pull --rebase failed: {}", e)})),
+                )
+                    .into_response();
+            }
+            Ok(ref o) if !o.status.success() => {
+                // Abort the rebase so the repo is not left mid-rebase
+                let _ = std::process::Command::new("git")
+                    .arg("-C").arg(&layout.repo_dir)
+                    .arg("rebase").arg("--abort")
+                    .output();
+                let raw = String::from_utf8_lossy(&o.stderr);
+                let safe = redact_auth_urls(&raw);
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({"ok": false, "error": format!("Rebase conflict — resolve locally and try again: {safe}")})),
+                )
+                    .into_response();
+            }
+            Ok(_) => {}
         }
 
-        if let Some(branch) = &req.branch {
-            if !branch.is_empty() {
-                push_cmd.arg(branch);
-            }
-        }
-
-        let push_out = match push_cmd.output() {
-            Ok(o) => o,
+        // Push --set-upstream so future pushes work without tracking config
+        let push_out = std::process::Command::new("git")
+            .arg("-C").arg(&layout.repo_dir)
+            .arg("push").arg("--set-upstream")
+            .arg(&auth_url).arg(&branch)
+            .output();
+        match push_out {
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({"ok": false, "error": e.to_string()})),
                 )
-                    .into_response()
+                    .into_response();
             }
-        };
-        if !push_out.status.success() {
-            let raw = String::from_utf8_lossy(&push_out.stderr);
-            // Redact https://user:token@host patterns — never expose credentials in error responses
-            let safe = redact_auth_urls(&raw);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"ok": false, "error": safe})),
-            )
-                .into_response();
+            Ok(ref o) if !o.status.success() => {
+                let raw = String::from_utf8_lossy(&o.stderr);
+                let safe = redact_auth_urls(&raw);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": safe})),
+                )
+                    .into_response();
+            }
+            Ok(_) => {}
         }
     }
     Json(json!({"ok": true})).into_response()
+}
+
+/// Request body for `PUT /api/projects/{owner}/{project}/git/remote`.
+#[derive(serde::Deserialize)]
+struct GitRemoteRequest {
+    #[serde(default)]
+    credential_id: String,
+    #[serde(default)]
+    repo_url: String,
+    #[serde(default)]
+    branch: String,
+}
+
+/// `GET /api/projects/{owner}/{project}/git/remote` — returns saved remote config.
+async fn api_git_get_remote(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::TemplatesRead,
+    ) {
+        return r;
+    }
+    let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    Json(json!({
+        "credential_id": cfg.remote.credential_id,
+        "repo_url": cfg.remote.repo_url,
+        "branch": cfg.remote.branch,
+    }))
+    .into_response()
+}
+
+/// `PUT /api/projects/{owner}/{project}/git/remote` — saves remote config.
+async fn api_git_put_remote(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<GitRemoteRequest>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+    ) {
+        return r;
+    }
+    let branch = if req.branch.trim().is_empty() { "main".to_string() } else { req.branch.trim().to_string() };
+    match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+        cfg.remote.credential_id = req.credential_id.trim().to_string();
+        cfg.remote.repo_url = req.repo_url.trim().to_string();
+        cfg.remote.branch = branch;
+    }) {
+        Ok(_) => Json(json!({"ok": true})).into_response(),
+        Err(e) => internal_error(e),
+    }
 }
 
 async fn api_activate_pipeline_definition(
@@ -6530,6 +6911,14 @@ async fn api_upsert_settings_section(
             cfg.git.author_email = email;
             json!(cfg.git)
         }
+        "assets" => {
+            let max_mb = req.data.get("max_asset_size_mb")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(5, 50) as u32)
+                .unwrap_or(10);
+            cfg.assets.max_asset_size_mb = max_mb;
+            json!(cfg.assets)
+        }
         _ => {
             return (
                 StatusCode::NOT_FOUND,
@@ -6546,10 +6935,10 @@ async fn api_upsert_settings_section(
     // Git: stage zebflow.json and commit with the user-provided message.
     // Uses identity from cfg.git (already updated in memory) so first-time saves work.
     // Failure is non-fatal — settings are already saved; we report the git outcome.
-    let identity_args = git_identity_args(&cfg.git);
     let (committed, git_error) = {
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
+        let identity_args = git_identity_args(&cfg.git, &project_slug);
         match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
             Err(_) => (false, Some("could not resolve project layout".to_string())),
             Ok(layout) => {
@@ -6758,7 +7147,7 @@ fn rwe_library_git_commit(
         return Err(());
     }
     let git_cfg = state.platform.zebflow_cfg.read_or_default(owner, project).git;
-    let identity_args = git_identity_args(&git_cfg);
+    let identity_args = git_identity_args(&git_cfg, &project_slug);
     let mut cmd = std::process::Command::new("git");
     for arg in &identity_args { cmd.arg(arg); }
     cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(message);
@@ -9645,4 +10034,270 @@ async fn project_settings_clone_ui_preview_page(
         Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+// ─── Asset Management API ────────────────────────────────────────────────────
+
+/// Sanitize an asset filename: allow `[A-Za-z0-9._-]`, reject `..` and `/`,
+/// reject leading dot, max 200 chars. Returns `None` if invalid.
+fn sanitize_asset_filename(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.len() > 200 {
+        return None;
+    }
+    if name.starts_with('.') || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return None;
+    }
+    // Replace spaces and invalid chars with '-', then collapse consecutive dashes.
+    let replaced: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '-' })
+        .collect();
+    // Collapse consecutive dashes (e.g. "foo--bar" → "foo-bar")
+    let mut sanitized = String::with_capacity(replaced.len());
+    let mut prev_dash = false;
+    for c in replaced.chars() {
+        if c == '-' {
+            if !prev_dash { sanitized.push(c); }
+            prev_dash = true;
+        } else {
+            sanitized.push(c);
+            prev_dash = false;
+        }
+    }
+    // Strip leading/trailing dashes
+    let sanitized = sanitized.trim_matches('-').to_string();
+    if sanitized.is_empty() {
+        return None;
+    }
+    Some(sanitized)
+}
+
+/// Sanitize a single subfolder segment: `[A-Za-z0-9_-]` only, no slashes or dots.
+fn sanitize_subfolder(s: &str) -> Option<String> {
+    let s = s.trim_matches('/');
+    if s.is_empty() { return None; }
+    if s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Sanitize a multi-segment asset subpath (e.g. `images/logo.png`).
+/// Each segment must pass `[A-Za-z0-9._-]` rules and not start with `.`.
+fn sanitize_asset_subpath(path: &str) -> Option<std::path::PathBuf> {
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() || trimmed.contains("..") { return None; }
+    let mut result = std::path::PathBuf::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part.starts_with('.') { return None; }
+        if !part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b'_') {
+            return None;
+        }
+        result.push(part);
+    }
+    if result.components().count() == 0 { return None; }
+    Some(result)
+}
+
+/// Query params shared by asset list/upload endpoints.
+#[derive(serde::Deserialize)]
+struct AssetQuery {
+    subfolder: Option<String>,
+}
+
+/// `GET /api/projects/{owner}/{project}/assets` — list files in `repo/pipelines/assets/`.
+async fn api_list_assets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<AssetQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+
+    let subfolder = query.subfolder.as_deref().and_then(sanitize_subfolder).unwrap_or_default();
+    let assets_dir = if subfolder.is_empty() {
+        layout.repo_pipelines_dir.join("assets")
+    } else {
+        layout.repo_pipelines_dir.join("assets").join(&subfolder)
+    };
+    if let Err(e) = std::fs::create_dir_all(&assets_dir) {
+        return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
+    }
+
+    let entries = match std::fs::read_dir(&assets_dir) {
+        Ok(rd) => rd,
+        Err(e) => return internal_error(PlatformError::new("ASSET_DIR_READ", e.to_string())),
+    };
+
+    let mut files: Vec<Value> = Vec::new();
+    for entry in entries.flatten() {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let size_bytes = meta.len();
+        let url = if subfolder.is_empty() {
+            format!("/assets/{owner_slug}/{project_slug}/{name}")
+        } else {
+            format!("/assets/{owner_slug}/{project_slug}/{subfolder}/{name}")
+        };
+        files.push(json!({ "name": name, "size_bytes": size_bytes, "url": url }));
+    }
+
+    files.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    Json(json!({ "ok": true, "files": files })).into_response()
+}
+
+/// `POST /api/projects/{owner}/{project}/assets` — upload a file via multipart.
+async fn api_upload_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<AssetQuery>,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::TemplatesWrite,
+    ) {
+        return response;
+    }
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+
+    let cfg = state.platform.zebflow_cfg.read_or_default(&owner_slug, &project_slug);
+    let max_bytes = (cfg.assets.max_asset_size_mb as u64) * 1024 * 1024;
+
+    let subfolder = query.subfolder.as_deref().and_then(sanitize_subfolder).unwrap_or_default();
+    let assets_dir = if subfolder.is_empty() {
+        layout.repo_pipelines_dir.join("assets")
+    } else {
+        layout.repo_pipelines_dir.join("assets").join(&subfolder)
+    };
+    if let Err(e) = std::fs::create_dir_all(&assets_dir) {
+        return internal_error(PlatformError::new("ASSET_DIR_CREATE", e.to_string()));
+    }
+
+    let field = match multipart.next_field().await {
+        Ok(Some(f)) => f,
+        Ok(None) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "no file field in multipart body"}))).into_response();
+        }
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+        }
+    };
+
+    let raw_filename = field
+        .file_name()
+        .map(|s| s.to_string())
+        .or_else(|| field.name().map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    let filename = match sanitize_asset_filename(&raw_filename) {
+        Some(n) => n,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": format!("invalid filename '{raw_filename}': only [A-Za-z0-9._-] allowed, no leading dot, max 200 chars")})),
+            ).into_response();
+        }
+    };
+
+    let bytes = match field.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+        }
+    };
+
+    if bytes.len() as u64 > max_bytes {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), cfg.assets.max_asset_size_mb)})),
+        ).into_response();
+    }
+
+    let dest = assets_dir.join(&filename);
+    if let Err(e) = std::fs::write(&dest, &bytes) {
+        return internal_error(PlatformError::new("ASSET_WRITE", e.to_string()));
+    }
+
+    let url = if subfolder.is_empty() {
+        format!("/assets/{owner_slug}/{project_slug}/{filename}")
+    } else {
+        format!("/assets/{owner_slug}/{project_slug}/{subfolder}/{filename}")
+    };
+    Json(json!({ "ok": true, "name": filename, "size_bytes": bytes.len(), "url": url })).into_response()
+}
+
+/// `DELETE /api/projects/{owner}/{project}/assets/{*path}` — delete an asset file.
+async fn api_delete_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, path)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::TemplatesDelete,
+    ) {
+        return response;
+    }
+
+    let subpath = match sanitize_asset_subpath(path.trim_start_matches('/')) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid asset path"})),
+            ).into_response();
+        }
+    };
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+
+    let assets_dir = layout.repo_pipelines_dir.join("assets");
+    let abs = assets_dir.join(&subpath);
+
+    if !abs.starts_with(&assets_dir) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "invalid asset path"}))).into_response();
+    }
+
+    if !abs.is_file() {
+        return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "asset not found"}))).into_response();
+    }
+
+    if let Err(e) = std::fs::remove_file(&abs) {
+        return internal_error(PlatformError::new("ASSET_DELETE", e.to_string()));
+    }
+
+    Json(json!({ "ok": true })).into_response()
 }

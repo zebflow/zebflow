@@ -37,6 +37,8 @@ pub trait DataAdapter: Send + Sync {
     fn put_project(&self, project: &PlatformProject) -> Result<(), PlatformError>;
     /// List projects by owner.
     fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError>;
+    /// Delete one project metadata record.
+    fn delete_project(&self, owner: &str, project: &str) -> Result<(), PlatformError>;
     /// Load one project credential.
     fn get_project_credential(
         &self,

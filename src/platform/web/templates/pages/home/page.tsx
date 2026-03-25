@@ -90,7 +90,10 @@ export default function Page(input) {
               <h1 className="text-3xl font-black tracking-tighter text-slate-900">
                 Projects for {input.owner}
               </h1>
-              <p className="mt-2 text-sm text-slate-500">Create and manage your automation projects.</p>
+                <p className="mt-2 text-sm text-slate-500">Create and manage your automation projects.</p>
+              {input?.app_version ? (
+                <p className="mt-1 text-[0.7rem] text-slate-400 tracking-wide">v{input.app_version}</p>
+              ) : null}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button type="button" variant="primary" onClick={openCreateDialog}>
@@ -275,6 +278,7 @@ export default function Page(input) {
                   name="git_name"
                   id="home-clone-git-name"
                   placeholder="Your Name"
+                  required
                 />
               </Field>
 
@@ -285,6 +289,7 @@ export default function Page(input) {
                   name="git_email"
                   id="home-clone-git-email"
                   placeholder="you@example.com"
+                  required
                 />
               </Field>
             </div>
