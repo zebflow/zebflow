@@ -3,6 +3,7 @@ import { initPipelineRegistryBehavior } from "@/pages/project-studio/pipelines/p
 import { initInstallCatalogBehavior } from "@/pages/project-studio/pipelines/install-catalog-behavior";
 import WebhookRouteTree from "@/components/ui/webhook-route-tree";
 import { cx, Link, usePageState, useNavigate } from "zeb";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -105,15 +106,15 @@ export default function Page(input) {
       nav={input?.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <Link href={navLinks.pipelines_registry ?? "#"} className={cx("project-tab-link", navClasses.pipeline_registry)}>Registry</Link>
-          <Link href={navLinks.pipelines_webhooks ?? "#"} className={cx("project-tab-link", navClasses.pipeline_webhooks)}>Webhooks</Link>
-          <Link href={navLinks.pipelines_schedules ?? "#"} className={cx("project-tab-link", navClasses.pipeline_schedules)}>Schedules</Link>
-          <Link href={navLinks.pipelines_manual ?? "#"} className={cx("project-tab-link", navClasses.pipeline_manual)}>Manual</Link>
-          <Link href={navLinks.pipelines_functions ?? "#"} className={cx("project-tab-link", navClasses.pipeline_functions)}>Functions</Link>
-        </nav>
+        <StudioTabNav>
+          <StudioTabLink href={navLinks.pipelines_registry ?? "#"} active={!!navClasses.pipeline_registry}>Registry</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_webhooks ?? "#"} active={!!navClasses.pipeline_webhooks}>Webhooks</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_schedules ?? "#"} active={!!navClasses.pipeline_schedules}>Schedules</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_manual ?? "#"} active={!!navClasses.pipeline_manual}>Manual</StudioTabLink>
+          <StudioTabLink href={navLinks.pipelines_functions ?? "#"} active={!!navClasses.pipeline_functions}>Functions</StudioTabLink>
+        </StudioTabNav>
 
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
           {input?.is_registry ? (
             <div
               className="flex-1 min-h-0 flex flex-col"
@@ -126,13 +127,13 @@ export default function Page(input) {
               data-api-git-commit={registryApi?.git_commit ?? ""}
             >
               {/* ── Toolbar ─────────────────────────────────────────────── */}
-              <div className="flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)]">
-                <div className="flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-[var(--studio-text-soft)]">
+              <div className="flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-surface">
+                <div className="flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-body-soft">
                   <span className="font-mono uppercase tracking-[0.12em]">Path</span>
                   {registryBreadcrumbs.map((crumb, index) => (
                     <span key={`${crumb?.path ?? "root"}-${index}`} className="inline-flex items-center gap-[0.35rem]">
-                      {crumb?.show_divider ? <span className="text-[var(--studio-border)]">/</span> : null}
-                      <Link href={crumb?.path ?? "#"} className="project-inline-path-link text-[var(--studio-text)]">{crumb?.name ?? "/"}</Link>
+                      {crumb?.show_divider ? <span className="text-border">/</span> : null}
+                      <Link href={crumb?.path ?? "#"} className="project-inline-path-link text-body">{crumb?.name ?? "/"}</Link>
                     </span>
                   ))}
                 </div>
@@ -145,7 +146,7 @@ export default function Page(input) {
               </div>
 
               {/* ── Filter tabs ──────────────────────────────────────────── */}
-              <div className="flex gap-1 px-3 py-[0.375rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)]">
+              <div className="flex gap-1 px-3 py-[0.375rem] border-b border-border bg-surface">
                 {(["all", "pipelines", "templates", "scripts"] as const).map((f) => (
                   <button
                     key={f}
@@ -159,7 +160,7 @@ export default function Page(input) {
               </div>
 
               {/* ── Inline: new pipeline form ────────────────────────────── */}
-              <div hidden data-new-pipeline-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-[var(--studio-border-soft)] flex-wrap">
+              <div hidden data-new-pipeline-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-border-soft flex-wrap">
                 <Input name="name" type="text" placeholder="pipeline-name" className="pipeline-registry-inline-input" />
                 <Input name="title" type="text" placeholder="Title (optional)" className="pipeline-registry-inline-input" />
                 <Select name="trigger_kind" className="pipeline-registry-inline-select">
@@ -173,14 +174,14 @@ export default function Page(input) {
               </div>
 
               {/* ── Inline: new folder form ──────────────────────────────── */}
-              <div hidden data-new-folder-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-[var(--studio-border-soft)] flex-wrap">
+              <div hidden data-new-folder-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-border-soft flex-wrap">
                 <Input name="folder_name" type="text" placeholder="folder-name" className="pipeline-registry-inline-input" />
                 <Button size="xs" data-new-folder-submit="true">Create Folder</Button>
                 <Button variant="outline" size="xs" data-new-folder-cancel="true">Cancel</Button>
               </div>
 
               {/* ── Inline: new template form ────────────────────────────── */}
-              <div hidden data-new-template-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-[var(--studio-border-soft)] flex-wrap">
+              <div hidden data-new-template-form="true" className="flex items-center gap-2 px-3 py-2 border-t border-border-soft flex-wrap">
                 <Input name="template_name" type="text" placeholder="template-name" className="pipeline-registry-inline-input" />
                 <Select name="template_kind" className="pipeline-registry-inline-select">
                   <option value="page">Page (.tsx)</option>
@@ -206,7 +207,7 @@ export default function Page(input) {
                       href={folder?.path ?? "#"}
                       className="pipeline-registry-row pipeline-registry-folder-row"
                     >
-                      <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]">
+                      <span className="shrink-0 flex items-center text-body-soft">
                         <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
                           <path d="M3 7.5A1.5 1.5 0 014.5 6h4l1.5 2h9A1.5 1.5 0 0120.5 9.5v7A1.5 1.5 0 0119 18H4.5A1.5 1.5 0 013 16.5v-9z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
                         </svg>
@@ -224,7 +225,7 @@ export default function Page(input) {
                       href={folder?.path ?? "#"}
                       className={cx("pipeline-registry-row pipeline-registry-folder-row pipeline-registry-special-folder", folder?.name === "docs" ? "registry-folder-docs" : folder?.name === "assets" ? "registry-folder-assets" : folder?.name === "styles" ? "registry-folder-styles" : "")}
                     >
-                      <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]">
+                      <span className="shrink-0 flex items-center text-body-soft">
                         <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
                           <path d="M3 7.5A1.5 1.5 0 014.5 6h4l1.5 2h9A1.5 1.5 0 0120.5 9.5v7A1.5 1.5 0 0119 18H4.5A1.5 1.5 0 013 16.5v-9z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
                         </svg>
@@ -246,7 +247,7 @@ export default function Page(input) {
                       data-rel-path={item?.file_rel_path ?? ""}
                     >
                       <Link href={item?.edit_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><PipelineIcon /></span>
+                        <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
                         <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
                         <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
                         <Badge variant="secondary">{item?.trigger_kind}</Badge>
@@ -283,7 +284,7 @@ export default function Page(input) {
                       data-rel-path={file?.rel_path ?? ""}
                     >
                       <Link href={file?.edit_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]">
+                        <span className="shrink-0 flex items-center text-body-soft">
                           <FileKindIcon name={file?.name ?? ""} />
                         </span>
                         <span className="pipeline-registry-row-name">{file?.name}</span>
@@ -300,7 +301,7 @@ export default function Page(input) {
                   ))}
 
                   {registryFolders.length === 0 && registryPipelines.length === 0 && registryFiles.length === 0 ? (
-                    <p className="p-6 text-center text-[0.78rem] text-[var(--studio-text-soft)]">No pipelines here. Use <strong>+ Pipeline</strong> to create one.</p>
+                    <p className="p-6 text-center text-[0.78rem] text-body-soft">No pipelines here. Use <strong>+ Pipeline</strong> to create one.</p>
                   ) : null}
                 </div>
               </section>
@@ -365,7 +366,7 @@ export default function Page(input) {
 
                     {/* UI Kit tab content */}
                     <div data-install-tab-content="ui" className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", margin: 0 }}>
+                      <p style={{ fontSize: "12px", color: "var(--color-ui-text-muted)", margin: 0 }}>
                         Select components to install into <code>shared/ui/</code>. Installs as Zeb React TSX files.
                       </p>
                       <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
@@ -379,17 +380,17 @@ export default function Page(input) {
                       >
                         {/* Populated by project-install.ts behavior */}
                       </div>
-                      <p data-install-result="true" hidden style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", margin: 0 }} />
+                      <p data-install-result="true" hidden style={{ fontSize: "12px", color: "var(--color-ui-text-muted)", margin: 0 }} />
                     </div>
 
                     {/* Pipelines tab content (future) */}
                     <div data-install-tab-content="pipelines" hidden className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", margin: 0 }}>Pipeline templates coming soon.</p>
+                      <p style={{ fontSize: "12px", color: "var(--color-ui-text-muted)", margin: 0 }}>Pipeline templates coming soon.</p>
                     </div>
 
                     {/* Scripts tab content (future) */}
                     <div data-install-tab-content="scripts" hidden className="install-catalog-tab-panel">
-                      <p style={{ fontSize: "12px", color: "var(--zf-ui-text-muted)", margin: 0 }}>Script templates coming soon.</p>
+                      <p style={{ fontSize: "12px", color: "var(--color-ui-text-muted)", margin: 0 }}>Script templates coming soon.</p>
                     </div>
                   </div>
 
@@ -404,11 +405,11 @@ export default function Page(input) {
 
           {input?.is_non_registry && !input?.is_editor && !input?.is_webhooks ? (
             <div className="flex-1 min-h-0 overflow-auto flex flex-col">
-              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)]">
+              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-surface">
                 <div>
-                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--studio-text-soft)]">{input?.page_title}</p>
+                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-body-soft">{input?.page_title}</p>
                   {input?.page_subtitle ? (
-                    <p className="text-[0.72rem] text-[var(--studio-text-soft)] mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
+                    <p className="text-[0.72rem] text-body-soft mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
                   ) : null}
                 </div>
                 <Badge variant="secondary">{pipelineItems.length}</Badge>
@@ -420,22 +421,22 @@ export default function Page(input) {
                     href={item?.editor_href ?? "#"}
                     className="pipeline-registry-row"
                   >
-                    <span className="shrink-0 flex items-center text-[var(--studio-text-soft)]"><PipelineIcon className="w-4 h-4" /></span>
+                    <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon className="w-4 h-4" /></span>
                     <span className="flex-1 min-w-0 flex flex-col gap-[0.15rem]">
                       <span className="flex items-center gap-2 flex-wrap">
                         <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
                         {item?.virtual_path && item?.virtual_path !== "/" ? (
-                          <span className="text-[0.65rem] text-[var(--studio-text-soft)] font-mono">{item?.virtual_path}</span>
+                          <span className="text-[0.65rem] text-body-soft font-mono">{item?.virtual_path}</span>
                         ) : null}
                       </span>
                       {item?.description ? (
-                        <span className="text-[0.72rem] text-[var(--studio-text-soft)] leading-snug">{item?.description}</span>
+                        <span className="text-[0.72rem] text-body-soft leading-snug">{item?.description}</span>
                       ) : null}
                     </span>
                   </Link>
                 ))}
                 {pipelineItems.length === 0 ? (
-                  <p className="p-6 text-center text-[0.78rem] text-[var(--studio-text-soft)]">
+                  <p className="p-6 text-center text-[0.78rem] text-body-soft">
                     No {(input?.page_title as string)?.toLowerCase() ?? "pipelines"} yet. Create one in the Registry tab.
                   </p>
                 ) : null}
@@ -445,11 +446,11 @@ export default function Page(input) {
 
           {input?.is_webhooks ? (
             <div className="flex-1 min-h-0 overflow-auto flex flex-col">
-              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)]">
+              <div className="shrink-0 flex items-start justify-between gap-3 px-[0.875rem] py-[0.625rem] border-b border-border bg-surface">
                 <div>
-                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-[var(--studio-text-soft)]">{input?.page_title}</p>
+                  <p className="text-[0.68rem] uppercase tracking-[0.08em] text-body-soft">{input?.page_title}</p>
                   {input?.page_subtitle ? (
-                    <p className="text-[0.72rem] text-[var(--studio-text-soft)] mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
+                    <p className="text-[0.72rem] text-body-soft mt-[0.2rem] leading-snug">{input?.page_subtitle}</p>
                   ) : null}
                 </div>
                 <Badge variant="secondary">{pipelineItems.length}</Badge>

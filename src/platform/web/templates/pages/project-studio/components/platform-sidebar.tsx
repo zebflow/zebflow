@@ -50,10 +50,10 @@ export default function PlatformSidebar(props) {
           >
             <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="h-9 w-9 shrink-0" />
             <span className={cx("min-w-0", !expanded && "hidden")}>
-              <span className="block text-base font-black tracking-tight text-[var(--studio-text)]">
+              <span className="block text-base font-black tracking-tight text-body">
                 ZEBFLOW
               </span>
-              <span className="block font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--studio-text-soft)]">
+              <span className="block font-mono text-[10px] uppercase tracking-[0.18em] text-body-soft">
                 Project Studio
               </span>
             </span>

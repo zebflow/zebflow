@@ -2,14 +2,17 @@ import { useState, useEffect, useRef, useNavigate, cx } from "zeb";
 import { useWindowEvent } from "zeb/use";
 import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
-import Dialog from "@/components/ui/dialog";
+import { Dialog } from "@/components/ui/dialog";
+import DialogContent from "@/components/ui/dialog-content";
+import DialogTitle from "@/components/ui/dialog-title";
+import DialogFooter from "@/components/ui/dialog-footer";
 import { GitBranchIcon } from "@/pages/project-studio/components/icons";
 import { GitFileTree } from "@/pages/project-studio/components/git-file-tree";
 import { useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
 
-const credLabelCx = "text-[0.65rem] font-semibold uppercase tracking-[0.07em] text-[var(--studio-text-soft)] mb-[0.3rem] block";
-const credInputCx = "w-full bg-[var(--studio-panel-2)] border border-[var(--studio-border)] rounded-[0.35rem] text-[var(--studio-text)] text-[0.68rem] font-mono px-[0.4rem] h-7 outline-none focus:border-green-500";
-const credSelectCx = "w-full bg-[var(--studio-panel-2)] border border-[var(--studio-border)] rounded-[0.35rem] text-[var(--studio-text)] text-[0.72rem] px-[0.4rem] h-7 outline-none cursor-pointer";
+const credLabelCx = "text-[0.65rem] font-semibold uppercase tracking-[0.07em] text-body-soft mb-[0.3rem] block";
+const credInputCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] text-body text-[0.68rem] font-mono px-[0.4rem] h-7 outline-none focus:border-green-500";
+const credSelectCx = "w-full bg-surface-2 border border-border rounded-[0.35rem] text-body text-[0.72rem] px-[0.4rem] h-7 outline-none cursor-pointer";
 
 export function GitRepoPanel({ owner, project }) {
   const nav = useNavigate();
@@ -238,7 +241,7 @@ export function GitRepoPanel({ owner, project }) {
   return (
     <div
       className="relative"
-      tw-variants="absolute -top-1 -right-1 min-w-4 h-4 px-[0.22rem] bg-orange-500 text-[0.58rem] leading-4 pointer-events-none fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-slate-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-[var(--studio-border-soft)] tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-[var(--studio-accent)] rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-[var(--studio-panel-3)] border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px"
+      tw-variants="absolute -top-1 -right-1 min-w-4 h-4 px-[0.22rem] bg-orange-500 text-[0.58rem] leading-4 pointer-events-none fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-slate-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px"
     >
       {/* Trigger button */}
       <Button
@@ -270,15 +273,15 @@ export function GitRepoPanel({ owner, project }) {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
 
           {/* Panel */}
-          <div className="absolute top-[calc(100%+6px)] right-0 w-[640px] flex flex-col bg-[var(--studio-panel)] border border-[var(--studio-border)] rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.25)] overflow-hidden z-50">
+          <div className="absolute top-[calc(100%+6px)] right-0 w-[640px] flex flex-col bg-surface border border-border rounded-lg shadow-[0_8px_24px_rgba(0,0,0,0.25)] overflow-hidden z-50">
 
             {/* Header */}
-            <div className="flex items-center justify-between px-3 py-[0.55rem] border-b border-[var(--studio-border)] gap-2">
-              <div className="text-[0.75rem] font-semibold text-[var(--studio-text)] flex items-center gap-[0.35rem]">
+            <div className="flex items-center justify-between px-3 py-[0.55rem] border-b border-border gap-2">
+              <div className="text-[0.75rem] font-semibold text-body flex items-center gap-[0.35rem]">
                 <GitBranchIcon className="w-3.5 h-3.5 shrink-0" />
                 <span>Git</span>
               </div>
-              <div className="flex items-center gap-2 text-[0.7rem] text-[var(--studio-text-soft)]">
+              <div className="flex items-center gap-2 text-[0.7rem] text-body-soft">
                 <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>
                 <span
                   className={cx(
@@ -296,27 +299,27 @@ export function GitRepoPanel({ owner, project }) {
 
               {/* Left: commit */}
               <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-                <div className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-[var(--studio-text-soft)] px-3 py-[0.5rem] pb-[0.3rem] border-b border-[var(--studio-border-soft)]">
+                <div className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-body-soft px-3 py-[0.5rem] pb-[0.3rem] border-b border-border-soft">
                   Commit
                 </div>
                 <div className="flex-1 overflow-y-auto py-[0.4rem] min-h-[2.5rem]">
                   {staged.length > 0 && (
                     <>
-                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-[var(--studio-text-soft)] px-3 pt-[0.3rem] pb-[0.15rem] uppercase">STAGED</p>
+                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-body-soft px-3 pt-[0.3rem] pb-[0.15rem] uppercase">STAGED</p>
                       <GitFileTree files={staged} setFiles={setFiles} />
                     </>
                   )}
                   {unstaged.length > 0 && (
                     <>
-                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-[var(--studio-text-soft)] px-3 pt-[0.3rem] pb-[0.15rem] uppercase">CHANGES</p>
+                      <p className="text-[0.6rem] font-bold tracking-[0.07em] text-body-soft px-3 pt-[0.3rem] pb-[0.15rem] uppercase">CHANGES</p>
                       <GitFileTree files={unstaged} setFiles={setFiles} />
                     </>
                   )}
-                  {count === 0 && !gitLoading && <p className="text-[0.74rem] text-[var(--studio-text-soft)] px-3 py-[0.6rem]">Working tree clean.</p>}
-                  {gitLoading && <p className="text-[0.74rem] text-[var(--studio-text-soft)] px-3 py-[0.6rem]">Loading…</p>}
+                  {count === 0 && !gitLoading && <p className="text-[0.74rem] text-body-soft px-3 py-[0.6rem]">Working tree clean.</p>}
+                  {gitLoading && <p className="text-[0.74rem] text-body-soft px-3 py-[0.6rem]">Loading…</p>}
                 </div>
                 {count > 0 && (
-                  <div className="border-t border-[var(--studio-border)] px-[0.6rem] py-[0.5rem] flex flex-col gap-[0.4rem]">
+                  <div className="border-t border-border px-[0.6rem] py-[0.5rem] flex flex-col gap-[0.4rem]">
                     <Input
                       value={message}
                       onInput={(e) => setMessage(e.target.value)}
@@ -344,24 +347,24 @@ export function GitRepoPanel({ owner, project }) {
               </div>
 
               {/* Divider */}
-              <div className="w-px bg-[var(--studio-border)] shrink-0" />
+              <div className="w-px bg-border shrink-0" />
 
               {/* Right: remote */}
               <div className="w-[260px] shrink-0 flex flex-col overflow-y-auto p-3 gap-[0.85rem]">
                 <div
-                  className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-[var(--studio-text-soft)] border-b border-[var(--studio-border-soft)] pb-[0.3rem]"
+                  className="text-[0.65rem] font-bold uppercase tracking-[0.07em] text-body-soft border-b border-border-soft pb-[0.3rem]"
                   style={{ margin: "-.75rem -.75rem .6rem" }}
                 >Remote</div>
 
                 {repoLoading ? (
-                  <p className="text-[0.72rem] text-[var(--studio-text-soft)] leading-[1.5]">Loading…</p>
+                  <p className="text-[0.72rem] text-body-soft leading-[1.5]">Loading…</p>
                 ) : creds.length === 0 ? (
-                  <p className="text-[0.72rem] text-[var(--studio-text-soft)] leading-[1.5]">
+                  <p className="text-[0.72rem] text-body-soft leading-[1.5]">
                     No GitHub / GitLab credentials.{" "}
                     <a
                       href="#"
                       onClick={(e) => { e.preventDefault(); setShowCredDialog(true); }}
-                      className="underline text-[var(--studio-accent)]"
+                      className="underline text-accent"
                     >Create one</a>
                   </p>
                 ) : (
@@ -383,16 +386,16 @@ export function GitRepoPanel({ owner, project }) {
                     <div>
                       <label className={credLabelCx}>Repository</label>
                       <div className={cx(
-                        "flex items-center border border-[var(--studio-border)] rounded-[0.35rem] overflow-hidden bg-[var(--studio-panel-2)] focus-within:border-green-500",
+                        "flex items-center border border-border rounded-[0.35rem] overflow-hidden bg-surface-2 focus-within:border-green-500",
                         !selectedId && "opacity-50",
                       )}>
                         {credHost && (
-                          <span className="text-[0.65rem] font-mono text-[var(--studio-text-soft)] px-[0.4rem] whitespace-nowrap bg-[var(--studio-panel-3)] border-r border-[var(--studio-border)] h-7 flex items-center shrink-0">
+                          <span className="text-[0.65rem] font-mono text-body-soft px-[0.4rem] whitespace-nowrap bg-surface-3 border-r border-border h-7 flex items-center shrink-0">
                             {credHost}/
                           </span>
                         )}
                         <input
-                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-[var(--studio-text)] text-[0.68rem] font-mono px-[0.4rem] h-7"
+                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-body text-[0.68rem] font-mono px-[0.4rem] h-7"
                           type="text"
                           placeholder="username/repo-name"
                           value={slug}
@@ -442,22 +445,9 @@ export function GitRepoPanel({ owner, project }) {
         </>
       )}
 
-      <Dialog
-        open={showCredDialog}
-        onClose={() => setShowCredDialog(false)}
-        title="Add Git Credential"
-        wClass="max-w-2xl"
-        footer={
-          <>
-            <Button size="xs" onClick={handleCreateCred} disabled={credSaving} className="flex-1">
-              {credSaving ? "Saving…" : "Save"}
-            </Button>
-            <Button size="xs" variant="ghost" onClick={() => setShowCredDialog(false)} disabled={credSaving} className="flex-1">
-              Cancel
-            </Button>
-          </>
-        }
-      >
+      <Dialog open={showCredDialog} onOpenChange={(v: boolean) => !v && setShowCredDialog(false)}>
+        <DialogContent className="max-w-2xl">
+        <DialogTitle>Add Git Credential</DialogTitle>
         <div>
           <label className={credLabelCx}>Kind</label>
           <select
@@ -524,6 +514,15 @@ export function GitRepoPanel({ owner, project }) {
         </div>
 
         {credSaveError && <p className="text-[0.68rem] text-red-400">{credSaveError}</p>}
+        <DialogFooter>
+          <Button size="xs" onClick={handleCreateCred} disabled={credSaving} className="flex-1">
+            {credSaving ? "Saving…" : "Save"}
+          </Button>
+          <Button size="xs" variant="ghost" onClick={() => setShowCredDialog(false)} disabled={credSaving} className="flex-1">
+            Cancel
+          </Button>
+        </DialogFooter>
+        </DialogContent>
       </Dialog>
     </div>
   );

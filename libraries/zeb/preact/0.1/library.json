@@ -1,0 +1,9 @@
+{
+  "name": "zeb/preact",
+  "version": "0.1",
+  "kind": "runtime",
+  "trust": "official",
+  "description": "Preact 10.28.4 — offline bundle (preact + hooks + compat + jsx-runtime)",
+  "source": { "package": "preact", "package_version": "10.28.4" },
+  "runtime": { "format": "esm", "entry": "runtime/preact.bundle.mjs" }
+}

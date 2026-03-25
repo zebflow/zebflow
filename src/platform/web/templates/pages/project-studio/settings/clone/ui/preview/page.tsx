@@ -67,36 +67,36 @@ export default function Page(input: any) {
       nav={input?.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-center gap-2 border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-3 py-2 text-[0.78rem]">
-          <Link href={settingsHref} className="text-[var(--studio-accent)] hover:underline">
+        <nav className="shrink-0 flex items-center gap-2 border-b border-border bg-surface px-3 py-2 text-[0.78rem]">
+          <Link href={settingsHref} className="text-accent hover:underline">
             Settings
           </Link>
-          <span className="text-[var(--studio-text-soft)]">/</span>
-          <span className="text-[var(--studio-text-soft)]">Clone</span>
-          <span className="text-[var(--studio-text-soft)]">/</span>
-          <span className="font-medium text-[var(--studio-text)]">UI preview</span>
+          <span className="text-body-soft">/</span>
+          <span className="text-body-soft">Clone</span>
+          <span className="text-body-soft">/</span>
+          <span className="font-medium text-body">UI preview</span>
         </nav>
 
         <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="border-b border-[var(--zf-ui-border)] bg-[var(--zf-ui-bg-subtle)] px-6 py-5">
+          <div className="border-b border-ui-border bg-ui-bg-subtle px-6 py-5">
             <div className="mx-auto max-w-6xl">
               <div className="flex items-start justify-between">
                 <div>
                   <h1 className="text-xl font-semibold">UI Component Catalog</h1>
-                  <p className="mt-1 text-sm text-[var(--zf-ui-text-muted)]">
+                  <p className="mt-1 text-sm text-ui-text-muted">
                     shadcn-compatible Zeb React components — install into{" "}
-                    <code className="rounded bg-[var(--zf-ui-bg-muted)] px-1 py-0.5 font-mono text-xs">
+                    <code className="rounded bg-ui-bg-muted px-1 py-0.5 font-mono text-xs">
                       shared/ui/
                     </code>
                   </p>
                 </div>
-                <div className="flex items-center gap-3 text-sm text-[var(--zf-ui-text-muted)]">
+                <div className="flex items-center gap-3 text-sm text-ui-text-muted">
                   <span>
-                    <strong className="text-[var(--zf-ui-text)]">{total}</strong> components
+                    <strong className="text-ui-text">{total}</strong> components
                   </span>
                   <span>·</span>
                   <span>
-                    <strong className="text-[var(--zf-ui-text)]">{Object.keys(CATEGORY_LABELS).length}</strong>{" "}
+                    <strong className="text-ui-text">{Object.keys(CATEGORY_LABELS).length}</strong>{" "}
                     categories
                   </span>
                 </div>
@@ -140,23 +140,23 @@ export default function Page(input: any) {
 
           <div className="mx-auto max-w-6xl px-6 py-8 space-y-10">
             {Object.keys(grouped).length === 0 ? (
-              <div className="text-center py-16 text-[var(--zf-ui-text-muted)]">No components match your filter.</div>
+              <div className="text-center py-16 text-ui-text-muted">No components match your filter.</div>
             ) : (
               Object.entries(grouped).map(([cat, items]) => (
                 <section key={cat}>
-                  <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest text-[var(--zf-ui-text-muted)]">
+                  <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest text-ui-text-muted">
                     {CATEGORY_LABELS[cat] ?? cat}
                   </h2>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     {items.map((comp: any) => (
                       <Card
                         key={comp.name}
-                        className="group p-4 hover:border-[var(--zf-color-brand-blue)]/40 transition-colors"
+                        className="group p-4 hover:border-brand-blue/40 transition-colors"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="text-sm font-semibold">{comp.name}</p>
-                            <p className="mt-0.5 text-xs text-[var(--zf-ui-text-muted)]">{comp.description}</p>
+                            <p className="mt-0.5 text-xs text-ui-text-muted">{comp.description}</p>
                           </div>
                           <Badge
                             variant={comp.installed ? undefined : "secondary"}
@@ -169,8 +169,8 @@ export default function Page(input: any) {
                           </Badge>
                         </div>
                         <div className="mt-3 flex items-center justify-between">
-                          <code className="text-[10px] text-[var(--zf-ui-text-muted)] font-mono">{comp.filename}</code>
-                          <code className="rounded bg-[var(--zf-ui-bg-muted)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--zf-ui-text-soft)]">
+                          <code className="text-[10px] text-ui-text-muted font-mono">{comp.filename}</code>
+                          <code className="rounded bg-ui-bg-muted px-1.5 py-0.5 text-[10px] font-mono text-ui-text-soft">
                             {"@" + "/shared/ui/" + comp.name}
                           </code>
                         </div>
@@ -185,20 +185,20 @@ export default function Page(input: any) {
               <CardHeader>
                 <h2 className="text-sm font-semibold">How to Install</h2>
               </CardHeader>
-              <CardContent className="space-y-3 text-sm text-[var(--zf-ui-text-soft)]">
+              <CardContent className="space-y-3 text-sm text-ui-text-soft">
                 <p>
-                  <strong className="text-[var(--zf-ui-text)]">Via MCP agent:</strong>
+                  <strong className="text-ui-text">Via MCP agent:</strong>
                 </p>
-                <pre className="rounded-md bg-[var(--zf-ui-bg-muted)] px-4 py-3 font-mono text-xs overflow-x-auto">{`install_ui_components(names=["button","card","dialog"])`}</pre>
+                <pre className="rounded-md bg-ui-bg-muted px-4 py-3 font-mono text-xs overflow-x-auto">{`install_ui_components(names=["button","card","dialog"])`}</pre>
                 <p>
-                  <strong className="text-[var(--zf-ui-text)]">Via API:</strong>
+                  <strong className="text-ui-text">Via API:</strong>
                 </p>
-                <pre className="rounded-md bg-[var(--zf-ui-bg-muted)] px-4 py-3 font-mono text-xs overflow-x-auto">{`POST /api/projects/${input?.owner ?? "{owner}"}/${input?.project ?? "{project}"}/install/ui
+                <pre className="rounded-md bg-ui-bg-muted px-4 py-3 font-mono text-xs overflow-x-auto">{`POST /api/projects/${input?.owner ?? "{owner}"}/${input?.project ?? "{project}"}/install/ui
 { "names": ["button", "card"], "overwrite": false }`}</pre>
                 <p>
-                  <strong className="text-[var(--zf-ui-text)]">After install, use in TSX templates:</strong>
+                  <strong className="text-ui-text">After install, use in TSX templates:</strong>
                 </p>
-                <pre className="rounded-md bg-[var(--zf-ui-bg-muted)] px-4 py-3 font-mono text-xs overflow-x-auto">
+                <pre className="rounded-md bg-ui-bg-muted px-4 py-3 font-mono text-xs overflow-x-auto">
                   {'import { Button } from "@/shared/ui/button"\nimport { Card, CardHeader, CardContent } from "@/shared/ui/card"'}
                 </pre>
               </CardContent>

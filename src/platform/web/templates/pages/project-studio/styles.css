@@ -5,51 +5,53 @@
  */
 
 [data-studio-theme="dark"] {
-  --studio-bg: #0b1120;
-  --studio-panel: #111827;
-  --studio-panel-2: #172033;
-  --studio-panel-3: #1e293b;
-  --studio-border: #2b3648;
-  --studio-border-soft: #20293a;
-  --studio-text: #e5edf7;
-  --studio-text-soft: #93a4ba;
-  --studio-accent: var(--zf-color-brand-orange);
-  --studio-accent-strong: var(--zf-color-brand-orange-ink);
-  --studio-accent-alt: var(--zf-color-brand-blue);
-  --studio-accent-alt-strong: var(--zf-color-brand-blue-ink);
-  --zf-ui-bg: #020617;
-  --zf-ui-bg-subtle: #0f172a;
-  --zf-ui-bg-muted: #1e293b;
-  --zf-ui-border: #1e293b;
-  --zf-ui-border-subtle: #1e293b;
-  --zf-ui-text: #f8fafc;
-  --zf-ui-text-soft: #94a3b8;
-  --zf-ui-text-muted: #94a3b8;
-  color: var(--zf-ui-text);
+  --color-bg: #0b1120;
+  --color-surface: #111827;
+  --color-surface-2: #172033;
+  --color-surface-3: #1e293b;
+  --color-border: #2b3648;
+  --color-border-soft: #20293a;
+  --color-body: #e5edf7;
+  --color-body-soft: #93a4ba;
+  --color-body-muted: #64748b;
+  --color-accent: var(--color-brand-orange);
+  --color-accent-strong: var(--color-brand-orange-ink);
+  --color-accent-alt: var(--color-brand-blue);
+  --color-accent-alt-strong: var(--color-brand-blue-ink);
+  --color-ui-bg: #020617;
+  --color-ui-bg-subtle: #0f172a;
+  --color-ui-bg-muted: #1e293b;
+  --color-ui-border: #1e293b;
+  --color-ui-border-subtle: #1e293b;
+  --color-ui-text: #f8fafc;
+  --color-ui-text-soft: #94a3b8;
+  --color-ui-text-muted: #94a3b8;
+  color: var(--color-ui-text);
 }
 
 [data-studio-theme="light"] {
-  --studio-bg: rgb(248 250 252);
-  --studio-panel: rgb(255 255 255);
-  --studio-panel-2: rgb(248 250 252);
-  --studio-panel-3: rgb(241 245 249);
-  --studio-border: rgb(203 213 225);
-  --studio-border-soft: rgb(226 232 240);
-  --studio-text: rgb(15 23 42);
-  --studio-text-soft: rgb(71 85 105);
-  --studio-accent: var(--zf-color-brand-orange);
-  --studio-accent-strong: var(--zf-color-brand-orange-ink);
-  --studio-accent-alt: var(--zf-color-brand-blue);
-  --studio-accent-alt-strong: var(--zf-color-brand-blue-ink);
-  --zf-ui-bg: #ffffff;
-  --zf-ui-bg-subtle: #f8fafc;
-  --zf-ui-bg-muted: #f1f5f9;
-  --zf-ui-border: #e2e8f0;
-  --zf-ui-border-subtle: #f1f5f9;
-  --zf-ui-text: #020617;
-  --zf-ui-text-soft: #475569;
-  --zf-ui-text-muted: #64748b;
-  color: var(--zf-ui-text);
+  --color-bg: rgb(248 250 252);
+  --color-surface: rgb(255 255 255);
+  --color-surface-2: rgb(248 250 252);
+  --color-surface-3: rgb(241 245 249);
+  --color-border: rgb(203 213 225);
+  --color-border-soft: rgb(226 232 240);
+  --color-body: rgb(15 23 42);
+  --color-body-soft: rgb(71 85 105);
+  --color-body-muted: rgb(100 116 139);
+  --color-accent: var(--color-brand-orange);
+  --color-accent-strong: var(--color-brand-orange-ink);
+  --color-accent-alt: var(--color-brand-blue);
+  --color-accent-alt-strong: var(--color-brand-blue-ink);
+  --color-ui-bg: #ffffff;
+  --color-ui-bg-subtle: #f8fafc;
+  --color-ui-bg-muted: #f1f5f9;
+  --color-ui-border: #e2e8f0;
+  --color-ui-border-subtle: #f1f5f9;
+  --color-ui-text: #020617;
+  --color-ui-text-soft: #475569;
+  --color-ui-text-muted: #64748b;
+  color: var(--color-ui-text);
 }
 
 /* Prevent UA stylesheet from overriding inherited color on button elements */
@@ -145,32 +147,9 @@
 /* Optional styling for inline <code> in console HTML (no current emitter) */
 
 /* .project-workspace → Tailwind: flex-1 min-h-0 flex flex-col overflow-hidden */
-/* .project-tab-strip → Tailwind: shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem] */
-/* .project-workspace-body → Tailwind: flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)] */
+/* .project-tab-strip → Tailwind: shrink-0 flex items-stretch border-b border-[var(--color-border)] bg-[var(--color-surface)] px-[0.625rem] */
+/* .project-workspace-body → Tailwind: flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--color-bg)] */
 
-/* tab active/hover: cannot be expressed as Tailwind — keep these two rules */
-.project-tab-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0 0.8rem;
-  border-bottom: 2px solid transparent;
-  font-size: 0.69rem;
-  font-family: var(--zebflow-font-mono, monospace);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--studio-text-soft);
-}
-
-.project-tab-link:hover {
-  color: var(--studio-text);
-  background: color-mix(in srgb, var(--studio-panel-3) 70%, transparent);
-}
-
-.project-tab-link.is-active {
-  color: var(--studio-text);
-  border-bottom-color: var(--studio-accent);
-}
 
 .project-content-wrap {
   min-height: 100%;
@@ -181,7 +160,7 @@
 .project-content-section {
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .project-content-section:last-child {
@@ -194,21 +173,21 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.625rem 0.875rem;
-  background: color-mix(in srgb, var(--studio-panel) 76%, transparent);
+  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
 }
 
 .project-content-title {
   font-size: 0.68rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .project-content-copy {
   margin-top: 0.25rem;
   font-size: 0.78rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .project-content-body {
@@ -220,12 +199,12 @@
 /* node-registry-* → Tailwind in settings/page.tsx NodeRegistryPanel */
 
 .project-inline-chip[data-active="true"] {
-  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
-  background: color-mix(in srgb, var(--studio-accent) 14%, transparent);
-  color: var(--studio-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
 }
 
-/* .project-surface-toolbar → Tailwind: flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)] */
+/* .project-surface-toolbar → Tailwind: flex items-center gap-3 px-[0.875rem] py-[0.625rem] border-b border-[var(--color-border)] bg-[var(--color-surface)] */
 
 .project-tree-list {
   margin-left: 1.05rem;
@@ -238,7 +217,7 @@
 }
 
 .project-tree-details {
-  border-left: 1px solid var(--studio-border-soft);
+  border-left: 1px solid var(--color-border-soft);
   padding-left: 0.35rem;
 }
 
@@ -247,7 +226,7 @@
   align-items: center;
   gap: 0.45rem;
   cursor: pointer;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   font-size: 0.82rem;
   user-select: none;
   list-style: none;
@@ -273,8 +252,8 @@
 }
 
 .project-tree-segment {
-  font-family: var(--zf-font-display);
-  color: var(--studio-text);
+  font-family: var(--font-display);
+  color: var(--color-body);
 }
 
 .project-tree-body {
@@ -288,14 +267,14 @@
   width: fit-content;
   max-width: 100%;
   text-decoration: none;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   border-radius: 0;
   padding: 0.18rem 0.4rem;
 }
 
 .project-tree-leaf-link:hover {
-  background: color-mix(in srgb, var(--studio-panel-3) 68%, transparent);
-  color: var(--studio-text);
+  background: color-mix(in srgb, var(--color-surface-3) 68%, transparent);
+  color: var(--color-body);
 }
 
 .project-card-grid {
@@ -312,66 +291,66 @@
 }
 
 .project-card {
-  border: 1px solid var(--studio-border-soft);
+  border: 1px solid var(--color-border-soft);
   border-radius: 0.5rem;
-  background: var(--studio-panel-2);
+  background: var(--color-surface-2);
   padding: 0.75rem;
 }
 
 .project-card:hover {
-  border-color: var(--studio-border);
-  background: color-mix(in srgb, var(--studio-panel-3) 72%, transparent);
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-3) 72%, transparent);
 }
 
 .project-card-title {
   font-size: 0.83rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   font-weight: 700;
   letter-spacing: 0.01em;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 .project-card-copy {
   margin-top: 0.45rem;
   font-size: 0.78rem;
   line-height: 1.45;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
-/* .project-inline-path → Tailwind: flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-[var(--studio-text-soft)] */
+/* .project-inline-path → Tailwind: flex flex-wrap items-center gap-[0.35rem] text-[0.72rem] text-[var(--color-body-soft)] */
 /* .project-inline-path-label → Tailwind: font-mono uppercase tracking-[0.12em] */
 /* .project-inline-path-item → Tailwind: inline-flex items-center gap-[0.35rem] */
-/* .project-inline-path-divider → Tailwind: text-[var(--studio-border)] */
-/* .project-inline-path-link → Tailwind: text-[var(--studio-text)] hover:text-[var(--studio-accent)] */
+/* .project-inline-path-divider → Tailwind: text-[var(--color-border)] */
+/* .project-inline-path-link → Tailwind: text-[var(--color-body)] hover:text-[var(--color-accent)] */
 
 .project-inline-chip {
   display: inline-flex;
   align-items: center;
   padding: 0.25rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text-soft);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-body-soft);
   font-size: 0.66rem;
-  font-family: var(--zebflow-font-mono, monospace);
+  font-family: var(--font-mono, monospace);
   text-transform: uppercase;
   letter-spacing: 0.12em;
 }
 
 .project-inline-chip:hover {
-  color: var(--studio-text);
-  background: var(--studio-panel-3);
+  color: var(--color-body);
+  background: var(--color-surface-3);
 }
 
 .project-inline-chip-accent {
-  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
-  background: color-mix(in srgb, var(--studio-accent) 14%, transparent);
-  color: var(--studio-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
 }
 
 .project-inline-chip-accent:hover {
   color: white;
-  background: var(--studio-accent);
+  background: var(--color-accent);
 }
 
 .pipeline-editor-shell {
@@ -385,8 +364,8 @@
 }
 
 .pipeline-editor-sidebar {
-  border-right: 1px solid var(--studio-border);
-  background: var(--studio-panel);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -400,7 +379,7 @@
 
 .pipeline-editor-sidebar-head {
   padding: 0.75rem 0.875rem;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -409,22 +388,22 @@
 
 .pipeline-editor-title {
   font-size: 0.78rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   letter-spacing: 0.01em;
   font-weight: 700;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 .pipeline-editor-subtitle {
   margin-top: 0.2rem;
   font-size: 0.72rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 /* ── Pipeline editor 1-column folder navigator ──────────────────────────── */
 
 .pipeline-editor-folder-nav {
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
 }
 
 .pipeline-editor-folder-crumbs {
@@ -433,7 +412,7 @@
   flex-wrap: wrap;
   gap: 0.1rem;
   padding: 0.38rem 0.75rem;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
 }
 
 .pipeline-editor-folder-crumb {
@@ -443,17 +422,17 @@
 
 .pipeline-editor-crumb-link {
   font-size: 0.68rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   text-decoration: none;
 }
 
 .pipeline-editor-crumb-link:hover {
-  color: var(--studio-accent);
+  color: var(--color-accent);
 }
 
 .pipeline-editor-crumb-sep {
   font-size: 0.68rem;
-  color: var(--studio-border);
+  color: var(--color-border);
   padding: 0 0.1rem;
   user-select: none;
 }
@@ -464,12 +443,12 @@
   gap: 0.45rem;
   padding: 0.32rem 0.65rem;
   font-size: 0.72rem;
-  color: var(--studio-text);
+  color: var(--color-body);
   text-decoration: none;
 }
 
 .pipeline-editor-nav-row:hover {
-  background: color-mix(in srgb, var(--studio-accent) 6%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
 }
 
 .pipeline-editor-nav-icon {
@@ -489,10 +468,10 @@
 
 .pipeline-editor-nav-count {
   font-size: 0.62rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   padding: 0.06rem 0.3rem;
-  background: var(--studio-panel-2);
-  border: 1px solid var(--studio-border-soft);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border-soft);
   border-radius: 9999px;
   flex-shrink: 0;
 }
@@ -501,7 +480,7 @@
 .pipeline-editor-item-wrap {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
   position: relative;
 }
 
@@ -520,7 +499,7 @@
   border: none;
   background: transparent;
   cursor: pointer;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   transition: color 0.12s, background 0.12s;
 }
 
@@ -531,16 +510,16 @@
 
 .pipeline-editor-item {
   display: block;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
   padding: 0.65rem 0.75rem;
 }
 
 .pipeline-editor-item:hover {
-  background: color-mix(in srgb, var(--studio-panel-3) 74%, transparent);
+  background: color-mix(in srgb, var(--color-surface-3) 74%, transparent);
 }
 
 .pipeline-editor-item.is-selected {
-  background: color-mix(in srgb, var(--studio-accent-alt) 16%, transparent);
+  background: color-mix(in srgb, var(--color-accent-alt) 16%, transparent);
 }
 
 .pipeline-editor-item-head {
@@ -551,9 +530,9 @@
 }
 
 .pipeline-editor-item-name {
-  color: var(--studio-text);
+  color: var(--color-body);
   font-size: 0.78rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   font-weight: 700;
 }
 
@@ -561,13 +540,13 @@
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .pipeline-editor-item-meta {
   margin-top: 0.24rem;
   font-size: 0.7rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .pipeline-editor-section-head {
@@ -576,14 +555,14 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
-  color: var(--studio-text-soft);
-  background: var(--studio-panel-2);
-  border-bottom: 1px solid var(--studio-border-soft);
+  color: var(--color-body-soft);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border-soft);
   user-select: none;
 }
 
 .pipeline-editor-item-git {
-  color: var(--studio-warning, #f59e0b);
+  color: var(--color-warning, #f59e0b);
 }
 
 /* Template editor items are buttons — reset browser defaults */
@@ -593,27 +572,27 @@ button.pipeline-editor-item {
   cursor: pointer;
   background: none;
   border: none;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
   padding: 0.65rem 0.75rem;
   font: inherit;
   color: inherit;
 }
 
 button.pipeline-editor-item:hover {
-  background: color-mix(in srgb, var(--studio-panel-3) 74%, transparent);
+  background: color-mix(in srgb, var(--color-surface-3) 74%, transparent);
 }
 
 .pipeline-editor-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--studio-bg);
+  background: var(--color-bg);
 }
 
 .pipeline-editor-toolbar {
   padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--studio-border-soft);
-  background: color-mix(in srgb, var(--studio-panel) 82%, transparent);
+  border-bottom: 1px solid var(--color-border-soft);
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -639,8 +618,8 @@ button.pipeline-editor-item:hover {
   font-size: 0.66rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--studio-text-soft);
-  font-family: var(--zebflow-font-mono, monospace);
+  color: var(--color-body-soft);
+  font-family: var(--font-mono, monospace);
 }
 
 .pipeline-editor-indicator::before {
@@ -715,10 +694,10 @@ button.pipeline-editor-item:hover {
   height: 1.5rem;
   padding: 0;
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--studio-border, #334155) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border, #334155) 90%, transparent);
   border-radius: 0.25rem;
-  background: color-mix(in srgb, var(--studio-panel-2, #1e293b) 88%, #000);
-  color: var(--studio-text, #e2e8f0);
+  background: color-mix(in srgb, var(--color-surface-2, #1e293b) 88%, #000);
+  color: var(--color-body, #e2e8f0);
   font-size: 0.65rem;
   font-weight: 700;
   line-height: 1;
@@ -730,9 +709,9 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-editor-main .zf-node-edit:hover {
-  background: var(--studio-accent, #22c55e);
+  background: var(--color-accent, #22c55e);
   color: #fff;
-  border-color: var(--studio-accent, #22c55e);
+  border-color: var(--color-accent, #22c55e);
 }
 
 .pipeline-editor-main .zf-node-slug {
@@ -744,8 +723,8 @@ button.pipeline-editor-item:hover {
   box-sizing: border-box;
   font-size: 0.58rem;
   font-weight: 600;
-  font-family: var(--zf-font-mono, var(--zebflow-font-mono, ui-monospace), monospace);
-  color: var(--studio-text-muted, #94a3b8);
+  font-family: var(--font-mono, var(--font-mono, ui-monospace), monospace);
+  color: var(--color-body-muted, #94a3b8);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -763,8 +742,8 @@ button.pipeline-editor-item:hover {
   word-break: break-all;
   font-family: monospace;
   font-size: 0.65rem;
-  background: var(--studio-bg);
-  border: 1px solid var(--studio-border);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
   border-radius: 0.25rem;
   padding: 0.375rem;
   margin: 0;
@@ -774,7 +753,7 @@ button.pipeline-editor-item:hover {
   flex-direction: column;
   gap: 0.5rem;
   padding: 0.5rem 1.25rem;
-  border-top: 1px solid var(--studio-border);
+  border-top: 1px solid var(--color-border);
 }
 
 .pipeline-editor-foot {
@@ -784,8 +763,8 @@ button.pipeline-editor-item:hover {
   gap: 0.8rem;
   padding: 0 0.75rem;
   font-size: 0.7rem;
-  color: var(--studio-text-soft);
-  background: var(--studio-panel);
+  color: var(--color-body-soft);
+  background: var(--color-surface);
 }
 
 .pipeline-editor-foot-item {
@@ -802,10 +781,10 @@ button.pipeline-editor-item:hover {
   margin: 0;
   padding: 0;
   transform: translate(-50%, -50%);
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.65rem;
-  background: var(--studio-panel);
-  color: var(--studio-text);
+  background: var(--color-surface);
+  color: var(--color-body);
   width: min(680px, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
@@ -831,7 +810,7 @@ button.pipeline-editor-item:hover {
   justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 1rem 0.7rem;
-  border-bottom: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 .credential-dialog-header-meta { min-width: 0; }
@@ -844,24 +823,24 @@ button.pipeline-editor-item:hover {
 .credential-dialog-header-actions button {
   min-height: 1.9rem;
   border-radius: 0.4rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-body);
   padding: 0 0.7rem;
   font-size: 0.72rem;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
 .credential-dialog-header-actions button:hover {
-  background: var(--studio-panel-3);
+  background: var(--color-surface-3);
 }
 .credential-dialog-header-actions button[type="submit"] {
-  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
-  background: color-mix(in srgb, var(--studio-accent) 15%, transparent);
-  color: var(--studio-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
 }
 .credential-dialog-header-actions button[type="submit"]:hover {
-  background: color-mix(in srgb, var(--studio-accent) 25%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
 }
 .credential-dialog-body {
   flex: 1;
@@ -904,16 +883,16 @@ button.pipeline-editor-item:hover {
   text-transform: uppercase;
   padding: 0 0.6rem;
   border-radius: 0.3rem;
-  border: 1px solid var(--studio-border, #2b3648);
-  background: var(--studio-panel-2, #1a2232);
-  color: var(--studio-text-muted, #8fa3c0);
+  border: 1px solid var(--color-border, #2b3648);
+  background: var(--color-surface-2, #1a2232);
+  color: var(--color-body-muted, #8fa3c0);
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   white-space: nowrap;
 }
 .credential-gen-btn:hover {
-  background: var(--studio-accent, #3b82f6);
-  border-color: var(--studio-accent, #3b82f6);
+  background: var(--color-accent, #3b82f6);
+  border-color: var(--color-accent, #3b82f6);
   color: #fff;
 }
 
@@ -929,7 +908,7 @@ button.pipeline-editor-item:hover {
 
 .pipeline-editor-dialog-title {
   font-size: 0.9rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   font-weight: 700;
   line-height: 1.2;
   margin: 0;
@@ -947,7 +926,7 @@ button.pipeline-editor-item:hover {
 
 .pipeline-editor-field-help {
   font-size: 0.64rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .pipeline-editor-subtitle[data-tone="ok"] {
@@ -963,9 +942,9 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-field textarea {
   width: 100%;
   border-radius: 0.45rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-body);
   min-height: 2rem;
   padding: 0 0.55rem;
 }
@@ -996,16 +975,16 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-dialog-actions button {
   min-height: 2rem;
   border-radius: 0.45rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-body);
   padding: 0 0.75rem;
 }
 
 .pipeline-editor-dialog-actions button[type=\"submit\"] {
-  border-color: color-mix(in srgb, var(--studio-accent) 60%, var(--studio-border));
-  background: color-mix(in srgb, var(--studio-accent) 15%, transparent);
-  color: var(--studio-accent);
+  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+  color: var(--color-accent);
 }
 
 .pipeline-editor-node-fields {
@@ -1046,9 +1025,9 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-sidebar {
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
-  background: var(--studio-panel-2);
+  background: var(--color-surface-2);
   padding: 0.35rem;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1060,9 +1039,9 @@ button.pipeline-editor-item:hover {
 .pipeline-render-sidebar-head input {
   width: 100%;
   border-radius: 0.4rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel);
-  color: var(--studio-text);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-body);
   min-height: 1.85rem;
   padding: 0 0.45rem;
   font-size: 0.7rem;
@@ -1070,10 +1049,10 @@ button.pipeline-editor-item:hover {
 
 .pipeline-render-sidebar-title {
   font-size: 0.66rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   margin-bottom: 0.2rem;
 }
 
@@ -1088,15 +1067,15 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-template-empty {
-  border: 1px dashed var(--studio-border-soft);
+  border: 1px dashed var(--color-border-soft);
   border-radius: 0.4rem;
   padding: 0.5rem;
   font-size: 0.66rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .pipeline-render-editor-shell {
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   background: #0f172a;
   display: grid;
@@ -1111,7 +1090,7 @@ button.pipeline-editor-item:hover {
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0 0.6rem;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
   font-size: 0.72rem;
 }
 
@@ -1122,7 +1101,7 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-render-status {
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   font-size: 0.66rem;
 }
 
@@ -1185,7 +1164,7 @@ button.pipeline-editor-item:hover {
 
   .pipeline-editor-sidebar {
     border-right: 0;
-    border-bottom: 1px solid var(--studio-border);
+    border-bottom: 1px solid var(--color-border);
     max-height: 16rem;
   }
 
@@ -1211,8 +1190,8 @@ button.pipeline-editor-item:hover {
 .pipeline-editor-split-handle {
   position: relative;
   cursor: col-resize;
-  background: var(--studio-panel);
-  border-right: 1px solid var(--studio-border);
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
 }
 
 .pipeline-editor-split-handle::before {
@@ -1224,11 +1203,11 @@ button.pipeline-editor-item:hover {
   height: 2rem;
   transform: translate(-50%, -50%);
   border-radius: 999px;
-  background: var(--studio-border);
+  background: var(--color-border);
 }
 
 .pipeline-editor-split-handle:hover::before {
-  background: var(--studio-accent);
+  background: var(--color-accent);
 }
 
 /* ===================================================
@@ -1245,29 +1224,29 @@ button.pipeline-editor-item:hover {
 }
 .dash-meta-label {
   font-size: 0.75rem;
-  color: var(--studio-text-muted);
+  color: var(--color-body-muted);
 }
 .dash-meta-sep {
   font-size: 0.75rem;
-  color: var(--studio-text-muted);
+  color: var(--color-body-muted);
 }
 .dash-metric-value {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--studio-text);
+  color: var(--color-body);
   margin-left: auto;
 }
 .dash-bar-track {
   margin-top: 0.5rem;
   height: 4px;
   border-radius: 2px;
-  background: var(--studio-border-soft);
+  background: var(--color-border-soft);
   overflow: hidden;
 }
 .dash-bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--studio-accent, #6366f1);
+  background: var(--color-accent, #6366f1);
   width: 0%;
   transition: width 0.4s ease;
 }
@@ -1284,12 +1263,12 @@ button.pipeline-editor-item:hover {
 }
 .dash-stat-key {
   font-size: 0.72rem;
-  color: var(--studio-text-muted);
+  color: var(--color-body-muted);
   min-width: 5rem;
 }
 .dash-stat-val {
   font-size: 0.75rem;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 .dash-cap-grid {
   display: flex;
@@ -1301,7 +1280,7 @@ button.pipeline-editor-item:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--studio-text-muted);
+  color: var(--color-body-muted);
   padding: 0.5rem 0 0.2rem;
   margin: 0;
 }
@@ -1322,15 +1301,15 @@ button.pipeline-editor-item:hover {
   flex-shrink: 0;
 }
 .dash-cap-dot-on  { background: #22c55e; }
-.dash-cap-dot-off { background: var(--studio-border); }
+.dash-cap-dot-off { background: var(--color-border); }
 .dash-cap-name {
   font-size: 0.78rem;
-  color: var(--studio-text);
+  color: var(--color-body);
   min-width: 7rem;
 }
 .dash-cap-status {
   font-size: 0.72rem;
-  color: var(--studio-text-muted);
+  color: var(--color-body-muted);
 }
 
 /* ── Pipeline Registry List View ─────────────────────────────────────────── */
@@ -1343,30 +1322,30 @@ button.pipeline-editor-item:hover {
   min-height: 2.4rem;
   padding: 0.4rem 0.6rem;
   border-radius: 0.4rem;
-  border: 1px solid var(--studio-border-soft);
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
+  border: 1px solid var(--color-border-soft);
+  background: var(--color-surface-2);
+  color: var(--color-body);
   text-decoration: none;
   transition: border-color 0.1s;
 }
 
 .pipeline-registry-row:hover {
-  border-color: var(--studio-border);
+  border-color: var(--color-border);
 }
 
 .pipeline-registry-folder-row {
   background: transparent;
   border-style: dashed;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   font-size: 0.75rem;
   gap: 0.4rem;
 }
 
 .pipeline-registry-folder-row:hover {
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
-/* .pipeline-registry-row-icon → Tailwind: shrink-0 flex items-center text-[var(--studio-text-soft)] */
+/* .pipeline-registry-row-icon → Tailwind: shrink-0 flex items-center text-[var(--color-body-soft)] */
 /* .pipeline-registry-row-body → Tailwind: flex-1 min-w-0 flex items-center gap-2 flex-wrap */
 
 .pipeline-registry-section-head {
@@ -1375,7 +1354,7 @@ button.pipeline-editor-item:hover {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--studio-muted);
+  color: var(--color-body-muted);
 }
 
 .pipeline-registry-section-head:first-child {
@@ -1387,7 +1366,7 @@ button.pipeline-editor-item:hover {
   min-width: 0;
   font-size: 0.78rem;
   font-weight: 600;
-  color: var(--studio-text);
+  color: var(--color-body);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1429,34 +1408,34 @@ button.pipeline-editor-item:hover {
   background: rgba(239, 68, 68, 0.08);
 }
 
-/* .pipeline-registry-inline-form → Tailwind: flex items-center gap-2 px-3 py-2 border-t border-[var(--studio-border-soft)] flex-wrap */
+/* .pipeline-registry-inline-form → Tailwind: flex items-center gap-2 px-3 py-2 border-t border-[var(--color-border-soft)] flex-wrap */
 
 .pipeline-registry-inline-input {
   width: auto;
   flex: 1 1 8rem;
   height: 1.9rem;
   padding: 0 0.5rem;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  background: var(--studio-panel);
-  color: var(--studio-text);
+  background: var(--color-surface);
+  color: var(--color-body);
   font-size: 0.75rem;
 }
 
 .pipeline-registry-inline-select {
   flex-shrink: 0;
   height: 1.9rem;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  background: var(--studio-panel);
-  color: var(--studio-text);
+  background: var(--color-surface);
+  color: var(--color-body);
   font-size: 0.75rem;
 }
 
 .pipeline-registry-inline-input:focus,
 .pipeline-registry-inline-select:focus {
   outline: none;
-  border-color: var(--studio-accent);
+  border-color: var(--color-accent);
 }
 
 /* ── Select component inner <select> override for inline forms ── */
@@ -1474,11 +1453,11 @@ button.pipeline-editor-item:hover {
   font-size: inherit !important;
 }
 
-/* .pipeline-registry-empty → Tailwind: p-6 text-center text-[0.78rem] text-[var(--studio-text-soft)] */
+/* .pipeline-registry-empty → Tailwind: p-6 text-center text-[0.78rem] text-[var(--color-body-soft)] */
 
 /* ── Registry Filter Tabs ────────────────────────────────────────────────── */
 
-/* .pipeline-registry-filters → Tailwind: flex gap-1 px-3 py-[0.375rem] border-b border-[var(--studio-border)] bg-[var(--studio-panel)] */
+/* .pipeline-registry-filters → Tailwind: flex gap-1 px-3 py-[0.375rem] border-b border-[var(--color-border)] bg-[var(--color-surface)] */
 
 .pipeline-registry-filter-tab {
   padding: 0.2rem 0.65rem;
@@ -1487,27 +1466,27 @@ button.pipeline-editor-item:hover {
   border-radius: 0.25rem;
   border: 1px solid transparent;
   cursor: pointer;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   background: transparent;
   transition: color 0.12s, background 0.12s, border-color 0.12s;
 }
 
 .pipeline-registry-filter-tab:hover {
-  color: var(--studio-text);
-  background: var(--studio-surface);
+  color: var(--color-body);
+  background: var(--color-surface);
 }
 
 .pipeline-registry-filter-tab.is-active {
-  color: var(--studio-text);
-  background: var(--studio-surface);
-  border-color: var(--studio-border);
+  color: var(--color-body);
+  background: var(--color-surface);
+  border-color: var(--color-border);
 }
 
 /* ── Registry Special Folder Separator ───────────────────────────────────── */
 
 .pipeline-registry-special-sep {
   height: 1px;
-  background: var(--studio-border);
+  background: var(--color-border);
   margin: 0.25rem 0;
   opacity: 0.5;
 }
@@ -1575,11 +1554,11 @@ button.pipeline-editor-item:hover {
   border-style: solid;
   gap: 0.5rem;
   text-decoration: none;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .pipeline-registry-file-row:hover {
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 /* ── Pipeline Status Dot ─────────────────────────────────────────────────── */
@@ -1631,8 +1610,8 @@ button.pipeline-editor-item:hover {
   position: relative;
   z-index: 1;
   width: min(28rem, calc(100vw - 2rem));
-  background: var(--studio-panel);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 0.65rem;
   padding: 1.25rem 1.5rem;
   display: flex;
@@ -1643,21 +1622,21 @@ button.pipeline-editor-item:hover {
 
 .pipeline-delete-title {
   font-size: 0.95rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   font-weight: 700;
   color: #ef4444;
   margin: 0;
 }
 
 .pipeline-delete-name {
-  font-family: var(--zf-font-mono);
+  font-family: var(--font-mono);
   font-size: 0.82rem;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 .pipeline-delete-copy {
   font-size: 0.78rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   margin: 0;
 }
 
@@ -1665,11 +1644,11 @@ button.pipeline-editor-item:hover {
   width: 100%;
   height: 2rem;
   padding: 0 0.6rem;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.4rem;
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
-  font-family: var(--zf-font-mono);
+  background: var(--color-surface-2);
+  color: var(--color-body);
+  font-family: var(--font-mono);
   font-size: 0.82rem;
 }
 
@@ -1707,8 +1686,8 @@ button.pipeline-editor-item:hover {
   z-index: 1;
   width: min(38rem, calc(100vw - 2rem));
   max-height: calc(100vh - 4rem);
-  background: var(--studio-panel);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 0.65rem;
   display: flex;
   flex-direction: column;
@@ -1737,7 +1716,7 @@ button.pipeline-editor-item:hover {
   flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0 0 0.75rem 0;
-  border-bottom: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
@@ -1786,16 +1765,16 @@ button.pipeline-editor-item:hover {
 
 .git-commit-title {
   font-size: 0.95rem;
-  font-family: var(--zf-font-display);
+  font-family: var(--font-display);
   font-weight: 700;
-  color: var(--studio-text);
+  color: var(--color-body);
   margin: 0;
 }
 
 .git-commit-close {
   background: transparent;
   border: none;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   cursor: pointer;
   font-size: 0.9rem;
   padding: 0.2rem 0.4rem;
@@ -1803,8 +1782,8 @@ button.pipeline-editor-item:hover {
 }
 
 .git-commit-close:hover {
-  color: var(--studio-text);
-  background: var(--studio-panel-2);
+  color: var(--color-body);
+  background: var(--color-surface-2);
 }
 
 .git-commit-file-list {
@@ -1815,10 +1794,10 @@ button.pipeline-editor-item:hover {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  border: 1px solid var(--studio-border-soft);
+  border: 1px solid var(--color-border-soft);
   border-radius: 0.4rem;
   padding: 0.5rem;
-  background: var(--studio-panel-2);
+  background: var(--color-surface-2);
 }
 
 .git-commit-file-row {
@@ -1832,13 +1811,13 @@ button.pipeline-editor-item:hover {
 }
 
 .git-commit-file-row:hover {
-  background: var(--studio-panel);
+  background: var(--color-surface);
 }
 
 .git-commit-file-path {
-  font-family: var(--zf-font-mono);
+  font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   word-break: break-all;
 }
 
@@ -1846,10 +1825,10 @@ button.pipeline-editor-item:hover {
   width: 100%;
   min-height: 4.5rem;
   padding: 0.5rem 0.6rem;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.4rem;
-  background: var(--studio-panel-2);
-  color: var(--studio-text);
+  background: var(--color-surface-2);
+  color: var(--color-body);
   font-size: 0.78rem;
   resize: vertical;
   box-sizing: border-box;
@@ -1857,7 +1836,7 @@ button.pipeline-editor-item:hover {
 
 .git-commit-message:focus {
   outline: none;
-  border-color: var(--studio-accent);
+  border-color: var(--color-accent);
 }
 
 .git-commit-push-row {
@@ -1865,7 +1844,7 @@ button.pipeline-editor-item:hover {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.75rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   cursor: pointer;
 }
 
@@ -1934,19 +1913,19 @@ button.pipeline-editor-item:hover {
   font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.07em;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   padding: 0.3rem 0.75rem 0.15rem;
   text-transform: uppercase;
 }
 
 .git-empty {
   font-size: 0.74rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   padding: 0.6rem 0.75rem;
 }
 
 .git-actions {
-  border-top: 1px solid var(--studio-border);
+  border-top: 1px solid var(--color-border);
   padding: 0.5rem 0.6rem;
   display: flex;
   flex-direction: column;
@@ -1984,8 +1963,8 @@ button.pipeline-editor-item:hover {
   width: 640px;
   display: flex;
   flex-direction: column;
-  background: var(--studio-panel);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
   overflow: hidden;
@@ -1997,14 +1976,14 @@ button.pipeline-editor-item:hover {
   align-items: center;
   justify-content: space-between;
   padding: 0.55rem 0.75rem;
-  border-bottom: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--color-border);
   gap: 0.5rem;
 }
 
 .git-repo-title {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--studio-text);
+  color: var(--color-body);
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -2015,7 +1994,7 @@ button.pipeline-editor-item:hover {
   align-items: center;
   gap: 0.5rem;
   font-size: 0.7rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
 }
 
 .git-repo-body {
@@ -2035,7 +2014,7 @@ button.pipeline-editor-item:hover {
 
 .git-repo-divider {
   width: 1px;
-  background: var(--studio-border);
+  background: var(--color-border);
   flex-shrink: 0;
 }
 
@@ -2054,9 +2033,9 @@ button.pipeline-editor-item:hover {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   padding: 0.5rem 0.75rem 0.3rem;
-  border-bottom: 1px solid var(--studio-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
 }
 
 .git-repo-cred-label {
@@ -2064,17 +2043,17 @@ button.pipeline-editor-item:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   margin-bottom: 0.3rem;
   display: block;
 }
 
 .git-repo-cred-select {
   width: 100%;
-  background: var(--studio-panel-2);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  color: var(--studio-text);
+  color: var(--color-body);
   font-size: 0.72rem;
   padding: 0 0.4rem;
   height: 1.75rem;
@@ -2085,10 +2064,10 @@ button.pipeline-editor-item:hover {
 .git-repo-slug-row {
   display: flex;
   align-items: center;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   overflow: hidden;
-  background: var(--studio-panel-2);
+  background: var(--color-surface-2);
 }
 
 .git-repo-slug-row:focus-within {
@@ -2099,11 +2078,11 @@ button.pipeline-editor-item:hover {
 .git-repo-host-prefix {
   font-size: 0.65rem;
   font-family: ui-monospace, monospace;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   padding: 0 0.4rem;
   white-space: nowrap;
-  background: var(--studio-panel-3);
-  border-right: 1px solid var(--studio-border);
+  background: var(--color-surface-3);
+  border-right: 1px solid var(--color-border);
   height: 1.75rem;
   display: flex;
   align-items: center;
@@ -2116,7 +2095,7 @@ button.pipeline-editor-item:hover {
   background: transparent;
   border: none;
   outline: none;
-  color: var(--studio-text);
+  color: var(--color-body);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0 0.4rem;
@@ -2125,10 +2104,10 @@ button.pipeline-editor-item:hover {
 
 .git-repo-branch-input {
   width: 100%;
-  background: var(--studio-panel-2);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  color: var(--studio-text);
+  color: var(--color-body);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0 0.4rem;
@@ -2143,7 +2122,7 @@ button.pipeline-editor-item:hover {
 
 .git-repo-no-cred {
   font-size: 0.72rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   line-height: 1.5;
 }
 
@@ -2162,10 +2141,10 @@ dialog.git-cred-dialog:not([open]) {
 dialog.git-cred-dialog {
   padding: 0;
   margin: auto;
-  border: 1px solid var(--studio-border);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
-  background: var(--studio-panel);
-  color: var(--studio-text);
+  background: var(--color-surface);
+  color: var(--color-body);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
   width: 360px;
   display: flex;
@@ -2185,22 +2164,22 @@ dialog.git-cred-dialog::backdrop {
   align-items: center;
   justify-content: space-between;
   padding: 0.6rem 0.85rem;
-  border-bottom: 1px solid var(--studio-border);
+  border-bottom: 1px solid var(--color-border);
   font-size: 0.78rem;
   font-weight: 600;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 .git-cred-dialog-close {
   background: none;
   border: none;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   cursor: pointer;
   font-size: 0.85rem;
   padding: 0;
   line-height: 1;
 }
-.git-cred-dialog-close:hover { color: var(--studio-text); }
+.git-cred-dialog-close:hover { color: var(--color-body); }
 
 .git-cred-dialog-body {
   display: flex;
@@ -2213,38 +2192,11 @@ dialog.git-cred-dialog::backdrop {
 */
 
 /* ── MCP Session Panel ───────────────────────────────────────────────────── */
-.mcp-session-panel {
-  padding: 0;
-  overflow: hidden;
-}
-.mcp-session-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.9rem 1rem 0.8rem;
-  border-bottom: 1px solid var(--studio-border, #1e293b);
-}
-.mcp-session-section {
-  padding: 0.7rem 1rem;
-  border-bottom: 1px solid var(--studio-border, #1e293b);
-}
-.mcp-session-section:last-child {
-  border-bottom: none;
-}
-.mcp-session-label {
-  font-size: 0.65rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--studio-text-soft, #64748b);
-  cursor: default;
-}
 .mcp-token-input {
-  background: var(--studio-panel-2, #0d1117);
-  border: 1px solid var(--studio-border, #1e293b);
+  background: var(--color-surface-2, #0d1117);
+  border: 1px solid var(--color-border, #1e293b);
   border-radius: 0.35rem;
-  color: var(--studio-text-soft, #94a3b8);
+  color: var(--color-body-soft, #94a3b8);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0.3rem 0.5rem;
@@ -2263,40 +2215,6 @@ dialog.git-cred-dialog::backdrop {
   border-color: #22c55e;
   box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
 }
-.mcp-copy-btn {
-  font-size: 0.7rem !important;
-  height: 1.75rem !important;
-  padding: 0 0.6rem !important;
-  flex-shrink: 0;
-  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
-}
-/* Reset Token — subtle but discoverable */
-.mcp-reset-btn {
-  font-size: 0.65rem !important;
-  height: 1.4rem !important;
-  padding: 0 0.5rem !important;
-  color: var(--studio-text-soft) !important;
-  border: 1px solid var(--studio-border) !important;
-  border-radius: 0.3rem !important;
-  transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
-}
-.mcp-reset-btn:hover:not(:disabled) {
-  color: #f59e0b !important;
-  border-color: #f59e0b !important;
-  background: rgba(245, 158, 11, 0.08) !important;
-}
-/* Capability checkboxes — larger touch target */
-.mcp-cap-check {
-  padding: 0.25rem 0;
-  min-height: 1.75rem;
-}
-/* Repo panel */
-/* Split body layout */
-.mcp-split-body { display: flex; align-items: stretch; }
-.mcp-split-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.mcp-split-left .mcp-session-section:last-child { border-bottom: none; flex: 1; }
-.mcp-split-divider { width: 1px; background: var(--studio-border); flex-shrink: 0; }
-.mcp-split-right { width: 196px; flex-shrink: 0; padding: 0.75rem 0.85rem; display: flex; flex-direction: column; gap: 0; }
 /* Install Guide */
 .mcp-guide-tabs {
   display: flex;
@@ -2309,30 +2227,30 @@ dialog.git-cred-dialog::backdrop {
   font-weight: 600;
   padding: 0.2rem 0.55rem;
   border-radius: 0.3rem;
-  border: 1px solid var(--studio-border);
-  background: var(--studio-panel-2);
-  color: var(--studio-text-soft);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-body-soft);
   cursor: pointer;
   transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
   white-space: nowrap;
 }
 .mcp-guide-tab:hover {
-  color: var(--studio-text);
-  border-color: var(--studio-text-soft);
+  color: var(--color-body);
+  border-color: var(--color-body-soft);
 }
 .mcp-guide-tab.is-active {
-  background: var(--studio-accent);
-  border-color: var(--studio-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
   color: #fff;
 }
 .mcp-guide-snippet {
-  background: var(--studio-panel-2);
-  border: 1px solid var(--studio-border);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   padding: 0.55rem 0.65rem;
   font-size: 0.6rem;
   font-family: ui-monospace, monospace;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   white-space: pre;
   overflow-x: auto;
   margin: 0 0 0.5rem;
@@ -2347,9 +2265,6 @@ dialog.git-cred-dialog::backdrop {
 
 /* prefers-reduced-motion */
 @media (prefers-reduced-motion: reduce) {
-  
-  .mcp-copy-btn,
-  .mcp-reset-btn,
   .mcp-guide-tab {
     transition: none;
   }
@@ -2371,7 +2286,7 @@ dialog.git-cred-dialog::backdrop {
 
 .git-tree-dir {
   padding: 0.1rem 0.5rem;
-  color: var(--studio-text-soft);
+  color: var(--color-body-soft);
   font-size: 0.7rem;
   min-height: 1.4rem;
 }
@@ -2388,7 +2303,7 @@ dialog.git-cred-dialog::backdrop {
 }
 
 .git-tree-file:hover {
-  background: color-mix(in srgb, var(--studio-text) 6%, transparent);
+  background: color-mix(in srgb, var(--color-body) 6%, transparent);
 }
 
 .git-tree-check {
@@ -2402,11 +2317,11 @@ dialog.git-cred-dialog::backdrop {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.72rem;
-  color: var(--studio-text);
+  color: var(--color-body);
 }
 
 .git-tree-code {
-  font-family: var(--zf-font-mono);
+  font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 700;
   flex-shrink: 0;

@@ -20,6 +20,8 @@ function teleportConsolePanel(): HTMLElement | null {
   const winPanel: HTMLElement | null = (window as any).__zf_console_panel ?? null;
   if (winPanel && document.body.contains(winPanel)) {
     consolePanel = winPanel;
+    // Restore visibility if it was force-hidden during off-project navigation.
+    winPanel.style.display = "";
     return winPanel;
   }
 
@@ -142,6 +144,14 @@ export function navigate(url: string) {
 
 function cleanStaleOverlays() {
   patchOverlay({ active: false });
+  // Hide the console panel when navigating away from project pages.
+  // Visibility is CSS-driven (max-h-[40vh] vs max-h-0) set by Preact — use display:none
+  // to forcibly hide regardless of frozen Preact state. Cleared in teleportConsolePanel().
+  const panel: HTMLElement | null = (window as any).__zf_console_panel ?? null;
+  if (panel && !window.location.pathname.startsWith("/projects/")) {
+    panel.style.display = "none";
+    panel.setAttribute("aria-hidden", "true");
+  }
 }
 
 if (typeof window !== "undefined" && typeof document !== "undefined") {

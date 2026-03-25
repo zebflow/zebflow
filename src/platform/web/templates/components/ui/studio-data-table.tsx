@@ -1,10 +1,10 @@
 import { cx } from "zeb";
 
 const studioTableThClass =
-  "px-[0.8rem] py-[0.65rem] border-b border-[var(--studio-border-soft)] text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-[var(--studio-text-soft)]";
+  "px-[0.8rem] py-[0.65rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft";
 
 const studioTableTdClassInner =
-  "px-[0.8rem] py-[0.65rem] border-b border-[var(--studio-border-soft)] text-left text-[0.8rem] text-[var(--studio-text)]";
+  "px-[0.8rem] py-[0.65rem] border-b border-border-soft text-left text-[0.8rem] text-body";
 
 /** For behaviors that create `<td>` in JS — same string as `StudioTd`. */
 export const studioTableTdClass = studioTableTdClassInner;
@@ -21,7 +21,7 @@ export function StudioTable({ variant = "default", className, children, ...rest 
 
 export function StudioThead({ className, children, ...rest }) {
   return (
-    <thead className={cx("bg-[var(--studio-panel-2)]", className)} {...rest}>
+    <thead className={cx("bg-surface-2", className)} {...rest}>
       {children}
     </thead>
   );

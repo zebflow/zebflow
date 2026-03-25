@@ -128,7 +128,7 @@ impl PlatformOps {
             Ok(docs) if !docs.is_empty() => {
                 sections.push(format!(
                     "## Project Docs (repo/docs/)\n{}",
-                    docs.iter().map(|d| format!("- {}", d.path)).collect::<Vec<_>>().join("\n")
+                    docs.iter().map(|d| format!("- {} → docs_project_read(\"{}\")", d.path, d.path)).collect::<Vec<_>>().join("\n")
                 ));
             }
             Ok(_) => {
@@ -240,21 +240,12 @@ impl PlatformOps {
                 .to_string(),
         );
 
-        // Help pointers
-        let examples_index = crate::platform::skills::all_examples()
-            .iter()
-            .map(|e| format!("  - `{}` — {}", e.slug, e.title))
-            .collect::<Vec<_>>()
-            .join("\n");
+        // Help pointers — auto-generated from HELP array
+        let help_index = crate::platform::help::help_root_index();
 
         sections.push(format!(
             "## Next: Help Tools\n\
-             - `help_pipeline` — DSL syntax, pipe mode, web patterns (GET page, POST API, auth gate, redirect)\n\
-             - `help_web_engine` — TSX web pages, hooks, passing pipeline data via input\n\
-             - `help_examples slug=<slug>` — full DSL recipe. Available slugs:\n{examples_index}\n\
-             - `help_nodes` — node catalog (all kinds, flags, input/output)\n\
-             - `help_search query=<term>` — search across all skill docs\n\
-             - `skill_list` — list all reference skill documents\n\
+             {help_index}\n\n\
              - `pipeline_list` — see existing pipelines\n\
              - `docs_agent_read name=MEMORY.md` — read previous session notes",
         ));
@@ -266,78 +257,28 @@ impl PlatformOps {
 // ── Help / Knowledge ──────────────────────────────────────────────────────────
 
 impl PlatformOps {
-    pub fn help_pipeline(&self) -> OpsResult {
-        let mut content = match crate::platform::skills::get_skill("help-pipeline") {
-            Some(skill) => skill.content.to_string(),
-            None => return OpsResult::err("help-pipeline skill not found"),
-        };
-        content.push_str("\n\n---\n\n");
-        content.push_str(&crate::pipeline::nodes::builtin_nodes_markdown_reference());
-        OpsResult::ok(content)
-    }
-
-    pub fn help_web_engine(&self) -> OpsResult {
-        let mut content = String::new();
-        if let Some(skill) = crate::platform::skills::get_skill("web-templates") {
-            content.push_str(skill.content);
-        }
-        content.push_str("\n\n---\n\n");
-        if let Some(skill) = crate::platform::skills::get_skill("pipeline-dsl-web") {
-            content.push_str(skill.content);
-        }
-        OpsResult::ok(content)
-    }
-
-    pub fn help_examples(&self, slug: Option<&str>) -> OpsResult {
-        match slug {
-            None => {
-                let examples = crate::platform::skills::all_examples();
-                let listing = examples.iter()
-                    .map(|e| format!("- **{}** (`{}`) — {}", e.title, e.slug, e.description))
-                    .collect::<Vec<_>>().join("\n");
-                OpsResult::ok(format!(
-                    "# Available Archetypes\n\nCall `help_examples` with slug to load full DSL recipe.\n\n{listing}"
-                ))
-            }
-            Some(slug) => match crate::platform::skills::get_example(slug) {
-                Some(example) => OpsResult::ok(example.content),
-                None => {
-                    let available: Vec<&str> = crate::platform::skills::all_examples()
-                        .iter().map(|e| e.slug).collect();
-                    OpsResult::err(format!(
-                        "Archetype '{slug}' not found. Available: {}", available.join(", ")
-                    ))
-                }
-            },
-        }
-    }
-
-    pub fn help_nodes(&self, kind: Option<&str>) -> OpsResult {
-        match kind {
-            None => OpsResult::ok(crate::pipeline::nodes::builtin_nodes_markdown_reference()),
-            Some(kind) => {
-                if let Some(section) = crate::pipeline::nodes::node_markdown_by_kind_query(kind) {
-                    OpsResult::ok(section)
-                } else {
-                    let catalog = crate::pipeline::nodes::builtin_nodes_markdown_reference();
-                    OpsResult::ok(format!("No node matched kind `{kind}`. Returning full catalog.\n\n{catalog}"))
-                }
-            }
+    /// Unified help browser. No topic = root index. Hierarchical paths:
+    /// "pipeline", "pipeline/dsl", "pipeline/nodes", "pipeline/nodes/{kind}",
+    /// "web", "web/hooks", "tool", "db", "db/sekejap", "platform", etc.
+    pub fn help(&self, topic: &str) -> OpsResult {
+        match crate::platform::help::get_help(topic) {
+            Ok(content) => OpsResult::ok(content),
+            Err(msg) => OpsResult::err(msg),
         }
     }
 
     pub fn help_search(&self, query: &str) -> OpsResult {
         let query_lower = query.to_lowercase();
         let terms: Vec<&str> = query_lower.split_whitespace().collect();
-        let skills = crate::platform::skills::all_skills();
+        let all = crate::platform::help::all_help_text();
 
         let mut results: Vec<String> = Vec::new();
         let context_lines = 5usize;
         let max_chars = 3000usize;
         let mut total_chars = 0usize;
 
-        'outer: for skill in skills {
-            let lines: Vec<&str> = skill.content.lines().collect();
+        'outer: for (path, title, content) in &all {
+            let lines: Vec<&str> = content.lines().collect();
             let mut i = 0;
             while i < lines.len() {
                 let line_lower = lines[i].to_lowercase();
@@ -346,7 +287,7 @@ impl PlatformOps {
                     let start = i.saturating_sub(context_lines);
                     let end = (i + context_lines + 1).min(lines.len());
                     let chunk = lines[start..end].join("\n");
-                    let entry = format!("### Match in `{}` ({})\n{}\n", skill.name, skill.title, chunk);
+                    let entry = format!("### Match in `{}` ({})\n{}\n", path, title, chunk);
                     total_chars += entry.len();
                     results.push(entry);
                     i = end;
@@ -358,27 +299,9 @@ impl PlatformOps {
         }
 
         if results.is_empty() {
-            OpsResult::ok(format!("No results for '{query}'. Try different terms or use skill_list to browse all skills."))
+            OpsResult::ok(format!("No results for '{query}'. Try different terms or call help() for the full index."))
         } else {
             OpsResult::ok(results.join("\n---\n\n"))
-        }
-    }
-
-    pub fn skill_list(&self) -> OpsResult {
-        let skills = crate::platform::skills::all_skills();
-        let items: Vec<_> = skills.iter()
-            .map(|s| json!({ "name": s.name, "title": s.title, "summary": s.summary() }))
-            .collect();
-        OpsResult::ok(
-            serde_json::to_string_pretty(&json!({ "skills": items, "count": items.len() }))
-                .unwrap_or_default()
-        )
-    }
-
-    pub fn skill_read(&self, name: &str) -> OpsResult {
-        match crate::platform::skills::get_skill(name) {
-            Some(skill) => OpsResult::ok(skill.content),
-            None => OpsResult::err(format!("Skill '{name}' not found. Use skill_list to see available skills.")),
         }
     }
 }

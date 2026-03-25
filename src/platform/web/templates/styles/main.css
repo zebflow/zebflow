@@ -1,43 +1,43 @@
 @import url("https://fonts.googleapis.com/css2?family=Pathway+Extreme:ital,opsz,wght@0,8..144,100..900;1,8..144,100..900&family=Roboto:wght@400;500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap");
 
 :root {
-  --zf-color-brand-blue: #005b9a;
-  --zf-color-brand-blue-ink: #004a7a;
-  --zf-color-brand-orange: #ff5c00;
-  --zf-color-brand-orange-ink: #db4f00;
-  --zf-color-accent: var(--zf-color-brand-blue);
-  --zf-color-accent-ink: var(--zf-color-brand-blue-ink);
-  --zf-font-display:
-    "Pathway Extreme", "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --zf-font-sans:
-    "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --zf-font-mono:
-    "Roboto Mono", "JetBrains Mono", "SFMono-Regular", monospace;
-  --zf-radius-panel: 1.25rem;
-  --rwe-nav-color: var(--zf-color-brand-blue);
-  --zebflow-font-sans: var(--zf-font-sans);
-  --zebflow-font-mono: var(--zf-font-mono);
+  /* Brand colors */
+  --color-brand-orange:     #ff5c00;
+  --color-brand-orange-ink: #db4f00;
+  --color-brand-blue:       #005b9a;
+  --color-brand-blue-ink:   #004a7a;
 
-  /* UI component design tokens — light defaults */
-  --zf-ui-bg:            #ffffff;
-  --zf-ui-bg-subtle:     #f8fafc;
-  --zf-ui-bg-muted:      #f1f5f9;
-  --zf-ui-border:        #e2e8f0;
-  --zf-ui-border-subtle: #f1f5f9;
-  --zf-ui-text:          #020617;
-  --zf-ui-text-soft:     #475569;
-  --zf-ui-text-muted:    #64748b;
+  /* Fonts */
+  --font-display:
+    "Pathway Extreme", "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-sans:
+    "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono:
+    "Roboto Mono", "JetBrains Mono", "SFMono-Regular", monospace;
+
+  --radius-panel: 1.25rem;
+  --rwe-nav-color: var(--color-brand-blue);
+
+  /* Global UI component tokens — light defaults, overridden by [data-studio-theme] */
+  --color-ui-bg:            #ffffff;
+  --color-ui-bg-subtle:     #f8fafc;
+  --color-ui-bg-muted:      #f1f5f9;
+  --color-ui-border:        #e2e8f0;
+  --color-ui-border-subtle: #f1f5f9;
+  --color-ui-text:          #020617;
+  --color-ui-text-soft:     #475569;
+  --color-ui-text-muted:    #64748b;
 }
 
 html {
-  font-family: var(--zf-font-sans);
+  font-family: var(--font-sans);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  accent-color: var(--zf-color-accent);
+  accent-color: var(--color-brand-orange);
 }
 
 dialog::backdrop {
@@ -50,7 +50,7 @@ h3,
 h4,
 h5,
 h6 {
-  font-family: var(--zf-font-sans);
+  font-family: var(--font-sans);
 }
 
 ::selection {
@@ -70,11 +70,11 @@ select {
 }
 
 [data-zf-surface="panel"] {
-  border-radius: var(--zf-radius-panel);
+  border-radius: var(--radius-panel);
 }
 
 
-/* ── HelpTooltip ─────────────────────────────────────────── */
+/* ── HelpTooltip ─────────────────────────────────────── */
 .zf-help-tooltip {
   position: relative;
   display: inline-flex;
@@ -84,12 +84,12 @@ select {
 }
 .zf-help-tooltip-icon {
   display: inline-flex;
-  color: var(--zf-ui-text-muted);
+  color: var(--color-ui-text-muted);
   transition: color 0.15s ease;
 }
 .zf-help-tooltip:hover .zf-help-tooltip-icon,
 .zf-help-tooltip:focus-within .zf-help-tooltip-icon {
-  color: var(--zf-ui-text);
+  color: var(--color-ui-text);
 }
 .zf-help-tooltip-content {
   visibility: hidden;
@@ -112,7 +112,7 @@ select {
   white-space: normal;
   background: #1e293b;
   color: #f1f5f9;
-  border: 1px solid var(--zf-ui-border);
+  border: 1px solid var(--color-ui-border);
   box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.15), 0 2px 4px -2px rgb(0 0 0 / 0.1);
   pointer-events: none;
   transition: opacity 0.15s ease, visibility 0.15s ease;

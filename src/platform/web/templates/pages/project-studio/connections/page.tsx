@@ -1,6 +1,7 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initProjectDbConnectionsBehavior } from "@/pages/project-studio/connections/connections-behavior";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
@@ -45,10 +46,10 @@ export default function Page(input) {
       nav={input.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <a href={input.nav?.links?.db_connections ?? "#"} className="project-tab-link is-active">Connections</a>
-        </nav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+        <StudioTabNav>
+          <StudioTabLink href={input.nav?.links?.db_connections ?? "#"} active>Connections</StudioTabLink>
+        </StudioTabNav>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
           <div className="project-content-wrap">
             <section className="project-content-section">
               <div className="project-content-head">

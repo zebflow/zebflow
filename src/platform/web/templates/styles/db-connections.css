@@ -7,7 +7,7 @@
 
 .db-connection-name .zf-devicon,
 .db-connection-kind .zf-devicon {
-  color: color-mix(in srgb, var(--studio-text) 86%, transparent);
+  color: color-mix(in srgb, var(--color-body) 86%, transparent);
 }
 
 .db-connection-kind .zf-devicon.colored {

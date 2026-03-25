@@ -27,7 +27,7 @@ export function AutoOverlay() {
         {s.label}
       </div>
       <div
-        className="pointer-events-none fixed left-1/2 top-1/2 z-[99999] h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-[rgba(255,255,255,0.08)] border-t-[var(--zf-color-brand-blue)]"
+        className="pointer-events-none fixed left-1/2 top-1/2 z-[99999] h-11 w-11 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-[rgba(255,255,255,0.08)] border-t-brand-blue"
         style={{ animation: "zf-spin 0.75s linear infinite" }}
       />
     </div>

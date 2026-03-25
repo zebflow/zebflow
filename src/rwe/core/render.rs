@@ -222,37 +222,40 @@ fn build_zeb_preamble(source: &str) -> String {
 
 fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let tool_js = TOOL_INIT;
+    const PREACT_BUNDLE: &str =
+        "/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs";
     let runtime_ready_source = strip_rwe_client_imports(client_source)
         .replace(
             "from \"npm:preact/jsx-runtime\"",
-            "from \"https://esm.sh/preact@10.28.4/jsx-runtime\"",
+            &format!("from \"{PREACT_BUNDLE}\""),
         )
         .replace(
             "from 'npm:preact/jsx-runtime'",
-            "from 'https://esm.sh/preact@10.28.4/jsx-runtime'",
-        )
-        .replace(
-            "from \"npm:preact\"",
-            "from \"https://esm.sh/preact@10.28.4\"",
-        )
-        .replace(
-            "from 'npm:preact'",
-            "from 'https://esm.sh/preact@10.28.4'",
+            &format!("from '{PREACT_BUNDLE}'"),
         )
         .replace(
             "from \"npm:preact/hooks\"",
-            "from \"https://esm.sh/preact@10.28.4/hooks\"",
+            &format!("from \"{PREACT_BUNDLE}\""),
         )
         .replace(
             "from 'npm:preact/hooks'",
-            "from 'https://esm.sh/preact@10.28.4/hooks'",
+            &format!("from '{PREACT_BUNDLE}'"),
+        )
+        .replace(
+            "from \"npm:preact\"",
+            &format!("from \"{PREACT_BUNDLE}\""),
+        )
+        .replace(
+            "from 'npm:preact'",
+            &format!("from '{PREACT_BUNDLE}'"),
         );
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
         "{tool_js}\n\
-         import {{ h, Fragment, hydrate, createContext }} from 'https://esm.sh/preact@10.28.4';\n\
-         import {{ forwardRef, memo }} from 'https://esm.sh/preact@10.28.4/compat';\n\
-         import {{ useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState }} from 'https://esm.sh/preact@10.28.4/hooks';\n\
+         import {{ h, Fragment, hydrate, render, createContext, forwardRef, memo,\
+           useCallback, useContext, useEffect, useId, useImperativeHandle,\
+           useLayoutEffect, useMemo, useReducer, useRef, useState }}\
+           from '/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs';\n\
          const __RwePageStateContext = createContext(null);\n\
          function __rweUsePageState(keyOrInitial, defaultValue) {{\n\
            const isKeyed = typeof keyOrInitial === 'string';\n\
@@ -372,6 +375,8 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                    var lRoot = document.getElementById('{ROOT_ID}');\n\
                    var lPay = document.getElementById('{PAYLOAD_ID}');\n\
                    if (nRoot && lRoot) {{\n\
+                     render(null, lRoot);\n\
+                     render(null, lRoot);\n\
                      lRoot.innerHTML = nRoot.innerHTML;\n\
                      if (nPay && lPay) lPay.textContent = nPay.textContent;\n\
                    }}\n\
@@ -429,6 +434,61 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          const __input = __payloadEl ? JSON.parse(__payloadEl.textContent || '{{}}') : {{}};\n\
          globalThis.ctx = __input;\n\
          {zeb_preamble}\
+         let __islandCounter = 0;\n\
+         const __IslandOff = memo(function({{ children }}) {{ return children; }}, () => true);\n\
+         function __IslandOnView({{ id, children }}) {{\n\
+           const [active, setActive] = useState(false);\n\
+           const [ssrHtml] = useState(() => {{\n\
+             if (typeof document === 'undefined') return '';\n\
+             const el = document.querySelector('[data-island-id=\"' + id + '\"]');\n\
+             return el ? el.outerHTML : '';\n\
+           }});\n\
+           const ref = useRef(null);\n\
+           useEffect(() => {{\n\
+             if (!ref.current || active) return;\n\
+             const io = new IntersectionObserver(([e]) => {{\n\
+               if (e.isIntersecting) {{ setActive(true); io.disconnect(); }}\n\
+             }}, {{ threshold: 0.1 }});\n\
+             io.observe(ref.current);\n\
+             return () => io.disconnect();\n\
+           }}, [active]);\n\
+           if (active) return children;\n\
+           return h('div', {{ ref, 'data-island-id': id, 'data-hydrate': 'onview',\n\
+             dangerouslySetInnerHTML: {{ __html: ssrHtml }} }});\n\
+         }}\n\
+         function __IslandOnInteract({{ id, children }}) {{\n\
+           const [active, setActive] = useState(false);\n\
+           const [ssrHtml] = useState(() => {{\n\
+             if (typeof document === 'undefined') return '';\n\
+             const el = document.querySelector('[data-island-id=\"' + id + '\"]');\n\
+             return el ? el.outerHTML : '';\n\
+           }});\n\
+           if (active) return children;\n\
+           return h('div', {{\n\
+             'data-island-id': id, 'data-hydrate': 'oninteract',\n\
+             onClickCapture: () => setActive(true),\n\
+             onFocusCapture: () => setActive(true),\n\
+             dangerouslySetInnerHTML: {{ __html: ssrHtml }}\n\
+           }});\n\
+         }}\n\
+         (function() {{\n\
+           const __origH = globalThis.h;\n\
+           globalThis.h = function(type, props, ...args) {{\n\
+             if (props && props.hydrate && props.hydrate !== 'onload') {{\n\
+               const mode = props.hydrate;\n\
+               const id = 'island-' + (__islandCounter++);\n\
+               const newProps = Object.assign({{}}, props);\n\
+               delete newProps.hydrate;\n\
+               newProps['data-island-id'] = id;\n\
+               const el = __origH(type, newProps, ...args);\n\
+               if (mode === 'off')        return __origH(__IslandOff, {{ id }}, el);\n\
+               if (mode === 'onview')     return __origH(__IslandOnView, {{ id }}, el);\n\
+               if (mode === 'oninteract') return __origH(__IslandOnInteract, {{ id }}, el);\n\
+             }}\n\
+             return __origH(type, props, ...args);\n\
+           }};\n\
+         }})();\n\
+         __islandCounter = 0;\n\
          const __mod = await import('data:text/javascript;base64,{encoded}');\n\
          const __Page = __mod.default;\n\
          function __RweRoot(props) {{\n\

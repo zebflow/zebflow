@@ -1,4 +1,5 @@
 import { useState, cx, Link } from "zeb";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import Checkbox from "@/components/ui/checkbox";
 import Input from "@/components/ui/input";
@@ -121,7 +122,7 @@ function RwePanel({ api, initialConfig }) {
   }
 
   return (
-    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
         open={commitOpen}
         section="rwe"
@@ -179,7 +180,7 @@ function RwePanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save RWE Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--studio-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-[var(--studio-text-soft)]")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -234,7 +235,7 @@ function AssistantPanel({ api, credentials, initialConfig }) {
   }
 
   return (
-    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
         <div>
           <h3 className="project-card-title">Project Assistant</h3>
@@ -332,7 +333,7 @@ function AssistantPanel({ api, credentials, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Assistant Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--studio-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-[var(--studio-text-soft)]")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -377,7 +378,7 @@ function LibrariesPanel({ items, api }) {
         <p className="text-[0.72rem] text-red-300">{errorMsg}</p>
       ) : null}
       {libs.map((lib) => (
-        <article key={lib.name} className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+        <article key={lib.name} className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
           <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
@@ -453,7 +454,7 @@ function GitPanel({ api, initialConfig }) {
   }
 
   return (
-    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
         open={commitOpen}
         section="git"
@@ -496,7 +497,7 @@ function GitPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Git Identity"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--studio-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-[var(--studio-text-soft)]")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -531,7 +532,7 @@ function NodeRegistryPanel({ groups, count }) {
   );
 
   return (
-    <div className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] overflow-hidden">
+    <div className="border border-border rounded-xl bg-surface overflow-hidden">
       {/* Toolbar */}
       <div className="flex flex-row items-center gap-[0.55rem] px-3 pt-[0.7rem] pb-[0.6rem]">
         <Input
@@ -549,7 +550,7 @@ function NodeRegistryPanel({ groups, count }) {
             key={tab}
             variant="ghost"
             size="sm"
-            className={cx(tab === activeTab && "bg-[color-mix(in_srgb,var(--studio-accent)_14%,transparent)] text-[var(--studio-accent)] border-[color-mix(in_srgb,var(--studio-accent)_40%,transparent)]")}
+            className={cx(tab === activeTab && "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent border-[color-mix(in_srgb,var(--color-accent)_40%,transparent)]")}
             label={tab === "installed" ? `Installed · ${count}` : tab === "discover" ? "Discover" : "Updates"}
             onClick={() => setActiveTab(tab)}
           />
@@ -561,34 +562,34 @@ function NodeRegistryPanel({ groups, count }) {
       {/* Installed panel */}
       {activeTab === "installed" ? (
         <div>
-          <p className="px-3 py-[0.4rem] text-[0.72rem] text-[var(--studio-text-soft)] border-b border-[var(--studio-border-soft)]">
+          <p className="px-3 py-[0.4rem] text-[0.72rem] text-body-soft border-b border-border-soft">
             {visibleCount === count
               ? `${count} nodes · ${count} built-in`
               : `${visibleCount} of ${count} nodes · ${count} built-in`}
           </p>
           <div className="flex flex-col gap-[0.35rem] px-3 py-[0.6rem]">
             {filteredGroups.length === 0 ? (
-              <p className="p-8 text-center text-[0.8rem] text-[var(--studio-text-soft)]">No nodes found.</p>
+              <p className="p-8 text-center text-[0.8rem] text-body-soft">No nodes found.</p>
             ) : (
               filteredGroups.map((group, gi) => (
                 <div key={`grp-${gi}`}>
                   <div className="flex items-center gap-2 mb-[0.35rem] mt-2 first:mt-0">
                     {group?.prefix ? (
-                      <span className="text-[0.65rem] font-mono text-[var(--studio-text-soft)] tracking-[0.05em] whitespace-nowrap shrink-0">{group.prefix}</span>
+                      <span className="text-[0.65rem] font-mono text-body-soft tracking-[0.05em] whitespace-nowrap shrink-0">{group.prefix}</span>
                     ) : null}
-                    <div className="flex-1 h-px bg-[var(--studio-border-soft)]" />
+                    <div className="flex-1 h-px bg-border-soft" />
                   </div>
                   {(Array.isArray(group?.nodes) ? group.nodes : []).map((node, ni) => (
                     <div
                       key={`${node?.kind ?? "node"}-${ni}`}
-                      className="flex items-stretch border border-[var(--studio-border-soft)] rounded-lg bg-[var(--studio-panel-2)] overflow-hidden transition-colors duration-[120ms]"
+                      className="flex items-stretch border border-border-soft rounded-lg bg-surface-2 overflow-hidden transition-colors duration-[120ms]"
                     >
-                      <div className="w-[3px] shrink-0 bg-[var(--studio-border)]" />
+                      <div className="w-[3px] shrink-0 bg-border" />
                       <div className="flex-1 min-w-0 px-3 py-[0.6rem] flex items-start justify-between gap-3">
                         <div className="flex-1 min-w-0">
-                          <div className="text-[0.83rem] font-bold text-[var(--studio-text)] leading-tight">{node?.title}</div>
-                          <div className="text-[0.66rem] font-mono text-[var(--studio-text-soft)] mt-[0.15rem] tracking-[0.03em]">{node?.kind}</div>
-                          <div className="text-[0.75rem] leading-[1.4] text-[var(--studio-text-soft)] mt-[0.3rem]">{node?.description}</div>
+                          <div className="text-[0.83rem] font-bold text-body leading-tight">{node?.title}</div>
+                          <div className="text-[0.66rem] font-mono text-body-soft mt-[0.15rem] tracking-[0.03em]">{node?.kind}</div>
+                          <div className="text-[0.75rem] leading-[1.4] text-body-soft mt-[0.3rem]">{node?.description}</div>
                         </div>
                         <div className="flex items-center flex-wrap gap-[0.3rem] shrink-0 pt-[0.1rem]">
                           {node?.script_available ? (
@@ -681,7 +682,7 @@ function LoggingPanel({ api, initialConfig }) {
   }
 
   return (
-    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
         open={commitOpen}
         section="logging"
@@ -718,7 +719,7 @@ function LoggingPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Logging Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--studio-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-[var(--studio-text-soft)]")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -744,19 +745,19 @@ export default function Page(input) {
         nav={input.nav}
       >
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
+          <StudioTabNav>
             {settingsTabs.map((item, index) => (
-              <Link
+              <StudioTabLink
                 key={`${item?.href ?? "tab"}-${index}`}
                 href={item?.href ?? "#"}
-                className={cx("project-tab-link", item?.classes)}
+                active={item?.classes === "is-active"}
               >
                 {item?.label}
-              </Link>
+              </StudioTabLink>
             ))}
-          </nav>
+          </StudioTabNav>
 
-          <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+          <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
             <div className="project-content-wrap">
               <section className="project-content-section">
                 <div className="project-content-head">
@@ -808,7 +809,7 @@ export default function Page(input) {
                       initialConfig={assistant?.config ?? {}}
                     />
 
-                    <article className="border border-[var(--studio-border)] rounded-xl bg-[var(--studio-panel)] p-[0.85rem] mb-[0.9rem]">
+                    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
                       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
                         <div>
                           <h3 className="project-card-title">MCP Session</h3>

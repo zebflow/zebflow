@@ -1465,14 +1465,9 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "docs_agent_list" => Some(ProjectCapability::SettingsRead),
         "docs_agent_read" => Some(ProjectCapability::SettingsRead),
         "docs_agent_write" => Some(ProjectCapability::SettingsWrite),
-        "skill_list" => Some(ProjectCapability::ProjectRead),
-        "skill_read" => Some(ProjectCapability::ProjectRead),
         // Help and orientation tools
         "start_here" => Some(ProjectCapability::ProjectRead),
-        "help_pipeline" => Some(ProjectCapability::ProjectRead),
-        "help_web_engine" => Some(ProjectCapability::ProjectRead),
-        "help_examples" => Some(ProjectCapability::ProjectRead),
-        "help_nodes" => Some(ProjectCapability::ProjectRead),
+        "help" => Some(ProjectCapability::ProjectRead),
         "help_search" => Some(ProjectCapability::ProjectRead),
         // UI catalog install tools
         "list_ui_catalog" => Some(ProjectCapability::PipelinesRead),

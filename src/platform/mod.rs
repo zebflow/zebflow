@@ -17,6 +17,7 @@ pub mod model;
 pub mod operations;
 pub mod services;
 pub mod shell;
+pub mod help;
 pub mod skills;
 pub mod web;
 

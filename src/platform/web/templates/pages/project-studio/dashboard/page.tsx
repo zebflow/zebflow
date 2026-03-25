@@ -1,6 +1,7 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { initDashboardBehavior } from "@/pages/project-studio/dashboard/dashboard-behavior";
 import { Link } from "zeb";
+import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
@@ -31,10 +32,10 @@ export default function Page(input) {
       nav={input.nav}
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        <nav className="shrink-0 flex items-stretch border-b border-[var(--studio-border)] bg-[var(--studio-panel)] px-[0.625rem]">
-          <Link href={input?.nav?.links?.dashboard ?? "#"} className="project-tab-link is-active">System</Link>
-        </nav>
-        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-[var(--studio-bg)]">
+        <StudioTabNav>
+          <StudioTabLink href={input?.nav?.links?.dashboard ?? "#"} active>System</StudioTabLink>
+        </StudioTabNav>
+        <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
           <div className="project-content-wrap">
 
             <section className="project-content-section">

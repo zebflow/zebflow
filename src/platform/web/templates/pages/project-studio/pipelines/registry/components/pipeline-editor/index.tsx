@@ -464,7 +464,7 @@ export default function PipelineEditor({
     <div className="contents">
       {/* Loading overlay — only when a pipeline is selected and not yet ready */}
       {selectedId && (!loaded || !graphuiReady) && !loadError && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--studio-bg)] text-[var(--studio-muted)]">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-bg text-body-muted">
           <svg viewBox="0 0 24 24" fill="none" className="w-10 h-10 opacity-30" aria-hidden="true">
             <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" strokeWidth="1.5"/>
             <path d="M3 9h18" stroke="currentColor" strokeWidth="1.5"/>
@@ -473,13 +473,13 @@ export default function PipelineEditor({
             <circle cx="13" cy="6" r="1" fill="currentColor"/>
             <path d="M8 14h8M8 17h5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
           </svg>
-          <p className="text-sm font-medium text-[var(--studio-text)]">Loading pipeline…</p>
+          <p className="text-sm font-medium text-body">Loading pipeline…</p>
         </div>
       )}
 
       {/* Error state */}
       {loadError && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--studio-bg)] text-[var(--studio-muted)]">
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-bg text-body-muted">
           <p className="text-sm font-medium text-red-500">{loadError}</p>
         </div>
       )}
@@ -558,7 +558,7 @@ export default function PipelineEditor({
       </div>
 
       {/* Canvas + category tools */}
-      <div className="flex-1 min-h-0 border-b border-[var(--studio-border-soft)] relative">
+      <div className="flex-1 min-h-0 border-b border-border-soft relative">
         {/* Category buttons */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
           {Object.keys(nodeCategories).map((cat) => {
@@ -571,7 +571,7 @@ export default function PipelineEditor({
                 trigger={
                   <button
                     type="button"
-                    className="w-8 h-8 shrink-0 rounded-md border border-[var(--studio-border-soft)] bg-[var(--studio-panel-2)] text-[var(--studio-text-muted)] flex items-center justify-center p-0 hover:bg-[var(--studio-panel-3)] hover:text-[var(--studio-text)] hover:border-[var(--studio-border)] transition-colors disabled:opacity-40 disabled:cursor-default"
+                    className="w-8 h-8 shrink-0 rounded-md border border-border-soft bg-surface-2 text-body-muted flex items-center justify-center p-0 hover:bg-surface-3 hover:text-body hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
                     title={cat.charAt(0).toUpperCase() + cat.slice(1)}
                     disabled={currentLocked || !currentMeta}
                   >
@@ -611,49 +611,49 @@ export default function PipelineEditor({
 
       {/* Log panel */}
       {logsOpen && currentGraph && (
-        <div className="pipeline-editor-logs-panel border-t border-[var(--studio-border)] bg-[var(--studio-bg)] flex flex-col">
+        <div className="pipeline-editor-logs-panel border-t border-border bg-bg flex flex-col">
           {/* Header */}
-          <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--studio-panel)] border-b border-[var(--studio-border)] flex-shrink-0">
-            <span className="text-xs font-semibold text-[var(--studio-text)]">
+          <div className="flex items-center justify-between px-3 py-1.5 bg-surface border-b border-border flex-shrink-0">
+            <span className="text-xs font-semibold text-body">
               Invocations — {currentMeta?.name || currentMeta?.title || "pipeline"}
             </span>
             <div className="flex items-center gap-2">
-              <span className="text-[0.65rem] text-[var(--studio-text-muted)]">auto-refresh 5s</span>
+              <span className="text-[0.65rem] text-body-muted">auto-refresh 5s</span>
               <Button size="sm" variant="ghost" onClick={() => setLogsOpen(false)}>✕</Button>
             </div>
           </div>
           {/* Body */}
           <div className="pipeline-editor-logs-body text-xs">
             {invocations.length === 0 ? (
-              <div className="p-4 text-center text-[var(--studio-text-muted)]">No invocations recorded yet.</div>
+              <div className="p-4 text-center text-body-muted">No invocations recorded yet.</div>
             ) : invocations.map((inv: any, i: number) => (
-              <div key={i} className="border-b border-[var(--studio-border)]">
+              <div key={i} className="border-b border-border">
                 {/* Invocation row */}
                 <div
                   className={cx(
-                    "flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none hover:bg-[var(--studio-hover)]",
+                    "flex items-center gap-2 px-3 py-1.5 cursor-pointer select-none hover:bg-surface-2",
                     inv.status === "error" && "bg-red-500/5"
                   )}
                   onClick={() => setExpandedInv(expandedInv === i ? null : i)}
                 >
-                  <span className="text-[var(--studio-text-muted)] whitespace-nowrap shrink-0">
+                  <span className="text-body-muted whitespace-nowrap shrink-0">
                     {new Date(inv.at * 1000).toLocaleString()}
                   </span>
                   <Badge variant={inv.status === "ok" ? "default" : "destructive"}>{inv.status}</Badge>
                   <Badge variant="secondary">{inv.trigger}</Badge>
-                  <span className="text-[var(--studio-text-muted)] shrink-0">{inv.duration_ms}ms</span>
+                  <span className="text-body-muted shrink-0">{inv.duration_ms}ms</span>
                   {inv.error && (
                     <span className="text-red-400 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{inv.error}</span>
                   )}
-                  <span className="text-[0.6rem] text-[var(--studio-text-muted)] ml-auto shrink-0">
+                  <span className="text-[0.6rem] text-body-muted ml-auto shrink-0">
                     {expandedInv === i ? "▲" : "▼"}
                   </span>
                 </div>
                 {/* Per-node trace */}
                 {expandedInv === i && Array.isArray(inv.trace) && inv.trace.length > 0 && (
-                  <div className="bg-[var(--studio-panel)] border-t border-[var(--studio-border)]">
+                  <div className="bg-surface border-t border-border">
                     {inv.error && (
-                      <div className="px-3 py-2 text-[0.7rem] text-red-400 bg-red-500/5 border-b border-[var(--studio-border)] whitespace-pre-wrap break-all">
+                      <div className="px-3 py-2 text-[0.7rem] text-red-400 bg-red-500/5 border-b border-border whitespace-pre-wrap break-all">
                         {inv.error}
                       </div>
                     )}
@@ -661,10 +661,10 @@ export default function PipelineEditor({
                       const nodeKey = `${i}-${j}`;
                       const nodeExpanded = expandedNode === nodeKey;
                       return (
-                        <div key={j} className="border-b border-[var(--studio-border)]/60">
+                        <div key={j} className="border-b border-border/60">
                           <div
                             className={cx(
-                              "flex items-center gap-2 px-5 py-1 cursor-pointer hover:bg-[var(--studio-hover)]",
+                              "flex items-center gap-2 px-5 py-1 cursor-pointer hover:bg-surface-2",
                               entry.error && "text-red-400"
                             )}
                             onClick={() => {
@@ -681,24 +681,24 @@ export default function PipelineEditor({
                             }}
                           >
                             <code className="font-mono text-[0.7rem]">{entry.node_id}</code>
-                            <span className="text-[var(--studio-text-muted)] text-[0.65rem]">{entry.node_kind}</span>
-                            <span className="text-[var(--studio-text-muted)] text-[0.65rem] ml-auto shrink-0">{entry.duration_ms}ms</span>
+                            <span className="text-body-muted text-[0.65rem]">{entry.node_kind}</span>
+                            <span className="text-body-muted text-[0.65rem] ml-auto shrink-0">{entry.duration_ms}ms</span>
                             {entry.error && <span className="text-red-400 text-[0.65rem]">{entry.error}</span>}
-                            <span className="text-[0.6rem] text-[var(--studio-text-muted)] shrink-0">{nodeExpanded ? "▲" : "▼"}</span>
+                            <span className="text-[0.6rem] text-body-muted shrink-0">{nodeExpanded ? "▲" : "▼"}</span>
                           </div>
                           {nodeExpanded && (
                             <div className="pipeline-editor-logs-io-grid">
                               {entry.error && (
                                 <div>
                                   <span className="text-[0.6rem] font-semibold uppercase text-red-400">Error</span>
-                                  <pre className="pipeline-editor-logs-io-pre" style={{ borderColor: 'var(--studio-danger, #ef4444)' }}>
+                                  <pre className="pipeline-editor-logs-io-pre" style={{ borderColor: 'var(--color-danger, #ef4444)' }}>
                                     {entry.error}
                                   </pre>
                                 </div>
                               )}
                               {[["Input", entry.input], ["Output", entry.output]].map(([label, val]) => (
                                 <div key={label as string}>
-                                  <span className="text-[0.6rem] font-semibold uppercase text-[var(--studio-text-muted)]">{label}</span>
+                                  <span className="text-[0.6rem] font-semibold uppercase text-body-muted">{label}</span>
                                   <pre className="pipeline-editor-logs-io-pre">{JSON.stringify(val, null, 2)}</pre>
                                 </div>
                               ))}
