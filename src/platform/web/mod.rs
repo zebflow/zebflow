@@ -240,6 +240,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_git_get_remote).put(api_git_put_remote),
         )
         .route(
+            "/api/projects/{owner}/{project}/git/branches",
+            get(api_git_list_branches).post(api_git_checkout_branch),
+        )
+        .route(
             "/api/projects/{owner}/{project}/pipelines/activate",
             post(api_activate_pipeline_definition),
         )
@@ -1480,6 +1484,8 @@ async fn home_create_project_submit(
     }
 }
 
+fn default_branch_main() -> String { "main".to_string() }
+
 /// Form payload for cloning a remote git repository into a new project.
 #[derive(serde::Deserialize)]
 struct CloneProjectFormRequest {
@@ -1496,6 +1502,12 @@ struct CloneProjectFormRequest {
     git_name: String,
     #[serde(default)]
     git_email: String,
+    /// Which remote branch to clone from. Defaults to "main".
+    #[serde(default = "default_branch_main")]
+    remote_branch: String,
+    /// Local branch name after clone. Empty means same as remote_branch.
+    #[serde(default)]
+    local_branch: String,
 }
 
 async fn home_clone_project_submit(
@@ -1532,13 +1544,18 @@ async fn home_clone_project_submit(
         }
     }
 
-    // Run git clone
-    let clone_out = std::process::Command::new("git")
-        .arg("clone")
-        .arg("--")
-        .arg(&auth_url)
-        .arg(&repo_dir)
-        .output();
+    // Run git clone (with explicit -b if a remote branch is specified)
+    let remote_branch = {
+        let b = req.remote_branch.trim().to_string();
+        if b.is_empty() { "main".to_string() } else { b }
+    };
+    let mut clone_cmd = std::process::Command::new("git");
+    clone_cmd.arg("clone");
+    if !remote_branch.is_empty() {
+        clone_cmd.arg("-b").arg(&remote_branch);
+    }
+    clone_cmd.arg("--").arg(&auth_url).arg(&repo_dir);
+    let clone_out = clone_cmd.output();
 
     match clone_out {
         Err(e) => return internal_error(crate::platform::error::PlatformError::new("CLONE_SPAWN", e.to_string())),
@@ -1548,6 +1565,20 @@ async fn home_clone_project_submit(
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
         Ok(_) => {}
+    }
+
+    // Compute effective local branch name; rename if it differs from the remote branch.
+    let effective_local = {
+        let lb = req.local_branch.trim().to_string();
+        if lb.is_empty() { remote_branch.clone() } else { lb }
+    };
+    if effective_local != remote_branch {
+        let _ = std::process::Command::new("git")
+            .arg("-C").arg(&repo_dir)
+            .arg("branch").arg("-m")
+            .arg(&remote_branch)
+            .arg(&effective_local)
+            .output();
     }
 
     // Detect whether the cloned repo has any commits (empty remote repos have no HEAD)
@@ -1563,6 +1594,7 @@ async fn home_clone_project_submit(
     let create_req = crate::platform::model::CreateProjectRequest {
         project: project.clone(),
         title: Some(title.clone()),
+        local_branch: None, // branch already set by git clone + rename above
     };
     if let Err(e) = state.platform.projects.create_or_update_project(&owner, &create_req) {
         return internal_error(e);
@@ -1577,7 +1609,7 @@ async fn home_clone_project_submit(
         if !git_email.is_empty() { cfg.git.author_email = git_email.clone(); }
         cfg.remote.credential_id = cred_id.clone();
         cfg.remote.repo_url = req.repo_url.clone();
-        cfg.remote.branch = "main".to_string();
+        cfg.remote.branch = effective_local.clone();
     });
 
     // Save credential record so git push can look it up later
@@ -1627,7 +1659,7 @@ async fn home_clone_project_submit(
             let push_out = std::process::Command::new("git")
                 .arg("-C").arg(&repo_dir)
                 .arg("push").arg("--set-upstream")
-                .arg(&auth_url).arg("main")
+                .arg(&auth_url).arg(format!("HEAD:{}", effective_local))
                 .output();
             if let Ok(ref o) = push_out {
                 if !o.status.success() {
@@ -5690,6 +5722,67 @@ async fn api_repo_git_status(
             Json(json!({ "branch": branch, "files": items })).into_response()
         }
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_git_list_branches(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    let current = state
+        .platform
+        .projects
+        .get_repo_git_branch(&owner, &project)
+        .unwrap_or_default();
+    match state.platform.projects.list_repo_git_local_branches(&owner, &project) {
+        Ok(branches) => Json(json!({ "current": current, "branches": branches })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct GitCheckoutRequest {
+    branch: String,
+    #[serde(default)]
+    create: bool,
+}
+
+async fn api_git_checkout_branch(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<GitCheckoutRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .projects
+        .checkout_repo_git_branch(&owner, &project, &req.branch, req.create)
+    {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": err.to_string() })),
+        )
+            .into_response(),
     }
 }
 

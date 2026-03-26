@@ -51,6 +51,8 @@ The `@/components/ui/` path is the **platform studio** component library — not
 
 ## Tailwind + `cx()` + `tv()`
 
+**Class discovery is automatic.** The compiler scans all string literals in your template source — conditional classes, `cx()` arguments, and components hidden during SSR (e.g. `<Dialog>` when closed) are all covered. No ghost span needed; `tw-variants` is only needed for pure runtime-computed strings with no literal form in code.
+
 `cx()` — global for joining class names conditionally:
 
 ```tsx

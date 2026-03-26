@@ -280,6 +280,16 @@ export function GitRepoPanel({ owner, project }) {
                     {localBranch}
                   </span>
                 )}
+                {localBranch && (
+                  <a
+                    href={`/projects/${owner}/${project}/settings/general#git`}
+                    onClick={() => setOpen(false)}
+                    className="text-[0.62rem] text-body-soft hover:text-body underline ml-[0.15rem]"
+                    tw-variants="hover:text-body"
+                  >
+                    change
+                  </a>
+                )}
               </div>
               <div className="flex items-center gap-2 text-[0.7rem] text-body-soft">
                 <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>

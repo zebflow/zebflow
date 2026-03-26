@@ -1297,6 +1297,9 @@ pub struct CreateProjectRequest {
     pub project: String,
     /// Optional title.
     pub title: Option<String>,
+    /// Optional initial local branch name. Defaults to "main" when None or empty.
+    #[serde(default)]
+    pub local_branch: Option<String>,
 }
 
 /// Request payload for platform login page/form.
@@ -1458,8 +1461,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "list_project_docs" => Some(ProjectCapability::ProjectRead),
         "read_project_doc" => Some(ProjectCapability::ProjectRead),
         "create_project_doc" => Some(ProjectCapability::FilesWrite),
-        "list_skills" => Some(ProjectCapability::ProjectRead),
-        "read_skill" => Some(ProjectCapability::ProjectRead),
+
         "list_credentials" => Some(ProjectCapability::CredentialsRead),
         // execute_pipeline_dsl temporarily disabled; keeping mapping for future re-enable
         "execute_pipeline_dsl" => Some(ProjectCapability::PipelinesExecute),

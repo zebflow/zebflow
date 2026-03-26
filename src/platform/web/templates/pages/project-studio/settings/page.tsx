@@ -866,6 +866,103 @@ function FilesPanel() {
   );
 }
 
+// ─── Git Branch Panel ─────────────────────────────────────────────────────────
+
+function GitBranchPanel({ owner, project }) {
+  const branchesUrl = `/api/projects/${owner}/${project}/git/branches`;
+  const [current, setCurrent] = useState("");
+  const [branches, setBranches] = useState([]);
+  const [selected, setSelected] = useState("");
+  const [newBranch, setNewBranch] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [msgTone, setMsgTone] = useState("info");
+
+  async function fetchBranches() {
+    try {
+      const data = await requestJson(branchesUrl);
+      if (!data) return;
+      setCurrent(data.current ?? "");
+      setBranches(Array.isArray(data.branches) ? data.branches : []);
+      setSelected(data.current ?? "");
+    } catch (_) {}
+  }
+
+  useEffect(() => { fetchBranches(); }, []);
+
+  async function handleSwitch() {
+    if (!selected || selected === current) return;
+    setBusy(true); setMsg("");
+    try {
+      await requestJson(branchesUrl, { method: "POST", body: JSON.stringify({ branch: selected, create: false }) });
+      setMsg(`Switched to ${selected}.`); setMsgTone("ok");
+      await fetchBranches();
+    } catch (e) { setMsg((e as any)?.message || "Failed"); setMsgTone("error"); }
+    setBusy(false);
+  }
+
+  async function handleCreate() {
+    const name = newBranch.trim();
+    if (!name) return;
+    setBusy(true); setMsg("");
+    try {
+      await requestJson(branchesUrl, { method: "POST", body: JSON.stringify({ branch: name, create: true }) });
+      setMsg(`Branch "${name}" created and checked out.`); setMsgTone("ok");
+      setNewBranch("");
+      await fetchBranches();
+    } catch (e) { setMsg((e as any)?.message || "Failed"); setMsgTone("error"); }
+    setBusy(false);
+  }
+
+  return (
+    <article id="git" className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
+        <div>
+          <h3 className="project-card-title">Git Branches</h3>
+          <p className="project-card-copy">Switch or create local branches for this project.</p>
+        </div>
+        {current && (
+          <span className="font-mono text-[0.65rem] bg-surface-3 border border-border px-1.5 py-0.5 rounded text-body-soft">
+            {current}
+          </span>
+        )}
+      </header>
+
+      {branches.length > 1 && (
+        <div className="flex items-end gap-[0.65rem] mb-[0.65rem]">
+          <Field label="Switch to branch" className="flex-1">
+            <Select value={selected} onChange={(e) => setSelected(e.target.value)}>
+              {branches.map((b) => <SelectOption key={b} value={b}>{b}</SelectOption>)}
+            </Select>
+          </Field>
+          <Button size="sm" variant="outline" onClick={handleSwitch} disabled={busy || selected === current}>
+            Switch
+          </Button>
+        </div>
+      )}
+
+      <div className="flex items-end gap-[0.65rem]">
+        <Field label="Create new branch" className="flex-1">
+          <Input
+            placeholder="branch-name"
+            value={newBranch}
+            onInput={(e) => setNewBranch(e.currentTarget.value)}
+          />
+        </Field>
+        <Button size="sm" variant="primary" onClick={handleCreate} disabled={busy || !newBranch.trim()}>
+          Create
+        </Button>
+      </div>
+
+      {msg && (
+        <p className={cx("text-[0.72rem] mt-[0.5rem]", msgTone === "ok" ? "text-accent" : msgTone === "error" ? "text-red-400" : "text-body-soft")}>
+          {msg}
+        </p>
+      )}
+    </article>
+  );
+}
+
 // ─── Danger Zone ─────────────────────────────────────────────────────────────
 
 function DangerZone({ owner, project }) {
@@ -990,6 +1087,11 @@ export default function Page(input) {
                       api={input?.assets?.settings_api ?? ""}
                       initialConfig={input?.assets?.config ?? {}}
                     />
+                    <GitPanel
+                      api={input?.git?.api ?? ""}
+                      initialConfig={input?.git?.config ?? {}}
+                    />
+                    <GitBranchPanel owner={input.owner} project={input.project} />
                     <DangerZone owner={input.owner} project={input.project} />
                   </div>
                 </section>
@@ -998,11 +1100,6 @@ export default function Page(input) {
               {tabFlags?.policy ? (
                 <section className="project-content-section">
                   <div className="project-content-body">
-                    <GitPanel
-                      api={input?.git?.api ?? ""}
-                      initialConfig={input?.git?.config ?? {}}
-                    />
-                    <Separator className="my-6" />
                     <RwePanel
                       api={input?.rwe?.api ?? ""}
                       initialConfig={input?.rwe?.config ?? {}}

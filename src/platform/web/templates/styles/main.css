@@ -2,10 +2,18 @@
 
 :root {
   /* Brand colors */
-  --color-brand-orange:     #ff5c00;
-  --color-brand-orange-ink: #db4f00;
+  --color-brand-orange:     #e2a35b;
+  --color-brand-orange-ink: #e59068;
   --color-brand-blue:       #005b9a;
   --color-brand-blue-ink:   #004a7a;
+  --color-dark-menus: #020202;
+  --color-dark-background: #101010;
+  --color-dark-border: #2a2a2a;
+  --color-dark-accent1: #e59068;
+  --color-dark-accent2: #e2a35b;
+  --color-dark-accent3: #ba6f61;
+  --color-dark-accent4: #c4333b;
+  --color-dark-text1: #808080;
 
   /* Fonts */
   --font-display:

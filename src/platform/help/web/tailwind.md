@@ -83,22 +83,27 @@ Zeb defines `--color-*` CSS custom properties that resolve to the active theme (
 
 ---
 
-## `tw-variants` — Register Dynamically Built Classes
+## Dynamic Class Discovery (OXC Source Scanner)
 
-The RWE engine scans `className` attribute strings at compile time. If you build class names dynamically from variables, those strings never appear literally in the source and won't make it into the generated CSS.
+The Tailwind compiler scans **all string and template literals** in the bundled page source
+before generating CSS. This means classes in:
 
-Fix: add a hidden `<span tw-variants="...">` with all the class strings you need:
+- `cx("a", condition ? "b" : "c")` — both branches discovered
+- `const cls = "flex items-center"` — scanned at declaration
+- `{_isOpen ? "block" : "hidden"}` — both string literals found
+- Components that return `null` in SSR — their class strings still found
+
+**`tw-variants` is only needed** when a class value is built entirely at runtime
+from variables with no string literal form in source:
 
 ```tsx
-// Declare all dynamically-used classes here — engine scans this
-<span hidden tw-variants="bg-sky-900 border-accent text-red-400 bg-surface-2 opacity-50 bg-accent text-white" />
+// This would NOT be auto-discovered (pure runtime concatenation):
+const prefix = userInput;
+const cls = prefix + "-500";   // tw-variants needed if cls used as className
 
-// Now safe to compose dynamically
-const bgClass = color === "sky" ? "bg-sky-900" : "bg-surface-2";
-<div className={cx("rounded p-4", bgClass)}>
+// This IS auto-discovered (string literals visible in source):
+const cls = condition ? "bg-red-500" : "bg-blue-500";  // ✅ no tw-variants needed
 ```
-
-**Always add `tw-variants` when you concatenate class names from variables or ternaries.**
 
 ---
 
@@ -126,8 +131,8 @@ const badge = tv({
   defaultVariants: { color: "default", size: "md" },
 });
 
-// Register all variant strings (required for engine to include them)
-<span hidden tw-variants="bg-surface-3 text-body bg-green-900/40 text-green-300 bg-amber-900/40 text-amber-300 bg-red-900/40 text-red-300 bg-accent text-white text-[10px] px-1.5 py-0 text-xs px-2 py-0.5 text-sm px-3 py-1" />
+// All variant strings are discovered automatically by the OXC source scanner
+// No ghost span needed — the string literals in the tv() map are found statically
 
 // Usage
 <span className={badge({ color: "success", size: "sm" })}>Active</span>
@@ -153,6 +158,6 @@ const badge = tv({
 | Never `style=` | Use utility classes. Inline styles are a design system smell. |
 | Never `[var(--studio-*)]` | Those old names are gone. Use semantic token classes: `bg-surface`, `text-body`, etc. |
 | Never `[var(--zf-*)]` | Old prefix, gone. |
-| Always `tw-variants` for dynamic classes | If a class string is composed from variables, register it with `tw-variants`. |
+| `tw-variants` for pure runtime strings | Only needed when a class is assembled from user input or external data with no literal form in source. Auto-discovery handles all normal cases. |
 | Prefer semantic tokens | `bg-surface` over `bg-[#111827]` — it adapts to dark/light theme automatically. |
 | Arbitrary values OK when needed | `bg-[#ff5c00]`, `w-[320px]`, `mt-[3px]` are fine for one-offs. |

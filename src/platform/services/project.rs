@@ -116,6 +116,17 @@ impl ProjectService {
         };
         self.data.put_project(&record)?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
+        // Rename initial "main" branch if caller requested a different name.
+        // Safe even with no commits — git branch -m works on an unborn branch.
+        if let Some(ref branch) = req.local_branch {
+            let branch = branch.trim();
+            if !branch.is_empty() && branch != "main" {
+                let _ = Command::new("git")
+                    .arg("-C").arg(&layout.repo_dir)
+                    .arg("branch").arg("-m").arg("main").arg(branch)
+                    .output();
+            }
+        }
         // Write title to zebflow.json (Layer 2)
         self.zebflow_cfg.ensure_initialized(&owner, &project, &title)?;
         // Write zeb.lock if it doesn't exist yet
@@ -990,6 +1001,50 @@ impl ProjectService {
             return Ok(String::new());
         }
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Lists all local branch names for the project's git repo.
+    /// Returns an empty vec if the repo has no commits yet.
+    pub fn list_repo_git_local_branches(&self, owner: &str, project: &str) -> Result<Vec<String>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let out = Command::new("git")
+            .arg("-C").arg(&layout.repo_dir)
+            .arg("branch").arg("--list")
+            .arg("--format=%(refname:short)")
+            .output()
+            .map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
+        if !out.status.success() {
+            return Ok(vec![]);
+        }
+        let names: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        Ok(names)
+    }
+
+    /// Checks out (or creates) a local git branch.
+    /// `create = true` → `git checkout -b <branch>` (fails if branch already exists).
+    /// `create = false` → `git checkout <branch>` (fails if branch doesn't exist).
+    pub fn checkout_repo_git_branch(&self, owner: &str, project: &str, branch: &str, create: bool) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(&layout.repo_dir).arg("checkout");
+        if create { cmd.arg("-b"); }
+        cmd.arg(branch);
+        let out = cmd.output().map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
+        if !out.status.success() {
+            return Err(PlatformError::new(
+                "PLATFORM_REPO_GIT_CHECKOUT",
+                String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            ));
+        }
+        Ok(())
     }
 
     /// Deletes one pipeline — removes the source file, platform metadata, and any active runtime snapshot.

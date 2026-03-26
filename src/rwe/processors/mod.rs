@@ -10,7 +10,7 @@
 
 use crate::rwe::model::{ReactiveWebDiagnostic, ReactiveWebOptions, StyleEngineMode};
 use markdown::{process_markdown, process_rwe_md_placeholders};
-use tailwind::process_tailwind;
+use tailwind::{collect_source_tokens, process_tailwind};
 
 pub mod markdown;
 pub mod tailwind;
@@ -25,22 +25,27 @@ pub mod tailwind;
 ///   listed order
 pub fn apply_compile_processors(
     html: &str,
+    source: &str,
     options: &ReactiveWebOptions,
     diagnostics: &mut Vec<ReactiveWebDiagnostic>,
 ) -> String {
     let normalized = normalize_processor_list(&options.processors);
     if normalized.is_empty() {
         return match options.style_engine {
-            StyleEngineMode::TailwindLike => process_tailwind(html),
+            StyleEngineMode::TailwindLike => {
+                let extra = collect_source_tokens(source);
+                process_tailwind(html, &extra)
+            }
             StyleEngineMode::Off => html.to_string(),
         };
     }
 
+    let extra = collect_source_tokens(source);
     let mut out = html.to_string();
     for processor in normalized {
         match processor.as_str() {
             "tailwind" => {
-                out = process_tailwind(&out);
+                out = process_tailwind(&out, &extra);
             }
             "markdown" => {
                 out = process_markdown(&out);
