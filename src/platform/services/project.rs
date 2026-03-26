@@ -972,6 +972,26 @@ impl ProjectService {
         Ok(items)
     }
 
+    /// Returns the current local branch name for the project's git repo.
+    /// Falls back to an empty string if git is not initialized or has no commits yet.
+    pub fn get_repo_git_branch(&self, owner: &str, project: &str) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("rev-parse")
+            .arg("--abbrev-ref")
+            .arg("HEAD")
+            .output()
+            .map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
+        if !out.status.success() {
+            return Ok(String::new());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// Deletes one pipeline — removes the source file, platform metadata, and any active runtime snapshot.
     pub fn delete_pipeline(
         &self,

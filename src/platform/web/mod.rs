@@ -90,6 +90,8 @@ pub struct PlatformAppState {
     web_render_cache: crate::pipeline::engines::basic::WebRenderCache,
     /// Background cron scheduler — kept alive for the lifetime of the process.
     scheduler: Arc<PipelineScheduler>,
+    /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
+    preview_registry: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 /// Builds Zebflow platform router.
@@ -436,12 +438,23 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/ws/{owner}/{project}/rooms/{room_id}",
             get(ws_room_handler),
         )
+        .route(
+            "/api/projects/{owner}/{project}/preview/toggle",
+            post(api_preview_toggle),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/preview/status",
+            get(api_preview_status),
+        )
+        .route("/preview/{owner}/{project}", get(preview_page))
+        .route("/ws/preview/{owner}/{project}", get(ws_preview_handler))
         .with_state(PlatformAppState {
             platform,
             frontend,
             render_script_cache,
             web_render_cache: crate::pipeline::engines::basic::new_web_render_cache(),
             scheduler,
+            preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         })
 }
 
@@ -5668,7 +5681,14 @@ async fn api_repo_git_status(
         .projects
         .list_repo_git_status(&owner, &project)
     {
-        Ok(items) => Json(items).into_response(),
+        Ok(items) => {
+            let branch = state
+                .platform
+                .projects
+                .get_repo_git_branch(&owner, &project)
+                .unwrap_or_default();
+            Json(json!({ "branch": branch, "files": items })).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -5876,7 +5896,7 @@ async fn api_git_commit(
         let push_out = std::process::Command::new("git")
             .arg("-C").arg(&layout.repo_dir)
             .arg("push").arg("--set-upstream")
-            .arg(&auth_url).arg(&branch)
+            .arg(&auth_url).arg(format!("HEAD:{}", branch))
             .output();
         match push_out {
             Err(e) => {
@@ -10300,4 +10320,283 @@ async fn api_delete_asset(
     }
 
     Json(json!({ "ok": true })).into_response()
+}
+
+// ── Live Preview ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    file: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PreviewToggleBody {
+    active: bool,
+    file: String,
+}
+
+fn preview_key(owner: &str, project: &str, file: &str) -> String {
+    format!("{owner}/{project}/{file}")
+}
+
+/// Sanitize a preview file path: must not escape the templates dir.
+fn sanitize_preview_file(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_start_matches('/');
+    if trimmed.is_empty() || trimmed.contains("..") {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// `POST /api/projects/{owner}/{project}/preview/toggle`
+async fn api_preview_toggle(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<PreviewToggleBody>,
+) -> Response {
+    let Some(_session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false}))).into_response();
+    };
+    let file = match sanitize_preview_file(&body.file) {
+        Some(f) => f,
+        None => return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "invalid file"}))).into_response(),
+    };
+    let key = preview_key(&owner, &project, &file);
+    let mut reg = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner());
+    if body.active {
+        reg.insert(key);
+    } else {
+        reg.remove(&key);
+    }
+    Json(json!({ "ok": true, "active": body.active })).into_response()
+}
+
+/// `GET /api/projects/{owner}/{project}/preview/status?file=...`
+async fn api_preview_status(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(q): Query<PreviewQuery>,
+) -> Response {
+    let Some(_session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
+    };
+    let file = q.file.as_deref().and_then(sanitize_preview_file).unwrap_or_default();
+    let key = preview_key(&owner, &project, &file);
+    let active = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner()).contains(&key);
+    Json(json!({ "active": active })).into_response()
+}
+
+/// `GET /preview/{owner}/{project}?file=...`
+/// Auth + toggle gated. Compiles the TSX on the fly and returns full HTML with WS reload client.
+async fn preview_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(q): Query<PreviewQuery>,
+) -> Response {
+    let Some(_session) = session_owner(&headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+
+    let file = match q.file.as_deref().and_then(sanitize_preview_file) {
+        Some(f) => f,
+        None => return (StatusCode::BAD_REQUEST, Html("<p>Missing ?file= param</p>".to_string())).into_response(),
+    };
+
+    let key = preview_key(&owner, &project, &file);
+    let active = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner()).contains(&key);
+    if !active {
+        return (
+            StatusCode::FORBIDDEN,
+            Html("<html><body style='font-family:sans-serif;padding:2rem'><h2>Preview not active</h2><p>Enable Live Preview in the registry editor first.</p></body></html>".to_string()),
+        ).into_response();
+    }
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+
+    let abs_path = layout.repo_pipelines_dir.join(&file);
+    let markup = match fs::read_to_string(&abs_path) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::NOT_FOUND, Html(format!("<p>Cannot read file: {e}</p>"))).into_response(),
+    };
+
+    let options = crate::rwe::ReactiveWebOptions {
+        templates: crate::rwe::TemplateOptions {
+            template_root: Some(layout.repo_pipelines_dir.clone()),
+            style_entries: Vec::new(),
+        },
+        processors: vec!["tailwind".to_string()],
+        ..Default::default()
+    };
+
+    let compiled = match state.frontend.rwe.compile_template(
+        &crate::rwe::TemplateSource {
+            id: format!("preview/{owner}/{project}/{file}"),
+            source_path: Some(abs_path),
+            markup,
+        },
+        state.frontend.language.as_ref(),
+        &options,
+    ) {
+        Ok(c) => c,
+        Err(e) => return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(format!("<html><body style='font-family:monospace;padding:1rem;white-space:pre-wrap'><b>Compile error:</b>\n{e}</body></html>")),
+        ).into_response(),
+    };
+
+    let ctx = crate::rwe::RenderContext {
+        route: format!("/preview/{owner}/{project}"),
+        request_id: "preview".to_string(),
+        metadata: json!({}),
+    };
+
+    let out = match state.frontend.rwe.render(&compiled, json!({}), state.frontend.language.as_ref(), &ctx) {
+        Ok(out) => out,
+        Err(e) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(format!("<html><body style='font-family:monospace;padding:1rem;white-space:pre-wrap'><b>Render error:</b>\n{e}</body></html>")),
+        ).into_response(),
+    };
+
+    // Build final HTML the same way `render_page_html` does.
+    let mut html = ensure_meta_charset(out.html);
+
+    // Inject Tailwind CSS extracted by the RWE engine.
+    if let Some(css) = out.hydration_payload.get("css").and_then(Value::as_str)
+        && !css.trim().is_empty()
+    {
+        let style_block = format!("<style data-rwe-tw>{css}</style>");
+        if let Some(pos) = html.find("</head>") {
+            html.insert_str(pos, &style_block);
+        } else {
+            html = format!("{style_block}{html}");
+        }
+    }
+
+    // Platform design tokens + reset.
+    html = ensure_stylesheet_link(html, "/assets/platform/main.css");
+
+    // Handle compiled JS scripts.
+    html = externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None);
+
+    // Inject WS live-reload client just before </body>
+    let ws_url = format!("/ws/preview/{owner}/{project}?file={}", urlencoding_encode(&file));
+    let ws_script = format!(
+        r#"<script>
+(function(){{
+  var url = (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '{ws_url}';
+  function connect() {{
+    var ws = new WebSocket(url);
+    ws.onmessage = function(e) {{
+      try {{ if (JSON.parse(e.data).type === 'reload') location.reload(); }} catch(_) {{}}
+    }};
+    ws.onclose = function() {{ setTimeout(connect, 2000); }};
+  }}
+  connect();
+}})();
+</script></body>"#
+    );
+    let html = if html.contains("</body>") {
+        html.replacen("</body>", &ws_script, 1)
+    } else {
+        format!("{html}{ws_script}")
+    };
+
+    (StatusCode::OK, [(CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    s.chars().map(|c| match c {
+        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
+        ' ' => "%20".to_string(),
+        c => format!("%{:02X}", c as u32),
+    }).collect()
+}
+
+/// `GET /ws/preview/{owner}/{project}?file=...`
+/// WebSocket: polls file mtime every second, sends {"type":"reload"} on change.
+/// On disconnect: removes the file from the preview registry.
+async fn ws_preview_handler(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(q): Query<PreviewQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    let Some(_session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    };
+
+    let file = match q.file.as_deref().and_then(sanitize_preview_file) {
+        Some(f) => f,
+        None => return (StatusCode::BAD_REQUEST, "missing file param").into_response(),
+    };
+
+    let key = preview_key(&owner, &project, &file);
+    {
+        let reg = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner());
+        if !reg.contains(&key) {
+            return (StatusCode::FORBIDDEN, "preview not active").into_response();
+        }
+    }
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+
+    let abs_path = layout.repo_pipelines_dir.join(&file);
+    let registry = state.preview_registry.clone();
+
+    ws.on_upgrade(move |socket| async move {
+        handle_preview_ws(socket, abs_path, key, registry).await;
+    })
+}
+
+async fn handle_preview_ws(
+    mut socket: WebSocket,
+    path: PathBuf,
+    _key: String,
+    _registry: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+) {
+    let mut last_mtime = get_mtime(&path);
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let mtime = get_mtime(&path);
+                if mtime != last_mtime {
+                    last_mtime = mtime;
+                    let msg = Message::Text(r#"{"type":"reload"}"#.to_string().into());
+                    if socket.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(_)) => {} // ignore client messages
+                    _ => break,      // disconnect
+                }
+            }
+        }
+    }
+
+    // WS disconnected (tab reload or close) — do NOT remove from registry.
+    // Preview toggle state is managed only via POST /preview/toggle.
+}
+
+fn get_mtime(path: &FsPath) -> Option<std::time::SystemTime> {
+    fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }

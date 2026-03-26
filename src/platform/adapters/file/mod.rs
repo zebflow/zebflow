@@ -45,6 +45,7 @@ impl FilesystemFileAdapter {
         let status = Command::new("git")
             .arg("init")
             .arg("-q")
+            .arg("--initial-branch=main")
             .current_dir(repo_dir)
             .status()
             .map_err(|e| PlatformError::new("PLATFORM_GIT_INIT", e.to_string()))?;

@@ -265,6 +265,39 @@ export default function UnifiedRegistryEditor(input) {
   const owner = String(input?.owner ?? "");
   const project = String(input?.project ?? "");
   const projectApiBase = `/api/projects/${owner}/${project}`;
+
+  // ── Live preview ──────────────────────────────────────────────────────────
+  const [previewActive, setPreviewActive] = useState(false);
+  const previewPollRef = useRef(null as any);
+  const isTsxTemplate = (template?.rel_path ?? "").endsWith(".tsx");
+  const previewApiBase = `${projectApiBase}/preview`;
+  const previewUrl = `/preview/${owner}/${project}?file=${encodeURIComponent(template?.rel_path ?? "")}`;
+
+  useEffect(() => {
+    if (!isTsxTemplate) return;
+    const checkStatus = async () => {
+      try {
+        const res = await fetch(`${previewApiBase}/status?file=${encodeURIComponent(template?.rel_path ?? "")}`);
+        const data = await res.json();
+        setPreviewActive(!!data.active);
+      } catch (_) {}
+    };
+    checkStatus(); // immediate on mount / template change
+    previewPollRef.current = setInterval(checkStatus, 3000);
+    return () => clearInterval(previewPollRef.current);
+  }, [template?.rel_path]);
+
+  async function handleTogglePreview() {
+    const next = !previewActive;
+    try {
+      await requestJson(`${previewApiBase}/toggle`, {
+        method: "POST",
+        body: JSON.stringify({ active: next, file: template?.rel_path ?? "" }),
+      });
+      setPreviewActive(next);
+      if (next) window.open(previewUrl, "_blank");
+    } catch (_) {}
+  }
   const newPipelineDialogRef = useRef(null);
   const newFileDialogRef = useRef(null);
   const newFolderDialogRef = useRef(null);
@@ -1005,6 +1038,15 @@ export default function UnifiedRegistryEditor(input) {
                   <div className="pipeline-editor-toolbar-actions">
                     <span className="pipeline-editor-indicator">{templateSaveState}</span>
                     <span className="pipeline-editor-indicator">{template?.file_kind}</span>
+                    {isTsxTemplate && (
+                      <Button
+                        variant={previewActive ? "live" : "outline"}
+                        size="xs"
+                        onClick={handleTogglePreview}
+                      >
+                        {previewActive ? "● Live" : "Live Preview"}
+                      </Button>
+                    )}
                     <Button variant="outline" size="xs" onClick={handleSaveTemplate}>Save</Button>
                     <Button
                       variant="destructive"
