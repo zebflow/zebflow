@@ -22,6 +22,7 @@ export function GitRepoPanel({ owner, project }) {
   const [files, setFiles] = useState([]);
   const [gitLoading, setGitLoading] = useState(false);
   const [synced, setSynced] = useState(true);
+  const [localBranch, setLocalBranch] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [commitError, setCommitError] = useState("");
@@ -60,8 +61,10 @@ export function GitRepoPanel({ owner, project }) {
     try {
       const res = await fetch(statusUrl, { headers: { Accept: "application/json" } });
       if (res.status === 401) { nav("/login"); return; }
-      const data = await res.json().catch(() => []);
-      setFiles(Array.isArray(data) ? data.map((f) => ({ ...f, checked: true })) : []);
+      const data = await res.json().catch(() => ({ branch: "", files: [] }));
+      const files = Array.isArray(data) ? data : (data.files ?? []);
+      if (!Array.isArray(data) && data.branch) setLocalBranch(data.branch);
+      setFiles(files.map((f) => ({ ...f, checked: true })));
     } catch (_) {}
     setGitLoading(false);
   }
@@ -233,7 +236,7 @@ export function GitRepoPanel({ owner, project }) {
   return (
     <div
       className="relative"
-      tw-variants="absolute -top-1 -right-1 min-w-4 h-4 px-[0.22rem] bg-orange-500 text-[0.58rem] leading-4 pointer-events-none fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-slate-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px"
+      tw-variants="absolute -top-1 -right-1 min-w-4 h-4 px-[0.22rem] bg-orange-500 text-[0.58rem] leading-4 pointer-events-none fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-slate-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px font-mono px-1.5 text-body-soft border-border"
     >
       {/* Trigger button */}
       <Button
@@ -272,6 +275,11 @@ export function GitRepoPanel({ owner, project }) {
               <div className="text-[0.75rem] font-semibold text-body flex items-center gap-[0.35rem]">
                 <GitBranchIcon className="w-3.5 h-3.5 shrink-0" />
                 <span>Git</span>
+                {localBranch && (
+                  <span className="font-mono text-[0.65rem] text-body-soft bg-surface-3 border border-border px-1.5 rounded">
+                    {localBranch}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 text-[0.7rem] text-body-soft">
                 <span>{gitLoading ? "…" : `${count} change${count !== 1 ? "s" : ""}`}</span>
