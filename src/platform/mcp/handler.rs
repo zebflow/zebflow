@@ -103,7 +103,7 @@ struct PipelineRegisterParams {
     title: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
     /// Example: "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\""
-    /// Use help_pipeline or skill_read with name "pipeline-dsl" for the full node catalog and syntax.
+    /// Use help("pipeline/dsl") for the full node catalog and syntax.
     body: String,
 }
 
@@ -318,7 +318,7 @@ impl ZebflowMcpHandler {
         description = "Register (create or update) a pipeline by name and pipe-chained node body. \
                        Body format: '| trigger.webhook --path /x | pg.query --credential db -- \"SQL\"'. \
                        After registering, call pipeline_activate to make it live. \
-                       Use help_pipeline or skill_read with name 'pipeline-dsl' for the full node catalog and syntax."
+                       Use help(\"pipeline/dsl\") for the full node catalog and syntax."
     )]
     async fn pipeline_register(
         &self,
@@ -501,7 +501,7 @@ impl ZebflowMcpHandler {
         description = "Write (create or overwrite) a template file. \
                        Use template_create first to scaffold with boilerplate, then template_write to fill in content. \
                        Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx'). \
-                       Use help_web_engine or skill_read 'web-templates' for TSX conventions before writing."
+                       Use help(\"web\") for TSX conventions before writing."
     )]
     async fn template_write(
         &self,

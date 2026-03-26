@@ -13,7 +13,9 @@
 //! - unsupported tokens are ignored safely (no panic, no hard failure)
 
 mod compiler;
+mod source_scanner;
 mod variants;
 
 pub use compiler::{process_tailwind, rebuild_tailwind};
+pub use source_scanner::collect_source_tokens;
 pub use variants::{TwVariantManifest, collect_tw_variants, dynamic_runtime_css_for_patterns};

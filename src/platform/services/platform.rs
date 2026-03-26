@@ -218,6 +218,7 @@ impl PlatformService {
             &CreateProjectRequest {
                 project: self.config.default_project.clone(),
                 title: Some("Default".to_string()),
+                local_branch: None,
             },
         )?;
         Ok(())

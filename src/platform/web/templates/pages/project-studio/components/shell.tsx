@@ -53,11 +53,12 @@ export default function ProjectStudioShell(props) {
               "ml-16 flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
               isLight ? "bg-slate-50" : "bg-slate-950",
             )}
+            tw-variants={"bg-slate-50 bg-slate-950"}
           >
             <header
               className={cx(
                 "relative z-10 flex h-10 shrink-0 items-center border-b px-4 backdrop-blur-md",
-                isLight ? "border-slate-200 bg-white/90" : "border-slate-700/60 bg-slate-950/80",
+                isLight ? "border-slate-200 bg-white/90" : "border-dark-border bg-dark-background",
               )}
             >
               <div className="flex h-full w-full items-center justify-between">

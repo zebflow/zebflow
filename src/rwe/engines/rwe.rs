@@ -152,7 +152,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
         // Tailwind stays on Zebflow processor pipeline.
         let mut processor_diags: Vec<ReactiveWebDiagnostic> = Vec::new();
         let processed_html =
-            processors::apply_compile_processors(&rendered.html, &compiled.options, &mut processor_diags);
+            processors::apply_compile_processors(&rendered.html, &rwe_compiled.server_module_source, &compiled.options, &mut processor_diags);
         let (clean_html, extracted_css) = extract_generated_tailwind_style(&processed_html);
 
         let mut scripts = Vec::new();

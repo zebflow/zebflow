@@ -141,7 +141,7 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
 /// - converts each recognized token into CSS
 /// - injects a consolidated `<style data-rwe-tw>` block into `<head>`
 /// - leaves unsupported tokens untouched in markup
-pub fn process_tailwind(html: &str) -> String {
+pub fn process_tailwind(html: &str, extra_tokens: &HashSet<String>) -> String {
     let mut css = tailwind_preflight_css().to_string();
     let variants = collect_tw_variants(html);
 
@@ -160,6 +160,9 @@ pub fn process_tailwind(html: &str) -> String {
         }
     }
     for token in &variants.exact_tokens {
+        tokens.insert(token.clone());
+    }
+    for token in extra_tokens {
         tokens.insert(token.clone());
     }
 
@@ -193,7 +196,7 @@ pub fn process_tailwind(html: &str) -> String {
 /// from the current markup snapshot.
 pub fn rebuild_tailwind(html: &str) -> String {
     let stripped = strip_generated_tailwind_style_blocks(html);
-    process_tailwind(&stripped)
+    process_tailwind(&stripped, &HashSet::new())
 }
 
 fn strip_generated_tailwind_style_blocks(html: &str) -> String {
@@ -2315,7 +2318,7 @@ mod tests {
     fn process_tailwind_injects_compacted_style_block() {
         let html =
             "<html><head></head><body><div class=\"p-4 text-slate-100\"></div></body></html>";
-        let out = process_tailwind(html);
+        let out = process_tailwind(html, &std::collections::HashSet::new());
         let start = out.find("<style data-rwe-tw>").expect("style open");
         let content_start = start + "<style data-rwe-tw>".len();
         let end = out[content_start..].find("</style>").expect("style close") + content_start;
