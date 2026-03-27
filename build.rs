@@ -10,14 +10,21 @@ fn main() {
 fn generate_version() {
     let cargo_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
 
-    // Build timestamp: YYYYMMDDHHmm (UTC)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let ts = format_build_timestamp(now);
+    // Rerun if CI passes a new BUILD_VERSION.
+    println!("cargo:rerun-if-env-changed=BUILD_VERSION");
 
-    let app_version = format!("{cargo_version}.{ts}");
+    // Use BUILD_VERSION from CI (passed as Docker build-arg) so the binary version
+    // matches the Docker Hub tag. Fall back to a local timestamp when building outside CI.
+    let app_version = match std::env::var("BUILD_VERSION") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            format!("{cargo_version}.{}", format_build_timestamp(now))
+        }
+    };
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest = std::path::Path::new(&out_dir).join("version_gen.rs");
@@ -66,6 +73,7 @@ fn generate_platform_template_assets() {
     let templates_dir = "src/platform/web/templates";
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest = Path::new(&out_dir).join("platform_templates_gen.rs");
+    println!("cargo:rerun-if-changed=build.rs");
 
     let mut rel_paths: Vec<String> = Vec::new();
     collect_files(Path::new(templates_dir), templates_dir, &mut rel_paths);
@@ -96,6 +104,10 @@ fn generate_help_index() {
     let help_root = "src/platform/help";
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest = Path::new(&out_dir).join("help_generated.rs");
+
+    // Always rerun when build.rs itself changes (covers cargo-chef stub → real build.rs swap,
+    // and ensures a previously-empty cached HELP is regenerated after help files appear).
+    println!("cargo:rerun-if-changed=build.rs");
 
     // Collect all files relative to the manifest root (e.g. "src/platform/help/web/hooks.md")
     let mut all_files: Vec<String> = Vec::new();

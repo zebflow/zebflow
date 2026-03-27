@@ -246,6 +246,18 @@ impl ZebflowMcpHandler {
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
+    // ── Version ──────────────────────────────────────────────────────────────
+
+    #[tool(description = "Returns the running platform version string. \
+        Use this to verify the deployed binary matches the expected Docker image tag.")]
+    async fn version(
+        &self,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![Content::text(
+            crate::version::APP_VERSION.to_string(),
+        )]))
+    }
+
     // ── Help / Knowledge ─────────────────────────────────────────────────────
 
     #[tool(description = "Hierarchical docs browser. No topic = full index. \
