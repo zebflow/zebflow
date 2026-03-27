@@ -255,7 +255,13 @@ impl NodeHandler for Node {
         };
         let response = match body_value {
             Some(body) if !matches!(method.as_str(), "GET" | "HEAD" | "DELETE" | "OPTIONS") => {
-                request.send_string(&body.to_string())
+                // If the body is already a string (e.g. form-encoded), send it as-is.
+                // Otherwise JSON-serialize it (objects, arrays, numbers, booleans).
+                let body_str = match body {
+                    Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                request.send_string(&body_str)
             }
             _ => request.call(),
         };
