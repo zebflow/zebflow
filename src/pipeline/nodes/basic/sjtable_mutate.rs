@@ -68,6 +68,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--id-expr".to_string(),
+                config_key: "row_id_expr".to_string(),
+                description: "JS expression returning the row ID string. Overrides --id-path.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: {
             vec![

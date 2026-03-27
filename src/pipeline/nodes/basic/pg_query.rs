@@ -49,6 +49,8 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Credential ID of the PostgreSQL connection to use.".to_string(), kind: DslFlagKind::Scalar, required: true },
             DslFlag { flag: "--params-path".to_string(), config_key: "params_path".to_string(), description: "Dot-notation path into upstream payload for $1/$2 bind params. e.g. 'body' or 'identifier'. If value is an array each element maps to $1/$2/...".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--params-expr".to_string(), config_key: "params_expr".to_string(), description: "JS expression returning an array of bind params, evaluated against input. e.g. '[input.identifier, input.password]'.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--credential-expr".to_string(), config_key: "credential_id_expr".to_string(), description: "JS expression returning the credential ID to use. Overrides --credential at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--query-expr".to_string(), config_key: "query_expr".to_string(), description: "JS expression returning the SQL query string. Overrides the body SQL at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SidebarSection, SidebarItem};
