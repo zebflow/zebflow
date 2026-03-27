@@ -83,6 +83,27 @@ pub fn definition() -> NodeDefinition {
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
             },
+            crate::pipeline::model::DslFlag {
+                flag: "--claim".to_string(),
+                config_key: "claims".to_string(),
+                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name=$.field_path or claim_name=literal. e.g. --claim player_id=$.player_id --claim fullname=$.fullname".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
+                flag: "--issuer".to_string(),
+                config_key: "issuer".to_string(),
+                description: "JWT issuer claim (iss).".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
+            crate::pipeline::model::DslFlag {
+                flag: "--audience".to_string(),
+                config_key: "audience".to_string(),
+                description: "JWT audience claim (aud).".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};

@@ -3,16 +3,16 @@ import { cx, Link, useState } from "zeb";
 function navRowCx(expanded: boolean, isLight: boolean, routeClass: string) {
   const active = routeClass?.includes("is-active");
   return cx(
-    "group flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+    "group flex items-center gap-3 px-3 py-2 text-sm transition-colors",
     expanded ? "justify-start" : "justify-center",
     !active &&
       (isLight
         ? "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-        : "text-slate-400 hover:bg-slate-800/80 hover:text-slate-100"),
+        : "border-l-2 border-dark-menus text-dark-text1 hover:bg-gray-100/10 hover:text-gray-100"),
     active &&
       (isLight
         ? "bg-orange-500 font-medium text-white shadow-sm"
-        : "bg-orange-600 font-medium text-white shadow-sm"),
+        : "border-l-2 border-solid border-dark-accent1 bg-dark-accent1/10 font-medium text-dark-accent1 shadow-sm"),
     routeClass,
   );
 }
@@ -31,13 +31,13 @@ export default function PlatformSidebar(props) {
         className={cx(
           "flex h-full flex-col overflow-visible border-r shadow-lg transition-all duration-200 ease-out",
           expanded ? "w-60 shadow-2xl" : "w-16 shadow-md",
-          isLight ? "border-slate-200 bg-white" : "border-slate-700/80 bg-slate-900",
+          isLight ? "border-slate-200 bg-white" : "border-dark-border bg-dark-menus",
         )}
       >
         <div
           className={cx(
             "flex items-center gap-3 border-b px-3 py-3",
-            isLight ? "border-slate-200" : "border-slate-700/80",
+            isLight ? "border-slate-200" : "border-dark-border",
             expanded ? "justify-between" : "justify-center",
           )}
         >
@@ -75,7 +75,7 @@ export default function PlatformSidebar(props) {
                 <path
                   d="M8 5l8 7-8 7"
                   stroke="currentColor"
-                  strokeWidth="1.8"
+                  style={{ strokeWidth: "5" }}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />
@@ -84,14 +84,14 @@ export default function PlatformSidebar(props) {
           )}
         </div>
         {!expanded && (
-          <div className="flex justify-center py-2">
+          <div className="flex justify-center py-2 mt-2">
             <button
               type="button"
               className={cx(
                 "inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors",
                 isLight
-                  ? "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100"
-                  : "border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700",
+                  ? "border-dark-border bg-gray-50 text-slate-500 hover:bg-slate-100"
+                  : "border-dark-border bg-gray-800 text-slate-400 hover:bg-slate-700",
               )}
               aria-label="Expand sidebar"
               onClick={() => setExpanded(true)}
@@ -100,7 +100,7 @@ export default function PlatformSidebar(props) {
                 <path
                   d="M8 5l8 7-8 7"
                   stroke="currentColor"
-                  strokeWidth="1.8"
+                  style={{ strokeWidth: "5" }}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 />

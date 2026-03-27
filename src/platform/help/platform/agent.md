@@ -34,11 +34,13 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | Tool | What it does |
 |------|-------------|
 | `start_here` | First call — returns overview, project context, doc list, connections, template tree |
-| `help_pipeline` | Pipeline DSL guide — syntax, pipe mode, web patterns, examples |
-| `help_web_engine` | Web pages — TSX templates, server render, hooks, pipeline `input` |
-| `help_examples` | Project archetypes — blog, forum, game, scheduling, scraping, auth (with full DSL) |
-| `help_nodes` | Node catalog — list all nodes or get docs for a specific node kind |
-| `help_search` | Search all skill docs for a concept, node name, or DSL syntax |
+| `help` (no topic) | Full help index — all available topics |
+| `help(topic="pipeline")` | Pipeline DSL guide — syntax, pipe mode, web patterns, examples + live node appendix |
+| `help(topic="web")` | Web pages — TSX templates, server render, hooks, pipeline `input` |
+| `help(topic="pipeline/examples")` | Project archetypes — blog, forum, game, scheduling, scraping, auth (with full DSL) |
+| `help(topic="pipeline/nodes")` | Node catalog — all nodes with flags and schemas (live from Rust) |
+| `help(topic="pipeline/nodes/{kind}")` | One node — e.g. `topic="pipeline/nodes/n.trigger.webhook"` |
+| `help_search` | Search all help docs for a concept, node name, or DSL syntax |
 
 ### Pipelines
 
@@ -82,10 +84,13 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 ### Knowledge
 
-| Tool | What it does |
-|------|-------------|
-| `skill_list` | List all available skill docs |
-| `skill_read` | Read a skill doc in full |
+| Topic | What it covers |
+|-------|---------------|
+| `help(topic="pipeline")` | Pipeline DSL, nodes, examples |
+| `help(topic="web")` | TSX templates, hooks, UI kit, Tailwind |
+| `help(topic="db")` | Database connections, SekejapQL |
+| `help(topic="tool")` | Tool.* globals (time, arr, stat, geo) |
+| `help(topic="platform")` | Platform API, operations, agent workflow |
 
 ### Connections & Credentials
 
@@ -103,11 +108,11 @@ Master these before building anything:
 
 | Domain | Tool | Covers |
 |--------|------|--------|
-| **Pipeline DSL** | `help_pipeline` or `skill_read pipeline-dsl` | All commands, pipe mode, graph mode, branching, git, connections |
-| **Web templates** | `help_web_engine` or `skill_read web-templates` | TSX layout, hooks, UI kit install, import rules, hydration |
-| **Project Operations** | `skill_read project-operations` | File layout, agent docs, build loop, channels, git workflow |
+| **Pipeline DSL** | `help(topic="pipeline")` | All commands, pipe mode, graph mode, branching, git, connections |
+| **Web templates** | `help(topic="web")` | TSX layout, hooks, UI kit install, import rules, hydration |
+| **Project Operations** | `help(topic="platform/operations")` | File layout, agent docs, build loop, channels, git workflow |
 
-Supporting skills: `pipeline-authoring`, `pipeline-dsl-web`, `sekejapql`, `api-reference` — node details: **`help_nodes`** / **`help_pipeline`** (generated from code)
+Node details (live from Rust): `help(topic="pipeline/nodes")` for full catalog, `help(topic="pipeline/nodes/{kind}")` for one node.
 
 ---
 
@@ -135,7 +140,7 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 - Query language: SekejapQL text DSL — `collection "sjtable__posts" | take 50`
 - Collections use internal prefix `sjtable__`: table `posts` → collection `sjtable__posts`
 
-See `skill_read sekejapql` for the full query language reference.
+See `help(topic="db/sekejap")` for the full query language reference.
 
 ---
 
@@ -158,7 +163,7 @@ template_create  kind=page  name=blog-home
 ```
 
 Then `template_write rel_path=pages/blog-home.tsx` with TSX content.
-See `help_web_engine` or `skill_read web-templates` for TSX conventions.
+See `help(topic="web")` for TSX conventions.
 
 ### 3. Activate and commit
 

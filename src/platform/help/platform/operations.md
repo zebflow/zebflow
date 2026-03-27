@@ -147,7 +147,7 @@ A complete feature delivery follows this sequence:
 
 Always write a spec doc before building. Always commit after a logical chunk. Always update MEMORY.md before ending the session.
 
-**RULE: Before writing DSL for a node you haven't used in this session → call `help_nodes` with `kind=<that node>` (or `help_pipeline` for the full catalog appendix).** Node flags and schemas come from Rust `definition()`, not from a markdown file.
+**RULE: Before writing DSL for a node you haven't used in this session → call `help(topic="pipeline/nodes/{kind}")` (or `help(topic="pipeline/nodes")` for the full catalog).** Node flags and schemas come from Rust `definition()`, not from a markdown file.
 
 ---
 

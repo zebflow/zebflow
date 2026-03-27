@@ -215,7 +215,7 @@ pub fn definition() -> NodeDefinition {
             "properties": {
                 "template_path": {
                     "type": "string",
-                    "description": "Path to the TSX page file relative to templates/. Example: 'pages/blog-home', 'pages/blog/post-detail'. Omit the .tsx extension — RWE resolves it automatically."
+                    "description": "Path to the TSX page file relative to templates/. Must include .tsx extension. Example: 'pages/blog-home.tsx', 'pages/blog/post-detail.tsx'."
                 },
                 "load_scripts": {
                     "type": "string",
@@ -227,7 +227,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--template-path".to_string(),
                 config_key: "template_path".to_string(),
-                description: "TSX page file relative to templates/, e.g. pages/blog-home. Omit the .tsx extension.".to_string(),
+                description: "TSX page file relative to templates/, e.g. pages/blog-home.tsx. Must include the .tsx extension.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },

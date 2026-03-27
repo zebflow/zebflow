@@ -16,7 +16,7 @@ See also: **`pipeline-dsl`** (full DSL), **`web-templates`** (how to write `.tsx
 
 ## Minimal pipeline shape
 
-Use a real `file_rel_path` for the pipeline file (see `help_pipeline`). Example body:
+Use a real `file_rel_path` for the pipeline file (see `help(topic="pipeline")`). Example body:
 
 ```zf
 | trigger.webhook --path /blog --method GET

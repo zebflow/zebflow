@@ -1,73 +1,215 @@
 # Pipeline Authoring
 
-Pipelines are JSON-defined directed graphs stored as `.zf.json` files.
+Pipelines are directed graphs stored as `.zf.json` files under `repo/pipelines/`.
+Use the **DSL** (`pipeline_register`) to author them — the JSON is auto-generated.
+Read this doc for the underlying model. See `help("pipeline/dsl")` for the DSL.
 
-## File Format
+---
+
+## File Location
+
+```
+pipelines/
+  api/
+    auth/login.zf.json
+    posts/list.zf.json
+  pages/
+    home.zf.json
+    auth/login.zf.json
+  jobs/
+    daily-report.zf.json
+```
+
+Naming convention: `pipelines/<virtual-path>/<name>.zf.json`
+
+---
+
+## JSON Model
+
+Every pipeline compiles to a `PipelineGraph` object:
 
 ```json
 {
+  "kind": "zebflow.pipeline",
+  "version": "0.1",
+  "id": "auth-login",
+  "entry_nodes": ["a"],
   "nodes": [
     {
-      "id": "n1",
-      "kind": "trigger_webhook",
-      "config": {
-        "path": "/api/hello",
-        "method": "GET"
-      },
-      "pins_out": [{"id": "out", "label": "output"}]
+      "id": "a",
+      "kind": "n.trigger.webhook",
+      "input_pins": [],
+      "output_pins": ["out"],
+      "config": { "path": "/api/auth/login", "method": "POST" }
     },
     {
-      "id": "n2",
-      "kind": "script",
+      "id": "b",
+      "kind": "n.pg.query",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
       "config": {
-        "code": "return { message: 'Hello, world!' };"
-      },
-      "pins_in": [{"id": "in", "label": "input"}],
-      "pins_out": [{"id": "out", "label": "output"}]
+        "credential_id": "main-db",
+        "query": "SELECT * FROM users WHERE identifier = $1",
+        "params_path": "identifier"
+      }
+    },
+    {
+      "id": "c",
+      "kind": "n.web.render",
+      "input_pins": ["in"],
+      "output_pins": ["out", "error"],
+      "config": { "template_path": "pages/auth/login.tsx" }
     }
   ],
   "edges": [
-    {"from_node": "n1", "from_pin": "out", "to_node": "n2", "to_pin": "in"}
+    { "from_node": "a", "from_pin": "out", "to_node": "b", "to_pin": "in" },
+    { "from_node": "b", "from_pin": "out", "to_node": "c", "to_pin": "in" }
   ]
 }
 ```
 
+### Key fields
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | string | Always `"zebflow.pipeline"` |
+| `version` | string | Always `"0.1"` |
+| `id` | string | Pipeline slug (matches filename without `.zf.json`) |
+| `entry_nodes` | string[] | IDs of nodes with no incoming edges (auto-computed by DSL) |
+| `nodes` | Node[] | All nodes in the graph |
+| `edges` | Edge[] | All pin-to-pin connections |
+
+### Node fields
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Node label (e.g. `"a"`, `"b"`, `"trigger"`, `"n0"`) |
+| `kind` | string | Full node kind (e.g. `"n.trigger.webhook"`, `"n.pg.query"`) |
+| `input_pins` | string[] | Usually `["in"]` or `[]` for triggers |
+| `output_pins` | string[] | Usually `["out"]`; logic nodes have named pins |
+| `config` | object | Node-specific configuration (credential IDs, SQL, template paths, etc.) |
+
+### Edge fields
+
+| Field | Type | Description |
+|---|---|---|
+| `from_node` | string | Source node ID |
+| `from_pin` | string | Output pin name (`"out"` or named pin like `"true"`, `"false"`) |
+| `to_node` | string | Target node ID |
+| `to_pin` | string | Input pin name (usually `"in"`) |
+
+---
+
 ## Pipeline Lifecycle
 
-1. **Create** — POST source JSON to the pipeline API
-2. **Edit** — PUT updated source JSON
-3. **Activate** — POST to `/activate` to promote to runtime
-4. **Deactivate** — POST to `/deactivate` to remove from runtime
+| Status | Meaning |
+|---|---|
+| `draft` | Registered but never activated — not serving traffic |
+| `active` | Live; active snapshot matches current source |
+| `stale` | Live but source changed since last activation — needs re-activate |
+| `inactive` | Explicitly deactivated; source retained |
 
-Only **activated** pipelines receive live webhook traffic.
+Workflow: `register` → `activate` → (edit → `activate` again to unstale)
 
-## Pipeline API
+---
 
-```
-GET    /api/projects/{o}/{p}/pipelines              — list registry
-POST   /api/projects/{o}/{p}/pipelines              — create pipeline
-GET    /api/projects/{o}/{p}/pipelines/file?...     — read pipeline source
-PUT    /api/projects/{o}/{p}/pipelines/file         — update pipeline source
-DELETE /api/projects/{o}/{p}/pipelines/file         — delete pipeline
-POST   /api/projects/{o}/{p}/pipelines/activate     — activate pipeline
-POST   /api/projects/{o}/{p}/pipelines/deactivate   — deactivate pipeline
-POST   /api/projects/{o}/{p}/pipelines/execute      — manually execute
-```
-
-## Trigger Kinds
-
-- `trigger_webhook` — triggered by HTTP webhook request
-- `trigger_schedule` — triggered by cron schedule
-- `trigger_function` — triggered by manual API call
-
-## Webhook Ingress
+## Webhook Ingress URL
 
 When activated, webhook pipelines receive traffic at:
+
 ```
-{method} /wh/{owner}/{project}/{configured-path}
+{METHOD} /wh/{owner}/{project}/{configured-path}
 ```
 
-Example: pipeline with `"path": "/blog"` and `"method": "GET"` receives:
+Example: `trigger.webhook --path /api/auth/login --method POST` →
+
 ```
-GET /wh/alice/myproject/blog
+POST /wh/superadmin/my-project/api/auth/login
 ```
+
+---
+
+## Node Kind Reference
+
+All node kinds use the `n.` prefix. Short aliases work in DSL (e.g. `pg.query` → `n.pg.query`).
+
+| Kind | Short alias | Input pins | Output pins |
+|---|---|---|---|
+| `n.trigger.webhook` | `trigger.webhook` | _(none)_ | `out` |
+| `n.trigger.schedule` | `trigger.schedule` | _(none)_ | `out` |
+| `n.trigger.manual` | `trigger.manual` | _(none)_ | `out` |
+| `n.script` | `script` | `in` | `out` |
+| `n.pg.query` | `pg.query` | `in` | `out` |
+| `n.http.request` | `http.request` | `in` | `out` |
+| `n.web.render` | `web.render` | `in` | `out`, `error` |
+| `n.sekejap.query` | `sekejap.query` | `in` | `out` |
+| `n.auth.token.create` | `auth.token.create` | `in` | `out` |
+| `n.logic.if` | `logic.if` | `in` | `true`, `false` |
+| `n.logic.switch` | `logic.switch` | `in` | _(named cases)_ |
+| `n.logic.branch` | `logic.branch` | `in` | _(named branches)_ |
+| `n.logic.merge` | `logic.merge` | _(named)_ | `out` |
+| `n.ws.emit` | `ws.emit` | `in` | `out` |
+| `n.ws.sync_state` | `ws.sync_state` | `in` | `out` |
+| `n.crypto` | `crypto` | `in` | `out` |
+| `n.ai.agent` | `ai.agent` | `in` | `out` |
+
+---
+
+## Config Key Reference
+
+Key config fields and their DSL flag equivalents:
+
+| Node | Config key | DSL flag | Description |
+|---|---|---|---|
+| `n.pg.query` | `credential_id` | `--credential` | PostgreSQL credential ID |
+| `n.pg.query` | `query` | `-- <sql>` (body) | SQL query |
+| `n.pg.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds. e.g. `"identifier"` |
+| `n.pg.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params. e.g. `"[input.id, input.name]"` |
+| `n.script` | `source` | `-- <code>` (body) | Script source code |
+| `n.web.render` | `template_path` | `--template-path` | Full TSX path relative to `templates/`, must include `.tsx` |
+| `n.trigger.webhook` | `auth_type` | `--auth-type` | `none`, `jwt`, `hmac`, `api_key` |
+| `n.trigger.webhook` | `auth_credential` | `--auth-credential` | Credential ID for auth verification |
+| `n.auth.token.create` | `credential_id` | `--credential` | JWT signing key credential ID |
+| `n.auth.token.create` | `expires_in` | `--expires-in` | Token lifetime in seconds |
+| `n.auth.token.create` | `set_cookie` | `--set-cookie` | Set token as HttpOnly cookie |
+| `n.auth.token.create` | `cookie_name` | `--cookie-name` | Cookie name (default: `zebflow_session`) |
+
+---
+
+## Script Node Output
+
+The `n.script` node runs JS. The return value becomes the next node's input.
+
+Special keys in the return value:
+
+| Key | Effect |
+|---|---|
+| `__status` | Set HTTP response status code (e.g. `401`, `404`) |
+| `_redirect` | Redirect the response to a URL |
+| `_set_cookie` | Set a cookie in the response |
+
+```js
+// Return early with 401
+return { __status: 401, error: "Unauthorized" };
+
+// Redirect
+return { _redirect: "/auth/login" };
+```
+
+---
+
+## Webhook Input Shape
+
+POST body fields are merged to root. Path params and query string are nested:
+
+```json
+{
+  "identifier": "12345",
+  "password": "secret",
+  "params": { "id": "42" },
+  "query": { "page": "1" },
+  "auth": { "player_id": "...", "roles": [] }
+}
+```
+
+`auth` is injected by the webhook trigger when `--auth-type jwt` is configured and the token is valid.

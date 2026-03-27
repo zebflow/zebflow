@@ -70,12 +70,51 @@ const PLATFORM_MAIN_CSS: &str = concat!(
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
 
+/// In debug builds, set to true when source templates change.
+/// The SSE endpoint consumes this flag and broadcasts a reload to all browser tabs.
+#[cfg(debug_assertions)]
+static DEV_DIRTY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Absolute path to platform template sources — resolved at compile time.
+/// Used in debug builds to watch for file changes and serve CSS directly from disk.
+#[cfg(debug_assertions)]
+const TEMPLATE_SOURCE_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/src/platform/web/templates");
+
+/// Canonical page registry: (BTreeMap key, RWE template id, relative path from template root).
+/// Used by build_frontend() at startup and by render_page() in debug builds for per-request
+/// recompilation.
+const PAGE_DEFS: &[(&str, &str, &str)] = &[
+    ("platform-login",                           "platform.login",                          "pages/login/page.tsx"),
+    ("platform-home",                            "platform.home",                           "pages/home/page.tsx"),
+    ("platform-home-project-templates",          "platform.home.project.templates",         "pages/home/project-templates/page.tsx"),
+    ("platform-project-pipelines",              "platform.project.pipelines",              "pages/project-studio/pipelines/page.tsx"),
+    ("platform-project-editor",                 "platform.project.editor",                 "pages/project-studio/pipelines/registry/page.tsx"),
+    ("platform-project-section",                "platform.project.section",                "pages/project-studio/files/page.tsx"),
+    ("platform-project-dashboard",              "platform.project.dashboard",              "pages/project-studio/dashboard/page.tsx"),
+    ("platform-project-settings",               "platform.project.settings",               "pages/project-studio/settings/page.tsx"),
+    ("platform-project-credentials",            "platform.project.credentials",            "pages/project-studio/credentials/page.tsx"),
+    ("platform-project-tables",                 "platform.project.tables",                 "pages/project-studio/connections/page.tsx"),
+    ("platform-project-table-connection",       "platform.project.table_connection",       "pages/project-studio/connections/db/connection/page.tsx"),
+    ("platform-project-table-connection-postgresql", "platform.project.table_connection.postgresql", "pages/project-studio/connections/db/postgresql/page.tsx"),
+    ("platform-project-table-connection-sjtable",    "platform.project.table_connection.sjtable",    "pages/project-studio/connections/db/sekejap/page.tsx"),
+    ("platform-design-system",                  "platform.dev.design_system",              "pages/dev/design-system/page.tsx"),
+    ("platform-project-settings-clone-ui-preview", "platform.project.settings.clone_ui_preview", "pages/project-studio/settings/clone/ui/preview/page.tsx"),
+];
+
 /// Shared frontend render bundle (compiled templates + engines).
 #[derive(Clone)]
 struct PlatformFrontend {
     rwe: Arc<dyn ReactiveWebEngine>,
     language: Arc<dyn LanguageEngine>,
+    // In debug builds render_page() recompiles on every request, so this cache is unused.
+    #[cfg_attr(debug_assertions, allow(dead_code))]
     pages: Arc<std::collections::BTreeMap<&'static str, CompiledTemplate>>,
+    /// Template root on disk — used in debug builds for per-request recompilation.
+    template_root: PathBuf,
+    /// Compile options — cloned per request in debug builds.
+    options: ReactiveWebOptions,
 }
 
 /// Shared app state used by platform routes.
@@ -99,6 +138,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     let frontend = build_frontend(&platform.config.data_root).unwrap_or_else(|err| {
         panic!("failed building platform frontend templates: {err}");
     });
+
+    // In debug builds, watch the template source directory for changes.
+    // Copies changed files to the materialized temp dir and signals the SSE reload endpoint.
+    #[cfg(debug_assertions)]
+    {
+        let watcher_template_root = frontend.template_root.clone();
+        tokio::spawn(dev_template_watcher(watcher_template_root));
+    }
+
     let render_script_cache = build_render_script_cache(&platform.config.data_root);
 
     // Build a BasicPipelineEngine for the scheduler (script + sekejap nodes).
@@ -128,7 +176,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
 
     let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone());
 
-    Router::new()
+    let router = Router::new()
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
         .route("/assets/platform/{asset}", get(platform_asset))
@@ -459,7 +507,13 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             web_render_cache: crate::pipeline::engines::basic::new_web_render_cache(),
             scheduler,
             preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        })
+        });
+
+    // Debug-only: SSE reload endpoint added after with_state because it needs no app state.
+    #[cfg(debug_assertions)]
+    let router = router.route("/__dev/reload", get(dev_reload_sse));
+
+    router
 }
 
 fn build_render_script_cache(data_root: &FsPath) -> Option<Arc<RenderScriptCache>> {
@@ -497,191 +551,120 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
 
     let mut pages = std::collections::BTreeMap::new();
 
-    pages.insert(
-        "platform-login",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.login",
-            &template_root,
-            "pages/login/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-home",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.home",
-            &template_root,
-            "pages/home/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-home-project-templates",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.home.project.templates",
-            &template_root,
-            "pages/home/project-templates/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-pipelines",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.pipelines",
-            &template_root,
-            "pages/project-studio/pipelines/page.tsx",
-            options.clone(),
-        )?,
-    );
-    pages.insert(
-        "platform-project-editor",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.editor",
-            &template_root,
-            "pages/project-studio/pipelines/registry/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-section",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.section",
-            &template_root,
-            "pages/project-studio/files/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-dashboard",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.dashboard",
-            &template_root,
-            "pages/project-studio/dashboard/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-settings",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.settings",
-            &template_root,
-            "pages/project-studio/settings/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-credentials",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.credentials",
-            &template_root,
-            "pages/project-studio/credentials/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-tables",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.tables",
-            &template_root,
-            "pages/project-studio/connections/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-table-connection",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.table_connection",
-            &template_root,
-            "pages/project-studio/connections/db/connection/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-table-connection-postgresql",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.table_connection.postgresql",
-            &template_root,
-            "pages/project-studio/connections/db/postgresql/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-table-connection-sjtable",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.table_connection.sjtable",
-            &template_root,
-            "pages/project-studio/connections/db/sekejap/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-design-system",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.dev.design_system",
-            &template_root,
-            "pages/dev/design-system/page.tsx",
-            options.clone(),
-        )?,
-    );
-
-    pages.insert(
-        "platform-project-settings-clone-ui-preview",
-        compile_page(
-            rwe.as_ref(),
-            language.as_ref(),
-            "platform.project.settings.clone_ui_preview",
-            &template_root,
-            "pages/project-studio/settings/clone/ui/preview/page.tsx",
-            options.clone(),
-        )?,
-    );
+    for &(key, id, rel_path) in PAGE_DEFS {
+        pages.insert(
+            key,
+            compile_page(rwe.as_ref(), language.as_ref(), id, &template_root, rel_path, options.clone())?,
+        );
+    }
 
     Ok(PlatformFrontend {
         rwe,
         language,
         pages: Arc::new(pages),
+        template_root,
+        options,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Debug-only hot-reload infrastructure
+// ---------------------------------------------------------------------------
+
+/// Watches `TEMPLATE_SOURCE_DIR` for file changes every 500 ms.
+/// On any change: copies the modified file(s) to the materialized temp dir,
+/// re-runs prepare_template_root (idempotent import rewrite), then sets DEV_DIRTY.
+#[cfg(debug_assertions)]
+async fn dev_template_watcher(temp_root: PathBuf) {
+    use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
+
+    let source_dir = FsPath::new(TEMPLATE_SOURCE_DIR);
+    let mut known: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+    dev_collect_mtimes(source_dir, &mut known);
+
+    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.tick().await; // skip first immediate tick
+
+    loop {
+        interval.tick().await;
+
+        let mut current: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+        dev_collect_mtimes(source_dir, &mut current);
+
+        let changed: Vec<PathBuf> = current
+            .iter()
+            .filter(|(p, mtime)| known.get(*p) != Some(mtime))
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        if changed.is_empty() {
+            continue;
+        }
+
+        // Copy each changed source file into the matching temp-dir slot.
+        for src in &changed {
+            let Ok(rel) = src.strip_prefix(source_dir) else { continue };
+            let dest = temp_root.join(rel);
+            if let Some(parent) = dest.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = fs::copy(src, &dest);
+        }
+
+        // Re-run import rewriting so any newly copied files get @/ → absolute paths.
+        let _ = crate::rwe::core::prepare_template_root(&temp_root);
+
+        DEV_DIRTY.store(true, Ordering::Relaxed);
+        known = current;
+        println!("🔄 [dev] {} template file(s) changed — signalling reload", changed.len());
+    }
+}
+
+#[cfg(debug_assertions)]
+fn dev_collect_mtimes(
+    dir: &FsPath,
+    out: &mut std::collections::HashMap<PathBuf, std::time::SystemTime>,
+) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            dev_collect_mtimes(&p, out);
+        } else if let Ok(meta) = fs::metadata(&p) {
+            if let Ok(mtime) = meta.modified() {
+                out.insert(p, mtime);
+            }
+        }
+    }
+}
+
+/// SSE endpoint — sends `data: reload` whenever DEV_DIRTY is set.
+/// Browser pages subscribe via `new EventSource('/__dev/reload')`.
+#[cfg(debug_assertions)]
+async fn dev_reload_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    use std::sync::atomic::Ordering;
+
+    let stream = async_stream::stream! {
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        loop {
+            interval.tick().await;
+            if DEV_DIRTY.swap(false, Ordering::Relaxed) {
+                yield Ok::<Event, Infallible>(Event::default().data("reload"));
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Page compilation
+// ---------------------------------------------------------------------------
 
 fn compile_page(
     rwe: &dyn ReactiveWebEngine,
@@ -766,11 +749,38 @@ fn render_page(
     route: &str,
     input: Value,
 ) -> Result<String, PlatformError> {
-    let compiled = state
-        .frontend
-        .pages
-        .get(page)
-        .ok_or_else(|| PlatformError::new("PLATFORM_RWE_PAGE_MISSING", page))?;
+    // In debug builds: recompile from disk on every request so file edits are
+    // visible after a browser refresh without a cargo rebuild.
+    #[cfg(debug_assertions)]
+    let _compiled_owned: CompiledTemplate;
+
+    let compiled: &CompiledTemplate;
+
+    #[cfg(debug_assertions)]
+    {
+        let &(_, id, rel_path) = PAGE_DEFS
+            .iter()
+            .find(|&&(key, _, _)| key == page)
+            .ok_or_else(|| PlatformError::new("PLATFORM_RWE_PAGE_MISSING", page))?;
+        _compiled_owned = compile_page(
+            state.frontend.rwe.as_ref(),
+            state.frontend.language.as_ref(),
+            id,
+            &state.frontend.template_root,
+            rel_path,
+            state.frontend.options.clone(),
+        )?;
+        compiled = &_compiled_owned;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        compiled = state
+            .frontend
+            .pages
+            .get(page)
+            .ok_or_else(|| PlatformError::new("PLATFORM_RWE_PAGE_MISSING", page))?;
+    }
 
     let out = state
         .frontend
@@ -818,12 +828,19 @@ fn render_page(
         );
     }
 
-    Ok(externalize_rwe_scripts(
-        state,
-        html.as_str(),
-        &out.compiled_scripts,
-        None,
-    ))
+    let mut final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None);
+
+    // In debug builds: inject a tiny SSE listener that auto-reloads the page
+    // whenever platform template sources change on disk.
+    #[cfg(debug_assertions)]
+    {
+        final_html = inject_before_body_end(
+            &final_html,
+            "<script>(function(){new EventSource('/__dev/reload').onmessage=function(){location.reload()}})();</script>",
+        );
+    }
+
+    Ok(final_html)
 }
 
 fn ensure_meta_charset(mut html: String) -> String {
@@ -859,11 +876,37 @@ fn externalize_rwe_scripts(
     compiled_scripts: &[CompiledScript],
     project_scope: Option<(&str, &str)>,
 ) -> String {
+    // Read deployment_asset_base up front — needed on all return paths, not
+    // just when scripts are present.  When set, every `/assets/{owner}/{project}/`
+    // occurrence in the final HTML is rewritten to `{base}/`, covering scripts,
+    // uploaded files, images, and library chunks alike.
+    let deployment_asset_base: Option<String> = project_scope.and_then(|(owner, project)| {
+        state
+            .platform
+            .zebflow_cfg
+            .read_or_default(owner, project)
+            .rwe
+            .deployment_asset_base
+    });
+
+    // Rewrite remaining `/assets/{owner}/{project}/` occurrences that were not
+    // handled by the script-tag logic below (images, uploads, library chunks).
+    let rewrite_assets = |s: String| -> String {
+        match (project_scope, &deployment_asset_base) {
+            (Some((owner, project)), Some(base)) => {
+                let from = format!("/assets/{}/{}/", owner, project);
+                let to = format!("{}/", base.trim_end_matches('/'));
+                s.replace(&from, &to)
+            }
+            _ => s,
+        }
+    };
+
     let Some(cache) = &state.render_script_cache else {
-        return html.to_string();
+        return rewrite_assets(html.to_string());
     };
     if compiled_scripts.is_empty() {
-        return html.to_string();
+        return rewrite_assets(html.to_string());
     }
 
     let mut script_tags = String::new();
@@ -883,14 +926,15 @@ fn externalize_rwe_scripts(
         } else {
             "page"
         };
-        let src = match project_scope {
-            Some((owner, project)) => {
-                format!(
-                    "/assets/{owner}/{project}/rwe/scripts/{}",
-                    script.content_hash
-                )
+        let src = if let Some(ref base) = deployment_asset_base {
+            format!("{base}/rwe/scripts/{}", script.content_hash)
+        } else {
+            match project_scope {
+                Some((owner, project)) => {
+                    format!("/assets/{owner}/{project}/rwe/scripts/{}", script.content_hash)
+                }
+                None => format!("/assets/rwe/scripts/{}", script.content_hash),
             }
-            None => format!("/assets/rwe/scripts/{}", script.content_hash),
         };
         script_tags.push_str(&format!(
             "<script type=\"module\" defer data-rwe-external=\"{}\" src=\"{}\"></script>",
@@ -898,11 +942,11 @@ fn externalize_rwe_scripts(
         ));
     }
     if script_tags.is_empty() {
-        return html.to_string();
+        return rewrite_assets(html.to_string());
     }
 
     let stripped = strip_inline_runtime_bundle(html);
-    inject_before_body_end(&stripped, &script_tags)
+    rewrite_assets(inject_before_body_end(&stripped, &script_tags))
 }
 
 fn strip_inline_runtime_bundle(html: &str) -> String {
@@ -1100,6 +1144,31 @@ async fn branding_asset(Path(asset): Path<String>) -> Response {
 }
 
 async fn platform_asset(Path(asset): Path<String>) -> Response {
+    // In debug builds, serve CSS directly from source so edits are visible without rebuild.
+    #[cfg(debug_assertions)]
+    match asset.as_str() {
+        "main.css" => {
+            let css = [
+                fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/main.css")),
+                fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/pages/project-studio/styles.css")),
+            ]
+            .map(|r| r.unwrap_or_default())
+            .join("\n\n");
+            return asset_response("text/css; charset=utf-8", css.as_bytes());
+        }
+        "db-suite.css" => {
+            let css = fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/db-suite.css"))
+                .unwrap_or_default();
+            return asset_response("text/css; charset=utf-8", css.as_bytes());
+        }
+        "db-connections.css" => {
+            let css = fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/db-connections.css"))
+                .unwrap_or_default();
+            return asset_response("text/css; charset=utf-8", css.as_bytes());
+        }
+        _ => {}
+    }
+
     match asset.as_str() {
         "main.css" => {
             asset_response("text/css; charset=utf-8", PLATFORM_MAIN_CSS.as_bytes())
@@ -6994,6 +7063,8 @@ async fn api_upsert_settings_section(
                 minify_html: bool,
                 #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
                 strict_mode: bool,
+                #[serde(default)]
+                deployment_asset_base: Option<String>,
             }
             let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
                 Ok(p) => p,
@@ -7008,6 +7079,8 @@ async fn api_upsert_settings_section(
             cfg.rwe.allow_list = payload.allow_list;
             cfg.rwe.minify_html = payload.minify_html;
             cfg.rwe.strict_mode = payload.strict_mode;
+            cfg.rwe.deployment_asset_base = payload.deployment_asset_base
+                .and_then(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) });
             json!(cfg.rwe)
         }
         "logging" => {
@@ -9813,6 +9886,22 @@ async fn api_toggle_mcp_session(
         ProjectCapability::McpSessionCreate,
     ) {
         return resp;
+    }
+
+    // When enabling, auto-create with all capabilities if no session exists yet.
+    if req.enabled && state.platform.mcp_sessions.get_for_project(&owner, &project).is_none() {
+        let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
+            .unwrap_or_else(|_| "http://localhost:10610".to_string());
+        return match state.platform.mcp_sessions.create(
+            &owner,
+            &project,
+            ProjectCapability::all(),
+            &base_url,
+            None,
+        ) {
+            Ok(_) => Json(json!({"ok": true})).into_response(),
+            Err(err) => internal_error(err),
+        };
     }
 
     match state

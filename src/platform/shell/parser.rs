@@ -143,10 +143,17 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             (vec![], vec!["out".to_string()])
         }
         "n.pg.query" | "n.sekejap.query" | "n.sjtable.query" | "n.script" | "n.http.request"
-        | "n.zebtune" | "n.logic.if" | "n.logic.switch" | "n.logic.branch"
-        | "n.logic.merge" => {
+        | "n.zebtune" | "n.logic.branch" | "n.logic.merge" => {
             (vec!["in".to_string()], vec!["out".to_string()])
         }
+        "n.logic.if" => (
+            vec!["in".to_string()],
+            vec!["true".to_string(), "false".to_string()],
+        ),
+        "n.logic.switch" => (
+            vec!["in".to_string()],
+            vec!["true".to_string(), "false".to_string(), "default".to_string()],
+        ),
         "n.web.render" => (vec!["in".to_string()], vec![]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
@@ -256,6 +263,21 @@ pub fn parse_node_config(
                     config.insert(dsl_flag.config_key.clone(), json!(true));
                     i += 1;
                 }
+                DslFlagKind::KeyValuePairs => {
+                    let raw = tokens.get(i + 1).cloned().unwrap_or_default();
+                    let (k, v) = if let Some(eq) = raw.find('=') {
+                        (raw[..eq].trim().to_string(), raw[eq + 1..].to_string())
+                    } else {
+                        (raw.trim().to_string(), String::new())
+                    };
+                    let entry = config
+                        .entry(dsl_flag.config_key.clone())
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if let Value::Object(m) = entry {
+                        m.insert(k, json!(v));
+                    }
+                    i += 2;
+                }
             }
         } else {
             i += 1;
@@ -314,10 +336,10 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     }
 
     // Extract body from raw string to preserve quoted values (e.g. --cron "* * * * *").
-    // tokens.join(" ") would lose quote boundaries — use raw substring from first top-level `|`.
+    // Pipe mode bodies start with `|`; graph mode bodies start with `[`.
     let body = match find_first_pipe_in_raw(cmd) {
         Some(pos) => cmd[pos..].to_string(),
-        None => String::new(),
+        None => cmd.find('[').map(|pos| cmd[pos..].to_string()).unwrap_or_default(),
     };
 
     DslVerb::Register { file_rel_path, title, as_json, body }
@@ -692,6 +714,18 @@ fn node_to_segment(node: &PipelineNode) -> String {
                     parts.push(format!("\"{}\"", s.replace('"', "\\\"")));
                 } else {
                     parts.push(s);
+                }
+            }
+            DslFlagKind::KeyValuePairs => {
+                if let Some(map) = val.as_object() {
+                    for (k, v) in map {
+                        let v_str = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        parts.push(flag.flag.clone());
+                        parts.push(format!("{}={}", k, v_str));
+                    }
                 }
             }
         }
