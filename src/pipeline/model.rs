@@ -192,6 +192,14 @@ pub enum DslFlagKind {
     ///
     /// `--silent` → `config["silent"] = true`
     Bool,
+    /// Repeated `--flag key=value` occurrences collected into a JSON object.
+    ///
+    /// Each occurrence adds one entry. Split is on the **first** `=` only so values
+    /// may themselves contain `=`.  Follows Docker/kubectl convention.
+    ///
+    /// `--claim player_id=$.player_id --claim roles=$.roles`
+    /// → `config["claims"] = {"player_id": "$.player_id", "roles": "$.roles"}`
+    KeyValuePairs,
 }
 
 /// One DSL flag declaration owned by a [`NodeDefinition`].

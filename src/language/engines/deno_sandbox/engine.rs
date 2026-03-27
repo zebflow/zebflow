@@ -8,7 +8,6 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,7 +22,6 @@ use super::config::{DenoSandboxConfig, DenoSandboxConfigPatch, apply_patch, norm
 use super::instrument::{forbid_patterns, inject_loop_guards};
 use super::runner::run_compiled_script;
 
-const RUNNER_REL_PATH: &str = "runtime/secure_js_runner.js";
 const TOOL_INIT: &str = include_str!("../../../language/runtime/tool_init.js");
 
 /// Serialized artifact produced by `DenoSandboxEngine::compile_script`.
@@ -34,8 +32,11 @@ pub struct CompiledDenoSandboxScript {
     pub script_id: String,
     /// Original source submitted by caller.
     pub original_source: String,
-    /// Wrapped module source loaded by the JS runner.
+    /// Wrapped module source (kept for backward compat with stored artifacts).
     pub module_source: String,
+    /// Async function expression for pool execution (no `export default`).
+    /// Format: `async function(input, n, ctx) { <body> }`
+    pub fn_source: String,
     /// Resolved, normalized runtime policy.
     pub resolved_config: DenoSandboxConfig,
 }
@@ -54,7 +55,6 @@ pub struct DenoSandboxEngine {
     pub platform_patch: DenoSandboxConfigPatch,
     /// Per-project patch.
     pub project_patch: DenoSandboxConfigPatch,
-    runner_path: Option<PathBuf>,
 }
 
 impl DenoSandboxEngine {
@@ -66,14 +66,7 @@ impl DenoSandboxEngine {
         Self {
             platform_patch,
             project_patch,
-            runner_path: None,
         }
-    }
-
-    /// Overrides the runner path (mainly for integration tests).
-    pub fn with_runner_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.runner_path = Some(path.into());
-        self
     }
 
     /// Compiles plain JS source into a sandbox-ready artifact.
@@ -111,8 +104,10 @@ impl DenoSandboxEngine {
             inject_loop_guards(source)
         };
 
+        let fn_source =
+            format!("async function(input, n, ctx) {{\n{body}\n}}");
         let module_source =
-            format!("{TOOL_INIT}\nexport default async function(input, n, ctx) {{\n{body}\n}}\n");
+            format!("{TOOL_INIT}\nexport default {fn_source}\n");
 
         let mut hasher = DefaultHasher::new();
         module_source.hash(&mut hasher);
@@ -124,6 +119,7 @@ impl DenoSandboxEngine {
             script_id,
             original_source: source.to_string(),
             module_source,
+            fn_source,
             resolved_config: cfg,
         })
     }
@@ -134,7 +130,7 @@ impl DenoSandboxEngine {
         compiled: &CompiledDenoSandboxScript,
         input: &Value,
     ) -> Result<Value, LanguageError> {
-        run_compiled_script(&self.runner_path(), compiled, input).map_err(|e| {
+        run_compiled_script(compiled, input).map_err(|e| {
             LanguageError::new(
                 "LANG_DENO_RUN",
                 format!("sandbox execution failed for '{}': {e}", compiled.script_id),
@@ -153,13 +149,6 @@ impl DenoSandboxEngine {
         self.run_compiled(&compiled, input)
     }
 
-    fn runner_path(&self) -> PathBuf {
-        self.runner_path.clone().unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(RUNNER_REL_PATH)
-                .to_path_buf()
-        })
-    }
 }
 
 impl LanguageEngine for DenoSandboxEngine {

@@ -309,6 +309,39 @@ impl ProjectCapability {
             _ => None,
         }
     }
+
+    /// All capabilities — used when auto-creating an MCP session on first activation.
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::ProjectRead,
+            Self::CredentialsRead,
+            Self::CredentialsWrite,
+            Self::TemplatesRead,
+            Self::TemplatesWrite,
+            Self::TemplatesCreate,
+            Self::TemplatesDelete,
+            Self::TemplatesMove,
+            Self::TemplatesDiagnostics,
+            Self::PipelinesRead,
+            Self::PipelinesWrite,
+            Self::PipelinesCreate,
+            Self::PipelinesDelete,
+            Self::PipelinesMove,
+            Self::PipelinesExecute,
+            Self::FilesRead,
+            Self::FilesWrite,
+            Self::FilesDelete,
+            Self::TablesRead,
+            Self::TablesWrite,
+            Self::LibrariesRead,
+            Self::LibrariesInstall,
+            Self::LibrariesRemove,
+            Self::SettingsRead,
+            Self::SettingsWrite,
+            Self::McpSessionCreate,
+            Self::McpSessionRevoke,
+        ]
+    }
 }
 
 /// Project policy bundle stored in metadata and reused by users, MCP sessions, and assistants.
@@ -1172,6 +1205,18 @@ pub struct ZebflowJsonRwe {
     /// `/assets/libraries/zeb/…` regardless of this map.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub libraries: ZebflowJsonRweLibraries,
+    /// Base URL prefix used when generating `<script src="...">` paths for
+    /// compiled RWE scripts in production.
+    ///
+    /// Default (`None`): `/assets/{owner}/{project}/rwe/scripts/{hash}`
+    ///
+    /// When set, the prefix replaces `/assets/{owner}/{project}`, so the
+    /// resulting path becomes `{deployment_asset_base}/rwe/scripts/{hash}`.
+    ///
+    /// Useful when the app is served behind a reverse proxy that rewrites
+    /// asset paths, or when static assets are hosted at a custom sub-path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment_asset_base: Option<String>,
 }
 
 /// Enabled library map stored under `rwe.libraries` in `zebflow.json`.

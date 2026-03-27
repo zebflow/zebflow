@@ -26,7 +26,7 @@ export function SunIcon() {
 
 export function TerminalIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+    <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6">
       <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
       <path d="M7 9l3 3-3 3M13 15h4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>

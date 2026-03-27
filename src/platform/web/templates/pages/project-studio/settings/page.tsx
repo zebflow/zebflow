@@ -70,12 +70,15 @@ function renderCardGrid(items) {
 
 // ─── RWE Settings Panel ─────────────────────────────────────────────────────
 
-function RwePanel({ api, initialConfig }) {
+function RwePanel({ api, initialConfig, owner, project }) {
   const [allowList, setAllowList] = useState(
     (initialConfig?.allow_list ?? []).join("\n")
   );
   const [minify, setMinify] = useState(Boolean(initialConfig?.minify_html));
   const [strict, setStrict] = useState(initialConfig?.strict_mode !== false);
+  const [deploymentAssetBase, setDeploymentAssetBase] = useState(
+    String(initialConfig?.deployment_asset_base ?? "")
+  );
   const [statusMsg, setStatusMsg] = useState("Ready.");
   const [statusTone, setStatusTone] = useState("info");
   const [saving, setSaving] = useState(false);
@@ -88,6 +91,7 @@ function RwePanel({ api, initialConfig }) {
       allow_list: allowList.split(/[\n,]/).map((s) => s.trim()).filter(Boolean),
       minify_html: minify,
       strict_mode: strict,
+      deployment_asset_base: deploymentAssetBase.trim() || null,
     });
     setCommitOpen(true);
   }
@@ -171,6 +175,19 @@ function RwePanel({ api, initialConfig }) {
             onChange={(e) => setStrict(e.target.checked)}
           />
         </div>
+
+        <label className="pipeline-editor-field col-span-full">
+          <span>Asset Base Path</span>
+          <Input
+            name="deployment_asset_base"
+            placeholder={`/assets/${owner ?? "owner"}/${project ?? "project"}`}
+            value={deploymentAssetBase}
+            onInput={(e) => setDeploymentAssetBase(e.currentTarget.value)}
+          />
+          <small className="pipeline-editor-field-help">
+            Replaces the default <code>/assets/{"{owner}/{project}"}</code> prefix in all rendered HTML — scripts, images, uploads, library chunks. E.g. set to <code>/my/custom/path</code> and <code>/assets/{"{owner}/{project}"}/rwe/…</code> becomes <code>/my/custom/path/rwe/…</code>. Leave empty to keep the default.
+          </small>
+        </label>
 
         <div className="col-span-full flex items-center gap-[0.7rem]">
           <Button
@@ -1103,6 +1120,8 @@ export default function Page(input) {
                     <RwePanel
                       api={input?.rwe?.api ?? ""}
                       initialConfig={input?.rwe?.config ?? {}}
+                      owner={input?.owner}
+                      project={input?.project}
                     />
                     <Separator className="my-6" />
                     <LoggingPanel

@@ -13,6 +13,7 @@
 mod config;
 mod engine;
 mod instrument;
+mod pool;
 mod runner;
 
 pub use config::{

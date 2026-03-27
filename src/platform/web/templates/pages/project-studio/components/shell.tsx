@@ -51,9 +51,9 @@ export default function ProjectStudioShell(props) {
           <main
             className={cx(
               "ml-16 flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-              isLight ? "bg-slate-50" : "bg-slate-950",
+              isLight ? "bg-slate-50" : "bg-red-500",
             )}
-            tw-variants={"bg-slate-50 bg-slate-950"}
+            tw-variants={"bg-slate-50 bg-red-500"}
           >
             <header
               className={cx(
@@ -67,14 +67,14 @@ export default function ProjectStudioShell(props) {
                     href="/home"
                     className={cx(
                       "transition-colors",
-                      isLight ? "text-slate-500 hover:text-slate-900" : "text-slate-400 hover:text-slate-100",
+                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-slate-100",
                     )}
                     aria-label="Go to home"
                   >
                     <HomeIcon />
                   </Link>
                   <span
-                    className={cx("select-none", isLight ? "text-slate-300" : "text-slate-600")}
+                    className={cx("select-none", isLight ? "text-slate-300" : "text-dark-text1")}
                   >
                     /
                   </span>
@@ -82,18 +82,18 @@ export default function ProjectStudioShell(props) {
                     href={props?.projectHref ?? "#"}
                     className={cx(
                       "truncate transition-colors",
-                      isLight ? "text-slate-500 hover:text-slate-900" : "text-slate-400 hover:text-slate-100",
+                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-slate-100",
                     )}
                   >
                     {props?.projectLabel ?? "Project"}
                   </Link>
                   <span
-                    className={cx("select-none", isLight ? "text-slate-300" : "text-slate-600")}
+                    className={cx("select-none", isLight ? "text-slate-300" : "text-dark-text1")}
                   >
                     /
                   </span>
                   <span
-                    className={cx("font-medium", isLight ? "text-slate-900" : "text-slate-100")}
+                    className={cx("font-medium", isLight ? "text-slate-900" : "text-dark-text1")}
                     data-rwe-breadcrumb
                   >
                     {props?.currentMenu ?? "Workspace"}
@@ -101,7 +101,7 @@ export default function ProjectStudioShell(props) {
                 </nav>
 
                 <div className="flex items-center gap-1.5">
-                  <Button
+                  {/* <Button
                     variant="outline"
                     size="icon"
                     onClick={() => setTheme(isLight ? "dark" : "light")}
@@ -109,27 +109,21 @@ export default function ProjectStudioShell(props) {
                     className={cx(
                       isLight
                         ? "border-slate-200 bg-white text-slate-700"
-                        : "border-slate-600 bg-slate-900 text-slate-200",
+                        : "border-slate-600 bg-slate-900 text-slate-200 rounded-none",
                     )}
                   >
                     {isLight ? <SunIcon /> : <MoonIcon />}
-                  </Button>
+                  </Button> */}
 
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    title="Console (` to toggle)"
-                    data-console-trigger="true"
-                    data-owner={owner}
-                    data-project={project}
+                  <button
                     className={cx(
                       isLight
-                        ? "border-slate-200 bg-white text-slate-700"
-                        : "border-slate-600 bg-slate-900 text-slate-200",
+                        ? "border-slate-200 bg-white text-slate-700 rounded-none"
+                        : "border-dark-border bg-dark-accent3 !text-dark-menus px-3 h-9 rounded-none",
                     )}
                   >
                     <TerminalIcon />
-                  </Button>
+                  </button>
 
                   <GitRepoPanel owner={owner} project={project} />
                   <SessionPanel owner={owner} project={project} />

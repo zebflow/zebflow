@@ -13,6 +13,7 @@
   --color-dark-accent2: #e2a35b;
   --color-dark-accent3: #ba6f61;
   --color-dark-accent4: #c4333b;
+  --color-dark-accent5: #d27f64;
   --color-dark-text1: #808080;
 
   /* Fonts */
@@ -35,6 +36,9 @@
   --color-ui-text:          #020617;
   --color-ui-text-soft:     #475569;
   --color-ui-text-muted:    #64748b;
+}
+
+:root[data-theme="dark"] {
 }
 
 html {

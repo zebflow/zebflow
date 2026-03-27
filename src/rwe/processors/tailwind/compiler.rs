@@ -1209,37 +1209,41 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             ));
         }
     }
-    if let Some(v) = utility.strip_prefix("border-b-") {
-        let color = color_value(v)?;
-        return Some(simple_rule(
-            base_selector,
-            &format!("border-bottom-color:{};", color),
-            important,
-        ));
-    }
     if let Some(v) = utility.strip_prefix("border-t-") {
-        let color = color_value(v)?;
-        return Some(simple_rule(
-            base_selector,
-            &format!("border-top-color:{};", color),
-            important,
-        ));
-    }
-    if let Some(v) = utility.strip_prefix("border-l-") {
-        let color = color_value(v)?;
-        return Some(simple_rule(
-            base_selector,
-            &format!("border-left-color:{};", color),
-            important,
-        ));
+        if let Ok(px) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("border-top-width:{px}px;border-top-style:solid;"), important));
+        }
+        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            return Some(simple_rule(base_selector, &format!("border-top-width:{raw};border-top-style:solid;"), important));
+        }
+        return None;
     }
     if let Some(v) = utility.strip_prefix("border-r-") {
-        let color = color_value(v)?;
-        return Some(simple_rule(
-            base_selector,
-            &format!("border-right-color:{};", color),
-            important,
-        ));
+        if let Ok(px) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("border-right-width:{px}px;border-right-style:solid;"), important));
+        }
+        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            return Some(simple_rule(base_selector, &format!("border-right-width:{raw};border-right-style:solid;"), important));
+        }
+        return None;
+    }
+    if let Some(v) = utility.strip_prefix("border-b-") {
+        if let Ok(px) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("border-bottom-width:{px}px;border-bottom-style:solid;"), important));
+        }
+        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            return Some(simple_rule(base_selector, &format!("border-bottom-width:{raw};border-bottom-style:solid;"), important));
+        }
+        return None;
+    }
+    if let Some(v) = utility.strip_prefix("border-l-") {
+        if let Ok(px) = v.parse::<u32>() {
+            return Some(simple_rule(base_selector, &format!("border-left-width:{px}px;border-left-style:solid;"), important));
+        }
+        if let Some(raw) = v.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            return Some(simple_rule(base_selector, &format!("border-left-width:{raw};border-left-style:solid;"), important));
+        }
+        return None;
     }
     if let Some(v) = utility.strip_prefix("border-") {
         if let Some(decl) = border_rule(v) {

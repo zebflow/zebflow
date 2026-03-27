@@ -2,7 +2,7 @@
 
 Pipelines are the core of Zebflow. A pipeline is a linear or branching chain of nodes that handles an HTTP request, WebSocket event, or scheduled trigger — and produces a response (HTML page, JSON, redirect, or side effects).
 
-When you call **`help_pipeline`** over MCP, the platform **appends a live node appendix** after this file: every node `kind`, description, pins, DSL flags, and input/output schemas come from the same Rust `definition()` as the pipeline editor node API (not from hand-written docs).
+When you call **`help(topic="pipeline")`** over MCP, the platform **appends a live node appendix** after this file: every node `kind`, description, pins, DSL flags, and input/output schemas come from the same Rust `definition()` as the pipeline editor node API (not from hand-written docs).
 
 ---
 
@@ -46,16 +46,16 @@ A **node** is one step in the pipeline. Each node has a **kind** (trigger, query
 - **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `logic.if`, …).
 - **Last nodes** often produce the HTTP response (`web.render` / `n.web.render` for HTML, or a `script` that returns JSON / redirect fields).
 
-### How to open the full node reference — `help_nodes`
+### How to open the full node reference
 
-You already have **`help_nodes`** — use it instead of guessing flags:
+Use `help(topic="pipeline/nodes")` instead of guessing flags:
 
 | Call | What you get |
 |------|----------------|
-| **`help_nodes`** with **no `kind`** | The **entire** node catalog (same generated appendix as `help_pipeline`). |
-| **`help_nodes`** with **`kind=…`** | **One** node only — e.g. `kind=n.trigger.webhook`, `kind=trigger.webhook`, `kind=n.script`, `kind=script`. |
+| `help(topic="pipeline/nodes")` | The **entire** node catalog (same generated appendix as `help(topic="pipeline")`). |
+| `help(topic="pipeline/nodes/{kind}")` | **One** node only — e.g. `topic="pipeline/nodes/n.trigger.webhook"`, `topic="pipeline/nodes/n.script"`. |
 
-Use **`help_search`** for keywords across remaining skill markdown (node bodies are not duplicated there — use **`help_nodes`** for node flags and schemas).
+Use **`help_search`** for keywords across remaining skill markdown (node bodies are not duplicated there — use `help(topic="pipeline/nodes/…")` for node flags and schemas).
 
 ---
 
@@ -170,6 +170,6 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 
 ## Next steps
 
-- **`help_nodes`** — same live catalog as the appendix on `help_pipeline`, or one node via `kind=…`
-- **`help_web_engine`** — TSX pages and `n.web.render` / `input`
-- **`help_examples`** — full archetype recipes (blog, chat, game, scheduling, scraping, auth)
+- `help(topic="pipeline/nodes")` — same live catalog as the appendix on `help(topic="pipeline")`, or one node via `topic="pipeline/nodes/{kind}"`
+- `help(topic="web")` — TSX pages and `n.web.render` / `input`
+- `help(topic="pipeline/examples")` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)

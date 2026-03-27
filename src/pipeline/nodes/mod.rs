@@ -403,6 +403,7 @@ fn format_node_definition_markdown(def: &NodeDefinition) -> String {
                 DslFlagKind::Scalar => "scalar",
                 DslFlagKind::CommaSeparatedList => "comma-list",
                 DslFlagKind::Bool => "bool",
+                DslFlagKind::KeyValuePairs => "key-value-pairs",
             };
             let desc = f.description.replace('|', "\\|");
             s.push_str(&format!(

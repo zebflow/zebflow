@@ -267,10 +267,11 @@ n.logic.switch --help           # same
 | `trigger.schedule` | `n.trigger.schedule` | `--cron <expr> --timezone <tz>` |
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|py\|...>` or `-- <code>` |
-| `web.render` | `n.web.render` | `--template-path <pages/name.tsx> --route <path>` |
+| `web.render` | `n.web.render` | `--template-path <pages/name.tsx>` (must include `.tsx`) |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST>` |
 | `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
-| `pg.query` | `n.pg.query` | `--credential <slug>` + `-- <sql>` |
+| `pg.query` | `n.pg.query` | `--credential <id> [--params-path <dot.path>] [--params-expr <js-expr>]` + `-- <sql>` |
+| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--set-cookie true] [--cookie-name <name>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
