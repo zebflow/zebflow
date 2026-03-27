@@ -38,7 +38,8 @@ RUN cargo chef cook --release --recipe-path recipe.json
 # Now copy source and build only the application code (fast after cache hit).
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
-RUN cargo build --release --bin zebflow_platform
+ARG BUILD_VERSION
+RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow_platform
 
 # ── Stage 4: runtime image ────────────────────────────────────────────────
 FROM dhi.io/debian-base:trixie-debian13-dev
