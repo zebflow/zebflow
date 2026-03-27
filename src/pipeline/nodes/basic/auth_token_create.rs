@@ -73,7 +73,7 @@ pub fn definition() -> NodeDefinition {
                 flag: "--set-cookie".to_string(),
                 config_key: "set_cookie".to_string(),
                 description: "When true, instructs the webhook ingress to set the token as an HttpOnly cookie (name controlled by --cookie-name).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                kind: crate::pipeline::model::DslFlagKind::Bool,
                 required: false,
             },
             crate::pipeline::model::DslFlag {
