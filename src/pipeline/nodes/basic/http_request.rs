@@ -48,7 +48,15 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag { flag: "--url".to_string(), config_key: "url".to_string(), description: "Target URL for the HTTP request.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--url-expr".to_string(), config_key: "url_expr".to_string(), description: "JS expression returning the target URL. Evaluated against input payload at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--method".to_string(), config_key: "method".to_string(), description: "HTTP method: GET (default), POST, PUT, PATCH, DELETE.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--method-expr".to_string(), config_key: "method_expr".to_string(), description: "JS expression returning the HTTP method.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--body-path".to_string(), config_key: "body_path".to_string(), description: "Dot-notation path into input payload whose value is sent as the request body.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--body-expr".to_string(), config_key: "body_expr".to_string(), description: "JS expression returning the request body value. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--header".to_string(), config_key: "headers".to_string(), description: "Static request header. Repeat for each header. Format: Header-Name=value. e.g. --header Content-Type=application/json".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
+            DslFlag { flag: "--headers-expr".to_string(), config_key: "headers_expr".to_string(), description: "JS expression returning an object of request headers. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Request timeout in milliseconds (default 10000, max 120000).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--merge-input".to_string(), config_key: "merge_input".to_string(), description: "When true, merges the original input payload into the output alongside request/response. Useful for preserving upstream context.".to_string(), kind: DslFlagKind::Bool, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
@@ -110,6 +118,9 @@ pub struct Config {
     pub headers_expr: Option<String>,
     #[serde(default)]
     pub body_expr: Option<String>,
+    /// When true, original input payload is merged into the output alongside request/response.
+    #[serde(default)]
+    pub merge_input: bool,
 }
 
 impl Default for Config {
@@ -124,6 +135,7 @@ impl Default for Config {
             method_expr: None,
             headers_expr: None,
             body_expr: None,
+            merge_input: false,
         }
     }
 }
@@ -269,21 +281,35 @@ impl NodeHandler for Node {
         })?;
         let body = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
 
+        let request_obj = json!({
+            "url": url,
+            "method": method,
+            "timeout_ms": timeout_ms
+        });
+        let response_obj = json!({
+            "status": status,
+            "ok": (200..400).contains(&status),
+            "content_type": content_type,
+            "body": body
+        });
+        let payload = if self.config.merge_input {
+            let mut merged = match input.payload {
+                Value::Object(m) => m,
+                other => {
+                    let mut m = serde_json::Map::new();
+                    m.insert("_input".to_string(), other);
+                    m
+                }
+            };
+            merged.insert("request".to_string(), request_obj);
+            merged.insert("response".to_string(), response_obj);
+            Value::Object(merged)
+        } else {
+            json!({ "request": request_obj, "response": response_obj })
+        };
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: json!({
-                "request": {
-                    "url": url,
-                    "method": method,
-                    "timeout_ms": timeout_ms
-                },
-                "response": {
-                    "status": status,
-                    "ok": (200..400).contains(&status),
-                    "content_type": content_type,
-                    "body": body
-                }
-            }),
+            payload,
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

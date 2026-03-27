@@ -37,7 +37,15 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: Default::default(),
+        dsl_flags: vec![
+            crate::pipeline::model::DslFlag {
+                flag: "--lang".to_string(),
+                config_key: "language".to_string(),
+                description: "Script language (default: js). Supported: js, ts. Source is provided via -- body.".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
+        ],
         fields: vec![
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef {

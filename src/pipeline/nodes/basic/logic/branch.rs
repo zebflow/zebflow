@@ -34,6 +34,7 @@ pub fn definition() -> NodeDefinition {
         dsl_flags: vec![
             DslFlag { flag: "--branches".to_string(), config_key: "branches".to_string(), description: "Comma-separated branch names for fan-out or expression routing.".to_string(), kind: DslFlagKind::CommaSeparatedList, required: false },
             DslFlag { flag: "--mode".to_string(), config_key: "mode".to_string(), description: "Routing mode: fanout (all branches) or by_expression (one branch via expression).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--expr".to_string(), config_key: "expression".to_string(), description: "JS expression returning a branch name. Used when --mode by_expression.".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
