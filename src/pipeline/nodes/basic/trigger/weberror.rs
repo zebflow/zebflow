@@ -41,25 +41,25 @@
 //! **Custom 404 page:**
 //! ```text
 //! | n.trigger.weberror --code 404
-//! | n.web.render --template pages/error-404
+//! | n.web.response --template pages/error-404
 //! ```
 //!
 //! **Custom unauthorized page:**
 //! ```text
 //! | n.trigger.weberror --code 401
-//! | n.web.render --template pages/error-unauthorized
+//! | n.web.response --template pages/error-unauthorized
 //! ```
 //!
 //! **Catch-all error page (5xx):**
 //! ```text
 //! | n.trigger.weberror --code 5xx
-//! | n.web.render --template pages/error-server
+//! | n.web.response --template pages/error-server
 //! ```
 //!
 //! **Catch-all fallback:**
 //! ```text
 //! | n.trigger.weberror
-//! | n.web.render --template pages/error-generic
+//! | n.web.response --template pages/error-generic
 //! ```
 
 use async_trait::async_trait;
@@ -85,7 +85,7 @@ pub fn definition() -> NodeDefinition {
             Use --code to scope to a specific error code (404, 401), \
             a range (4xx, 5xx), or leave empty for a catch-all. \
             The pipeline receives error_code, error_message, original_path, and method. \
-            Pair with n.web.render to serve custom HTML error pages."
+            Pair with n.web.response to serve custom HTML error pages."
             .to_string(),
         input_schema: json!({
             "type": "object",

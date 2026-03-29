@@ -316,7 +316,7 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
         web template docs, node catalog, and all help files. Use for any concept, node name, DSL flag, \
-        or syntax question. Example: query='jwt', query='sekejap upsert', query='web.render'.")]
+        or syntax question. Example: query='jwt', query='sekejap upsert', query='web.response'.")]
     async fn help_search(
         &self,
         Extension(parts): Extension<http::request::Parts>,

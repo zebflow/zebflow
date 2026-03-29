@@ -57,6 +57,8 @@ impl UserService {
         let profile = PlatformUser {
             owner: owner.clone(),
             role: req.role.trim().to_string(),
+            git_name: req.git_name.trim().to_string(),
+            git_email: req.git_email.trim().to_string(),
             created_at,
             updated_at: now,
         };

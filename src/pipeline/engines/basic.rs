@@ -16,7 +16,7 @@ use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, function_call, http_request, logic, pg_query,
     script, sjtable_mutate, sjtable_query,
     trigger::{function as trigger_function, manual, schedule, webhook, weberror},
-    web_render, web_response, ws_emit, ws_sync_state, ws_trigger,
+    web_response, ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::platform::services::PlatformService;
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
@@ -25,17 +25,17 @@ use crate::platform::services::{CredentialService, SimpleTableService};
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 use crate::infra::transport::ws::WsHub;
 
-/// In-memory compile cache for `n.web.render` nodes.
+/// In-memory compile cache for template nodes.
 ///
 /// Key: hash of the template markup string.
-/// Value: the compiled node artifact, shared via `Arc` for cheap clone on cache hit.
+/// Value: the compiled page artifact, shared via `Arc` for cheap clone on cache hit.
 ///
 /// When a user saves a template the markup changes → new hash → cache miss → recompile.
 /// Subsequent requests with the same markup → cache hit → skip compile, just re-render.
-pub type WebRenderCache = Arc<Mutex<HashMap<u64, Arc<web_render::Compiled>>>>;
+pub type TemplateCache = Arc<Mutex<HashMap<u64, Arc<web_response::CompiledPage>>>>;
 
-/// Create a new empty web render cache.
-pub fn new_web_render_cache() -> WebRenderCache {
+/// Create a new empty template compile cache.
+pub fn new_template_cache() -> TemplateCache {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
@@ -51,9 +51,11 @@ pub struct BasicPipelineEngine {
     rwe: Arc<dyn ReactiveWebEngine>,
     credentials: Option<Arc<CredentialService>>,
     simple_tables: Option<Arc<SimpleTableService>>,
-    web_render_cache: Option<WebRenderCache>,
+    template_cache: Option<TemplateCache>,
     ws_hub: Option<Arc<WsHub>>,
     platform: Option<Arc<PlatformService>>,
+    /// Filesystem root for resolving `@/` alias imports in TSX templates.
+    template_root: Option<std::path::PathBuf>,
 }
 
 impl Default for BasicPipelineEngine {
@@ -64,9 +66,10 @@ impl Default for BasicPipelineEngine {
             rwe: resolve_engine_or_default(rwe_engine_id.as_deref()),
             credentials: None,
             simple_tables: None,
-            web_render_cache: None,
+            template_cache: None,
             ws_hub: None,
             platform: None,
+            template_root: None,
         }
     }
 }
@@ -83,16 +86,23 @@ impl BasicPipelineEngine {
             rwe,
             credentials,
             simple_tables,
-            web_render_cache: None,
+            template_cache: None,
             ws_hub: None,
             platform: None,
+            template_root: None,
         }
     }
 
-    /// Attach a shared web render compile cache to this engine.
+    /// Set the template root so `@/` alias imports resolve correctly in TSX templates.
+    pub fn with_template_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.template_root = root;
+        self
+    }
+
+    /// Attach a shared template compile cache to this engine.
     /// Same cache instance should be passed on every request so hits accumulate.
-    pub fn with_web_render_cache(mut self, cache: WebRenderCache) -> Self {
-        self.web_render_cache = Some(cache);
+    pub fn with_template_cache(mut self, cache: TemplateCache) -> Self {
+        self.template_cache = Some(cache);
         self
     }
 
@@ -192,20 +202,6 @@ impl BasicPipelineEngine {
                     credentials.clone(),
                     self.language.clone(),
                 )?))
-            }
-            web_render::NODE_KIND => {
-                let mut config: web_render::Config = serde_json::from_value(node.config.clone())
-                    .map_err(|err| {
-                        PipelineError::new("FW_NODE_WEB_RENDER_CONFIG", err.to_string())
-                    })?;
-                // Derive template_id from template_path when not explicitly set.
-                if config.template_id.is_empty() && !config.template_path.is_empty() {
-                    config.template_id = config.template_path.clone();
-                }
-                Ok(NodeDispatch::InlineWebRender {
-                    node_id: node.id.clone(),
-                    config,
-                })
             }
             web_response::NODE_KIND => {
                 let config: web_response::Config = serde_json::from_value(node.config.clone())
@@ -464,66 +460,6 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::SimpleTable(node) => node.execute_async(input).await,
                 NodeDispatch::SimpleTableMutate(node) => node.execute_async(input).await,
                 NodeDispatch::Postgres(node) => node.execute_async(input).await,
-                NodeDispatch::InlineWebRender { node_id, config } => {
-                    // Require markup — same contract as render_from_config.
-                    let markup = config.markup.as_deref().unwrap_or("").trim();
-                    if markup.is_empty() {
-                        Err(PipelineError::new(
-                            "FW_NODE_WEB_RENDER_CONFIG",
-                            format!("node '{node_id}' requires config.markup for inline execution"),
-                        ))
-                    } else {
-                        // Check compile cache: same markup hash → reuse CompiledTemplate.
-                        // Cache miss (first request or user saved new content) → compile + store.
-                        let key = hash_markup(markup);
-                        let cached = self.web_render_cache.as_ref().and_then(|c| {
-                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
-                        });
-
-                        let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
-                            Ok(hit)
-                        } else {
-                            let fresh = web_render::Node::compile(
-                                &node_id,
-                                &config,
-                                &TemplateSource {
-                                    id: config.template_id.clone(),
-                                    source_path: None,
-                                    markup: markup.to_string(),
-                                },
-                                self.rwe.as_ref(),
-                                self.language.as_ref(),
-                            )
-                            .map_err(|e| {
-                                PipelineError::new(
-                                    "FW_NODE_WEB_RENDER_COMPILE",
-                                    e.to_string(),
-                                )
-                            })
-                            .map(Arc::new);
-                            if let Ok(ref fresh_arc) = fresh {
-                                if let Some(cache) = &self.web_render_cache {
-                                    cache
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(key, fresh_arc.clone());
-                                }
-                            }
-                            fresh
-                        };
-
-                        compiled_result.and_then(|compiled| {
-                            web_render::render_with_engines(
-                                &compiled,
-                                input.payload,
-                                input.metadata,
-                                self.rwe.as_ref(),
-                                self.language.as_ref(),
-                                &ctx.request_id,
-                            )
-                        })
-                    }
-                }
                 NodeDispatch::InlineWebResponse { node_id, config } => {
                     let markup = config.markup.as_deref().unwrap_or("").trim();
                     if markup.is_empty() {
@@ -533,41 +469,52 @@ impl PipelineEngine for BasicPipelineEngine {
                         ))
                     } else {
                         // Resolve response envelope from config + input
+                        let location = config.location.as_deref().map(|loc| {
+                            if loc.starts_with("$.") || loc == "$" {
+                                web_response::resolve_json_path_string(&input.payload, loc)
+                                    .unwrap_or_else(|| loc.to_string())
+                            } else {
+                                loc.to_string()
+                            }
+                        });
                         let status = config.status
-                            .or_else(|| if config.location.is_some() { Some(302) } else { None });
+                            .or_else(|| if location.is_some() { Some(302) } else { None });
                         let cookie = config.set_cookie.as_deref()
                             .and_then(|s| web_response::parse_cookie_spec(s, &input.payload));
                         let headers = config.headers.clone();
 
-                        // Compile + render template (same cache path as InlineWebRender)
-                        let key = hash_markup(markup);
-                        let cached = self.web_render_cache.as_ref().and_then(|c| {
-                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
-                        });
-                        let wr_config = web_render::Config {
-                            template_path: config.template.clone().unwrap_or_default(),
-                            template_id: config.template.clone().unwrap_or_default(),
-                            markup: Some(markup.to_string()),
+                        let template_id = config.template.clone().unwrap_or_default();
+                        let source_path = self.template_root.as_ref()
+                            .and_then(|r| config.template.as_deref().map(|t| r.join(t)));
+                        let options = crate::rwe::ReactiveWebOptions {
+                            templates: crate::rwe::TemplateOptions {
+                                template_root: self.template_root.clone(),
+                                style_entries: Vec::new(),
+                            },
                             ..Default::default()
                         };
+
+                        let key = hash_markup(markup);
+                        let cached = self.template_cache.as_ref().and_then(|c| {
+                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+                        });
                         let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
                             Ok(hit)
                         } else {
-                            let fresh = web_render::Node::compile(
+                            let fresh = web_response::compile_page(
                                 &node_id,
-                                &wr_config,
                                 &TemplateSource {
-                                    id: wr_config.template_id.clone(),
-                                    source_path: None,
+                                    id: template_id,
+                                    source_path,
                                     markup: markup.to_string(),
                                 },
+                                &options,
                                 self.rwe.as_ref(),
                                 self.language.as_ref(),
                             )
-                            .map_err(|e| PipelineError::new("FW_NODE_WEB_RESPONSE_COMPILE", e.to_string()))
                             .map(Arc::new);
                             if let Ok(ref fresh_arc) = fresh {
-                                if let Some(cache) = &self.web_render_cache {
+                                if let Some(cache) = &self.template_cache {
                                     cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, fresh_arc.clone());
                                 }
                             }
@@ -575,7 +522,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         };
 
                         compiled_result.and_then(|compiled| {
-                            let render_out = web_render::render_with_engines(
+                            let render_out = web_response::render_compiled_page(
                                 &compiled,
                                 input.payload,
                                 input.metadata,
@@ -585,6 +532,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             )?;
                             let envelope = serde_json::json!({
                                 "status": status,
+                                "location": location,
                                 "set_cookie": cookie,
                                 "headers": headers,
                                 "html": render_out.payload.get("html"),
@@ -735,10 +683,6 @@ enum NodeDispatch {
     SimpleTable(sjtable_query::Node),
     SimpleTableMutate(sjtable_mutate::Node),
     Postgres(pg_query::Node),
-    InlineWebRender {
-        node_id: String,
-        config: web_render::Config,
-    },
     InlineWebResponse {
         node_id: String,
         config: web_response::Config,

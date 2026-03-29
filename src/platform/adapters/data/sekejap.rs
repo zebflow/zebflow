@@ -219,6 +219,8 @@ impl DataAdapter for SekejapDataAdapter {
                 .and_then(Value::as_str)
                 .unwrap_or("member")
                 .to_string(),
+            git_name: v.get("git_name").and_then(Value::as_str).unwrap_or("").to_string(),
+            git_email: v.get("git_email").and_then(Value::as_str).unwrap_or("").to_string(),
             created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
             updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
         };
@@ -236,6 +238,8 @@ impl DataAdapter for SekejapDataAdapter {
             "_collection": "user",
             "owner": user.profile.owner,
             "role": user.profile.role,
+            "git_name": user.profile.git_name,
+            "git_email": user.profile.git_email,
             "password": user.password,
             "created_at": user.profile.created_at,
             "updated_at": user.profile.updated_at,
@@ -263,6 +267,8 @@ impl DataAdapter for SekejapDataAdapter {
                         .and_then(Value::as_str)
                         .unwrap_or("member")
                         .to_string(),
+                    git_name: v.get("git_name").and_then(Value::as_str).unwrap_or("").to_string(),
+                    git_email: v.get("git_email").and_then(Value::as_str).unwrap_or("").to_string(),
                     created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
                     updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
                 })

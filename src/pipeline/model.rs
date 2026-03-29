@@ -26,7 +26,7 @@
 //! │                                      ▼                        │
 //! │                           ┌─────────────────────┐             │
 //! │                           │ PipelineNode (n2)   │             │
-//! │                           │  kind: n.web.render │             │
+//! │                           │  kind: n.web.response│             │
 //! │                           │  config: { tmpl }   │             │
 //! │                           └─────────────────────┘             │
 //! └─────────────────────────────────────────────────────────────────┘
@@ -165,7 +165,7 @@
 //!
 //! The trigger node is special: it receives the raw request payload and passes it through
 //! unchanged (or enriched).  Downstream nodes transform the payload until a terminal node
-//! (e.g. `n.web.render`) produces the final HTTP response.
+//! (e.g. `n.web.response`) produces the final HTTP response.
 
 use std::fmt::{Display, Formatter};
 
@@ -209,7 +209,7 @@ pub enum DslFlagKind {
 ///
 /// - **Parsing**: `config_key` is the authoritative destination key. Undeclared flags are a parse error.
 /// - **Value coercion**: `kind` controls how the value is interpreted (scalar, list, bool).
-/// - **Help text**: `pipeline --help n.web.render` lists all flags with descriptions.
+/// - **Help text**: `pipeline --help n.web.response` lists all flags with descriptions.
 /// - **Required validation**: flags with `required: true` must be present when registering.
 /// - **LLM context**: surfaced in `/docs/node` so agents know exactly what flags to emit.
 ///
@@ -443,7 +443,7 @@ pub struct PipelineGraph {
 pub struct PipelineNode {
     /// Unique node id within this graph (e.g. `"n0"`, `"trigger"`, `"render_blog"`).
     pub id: String,
-    /// Kind identifier — must match a registered node kind (e.g. `"n.web.render"`).
+    /// Kind identifier — must match a registered node kind (e.g. `"n.web.response"`).
     pub kind: String,
     /// Input pin names for this instance.  Alias: `"inputs"` in JSON.
     #[serde(default, alias = "inputs")]
@@ -569,7 +569,7 @@ pub struct NodeAiToolDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct NodeDefinition {
     /// Stable kind id — must be unique across all registered nodes.
-    /// Convention: `n.<category>.<action>` (e.g. `n.pg.query`, `n.web.render`).
+    /// Convention: `n.<category>.<action>` (e.g. `n.pg.query`, `n.web.response`).
     pub kind: String,
     /// Short display title for UI catalogs and tooltips (e.g. `"Postgres Query"`).
     pub title: String,
@@ -851,8 +851,8 @@ pub struct ExecuteOptions {
 ///
 /// `route` carries the inbound HTTP request path for webhook-triggered pipelines.
 /// It is injected into every node's `metadata` under the key `"route"` so that
-/// downstream nodes — in particular `n.web.render` — can access the real request
-/// path without reading it from a potentially-transformed payload.
+/// downstream nodes can access the real request path without reading it from a
+/// potentially-transformed payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineContext {
     /// Owner / tenant id (e.g. `"superadmin"`).
@@ -867,7 +867,7 @@ pub struct PipelineContext {
     ///
     /// Populated by the webhook handler from the matched request URI.  Empty string for
     /// non-webhook triggers (schedule, WS, manual).  Injected into node metadata as
-    /// `"route"` so `n.web.render` can build a correct [`crate::rwe::RenderContext`]
+    /// `"route"` so template nodes can build a correct [`crate::rwe::RenderContext`]
     /// without requiring a `route` field on the node config itself.
     #[serde(default)]
     pub route: String,
@@ -896,8 +896,8 @@ pub struct NodeTraceEntry {
 
 /// Final output of a completed pipeline execution.
 ///
-/// `value` is the payload produced by the last (terminal) node.  For `n.web.render` this
-/// contains `{ html, compiled_scripts, hydration_payload }`.  For all other terminal nodes
+/// `value` is the payload produced by the last (terminal) node.  For `n.web.response` with
+/// `--template` this contains `{ html, compiled_scripts, hydration_payload }`.  For all other terminal nodes
 /// it is whatever the node returned.
 ///
 /// `trace` is a flat ordered list of trace strings emitted by each node in execution order,

@@ -4,12 +4,12 @@
 //!
 //! Always the first node in a webhook-triggered pipeline. Owns the HTTP route.
 //! The request path flows as `PipelineContext.route` → node metadata `"route"` to
-//! downstream nodes (specifically `n.web.render`).
+//! downstream nodes via `PipelineContext.route`.
 //!
 //! ```text
 //! | n.trigger.webhook --path /blog --method GET
 //! | pg.query --credential main-db -- "SELECT ..."
-//! | n.web.render --template-path pages/blog-home
+//! | n.web.response --template pages/blog-home
 //! ```
 
 use crate::pipeline::{

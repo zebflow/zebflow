@@ -211,6 +211,8 @@ impl PlatformService {
             owner: self.config.default_owner.clone(),
             password: self.config.default_password.clone(),
             role: "superadmin".to_string(),
+            git_name: String::new(),
+            git_email: String::new(),
         })?;
 
         self.projects.create_or_update_project(

@@ -635,7 +635,10 @@ impl DslExecutor {
             Some(self.platform.credentials.clone()),
             Some(self.platform.simple_tables.clone()),
         )
-        .with_platform(self.platform.clone());
+        .with_platform(self.platform.clone())
+        .with_template_root(
+            self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
+        );
 
         use crate::pipeline::PipelineEngine;
         match engine.execute_async(&graph, &ctx).await {
@@ -719,7 +722,10 @@ impl DslExecutor {
                     Some(self.platform.credentials.clone()),
                     Some(self.platform.simple_tables.clone()),
                 )
-                .with_platform(self.platform.clone());
+                .with_platform(self.platform.clone())
+                .with_template_root(
+                    self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
+                );
 
                 use crate::pipeline::PipelineEngine;
                 match engine.execute_async(&graph, &ctx).await {
@@ -778,9 +784,58 @@ impl DslExecutor {
         };
 
         let mut cmd = std::process::Command::new("git");
+
+        // On commit: inject committer identity from user profile.
+        // git global options (-c) must come BEFORE the subcommand.
+        if subcommand == "commit" {
+            // Fetch stored git identity (best-effort; fall back to owner slug).
+            let (git_name, git_email) = self
+                .platform
+                .users
+                .get_user(&self.owner)
+                .ok()
+                .flatten()
+                .map(|u| {
+                    let name = if u.git_name.is_empty() { u.owner.clone() } else { u.git_name };
+                    let email = if u.git_email.is_empty() {
+                        format!("{}@zebflow.local", u.owner)
+                    } else {
+                        u.git_email
+                    };
+                    (name, email)
+                })
+                .unwrap_or_else(|| {
+                    (self.owner.clone(), format!("{}@zebflow.local", self.owner))
+                });
+
+            // -c flags before subcommand (git global options).
+            cmd.arg("-c").arg(format!("user.name={git_name}"));
+            cmd.arg("-c").arg(format!("user.email={git_email}"));
+        }
+
         cmd.arg(subcommand);
-        for arg in &args {
-            cmd.arg(arg);
+
+        if subcommand == "commit" {
+            // Filter out any -c user.name / -c user.email the LLM may have injected.
+            let mut skip_next = false;
+            for arg in &args {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if arg == "-c" {
+                    skip_next = true;
+                    continue;
+                }
+                if arg.starts_with("user.name=") || arg.starts_with("user.email=") {
+                    continue;
+                }
+                cmd.arg(arg);
+            }
+        } else {
+            for arg in &args {
+                cmd.arg(arg);
+            }
         }
 
         // For commit with body: use body as commit message.

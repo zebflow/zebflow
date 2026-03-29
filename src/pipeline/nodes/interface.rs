@@ -36,7 +36,7 @@ pub struct NodeExecutionOutput {
 /// Node interface implemented by every framework node kind.
 #[async_trait]
 pub trait NodeHandler: Send + Sync {
-    /// Stable node kind id (for example `n.web.render`).
+    /// Stable node kind id (for example `n.web.response`).
     fn kind(&self) -> &'static str;
     /// Supported input pin names.
     fn input_pins(&self) -> &'static [&'static str];

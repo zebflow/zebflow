@@ -70,6 +70,12 @@ pub struct PlatformUser {
     pub owner: String,
     /// Role string (`superadmin`, `member`, ...).
     pub role: String,
+    /// Display name for git commits (e.g. "Alice Smith").
+    #[serde(default)]
+    pub git_name: String,
+    /// Email for git commits (e.g. "alice@example.com").
+    #[serde(default)]
+    pub git_email: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -1113,6 +1119,12 @@ pub struct CreateUserRequest {
     /// Role.
     #[serde(default = "default_member_role")]
     pub role: String,
+    /// Display name for git commits.
+    #[serde(default)]
+    pub git_name: String,
+    /// Email for git commits.
+    #[serde(default)]
+    pub git_email: String,
 }
 
 fn default_member_role() -> String {
@@ -1181,7 +1193,7 @@ fn default_max_asset_size_mb() -> u32 {
 
 /// RWE settings section of `zebflow.json`.
 ///
-/// Controls project-level compile/render behaviour for all `n.web.render` nodes.
+/// Controls project-level compile/render behaviour for all `n.web.response` template nodes.
 /// Values are merged into [`crate::rwe::ReactiveWebOptions`] at execution time,
 /// before each pipeline run. Node-level `--load-scripts` is appended on top.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
