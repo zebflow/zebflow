@@ -1272,39 +1272,6 @@ impl ProjectService {
             )?;
         }
 
-        let home_page = pages_dir.join("home.tsx");
-        if !home_page.exists() {
-            fs::write(
-                &home_page,
-                r#"export const page = {
-  head: {
-    title: "Home",
-    description: "Default Zebflow page"
-  },
-  html: {
-    lang: "en"
-  },
-  body: {
-    className: "min-h-screen bg-slate-950 text-slate-100 font-sans"
-  },
-  navigation: "history"
-};
-
-export const app = {};
-
-export default function Page(input) {
-  return (
-    <Page>
-      <main className="p-6">
-        <h1 className="text-3xl font-black">Home</h1>
-      </main>
-    </Page>
-  );
-}
-"#,
-            )?;
-        }
-
         // Scaffold shared/ directories for cross-module shared code.
         // @/shared/ui, @/shared/layout, @/shared/lib — import path: @/shared/ui/button
         for subdir in ["shared/ui", "shared/layout", "shared/lib"] {
