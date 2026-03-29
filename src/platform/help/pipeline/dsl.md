@@ -273,11 +273,11 @@ n.logic.switch --help           # same
 | `trigger.webhook` | `n.trigger.webhook` | `--path <path> --method <GET\|POST\|...> [--auth-type jwt\|hmac\|api_key] [--auth-credential <id>] [--auth-required-role <roles>]` |
 | `trigger.schedule` | `n.trigger.schedule` | `--cron <expr> --timezone <tz>` |
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
-| `script` | `n.script` | `--lang <js\|py\|...>` or `-- <code>` |
-| `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--set-cookie`, `--header` |
-| `http.request` | `n.http.request` | `--url <url> --method <GET\|POST>` |
+| `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
+| `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
+| `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
-| `pg.query` | `n.pg.query` | `--credential <id> [--params-path <dot.path>] [--params-expr <js-expr>]` + `-- <sql>` |
+| `pg.query` | `n.pg.query` | `--credential <id> [--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |

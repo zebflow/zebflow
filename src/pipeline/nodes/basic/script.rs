@@ -49,6 +49,18 @@ pub fn definition() -> NodeDefinition {
         fields: vec![
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef {
+                name: "language".to_string(),
+                label: "Language".to_string(),
+                field_type: NodeFieldType::Select,
+                options: vec![
+                    crate::pipeline::model::SelectOptionDef { value: "js".to_string(), label: "JavaScript".to_string() },
+                    crate::pipeline::model::SelectOptionDef { value: "ts".to_string(), label: "TypeScript".to_string() },
+                ],
+                default_value: Some(serde_json::json!("js")),
+                help: Some("Script language (default: js).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
                 name: "source".to_string(),
                 label: "Source".to_string(),
                 field_type: NodeFieldType::CodeEditor,
@@ -84,7 +96,7 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Field("title".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("language".to_string())] },
             LayoutItem::Field("source".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
