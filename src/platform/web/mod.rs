@@ -184,6 +184,13 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/assets/{owner}/{project}/rwe/scripts/{hash}",
             get(project_rwe_script_asset),
         )
+        // When deployment_asset_base proxies /v2/assets/ → /assets/{owner}/{project}/,
+        // library bundle requests land at /assets/{owner}/{project}/libraries/... .
+        // Serve them from embedded platform libraries so one nginx rule covers everything.
+        .route(
+            "/assets/{owner}/{project}/libraries/{*path}",
+            get(project_scoped_library_asset),
+        )
         .route("/assets/{owner}/{project}/{*path}", get(project_asset))
         .route("/assets/libraries/{*path}", get(library_asset))
         .route("/p/{owner}/{project}/assets/{*path}", get(project_static_asset))
@@ -1212,6 +1219,21 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
 }
 
 async fn library_asset(Path(path): Path<String>) -> Response {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    match platform_library_asset(&normalized) {
+        Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
+        None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+    }
+}
+
+/// Serves platform library assets via the project-scoped asset path.
+/// Used when `deployment_asset_base` is set and a CDN/nginx rule maps
+/// `/base/` → `/assets/{owner}/{project}/` — library bundle requests
+/// (e.g. `/assets/{owner}/{project}/libraries/zeb/preact/...`) are routed here
+/// so a single nginx rule covers both project assets and library bundles.
+async fn project_scoped_library_asset(
+    Path((_, _, path)): Path<(String, String, String)>,
+) -> Response {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     match platform_library_asset(&normalized) {
         Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
