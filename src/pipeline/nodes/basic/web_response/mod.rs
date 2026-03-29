@@ -12,7 +12,7 @@
 //! | Serve specific field as JSON | `\| web.response --body $.rows` |
 //! | Render HTML page | `\| web.response --template pages/home.tsx` |
 //! | Redirect | `\| web.response --location /somewhere` |
-//! | Error with message | `\| web.response --status 403 --message "Akses ditolak"` |
+//! | Error with message | `\| web.response --status 403 --message "Access denied"` |
 //! | Error page | `\| web.response --template pages/404.tsx --status 404` |
 //! | Set session cookie | `\| web.response --template pages/home.tsx --set-cookie name=session,value=$.token,http-only` |
 //!
@@ -182,10 +182,18 @@ pub fn definition() -> NodeDefinition {
                     ..Default::default()
                 },
                 NodeFieldDef {
+                    name: "body_path".to_string(),
+                    label: "Body Path".to_string(),
+                    field_type: NodeFieldType::Text,
+                    placeholder: Some("$.rows".to_string()),
+                    help: Some("JSON path into the pipeline payload to serve as response body (JSON mode only).".to_string()),
+                    ..Default::default()
+                },
+                NodeFieldDef {
                     name: "message".to_string(),
                     label: "Message".to_string(),
                     field_type: NodeFieldType::Text,
-                    placeholder: Some("Akses ditolak".to_string()),
+                    placeholder: Some("Access denied".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
@@ -193,6 +201,21 @@ pub fn definition() -> NodeDefinition {
                     label: "Set-Cookie".to_string(),
                     field_type: NodeFieldType::Text,
                     placeholder: Some("name=session,value=$.token,http-only,max-age=86400".to_string()),
+                    ..Default::default()
+                },
+                NodeFieldDef {
+                    name: "headers".to_string(),
+                    label: "Extra Response Headers".to_string(),
+                    field_type: NodeFieldType::KeyValuePairs,
+                    help: Some("Static response headers added to every response from this node.".to_string()),
+                    ..Default::default()
+                },
+                NodeFieldDef {
+                    name: "load_scripts".to_string(),
+                    label: "Load Scripts".to_string(),
+                    field_type: NodeFieldType::Text,
+                    placeholder: Some("https://cdn.example.com/app.js".to_string()),
+                    help: Some("Comma-separated external script URLs to inject (template mode only).".to_string()),
                     ..Default::default()
                 },
             ]
@@ -206,8 +229,15 @@ pub fn definition() -> NodeDefinition {
                 ],
             },
             LayoutItem::Field("template".to_string()),
-            LayoutItem::Field("message".to_string()),
+            LayoutItem::Row {
+                row: vec![
+                    LayoutItem::Field("message".to_string()),
+                    LayoutItem::Field("body_path".to_string()),
+                ],
+            },
             LayoutItem::Field("set_cookie".to_string()),
+            LayoutItem::Field("headers".to_string()),
+            LayoutItem::Field("load_scripts".to_string()),
         ],
         ai_tool: Default::default(),
     }

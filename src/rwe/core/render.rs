@@ -554,28 +554,29 @@ fn stable_hash_u64(input: &str) -> u64 {
 }
 
 /// Build a complete HTML document from the resolved `export const page` config.
-/// Page config values (title, description, etc.) are already resolved by JS at module eval time
-/// via `globalThis.ctx` — no Rust-side interpolation needed.
+/// Page config values are already resolved by JS at module eval time via `globalThis.ctx`.
+///
+/// Supported `page.head` fields:
+/// - `title`       → `<title>`
+/// - `description` → `<meta name="description">`
+/// - `themeColor`  → `<meta name="theme-color">`
+/// - `canonical`   → `<link rel="canonical">`
+/// - `robots`      → `<meta name="robots">`
+/// - `manifest`    → `<link rel="manifest">`
+/// - `icons`       → array of `{ rel, href, type?, sizes? }` link tags
+///                   (favicon 32×32, 16×16, apple-touch-icon, etc.)
+/// - `og`          → Open Graph `{ title, description, image, url, type, siteName, locale }`
+/// - `twitter`     → Twitter Card `{ card, title, description, image, site, creator }`
+/// - `extra`       → raw HTML string injected verbatim at end of `<head>` (trusted escape hatch)
 fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> String {
     let pc = page_config.as_ref();
+    let hd = pc.and_then(|p| p.get("head"));
 
     let lang = pc
         .and_then(|p| p.get("html"))
         .and_then(|h| h.get("lang"))
         .and_then(Value::as_str)
         .unwrap_or("en");
-
-    let title = pc
-        .and_then(|p| p.get("head"))
-        .and_then(|h| h.get("title"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-
-    let description = pc
-        .and_then(|p| p.get("head"))
-        .and_then(|h| h.get("description"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
 
     let body_class = pc
         .and_then(|p| p.get("body"))
@@ -586,14 +587,111 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     let mut head = String::new();
     head.push_str("<meta charset=\"utf-8\">");
     head.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-    if !title.is_empty() {
-        head.push_str(&format!("<title>{}</title>", escape_html(&title)));
+
+    // title
+    if let Some(v) = hd.and_then(|h| h.get("title")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<title>{}</title>", escape_html(v)));
+        }
     }
-    if !description.is_empty() {
-        head.push_str(&format!(
-            "<meta name=\"description\" content=\"{}\">",
-            escape_attr(&description)
-        ));
+
+    // description
+    if let Some(v) = hd.and_then(|h| h.get("description")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<meta name=\"description\" content=\"{}\">", escape_attr(v)));
+        }
+    }
+
+    // theme-color
+    if let Some(v) = hd.and_then(|h| h.get("themeColor")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<meta name=\"theme-color\" content=\"{}\">", escape_attr(v)));
+        }
+    }
+
+    // robots
+    if let Some(v) = hd.and_then(|h| h.get("robots")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<meta name=\"robots\" content=\"{}\">", escape_attr(v)));
+        }
+    }
+
+    // canonical
+    if let Some(v) = hd.and_then(|h| h.get("canonical")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<link rel=\"canonical\" href=\"{}\">", escape_attr(v)));
+        }
+    }
+
+    // icons — [{ rel, href, type?, sizes? }]
+    if let Some(icons) = hd.and_then(|h| h.get("icons")).and_then(Value::as_array) {
+        for icon in icons {
+            let href = icon.get("href").and_then(Value::as_str).unwrap_or_default();
+            if href.is_empty() {
+                continue;
+            }
+            let rel = icon.get("rel").and_then(Value::as_str).unwrap_or("icon");
+            let mut tag = format!("<link rel=\"{}\" href=\"{}\"", escape_attr(rel), escape_attr(href));
+            if let Some(t) = icon.get("type").and_then(Value::as_str) {
+                if !t.is_empty() { tag.push_str(&format!(" type=\"{}\"", escape_attr(t))); }
+            }
+            if let Some(s) = icon.get("sizes").and_then(Value::as_str) {
+                if !s.is_empty() { tag.push_str(&format!(" sizes=\"{}\"", escape_attr(s))); }
+            }
+            tag.push('>');
+            head.push_str(&tag);
+        }
+    }
+
+    // manifest
+    if let Some(v) = hd.and_then(|h| h.get("manifest")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(&format!("<link rel=\"manifest\" href=\"{}\">", escape_attr(v)));
+        }
+    }
+
+    // Open Graph
+    if let Some(og) = hd.and_then(|h| h.get("og")) {
+        for (prop, key) in &[
+            ("og:title",       "title"),
+            ("og:description", "description"),
+            ("og:image",       "image"),
+            ("og:url",         "url"),
+            ("og:type",        "type"),
+            ("og:site_name",   "siteName"),
+            ("og:locale",      "locale"),
+        ] {
+            if let Some(v) = og.get(*key).and_then(Value::as_str) {
+                if !v.is_empty() {
+                    head.push_str(&format!("<meta property=\"{}\" content=\"{}\">", prop, escape_attr(v)));
+                }
+            }
+        }
+    }
+
+    // Twitter Card
+    if let Some(tw) = hd.and_then(|h| h.get("twitter")) {
+        for (name, key) in &[
+            ("twitter:card",        "card"),
+            ("twitter:title",       "title"),
+            ("twitter:description", "description"),
+            ("twitter:image",       "image"),
+            ("twitter:site",        "site"),
+            ("twitter:creator",     "creator"),
+        ] {
+            if let Some(v) = tw.get(*key).and_then(Value::as_str) {
+                if !v.is_empty() {
+                    head.push_str(&format!("<meta name=\"{}\" content=\"{}\">", name, escape_attr(v)));
+                }
+            }
+        }
+    }
+
+    // extra — raw HTML, injected verbatim (author-trusted content, no escaping)
+    if let Some(v) = hd.and_then(|h| h.get("extra")).and_then(Value::as_str) {
+        if !v.is_empty() {
+            head.push_str(v);
+        }
     }
 
     let body_attr = if body_class.is_empty() {

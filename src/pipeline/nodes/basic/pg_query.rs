@@ -82,13 +82,19 @@ pub fn definition() -> NodeDefinition {
                     ],
                     ..Default::default()
                 },
-                NodeFieldDef { name: "params_path".to_string(), label: "Params Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer into upstream payload for $1/$2 bind params. e.g. /body".to_string()), ..Default::default() },
+                NodeFieldDef { name: "params_path".to_string(), label: "Params Path".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-notation path into upstream payload for $1/$2 bind params. e.g. body or identifier.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "params_expr".to_string(), label: "Params Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning array of bind params. e.g. [input.user_id, input.role]. Overrides params_path.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "credential_id_expr".to_string(), label: "Credential Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning credential ID at runtime. Overrides the credential selector above.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "query_expr".to_string(), label: "Query Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("JS expression returning SQL query string. Overrides the query editor above.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("credential_id".to_string())] },
             LayoutItem::Field("query".to_string()),
             LayoutItem::Field("params_path".to_string()),
+            LayoutItem::Field("params_expr".to_string()),
+            LayoutItem::Field("credential_id_expr".to_string()),
+            LayoutItem::Field("query_expr".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,

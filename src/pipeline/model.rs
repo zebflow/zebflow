@@ -259,6 +259,9 @@ pub enum NodeFieldType {
     /// Multi-select checkbox list. Options come from `data_source` (live) or `options` (static).
     /// Config value is stored as `Vec<String>`.
     MultiCheckbox,
+    /// Repeating key-value pair rows: [key input][value input][×] with [+ Add] button.
+    /// Config value is stored as a JSON object (`Map<String, String>`).
+    KeyValuePairs,
 }
 
 impl Default for NodeFieldType {

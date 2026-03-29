@@ -90,29 +90,19 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         fields: {
-            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
+            use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource};
             vec![
                 NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "credential_id".to_string(), label: "Signing Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("JWT signing key credential (kind: jwt_signing_key).".to_string()), ..Default::default() },
-                NodeFieldDef { name: "algorithm".to_string(), label: "Algorithm".to_string(), field_type: NodeFieldType::Select, options: vec![
-                    SelectOptionDef { value: "HS256".to_string(), label: "HS256 — HMAC-SHA256 (symmetric)".to_string() },
-                    SelectOptionDef { value: "HS384".to_string(), label: "HS384 — HMAC-SHA384 (symmetric)".to_string() },
-                    SelectOptionDef { value: "HS512".to_string(), label: "HS512 — HMAC-SHA512 (symmetric)".to_string() },
-                    SelectOptionDef { value: "RS256".to_string(), label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)".to_string() },
-                    SelectOptionDef { value: "RS384".to_string(), label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)".to_string() },
-                    SelectOptionDef { value: "RS512".to_string(), label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)".to_string() },
-                    SelectOptionDef { value: "ES256".to_string(), label: "ES256 — ECDSA P-256 (asymmetric)".to_string() },
-                    SelectOptionDef { value: "ES384".to_string(), label: "ES384 — ECDSA P-384 (asymmetric)".to_string() },
-                ], ..Default::default() },
-                NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "claims".to_string(), label: "Static Claims (JSON)".to_string(), field_type: NodeFieldType::Textarea, rows: Some(5), ..Default::default() },
+                NodeFieldDef { name: "credential_id".to_string(), label: "Signing Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("JWT signing key credential (kind: jwt_signing_key). Algorithm is determined by the credential.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, placeholder: Some("900".to_string()), ..Default::default() },
                 NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
                 NodeFieldDef { name: "audience".to_string(), label: "Audience (aud)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Map claim name → $.field_path or literal value. e.g. sub=$.user_id, role=admin".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("algorithm".to_string())] },
-            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string()), LayoutItem::Field("expires_in".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("expires_in".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("issuer".to_string()), LayoutItem::Field("audience".to_string())] },
             LayoutItem::Field("claims".to_string()),
         ],

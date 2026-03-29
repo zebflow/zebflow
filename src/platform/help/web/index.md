@@ -94,13 +94,58 @@ export default function MyPage(input: PageInput) {
 }
 
 export const page = {
-  head: { title: "My Page" },
+  head: {
+    title: "My Page",
+    description: "Page description for SEO",
+    themeColor: "#145FA4",
+    canonical: "https://example.com/my-page",
+    robots: "index, follow",
+    icons: [
+      { rel: "icon",             type: "image/png", sizes: "32x32", href: "/favicon-32x32.png" },
+      { rel: "icon",             type: "image/png", sizes: "16x16", href: "/favicon-16x16.png" },
+      { rel: "apple-touch-icon", sizes: "180x180",                  href: "/apple-touch-icon.png" },
+    ],
+    manifest: "/site.webmanifest",
+    og: {
+      title: "My Page",
+      description: "Page description",
+      image: "https://example.com/og.png",
+      url: "https://example.com/my-page",
+      type: "website",
+      siteName: "My Site",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: "My Page",
+      description: "Page description",
+      image: "https://example.com/og.png",
+    },
+    // extra: raw HTML injected verbatim into <head> — for anything not covered above
+    extra: "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">",
+  },
+  html: { lang: "en" },
+  body: { className: "min-h-screen bg-slate-950 text-slate-100" },
 };
 
 export const app = {
   hydration: "reactive", // "reactive" | "static" | "none"
 };
 ```
+
+**`page.head` fields:**
+
+| Field | Output | Notes |
+|---|---|---|
+| `title` | `<title>` | |
+| `description` | `<meta name="description">` | |
+| `themeColor` | `<meta name="theme-color">` | PWA + browser chrome color |
+| `canonical` | `<link rel="canonical">` | SEO deduplication |
+| `robots` | `<meta name="robots">` | e.g. `"index, follow"` or `"noindex"` |
+| `icons` | `<link rel="icon">` / `<link rel="apple-touch-icon">` | Array of `{ rel, href, type?, sizes? }` |
+| `manifest` | `<link rel="manifest">` | PWA web app manifest |
+| `og` | `<meta property="og:*">` | `title`, `description`, `image`, `url`, `type`, `siteName`, `locale` |
+| `twitter` | `<meta name="twitter:*">` | `card`, `title`, `description`, `image`, `site`, `creator` |
+| `extra` | raw HTML verbatim | Escape hatch — inject anything else |
 
 Use **`className`**, not `class`.
 
