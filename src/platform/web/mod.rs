@@ -12,8 +12,8 @@ use std::time::Duration;
 use axum::body::{Body, Bytes};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
-    HeaderMap, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL, header::CONTENT_TYPE,
-    header::SET_COOKIE,
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
+    header::CACHE_CONTROL, header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -8572,40 +8572,86 @@ async fn api_query_simple_table_rows(
 
 // ── Webhook auth helper ──────────────────────────────────────────────────────
 
+/// Auth failure kinds returned by [`verify_webhook_auth`].
+enum AuthError {
+    /// 401 — not authenticated or token invalid. Carries optional redirect URL from credential.
+    Unauthenticated { message: String, redirect_url: Option<String> },
+    /// 403 — authenticated but role check failed. Carries optional redirect URL from credential.
+    Forbidden { message: String, redirect_url: Option<String> },
+    /// 500 — server-side misconfiguration.
+    Internal(String),
+}
+
+/// Returns `true` when the request is a browser page navigation (not a fetch/XHR call).
+///
+/// Primary signal: `Sec-Fetch-Mode: navigate` + `Sec-Fetch-Dest: document` (Fetch Metadata spec).
+/// Fallback: `Accept` header contains `text/html` (for older browsers without Sec-Fetch support).
+fn is_page_navigation(headers: &HeaderMap) -> bool {
+    let mode = headers
+        .get("sec-fetch-mode")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let dest = headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !mode.is_empty() || !dest.is_empty() {
+        // Sec-Fetch headers present — use them as authoritative signal.
+        return mode == "navigate" && dest == "document";
+    }
+
+    // Fallback: Accept header contains text/html (old browsers, curl with explicit Accept).
+    headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .map(|a| a.contains("text/html"))
+        .unwrap_or(false)
+}
+
 /// Verifies the auth requirement of a webhook trigger spec.
 ///
 /// Returns:
 /// - `Ok(Some(claims))` — JWT auth passed; claims to inject as `payload.auth`
 /// - `Ok(None)` — HMAC / API key auth passed; no claims to inject
-/// - `Err((status, message))` — auth failed
+/// - `Err(AuthError)` — auth failed
 fn verify_webhook_auth(
     headers: &HeaderMap,
     body: &Bytes,
     auth_type: &str,
     auth_credential: &str,
+    required_roles: &[String],
     credentials: &crate::platform::services::CredentialService,
     owner: &str,
     project: &str,
-) -> Result<Option<Value>, (StatusCode, String)> {
+) -> Result<Option<Value>, AuthError> {
     if auth_type.is_empty() || auth_type == "none" {
         return Ok(None);
     }
     if auth_credential.is_empty() {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
+        return Err(AuthError::Internal(
             "auth_type set but auth_credential is empty".to_string(),
         ));
     }
 
     let credential = credentials
         .get_project_credential(owner, project, auth_credential)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.message))?
+        .map_err(|e| AuthError::Internal(e.message))?
         .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("auth credential '{auth_credential}' not found"),
-            )
+            AuthError::Internal(format!("auth credential '{auth_credential}' not found"))
         })?;
+
+    // Read redirect URLs from credential secret — used when building AuthError responses.
+    let auth_redirect = credential
+        .secret
+        .get("auth_redirect")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
+    let auth_forbidden_redirect = credential
+        .secret
+        .get("auth_forbidden_redirect")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
 
     match auth_type {
         "jwt" => {
@@ -8625,7 +8671,10 @@ fn verify_webhook_auth(
                     })
                 })
                 .ok_or_else(|| {
-                    (StatusCode::UNAUTHORIZED, "missing Authorization: Bearer <token> or session cookie".to_string())
+                    AuthError::Unauthenticated {
+                        message: "missing Authorization: Bearer <token> or session cookie".to_string(),
+                        redirect_url: auth_redirect.clone(),
+                    }
                 })?;
 
             let algo_str = credential
@@ -8641,10 +8690,9 @@ fn verify_webhook_auth(
                 "RS384" => Algorithm::RS384,
                 "RS512" => Algorithm::RS512,
                 other => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("unsupported JWT algorithm '{other}'"),
-                    ));
+                    return Err(AuthError::Internal(format!(
+                        "unsupported JWT algorithm '{other}'"
+                    )));
                 }
             };
 
@@ -8655,8 +8703,7 @@ fn verify_webhook_auth(
                         .get("secret")
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
+                            AuthError::Internal(
                                 "jwt_signing_key credential missing 'secret' field".to_string(),
                             )
                         })?;
@@ -8669,13 +8716,12 @@ fn verify_webhook_auth(
                         .or_else(|| credential.secret.get("private_key"))
                         .and_then(|v| v.as_str())
                         .ok_or_else(|| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
+                            AuthError::Internal(
                                 "jwt_signing_key credential missing 'public_key'".to_string(),
                             )
                         })?;
                     DecodingKey::from_rsa_pem(pem.as_bytes())
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                        .map_err(|e| AuthError::Internal(e.to_string()))?
                 }
             };
 
@@ -8683,9 +8729,30 @@ fn verify_webhook_auth(
             validation.validate_exp = true;
 
             let token_data = decode::<Value>(&token, &decoding_key, &validation)
-                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("JWT invalid: {e}")))?;
+                .map_err(|e| AuthError::Unauthenticated {
+                    message: format!("JWT invalid: {e}"),
+                    redirect_url: auth_redirect.clone(),
+                })?;
 
-            Ok(Some(token_data.claims))
+            let claims = token_data.claims;
+
+            // Role check — only applies when the trigger specifies required roles.
+            if !required_roles.is_empty() {
+                let jwt_role = claims
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !required_roles.iter().any(|r| r == jwt_role) {
+                    return Err(AuthError::Forbidden {
+                        message: format!(
+                            "role '{jwt_role}' is not permitted for this route"
+                        ),
+                        redirect_url: auth_forbidden_redirect.clone(),
+                    });
+                }
+            }
+
+            Ok(Some(claims))
         }
 
         "hmac" => {
@@ -8699,10 +8766,10 @@ fn verify_webhook_auth(
                 .or_else(|| headers.get("X-Signature"))
                 .and_then(|h| h.to_str().ok())
                 .ok_or_else(|| {
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
-                    )
+                    AuthError::Unauthenticated {
+                        message: "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
+                        redirect_url: None,
+                    }
                 })?;
             let expected = sig_header.trim_start_matches("sha256=");
 
@@ -8711,19 +8778,19 @@ fn verify_webhook_auth(
                 .get("secret")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "hmac credential missing 'secret' field".to_string(),
-                    )
+                    AuthError::Internal("hmac credential missing 'secret' field".to_string())
                 })?;
 
             let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(|e| AuthError::Internal(e.to_string()))?;
             mac.update(body.as_ref());
             let computed = hex::encode(mac.finalize().into_bytes());
 
             if computed != expected {
-                return Err((StatusCode::UNAUTHORIZED, "HMAC signature mismatch".to_string()));
+                return Err(AuthError::Unauthenticated {
+                    message: "HMAC signature mismatch".to_string(),
+                    redirect_url: None,
+                });
             }
 
             Ok(None)
@@ -8741,10 +8808,10 @@ fn verify_webhook_auth(
                         .and_then(|h| h.strip_prefix("ApiKey "))
                 })
                 .ok_or_else(|| {
-                    (
-                        StatusCode::UNAUTHORIZED,
-                        "missing API key (X-API-Key or Authorization: ApiKey <key>)".to_string(),
-                    )
+                    AuthError::Unauthenticated {
+                        message: "missing API key (X-API-Key or Authorization: ApiKey <key>)".to_string(),
+                        redirect_url: None,
+                    }
                 })?;
 
             let stored = credential
@@ -8752,23 +8819,22 @@ fn verify_webhook_auth(
                 .get("key")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "api_key credential missing 'key' field".to_string(),
-                    )
+                    AuthError::Internal("api_key credential missing 'key' field".to_string())
                 })?;
 
             if provided != stored {
-                return Err((StatusCode::UNAUTHORIZED, "invalid API key".to_string()));
+                return Err(AuthError::Unauthenticated {
+                    message: "invalid API key".to_string(),
+                    redirect_url: None,
+                });
             }
 
             Ok(None)
         }
 
-        other => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("unknown auth_type '{other}'. Valid: jwt, hmac, api_key, none"),
-        )),
+        other => Err(AuthError::Internal(format!(
+            "unknown auth_type '{other}'. Valid: jwt, hmac, api_key, none"
+        ))),
     }
 }
 
@@ -8889,6 +8955,7 @@ async fn public_webhook_ingress(
         total_segments: usize,
         auth_type: String,
         auth_credential: String,
+        auth_required_role: Vec<String>,
     }
 
     let mut candidates = Vec::<Candidate>::new();
@@ -8907,6 +8974,7 @@ async fn public_webhook_ingress(
             candidates.push(Candidate {
                 auth_type: trigger.auth_type.clone(),
                 auth_credential: trigger.auth_credential.clone(),
+                auth_required_role: trigger.auth_required_role.clone(),
                 compiled: compiled.clone(),
                 path_params: path_match.params,
                 static_segments: path_match.static_segments,
@@ -8944,12 +9012,32 @@ async fn public_webhook_ingress(
         &body,
         &selected.auth_type,
         &selected.auth_credential,
+        &selected.auth_required_role,
         &state.platform.credentials,
         &owner,
         &project,
     ) {
         Ok(claims) => claims,
-        Err((status, msg)) => {
+        Err(auth_err) => {
+            let (status, msg, redirect_url) = match auth_err {
+                AuthError::Unauthenticated { message, redirect_url } => {
+                    (StatusCode::UNAUTHORIZED, message, redirect_url)
+                }
+                AuthError::Forbidden { message, redirect_url } => {
+                    (StatusCode::FORBIDDEN, message, redirect_url)
+                }
+                AuthError::Internal(message) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, message, None)
+                }
+            };
+
+            // Page navigation + redirect configured → 302 instead of JSON error.
+            if is_page_navigation(&headers) {
+                if let Some(url) = redirect_url {
+                    return axum::response::Redirect::to(&url).into_response();
+                }
+            }
+
             if let Some(err_resp) = dispatch_weberror(
                 &state,
                 &owner,
@@ -9089,7 +9177,87 @@ async fn public_webhook_ingress(
         log_max_n,
     );
 
-    // ── _set_cookie convention ────────────────────────────────────────────────
+    // ── n.web.response — explicit response envelope ───────────────────────────
+    // When the pipeline ends with n.web.response, its output carries a __zf_response
+    // envelope that fully controls the HTTP response. Handle it before legacy magic keys.
+    if let Some(resp_cfg) = output.value.get("__zf_response").cloned() {
+        let status = resp_cfg
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|c| StatusCode::from_u16(c as u16).ok())
+            .unwrap_or(StatusCode::OK);
+
+        // Build helpers for cookie + extra headers
+        let zf_cookie = build_zf_cookie(&resp_cfg);
+        let zf_headers = build_zf_headers(&resp_cfg);
+
+        // HTML (template mode)
+        if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
+            let mut html = html.to_string();
+            if let Some(css) = resp_cfg
+                .get("hydration_payload")
+                .and_then(|hp| hp.get("css"))
+                .and_then(Value::as_str)
+            {
+                if !css.trim().is_empty() {
+                    let style_block = format!("<style data-rwe-tw>{css}</style>");
+                    if let Some(pos) = html.find("</head>") {
+                        html.insert_str(pos, &style_block);
+                    } else {
+                        html = format!("{style_block}{html}");
+                    }
+                }
+            }
+            let scripts = resp_cfg
+                .get("compiled_scripts")
+                .cloned()
+                .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
+                .unwrap_or_default();
+            let externalized =
+                externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project)));
+            let mut resp = Html(externalized).into_response();
+            *resp.status_mut() = status;
+            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+            return resp;
+        }
+
+        // Redirect
+        if let Some(loc) = resp_cfg.get("location").and_then(Value::as_str) {
+            let mut resp = (status, "").into_response();
+            if let Ok(v) = HeaderValue::from_str(loc) {
+                resp.headers_mut().insert(LOCATION, v);
+            }
+            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+            return resp;
+        }
+
+        // Plain text message
+        if let Some(msg) = resp_cfg.get("message").and_then(Value::as_str) {
+            let mut resp = (status, msg.to_string()).into_response();
+            apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+            return resp;
+        }
+
+        // Explicit body path
+        if let Some(body) = resp_cfg.get("body") {
+            if !body.is_null() {
+                let mut resp = (status, Json(body.clone())).into_response();
+                apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+                return resp;
+            }
+        }
+
+        // Default: JSON response — pipeline output minus __zf_response
+        let mut out = output.value.clone();
+        if let Value::Object(ref mut map) = out {
+            map.remove("__zf_response");
+        }
+        let mut resp = (status, Json(out)).into_response();
+        apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
+        return resp;
+    }
+
+    // ── _set_cookie convention (legacy) ──────────────────────────────────────
     // If the pipeline output contains `_set_cookie`, build the Set-Cookie header string.
     // Applied to the final response regardless of response type.
     let set_cookie_header: Option<String> = output.value
@@ -9655,9 +9823,12 @@ fn hydrate_web_render_markup_from_templates(
     graph: &mut PipelineGraph,
 ) -> Result<(), PlatformError> {
     for node in &mut graph.nodes {
-        if node.kind != "n.web.render" {
+        let is_render = node.kind == "n.web.render";
+        let is_response = node.kind == "n.web.response";
+        if !is_render && !is_response {
             continue;
         }
+
         let has_markup = node
             .config
             .get("markup")
@@ -9668,13 +9839,18 @@ fn hydrate_web_render_markup_from_templates(
             continue;
         }
 
-        let template_rel = node
-            .config
-            .get("template_path")
-            .or_else(|| node.config.get("template_rel_path"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        // n.web.render uses "template_path"; n.web.response uses "template"
+        let template_rel = if is_response {
+            node.config.get("template").and_then(Value::as_str)
+        } else {
+            node.config
+                .get("template_path")
+                .or_else(|| node.config.get("template_rel_path"))
+                .and_then(Value::as_str)
+        }
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
         let Some(template_rel) = template_rel else {
             continue;
         };
@@ -9688,6 +9864,62 @@ fn hydrate_web_render_markup_from_templates(
         }
     }
     Ok(())
+}
+
+/// Build a Set-Cookie string from a `__zf_response` envelope's `set_cookie` field.
+fn build_zf_cookie(resp_cfg: &Value) -> Option<String> {
+    let sc = resp_cfg.get("set_cookie")?;
+    let name = sc.get("name")?.as_str()?;
+    let value = sc.get("value")?.as_str()?;
+    let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
+    let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
+    let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
+    let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
+    let secure = sc.get("secure").and_then(Value::as_bool).unwrap_or(false);
+
+    let mut parts = vec![
+        format!("{name}={value}"),
+        format!("Path={path}"),
+        format!("Max-Age={max_age}"),
+        format!("SameSite={same_site}"),
+    ];
+    if http_only {
+        parts.push("HttpOnly".to_string());
+    }
+    if secure {
+        parts.push("Secure".to_string());
+    }
+    Some(parts.join("; "))
+}
+
+/// Build extra headers list from a `__zf_response` envelope's `headers` field.
+fn build_zf_headers(resp_cfg: &Value) -> Vec<(String, String)> {
+    resp_cfg
+        .get("headers")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Apply cookie and extra headers from a `__zf_response` envelope to an axum Response.
+fn apply_zf_extras(resp: &mut axum::response::Response, cookie: &Option<String>, headers: &[(String, String)]) {
+    if let Some(c) = cookie {
+        if let Ok(v) = HeaderValue::from_str(c) {
+            resp.headers_mut().insert(SET_COOKIE, v);
+        }
+    }
+    for (k, v) in headers {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.as_bytes()),
+            HeaderValue::from_str(v),
+        ) {
+            resp.headers_mut().append(name, val);
+        }
+    }
 }
 
 fn compile_template_buffer(

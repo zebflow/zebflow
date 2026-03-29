@@ -1,86 +1,137 @@
-# Pipeline DSL — Web pages (`n.web.render`)
+# Pipeline DSL — Web responses (`n.web.response`)
 
-This doc is about **serving HTML pages** from pipelines: trigger → data nodes → **`n.web.render`** → browser.
+This doc covers **serving HTTP responses** from pipelines: HTML pages, JSON, redirects, cookies, and custom headers — all via `n.web.response`.
 
 See also: **`pipeline-dsl`** (full DSL), **`web-templates`** (how to write `.tsx` pages).
 
----
-
-## What `n.web.render` does
-
-1. Upstream nodes build a JSON **`input`** for the page.
-2. The template file (TSX under `repo/pipelines/`) is compiled and rendered to HTML on the server.
-3. If the page is interactive, the platform sends a small client script to hydrate.
+> `n.web.render` is the old name — it still works as an alias but **always use `web.response`** in new pipelines.
 
 ---
 
-## Minimal pipeline shape
+## What `n.web.response` does
 
-Use a real `file_rel_path` for the pipeline file (see `help(topic="pipeline")`). Example body:
+Without `--template`: serves the upstream payload as **JSON** (status 200 by default).
+With `--template`: compiles the TSX file, renders it to **HTML** on the server (SSR), and hydrates on the client.
+
+All HTTP concerns (status, cookies, headers, redirects) are explicit flags — nothing hidden.
+
+---
+
+## DSL flags
+
+| Flag | Description |
+|------|-------------|
+| `--template pages/foo.tsx` | TSX page to render. Activates RWE mode — upstream payload becomes `input` in the template. |
+| `--status 404` | HTTP status code (default: 200, or 302 when `--location` is set). |
+| `--location /path` | Redirect URL. Implies 302 unless `--status` overrides. |
+| `--message "text"` | Plain-text response body. |
+| `--body $.field` | JSON path into upstream payload to use as response body. |
+| `--set-cookie spec` | Set a cookie — see spec format below. |
+| `--header K=V` | Extra response header. Repeatable. |
+| `--load-scripts url` | External script URLs to inject (template mode only, comma-separated). |
+
+---
+
+## Cookie spec format (`--set-cookie`)
+
+Comma-separated key=value pairs:
+
+```
+name=session,value=$.access_token,http-only,max-age=86400,secure,same-site=Strict,path=/
+```
+
+| Part | Meaning |
+|------|---------|
+| `name=NAME` | Cookie name (required). |
+| `value=$.path` | Cookie value — `$.field` resolves from upstream payload, or use a literal. |
+| `http-only` | Sets HttpOnly flag (default: on). |
+| `secure` | Sets Secure flag. |
+| `max-age=SECS` | Max-Age directive (default: 900). |
+| `same-site=Lax` | SameSite (default: Lax). |
+| `path=/` | Cookie path (default: /). |
+
+---
+
+## Patterns
+
+### Serve JSON (no template)
+
+```zf
+| trigger.webhook --path /api/posts --method GET
+| pg.query --credential main-db -- "SELECT id, title FROM posts"
+| web.response
+```
+
+### Render an HTML page
 
 ```zf
 | trigger.webhook --path /blog --method GET
-| pg.query --credential my-db -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
-| n.web.render --template-path pages/blog-home
+| pg.query --credential main-db -- "SELECT id, title, published_at FROM posts ORDER BY published_at DESC LIMIT 20"
+| web.response --template pages/blog-home.tsx
 ```
 
-- The **webhook path** is what users open in the browser.
-- **`--template-path`** is the page path under `repo/pipelines/` **without** `.tsx`.
+### 404 error page
+
+```zf
+| trigger.webhook --path /blog/:id --method GET
+| pg.query --credential main-db -- "SELECT * FROM posts WHERE id = $1"
+| script -- "if (!input.rows?.[0]) return { __notfound: true }; return input.rows[0]"
+| web.response --template pages/not-found.tsx --status 404
+```
+
+### Redirect
+
+```zf
+| trigger.webhook --path /go/signup --method GET
+| web.response --location /auth/register --status 302
+```
+
+### Login — set session cookie
+
+```zf
+| trigger.webhook --path /auth/login --method POST
+| pg.query --credential main-db -- "SELECT id, role FROM users WHERE email = $1"
+| auth.token.create --credential my-jwt --claim sub=$.rows[0].id --claim role=$.rows[0].role
+| web.response --template pages/home.tsx --set-cookie name=session,value=$.access_token,http-only,max-age=86400
+```
+
+### Custom headers
+
+```zf
+| trigger.webhook --path /api/data --method GET
+| pg.query --credential main-db -- "SELECT * FROM data"
+| web.response --header Content-Type=application/json --header X-Version=2
+```
 
 ---
 
-## Node settings (short)
+## Accessing server data in TSX templates
 
-| Field | Meaning |
-|--------|---------|
-| `template_path` | Required. Example: `pages/blog-home`. |
-| `route` | Often comes from the trigger; set in the node when you need an override. |
-| `load_scripts` | Optional list of allowed external script URLs (project allow-list). |
+The upstream pipeline payload becomes **`input`** (the function parameter) inside the template. `ctx` is the same object available as a global (`globalThis.ctx`) in both SSR and browser.
+
+```tsx
+export default function Page(input) {
+  // input = full upstream payload (e.g. { rows: [...], total: 42 })
+  const posts = input?.rows ?? [];
+  const [selected, setSelected] = useState(null);
+
+  return (
+    <Page>
+      <main>
+        {posts.map(p => <div key={p.id}>{p.title}</div>)}
+      </main>
+    </Page>
+  );
+}
+```
+
+**Rules:**
+- Use `input` (function parameter) to access server data — works in both SSR and browser.
+- Use `useState`, `useEffect`, etc. for client interactivity — these are globals, no import needed.
+- `ctx` also works as a bare global if you prefer, but `input` as the function param is the convention.
 
 ---
 
 ## Where templates live
 
-**`repo/pipelines/`** — e.g. `pages/...`, `components/...`, `shared/ui/...`. Imports use **`@/`** from that root.
-
----
-
-## Page code
-
-The default export receives **`input`**:
-
-```tsx
-export default function BlogHome(input: { rows?: any[] }) {
-  const posts = input?.rows ?? [];
-  return (
-    <div>
-      <h1>Blog</h1>
-      <ul>
-        {posts.map((p) => (
-          <li key={p.id}><a href={`/blog/${p.id}`}>{p.title}</a></li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-```
-
-Hooks (`useState`, …) are globals; you may add `import { useState } from "zeb"` on pages for editor hints — see **`web-templates`**.
-
----
-
-## Imports (rules)
-
-Only **`zeb`**, **`zeb/...`** (enabled libraries), and **`@/...`**. Full detail: **`web-templates`** and **ARCHITECTURE** §11.
-
----
-
-## Example: post detail
-
-```zf
-| trigger.webhook --path /blog/:id --method GET
-| pg.query --credential main-db -- "SELECT * FROM posts WHERE id = $1"
-| n.web.render --template-path pages/blog-post
-```
-
-`repo/pipelines/pages/blog-post.tsx` — same `input` pattern as above; use `input.rows?.[0]` for one row.
+`repo/pipelines/` — e.g. `pages/...`, `components/...`, `shared/ui/...`. Imports use **`@/`** from that root.

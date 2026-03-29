@@ -102,7 +102,7 @@ register daily-price-check --path /jobs \
 
 ---
 
-## Combining web.auto + web.render
+## Combining web.auto + web.response
 
 A common pattern: scrape external data on a schedule, store it, serve it as a reactive page.
 
@@ -121,7 +121,7 @@ register scrape-blog --path /jobs \
 register articles-page --path /pages \
   | trigger.webhook --path /articles --method GET \
   | sekejap.query --table cached_articles --op query \
-  | web.render --template articles-home --route /articles
+  | web.response --template articles-home --route /articles
 ```
 
 ---

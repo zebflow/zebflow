@@ -67,6 +67,11 @@ pub fn definition() -> NodeDefinition {
                 "auth_credential": {
                     "type": "string",
                     "description": "Credential ID used for auth verification. Required when auth_type is not none."
+                },
+                "auth_required_role": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Required roles for this route. JWT claim 'role' must match one of these. Empty = any authenticated user."
                 }
             }
         }),
@@ -82,6 +87,7 @@ pub fn definition() -> NodeDefinition {
                 SelectOptionDef { value: "api_key".to_string(), label: "API Key (X-API-Key)".to_string() },
             ], help: Some("Trigger-level auth. On failure returns 401.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "auth_required_role".to_string(), label: "Required Role".to_string(), field_type: NodeFieldType::MultiCheckbox, data_source: Some(NodeFieldDataSource::CredentialJwtRoles), help: Some("Roles allowed to access this route. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()), ..Default::default() },
         ],
         dsl_flags: vec![
             DslFlag {
@@ -112,12 +118,20 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--auth-required-role".to_string(),
+                config_key: "auth_required_role".to_string(),
+                description: "Comma-separated roles required for this route. JWT claim 'role' must match one. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
+                kind: DslFlagKind::CommaSeparatedList,
+                required: false,
+            },
         ],
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("path".to_string())] },
             LayoutItem::Field("method".to_string()),
             LayoutItem::Field("__webhook_public_url".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("auth_type".to_string()), LayoutItem::Field("auth_credential".to_string())] },
+            LayoutItem::Field("auth_required_role".to_string()),
         ],
         ai_tool: Default::default(),
     }
@@ -140,6 +154,10 @@ pub struct Config {
     /// Credential ID to use for auth verification (required when `auth_type != "none"`).
     #[serde(default)]
     pub auth_credential: String,
+    /// Required roles for this route. JWT claim `role` must match one of these.
+    /// Empty = any authenticated user may access. Comma-separated in DSL: `lecturer,student`.
+    #[serde(default)]
+    pub auth_required_role: Vec<String>,
 }
 
 fn default_method() -> String {

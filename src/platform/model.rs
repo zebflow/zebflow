@@ -136,6 +136,9 @@ pub struct ProjectCredentialListItem {
     pub has_secret: bool,
     /// Optional freeform notes.
     pub notes: String,
+    /// Roles registered in this credential (JWT only). Non-sensitive — safe to expose in list responses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auth_roles: Vec<String>,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -1534,6 +1537,9 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "template_get" => Some(ProjectCapability::TemplatesRead),
         "template_create" => Some(ProjectCapability::TemplatesCreate),
         "template_write" => Some(ProjectCapability::TemplatesWrite),
+        "template_search" => Some(ProjectCapability::TemplatesRead),
+        "template_edit" => Some(ProjectCapability::TemplatesWrite),
+        "pipeline_search" => Some(ProjectCapability::PipelinesRead),
         "connection_list" => Some(ProjectCapability::TablesRead),
         "connection_describe" => Some(ProjectCapability::TablesRead),
         "credential_list" => Some(ProjectCapability::CredentialsRead),

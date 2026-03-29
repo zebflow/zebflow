@@ -16,6 +16,7 @@ pub mod sjtable_query;
 pub mod trigger;
 mod util;
 pub mod web_render;
+pub mod web_response;
 pub mod ws_emit;
 pub mod ws_sync_state;
 pub mod ws_trigger;
@@ -38,6 +39,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         sjtable_query::definition(),
         pg_query::definition(),
         web_render::definition(),
+        web_response::definition(),
         ws_sync_state::definition(),
         ws_emit::definition(),
         logic::if_::definition(),

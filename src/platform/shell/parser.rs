@@ -113,6 +113,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
         "script" | "n.script" => Some("n.script"),
         "web.render" | "n.web.render" => Some("n.web.render"),
+        "web.response" | "n.web.response" => Some("n.web.response"),
         "http.request" | "n.http.request" => Some("n.http.request"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
         // Backward-compat alias — old pipelines using n.sjtable.query still work
@@ -154,7 +155,7 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             vec!["in".to_string()],
             vec!["true".to_string(), "false".to_string(), "default".to_string()],
         ),
-        "n.web.render" => (vec!["in".to_string()], vec![]),
+        "n.web.render" | "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.function.call" => (

@@ -461,11 +461,32 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
 
-        let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) else {
-            return DslOutput::err(format!(
-                "Node '{node_id}' not found in pipeline '{file_rel_path}'"
-            ));
+        // Find node index: first try exact ID, then kind-based addressing
+        let node_idx = if let Some(i) = graph.nodes.iter().position(|n| n.id == node_id) {
+            i
+        } else {
+            let (kind_ref, explicit_idx) = parse_node_kind_ref(node_id);
+            let norm_ref = kind_ref.strip_prefix("n.").unwrap_or(&kind_ref);
+            let candidates: Vec<usize> = graph.nodes.iter().enumerate()
+                .filter(|(_, n)| n.kind.strip_prefix("n.").unwrap_or(&n.kind) == norm_ref)
+                .map(|(i, _)| i)
+                .collect();
+            match (candidates.len(), explicit_idx) {
+                (0, _) => return DslOutput::err(format!(
+                    "Node '{node_id}' not found in pipeline '{file_rel_path}'"
+                )),
+                (1, None) | (1, Some(0)) => candidates[0],
+                (_, Some(idx)) if idx < candidates.len() => candidates[idx],
+                (_, Some(idx)) => return DslOutput::err(format!(
+                    "Kind '{kind_ref}' has {} node(s) — index {idx} is out of range",
+                    candidates.len()
+                )),
+                (n, None) => return DslOutput::err(format!(
+                    "Kind '{kind_ref}' matches {n} nodes — use {kind_ref}[0], {kind_ref}[1], etc. to specify which"
+                )),
+            }
         };
+        let node = &mut graph.nodes[node_idx];
 
         if let Value::Object(ref mut cfg) = node.config {
             for (k, v) in &flags {
@@ -762,10 +783,18 @@ impl DslExecutor {
             cmd.arg(arg);
         }
 
-        // For commit with body: use body as commit message
+        // For commit with body: use body as commit message.
+        // Strip any Co-authored-by lines injected by AI agents before committing.
         if subcommand == "commit" {
             if let Some(msg) = body {
-                cmd.arg("-m").arg(msg);
+                let cleaned: String = msg
+                    .lines()
+                    .filter(|l| !l.trim_start().to_lowercase().starts_with("co-authored-by:"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .trim_end()
+                    .to_string();
+                cmd.arg("-m").arg(cleaned);
             }
         }
 
@@ -812,6 +841,22 @@ impl DslExecutor {
         ));
         out
     }
+}
+
+/// Parse a node kind reference with optional index suffix.
+/// "pg.query" → ("pg.query", None)
+/// "pg.query[1]" → ("pg.query", Some(1))
+fn parse_node_kind_ref(s: &str) -> (String, Option<usize>) {
+    if let Some(bracket_pos) = s.rfind('[') {
+        if s.ends_with(']') {
+            let kind = s[..bracket_pos].to_string();
+            let idx_str = &s[bracket_pos + 1..s.len() - 1];
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                return (kind, Some(idx));
+            }
+        }
+    }
+    (s.to_string(), None)
 }
 
 fn truncate(s: &str, max: usize) -> String {

@@ -106,7 +106,7 @@ pub fn get_help_content(path: &str) -> Option<String> {
     get_help(path).ok()
 }
 
-/// Root index table — all top-level topics.
+/// Root index table — full two-level hierarchy from HELP array.
 pub fn help_root_index() -> String {
     let mut out = String::from(
         "# Zebflow Help Index\n\n\
@@ -115,41 +115,82 @@ pub fn help_root_index() -> String {
          |-------|-------|--------------|\n",
     );
 
-    // Top-level static topics (depth=1)
-    let mut seen = std::collections::HashSet::new();
+    // Collect ordered top-level sections (preserving first-seen order)
+    let mut top_levels: Vec<&str> = Vec::new();
+    let mut seen_tops = std::collections::HashSet::new();
     for node in HELP.iter() {
-        let segments: Vec<&str> = node.path.splitn(2, '/').collect();
-        let top = segments[0];
-        if segments.len() == 1 || (segments.len() == 2 && segments[1] == "index") {
-            if !seen.contains(top) {
-                seen.insert(top);
-                let display_path = if node.path.ends_with("/index") {
-                    top.to_string()
-                } else {
-                    node.path.to_string()
-                };
-                out.push_str(&format!(
-                    "| `help(\"{}\")` | {} | {} |\n",
-                    display_path, node.title, node.last_updated
-                ));
-            }
+        let top = node.path.splitn(2, '/').next().unwrap_or("");
+        if !top.is_empty() && seen_tops.insert(top) {
+            top_levels.push(top);
         }
     }
 
-    // Dynamic special entries
-    out.push_str(&format!(
-        "| `help(\"pipeline/nodes\")` | Node Catalog (dynamic) | live |\n"
-    ));
-    out.push_str(&format!(
-        "| `help(\"pipeline/examples\")` | Pipeline Examples Index | — |\n"
-    ));
+    for top in top_levels {
+        // Top-level section header (from /index file if it exists)
+        if let Some(idx) = HELP.iter().find(|n| n.path == &format!("{}/index", top) || n.path == top) {
+            let display = if idx.path.ends_with("/index") { top } else { idx.path };
+            out.push_str(&format!(
+                "| **`help(\"{}\")`** | **{}** | {} |\n",
+                display, idx.title, idx.last_updated
+            ));
+        }
+
+        // Children: depth-2 entries under this top, excluding /index and examples sub-items
+        let prefix = format!("{}/", top);
+        let mut children: Vec<&HelpNode> = HELP
+            .iter()
+            .filter(|n| {
+                n.path.starts_with(&prefix)
+                    && !n.path.ends_with("/index")
+                    && !n.path[prefix.len()..].contains('/')
+            })
+            .collect();
+        children.sort_by_key(|n| n.path);
+
+        for child in children {
+            out.push_str(&format!(
+                "| `help(\"{}\")` | {} | {} |\n",
+                child.path, child.title, child.last_updated
+            ));
+        }
+
+        // Inject dynamic pipeline entries after pipeline children
+        if top == "pipeline" {
+            out.push_str("| `help(\"pipeline/nodes\")` | **Node Catalog** (live from Rust) | live |\n");
+            out.push_str("| `help(\"pipeline/examples\")` | Pipeline Examples Index | — |\n");
+        }
+    }
 
     out.push_str(
-        "\n`help_search(query)` — full-text search across all help docs\n\n\
-         Tip: `help(\"pipeline\")` shows pipeline sub-topics, \
-         `help(\"web\")` shows web sub-topics, etc.",
+        "\n`help_search(query)` — search across all help docs + node catalog (partial, scored)\n\n\
+         Tip: `help(\"pipeline/nodes\")` → full node catalog with all DSL flags and schemas.",
     );
     out
+}
+
+/// All searchable content: static HELP files + dynamic node catalog.
+/// Used by help_search — node catalog is included so agents can find nodes by name/flag/description.
+pub fn all_searchable_content() -> Vec<(String, String, String)> {
+    let mut all: Vec<(String, String, String)> = HELP
+        .iter()
+        .map(|n| (n.path.to_string(), n.title.to_string(), n.content.to_string()))
+        .collect();
+
+    // One entry per built-in node — kind, title, description, and all DSL flag text
+    for def in crate::pipeline::nodes::builtin_node_definitions() {
+        let path = format!("pipeline/nodes/{}", def.kind);
+        let title = format!("{} — {}", def.kind, def.title);
+        let mut content = format!("kind: {}\ntitle: {}\n{}\n", def.kind, def.title, def.description);
+        for flag in &def.dsl_flags {
+            content.push_str(&format!(
+                "flag: {} key: {} required: {} {}\n",
+                flag.flag, flag.config_key, flag.required, flag.description
+            ));
+        }
+        all.push((path, title, content));
+    }
+
+    all
 }
 
 /// Format all help content for inclusion in the assistant system prompt.
@@ -160,10 +201,6 @@ pub fn format_for_system_prompt() -> String {
         .join("\n---\n\n")
 }
 
-/// All help text (for search scanning).
-pub fn all_help_text() -> Vec<(&'static str, &'static str, &'static str)> {
-    HELP.iter().map(|n| (n.path, n.title, n.content)).collect()
-}
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 

@@ -25,7 +25,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 | trigger.webhook --path /blog --method GET
 | sekejap.query --table posts --op scan
 | script -- "return { posts: input.filter(p => p.published).sort((a,b)=>b.created_at-a.created_at).slice(0,20) }"
-| web.render --template-path pages/blog-home.tsx --route /blog
+| web.response --template pages/blog-home.tsx --route /blog
 ```
 
 ### blog-detail — single post
@@ -34,7 +34,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 | trigger.webhook --path /blog/:slug --method GET
 | sekejap.query --table posts --op get --key "{{input.params.slug}}"
 | script -- "if (!input || !input.published) return { __redirect: '/blog' }; return input"
-| web.render --template-path pages/blog-detail.tsx --route /blog/:slug
+| web.response --template pages/blog-detail.tsx --route /blog/:slug
 ```
 
 ### admin-list — protected admin panel
@@ -43,7 +43,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 | trigger.webhook --path /admin/posts --method GET
 | script -- "const tok = input.headers['authorization'] || input.query.token; if (!tok) return { __redirect: '/auth/login' }; return { token: tok }"
 | sekejap.query --table posts --op scan
-| web.render --template-path pages/admin-posts.tsx --route /admin/posts
+| web.response --template pages/admin-posts.tsx --route /admin/posts
 ```
 
 ### api-post-upsert — create or update post
@@ -77,7 +77,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 - `trigger.webhook` — HTTP endpoints (GET, POST, DELETE)
 - `sekejap.query` — embedded key-value store (scan, get, upsert, delete)
 - `script` — auth checks, data transforms, validation
-- `web.render` — TSX templates for public and admin pages
+- `web.response` — TSX templates for public and admin pages
 
 ---
 

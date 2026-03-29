@@ -6,6 +6,24 @@ Full JWT-based authentication: login page, register, session validation, role-ba
 
 ---
 
+## JWT Credential
+
+Create a `jwt_signing_key` credential with RBAC config in the secret:
+
+```json
+{
+  "algorithm": "HS256",
+  "secret": "your-signing-secret",
+  "auth_roles": ["user", "admin"],
+  "auth_redirect": "/auth/login",
+  "auth_forbidden_redirect": "/home"
+}
+```
+
+`auth_redirect` and `auth_forbidden_redirect` trigger only on browser page navigation (Sec-Fetch-Mode: navigate). API/fetch calls always receive JSON 401/403.
+
+---
+
 ## Pipelines
 
 1. `GET /auth/login` → render login page
@@ -13,99 +31,86 @@ Full JWT-based authentication: login page, register, session validation, role-ba
 3. `GET /auth/register` → render register page
 4. `POST /auth/register` → hash password → create user → redirect
 5. `GET /auth/logout` → clear cookie → redirect to login
-6. `GET /dashboard` → validate JWT → load user → render protected page
-7. `GET /admin/*` → validate JWT + role check → serve or 403
+6. `GET /dashboard` → JWT auto-verify → load user → render protected page
+7. `GET /admin/*` → JWT auto-verify + role check → serve or redirect/403
 
 ---
-
-## DSL
 
 ### auth-login-page — render login form
 
 ```
 | trigger.webhook --path /auth/login --method GET
-| web.render --template-path pages/auth-login.tsx --route /auth/login
+| web.response --template pages/auth-login.tsx
 ```
 
 ### auth-login-submit — authenticate and issue token
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| script -- "const { username, password } = input.body; if (!username || !password) return { error: 'missing fields', __status: 400 }; return { username, password }"
-| pg.query --credential main-db -- "SELECT id, username, role, password_hash FROM users WHERE username = '{{input.username}}' LIMIT 1"
-| script -- "const user = input[0]; if (!user) return { __redirect: '/auth/login?error=invalid' }; const match = user.password_hash === btoa(input.password + 'salt'); if (!match) return { __redirect: '/auth/login?error=invalid' }; const payload = { sub: user.id, username: user.username, role: user.role, exp: Date.now() + 86400000 }; return { token: btoa(JSON.stringify(payload)), user: { id: user.id, username: user.username, role: user.role } }"
-| script -- "return { __redirect: '/dashboard', __set_cookie: 'auth_token=' + input.token + '; Path=/; HttpOnly; Max-Age=86400' }"
+| pg.query --credential main-db --params-expr "[input.body.username]" \
+    -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
+| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, role: user.role }"
+| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username --claim role=$.role --expires-in 86400
+| web.response --location /dashboard --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
 ```
 
 ### auth-register-page — render register form
 
 ```
 | trigger.webhook --path /auth/register --method GET
-| web.render --template-path pages/auth-register.tsx --route /auth/register
+| web.response --template pages/auth-register.tsx
 ```
 
 ### auth-register-submit — create new user
 
 ```
 | trigger.webhook --path /auth/register --method POST
-| script -- "const { username, email, password } = input.body; if (!username || !email || !password) return { error: 'all fields required', __status: 400 }; if (password.length < 8) return { error: 'password too short', __status: 400 }; return { username, email, password_hash: btoa(password + 'salt'), role: 'user', created_at: Date.now() }"
-| pg.query --credential main-db -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ('{{input.username}}', '{{input.email}}', '{{input.password_hash}}', '{{input.role}}', NOW()) RETURNING id"
-| script -- "return { __redirect: '/auth/login?registered=1' }"
+| script -- "const { username, email, password } = input.body; if (!username || !email || !password) return { error: 'all fields required', __status: 400 }; if (password.length < 8) return { error: 'password too short', __status: 400 }; return { username, email, password_hash: btoa(password + 'salt'), role: 'user' }"
+| pg.query --credential main-db --params-expr "[input.username, input.email, input.password_hash, input.role]" \
+    -- "INSERT INTO users (username, email, password_hash, role, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING id::text"
+| web.response --location /auth/login?registered=1
 ```
 
-### auth-logout — clear session
+### auth-logout — clear session cookie
 
 ```
 | trigger.webhook --path /auth/logout --method GET
-| script -- "return { __redirect: '/auth/login', __set_cookie: 'auth_token=; Path=/; HttpOnly; Max-Age=0' }"
+| web.response --location /auth/login --set-cookie name=session,value=,http-only,max-age=0,path=/
 ```
 
 ### dashboard-protected — JWT-protected page
 
 ```
-| trigger.webhook --path /dashboard --method GET
-| script -- "const cookie = input.headers['cookie'] || ''; const match = cookie.match(/auth_token=([^;]+)/); if (!match) return { __redirect: '/auth/login' }; try { const payload = JSON.parse(atob(match[1])); if (payload.exp < Date.now()) return { __redirect: '/auth/login?expired=1' }; return { user: payload }; } catch(e) { return { __redirect: '/auth/login' }; }"
-| pg.query --credential main-db -- "SELECT id, username, email, role, created_at FROM users WHERE id = '{{input.user.sub}}'"
-| script -- "const u = input[0]; if (!u) return { __redirect: '/auth/login' }; return { user: u }"
-| web.render --template-path pages/dashboard.tsx --route /dashboard
+| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
+| pg.query --credential main-db --params-path /auth/sub \
+    -- "SELECT id::text, username, email, role FROM users WHERE id = $1::uuid"
+| script -- "const u = input.rows?.[0]; return { user: u }"
+| web.response --template pages/dashboard.tsx
 ```
+
+JWT missing/invalid → `auth_redirect` fires (browser) or 401 JSON (fetch).
 
 ### admin-guard — role-checked admin route
 
 ```
-| trigger.webhook --path /admin/:section --method GET
-| script -- "const cookie = input.headers['cookie'] || ''; const match = cookie.match(/auth_token=([^;]+)/); if (!match) return { __redirect: '/auth/login' }; try { const payload = JSON.parse(atob(match[1])); if (payload.role !== 'admin') return { __status: 403, error: 'Forbidden' }; return { user: payload, section: input.params.section }; } catch(e) { return { __redirect: '/auth/login' }; }"
-| web.render --template-path pages/admin-section.tsx --route /admin/:section
+| trigger.webhook --path /admin/:section --method GET --auth-type jwt --auth-credential my-jwt --auth-required-role admin
+| script -- "return { section: input.params.section, user: input.auth }"
+| web.response --template pages/admin-section.tsx
 ```
+
+Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 
 ---
 
 ## Nodes Used
 
-- `trigger.webhook` — all HTTP routes (GET and POST)
-- `pg.query` — user lookup, insert, update in PostgreSQL
-- `sekejap.query` — alternative to pg.query for Sekejap-based user storage
-- `script` — JWT encode/decode, password hashing, cookie parsing, role checks
-- `web.render` — login, register, dashboard, admin pages
-
----
-
-## Auth Helper Script (reusable)
-
-Extract this into a shared pipeline or script node to validate cookies consistently:
-
-```js
-const cookie = input.headers['cookie'] || '';
-const match = cookie.match(/auth_token=([^;]+)/);
-if (!match) return { __redirect: '/auth/login' };
-try {
-  const payload = JSON.parse(atob(match[1]));
-  if (payload.exp < Date.now()) return { __redirect: '/auth/login?expired=1' };
-  return { ...input, auth: payload };
-} catch(e) {
-  return { __redirect: '/auth/login' };
-}
-```
+- `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
+- `trigger.webhook --auth-required-role <roles>` — comma-separated roles from credential `auth_roles`
+- `pg.query` — user lookup and insert
+- `auth.token.create --claim key=$.field` — sign JWT; output `$.access_token`
+- `web.response --set-cookie` — set HttpOnly session cookie
+- `web.response --location` — redirect after login/logout/register
+- `web.response --template` — render protected pages
 
 ---
 
@@ -113,5 +118,5 @@ try {
 
 - `pages/auth-login.tsx` — login form (POST to /auth/login)
 - `pages/auth-register.tsx` — register form (POST to /auth/register)
-- `pages/dashboard.tsx` — protected user dashboard
-- `pages/admin-section.tsx` — admin panel (role-gated)
+- `pages/dashboard.tsx` — protected user dashboard; receives `input.user`
+- `pages/admin-section.tsx` — admin panel; receives `input.section` + `input.user`

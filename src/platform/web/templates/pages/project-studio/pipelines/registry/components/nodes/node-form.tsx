@@ -143,6 +143,12 @@ function enrichFields(
           label: m?.meta?.title || m?.meta?.name || m?.name || "",
         })
       ).filter((o: any) => o.value);
+    } else if (f.data_source === "credential_jwt_roles") {
+      // Roles come from the JWT credential selected in the sibling auth_credential field.
+      const selectedCredId = String(config.auth_credential ?? "");
+      const cred = (dataState.jwtCredentials as any[]).find((c: any) => c.credential_id === selectedCredId);
+      const roles: string[] = Array.isArray(cred?.auth_roles) ? cred.auth_roles : [];
+      options = roles.map((r: string) => ({ value: r, label: r }));
     }
 
     if (f.type === "copy_url") {

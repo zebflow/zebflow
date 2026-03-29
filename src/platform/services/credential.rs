@@ -33,14 +33,27 @@ impl CredentialService {
             .data
             .list_project_credentials(&owner, &project)?
             .into_iter()
-            .map(|credential| ProjectCredentialListItem {
-                credential_id: credential.credential_id,
-                title: credential.title,
-                kind: credential.kind,
-                has_secret: !credential.secret.is_null(),
-                notes: credential.notes,
-                created_at: credential.created_at,
-                updated_at: credential.updated_at,
+            .map(|credential| {
+                let auth_roles = credential
+                    .secret
+                    .get("auth_roles")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ProjectCredentialListItem {
+                    credential_id: credential.credential_id,
+                    title: credential.title,
+                    kind: credential.kind,
+                    has_secret: !credential.secret.is_null(),
+                    notes: credential.notes,
+                    auth_roles,
+                    created_at: credential.created_at,
+                    updated_at: credential.updated_at,
+                }
             })
             .collect::<Vec<_>>();
         items.sort_by(|a, b| a.credential_id.cmp(&b.credential_id));

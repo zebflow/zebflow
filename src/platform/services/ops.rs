@@ -54,203 +54,165 @@ impl PlatformOps {
     pub async fn start_here(&self) -> OpsResult {
         let owner = &self.owner;
         let project = &self.project;
+        let mut out = String::new();
 
-        let mut sections: Vec<String> = Vec::new();
-
-        sections.push(format!(
-            "# Zebflow Platform Overview\n\
-             Project: {owner}/{project}\n\n\
-             Zebflow is a pipeline-based reactive web platform.\n\
-             - **Pipelines**: chain of nodes that handle HTTP, WebSocket, or schedule triggers\n\
-             - **Web pages (TSX)**: server renders HTML from project templates, optional browser hydration\n\
-             - **Nodes**: trigger.webhook, pg.query, sekejap.query, script, web.render, ws.emit, ...\n\
-             - **Credentials**: stored secrets referenced by slug in pipeline --credential flags\n\
-             - **DB Connections**: named database connections (postgres, sekejap) with schema inspect",
+        // ── Overview ──────────────────────────────────────────────────────────
+        out.push_str(&format!(
+            "# Overview\n\
+             Zebflow is a pipeline-based platform: HTTP/WS/schedule triggers chain through\n\
+             nodes (query, script, AI, render) to produce APIs, pages, automations, and\n\
+             real-time systems — all authored as .zf.json pipelines + TSX templates.\n\n\
+             → Project current state:  ## The Project\n\
+             → Platform how-to:        ## Zebflow Docs\n\n\
+             Webhook URL pattern: `/wh/{owner}/{project}{{path}}`\n"
         ));
 
-        // Project git repo section
-        {
-            let git_section = match self.platform.file.ensure_project_layout(owner, project) {
-                Ok(layout) => {
-                    let git_status = std::process::Command::new("git")
-                        .args(["status", "--short"])
-                        .current_dir(&layout.repo_dir)
-                        .output()
-                        .ok()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                        .unwrap_or_default();
+        // ── The Project ───────────────────────────────────────────────────────
+        out.push_str(&format!("\n---\n\n## The Project: {owner}/{project}\n"));
 
-                    let status_block = if git_status.is_empty() {
-                        "  (working tree clean — nothing to commit)".to_string()
-                    } else {
-                        git_status.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
-                    };
-
-                    let has_remote = std::process::Command::new("git")
-                        .args(["remote", "get-url", "origin"])
-                        .current_dir(&layout.repo_dir)
-                        .output()
-                        .map(|o| o.status.success())
-                        .unwrap_or(false);
-
-                    let remote_warning = if has_remote {
-                        String::new()
-                    } else {
-                        "⚠️ **No remote configured** — changes are only tracked locally. \
-                         Ask the user to set a remote so work is backed up:\n\
-                         `git remote add origin <url>` then `git push -u origin main`\n\n"
-                            .to_string()
-                    };
-
-                    format!(
-                        "## Project Repository\n\
-                         \n\
-                         All project files are git-tracked — pipelines, templates, docs, assets, styles, \
-                         and `zebflow.json`. **Always commit after making changes** so every edit is recorded.\n\
-                         \n\
-                         ```\n\
-                         git_command subcommand=add args=\".\"\n\
-                         git_command subcommand=commit message=\"describe what you built\"\n\
-                         ```\n\
-                         \n\
-                         {remote_warning}\
-                         **Current status:**\n\
-                         {status_block}",
-                    )
-                }
-                Err(_) => "## Project Git Repo\n(could not read repo layout)".to_string(),
-            };
-            sections.push(git_section);
+        // AGENTS.md
+        out.push_str("\n### AGENTS.md\n");
+        match self.platform.projects.read_agent_doc(owner, project, "AGENTS.md") {
+            Ok(content) => out.push_str(&content),
+            Err(_) => out.push_str("(not found — create one to set project rules for all agents)"),
         }
 
-        // Project docs list
+        // Docs
+        out.push_str("\n\n### Docs  [repo/docs/]\n");
+        out.push_str("Read before building. Update as the project evolves.\n\n");
         match self.platform.projects.list_project_docs(owner, project) {
             Ok(docs) if !docs.is_empty() => {
-                sections.push(format!(
-                    "## Project Docs (repo/docs/)\n{}",
-                    docs.iter().map(|d| format!("- {} → docs_project_read(\"{}\")", d.path, d.path)).collect::<Vec<_>>().join("\n")
-                ));
+                for d in &docs {
+                    out.push_str(&format!("  {} → `docs_project_read(\"{}\")`\n", d.path, d.path));
+                }
             }
             Ok(_) => {
-                sections.push("## Project Docs\n(none yet — use docs_project_write to create)".to_string());
+                out.push_str(
+                    "(none yet)\n\
+                     Interview the user first — what to build, DB schema, first pages/endpoints, auth needs?\n\
+                     Then write: `docs_project_write path=\"REQUIREMENTS.md\" content=...`"
+                );
             }
-            Err(e) => {
-                sections.push(format!("## Project Docs\n(error: {e})"));
-            }
+            Err(e) => out.push_str(&format!("(error: {e})")),
         }
 
-        // AGENTS.md content
-        match self.platform.projects.read_agent_doc(owner, project, "AGENTS.md") {
-            Ok(content) => {
-                sections.push(format!("## AGENTS.md (Project Instructions)\n{content}"));
+        // Pipelines
+        out.push_str("\n\n### Pipelines\n");
+        match self.platform.projects.list_pipeline_meta_rows(owner, project) {
+            Ok(pipelines) if !pipelines.is_empty() => {
+                let active = pipelines.iter().filter(|p| p.active_hash.is_some()).count();
+                let draft = pipelines.len() - active;
+                out.push_str(&format!("[{active} active, {draft} draft]\n\n"));
+                for p in &pipelines {
+                    out.push_str(&format!(
+                        "  {} [{}] → `pipeline_describe file_rel_path=\"{}\"`\n",
+                        p.file_rel_path,
+                        if p.active_hash.is_some() { "active" } else { "draft" },
+                        p.file_rel_path
+                    ));
+                }
             }
-            Err(_) => {
-                sections.push("## AGENTS.md\n(not found — create with docs_agent_write name=AGENTS.md)".to_string());
-            }
+            Ok(_) => out.push_str("(none yet — use `pipeline_register` to create one)\n"),
+            Err(e) => out.push_str(&format!("(error: {e})\n")),
         }
 
-        // DB connections
-        match self.platform.db_connections.list_project_connections(owner, project) {
-            Ok(items) if !items.is_empty() => {
-                let lines: Vec<String> = items.iter().map(|c| {
-                    format!("- {} ({}) — kind: {}", c.connection_slug, c.connection_label, c.database_kind)
-                }).collect();
-
-                let has_schema_doc = self.platform.projects
-                    .list_project_docs(owner, project)
-                    .ok()
-                    .map(|docs| docs.iter().any(|d| {
-                        let p = d.path.to_lowercase();
-                        p.contains("db_schema") || p.contains("db-schema") || p.contains("schema.md")
-                    }))
-                    .unwrap_or(false);
-
-                let schema_hint = if has_schema_doc {
-                    "  → Schema doc exists in docs/ — read it before writing queries.".to_string()
-                } else {
-                    "  → No schema doc yet. Run `connection_describe slug=<slug> scope=tables` on each \
-                     connection, then save the output to `docs/db_schema.md` via `docs_project_write`. \
-                     This gives you and future agents a persistent, token-efficient schema reference."
-                        .to_string()
-                };
-
-                sections.push(format!(
-                    "## DB Connections\n{}\n\n{schema_hint}",
-                    lines.join("\n"),
-                ));
-            }
-            Ok(_) => {
-                sections.push("## DB Connections\n(none configured)".to_string());
-            }
-            Err(e) => {
-                sections.push(format!("## DB Connections\n(error: {e})"));
-            }
-        }
-
-        // Sekejap block
-        sections.push(
-            "## Sekejap (Embedded Database)\n\
-             Zebflow's built-in multi-model database — graph, vector, spatial, full-text, vague temporal.\n\
-             Suitable for: blog posts, user tables, AI memory, vector embeddings, event graphs, RAG indexes.\n\
-             Workflow: create table in UI (Tables page) → use `n.sekejap.query` in pipelines.\n\
-             Node: `n.sekejap.query --table <name> --op query|upsert`\n\
-             Collections use internal prefix `sjtable__` (e.g. table \"posts\" → collection \"sjtable__posts\").\n\
-             No external connection needed — scoped to project automatically."
-                .to_string(),
-        );
-
-        // Template tree
+        // Templates
+        out.push_str("\n### Templates  [repo/templates/]\n");
         match self.platform.projects.list_template_workspace(owner, project) {
             Ok(workspace) => {
-                sections.push(format!(
-                    "## Template Tree\n{}",
-                    serde_json::to_string_pretty(&workspace).unwrap_or_else(|_| "(parse error)".to_string())
-                ));
+                let files: Vec<_> = workspace.items.iter()
+                    .filter(|i| i.kind == "file")
+                    .collect();
+                if files.is_empty() {
+                    out.push_str("(none yet — use `template_create` to scaffold)\n");
+                } else {
+                    for item in files.iter().take(30) {
+                        out.push_str(&format!(
+                            "  {} → `template_get rel_path=\"{}\"`\n",
+                            item.rel_path, item.rel_path
+                        ));
+                    }
+                    if files.len() > 30 {
+                        out.push_str(&format!("  ... ({} more)\n", files.len() - 30));
+                    }
+                }
             }
-            Err(e) => {
-                sections.push(format!("## Templates\n(error: {e})"));
+            Err(e) => out.push_str(&format!("(error: {e})\n")),
+        }
+
+        // Connections & Credentials
+        out.push_str("\n### Connections & Credentials\n");
+        match self.platform.db_connections.list_project_connections(owner, project) {
+            Ok(items) if !items.is_empty() => {
+                for c in &items {
+                    out.push_str(&format!(
+                        "  {} ({}) → `connection_describe slug=\"{}\" scope=tables`\n",
+                        c.connection_slug, c.database_kind, c.connection_slug
+                    ));
+                }
+            }
+            Ok(_) => out.push_str("  Connections: (none — add via UI Settings → Connections)\n"),
+            Err(e) => out.push_str(&format!("  Connections: (error: {e})\n")),
+        }
+        out.push_str("  Sekejap (embedded DB, always available) — `help(\"db/sekejap\")`\n");
+        match self.platform.credentials.list_project_credentials(owner, project) {
+            Ok(items) if !items.is_empty() => {
+                out.push_str("  Credentials: ");
+                let creds: Vec<String> = items.iter().map(|c| format!("{} ({})", c.title, c.kind)).collect();
+                out.push_str(&creds.join(", "));
+                out.push('\n');
+            }
+            Ok(_) => out.push_str("  Credentials: (none)\n"),
+            Err(_) => {}
+        }
+
+        // ── Zebflow Docs ──────────────────────────────────────────────────────
+        out.push_str("\n---\n\n## Zebflow Docs\n");
+
+        // Pipeline Examples — auto from HELP array
+        out.push_str("\n### Pipeline Examples\n");
+        out.push_str("Full DSL recipe: `help(\"pipeline/examples/<slug>\")`\n\n");
+        let examples: Vec<_> = crate::platform::help::HELP
+            .iter()
+            .filter(|n| n.path.starts_with("pipeline/examples/"))
+            .collect();
+        if examples.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for ex in &examples {
+                let slug = ex.path.trim_start_matches("pipeline/examples/");
+                out.push_str(&format!("  {:<32} — {}\n", slug, ex.excerpt));
             }
         }
 
-        // Agent orientation
-        sections.push(
-            "## Agent Orientation — Read Before Acting\n\
-             \n\
-             Assess the project state from the sections above:\n\
-             \n\
-             **If the project is NEW or SPARSE** (no AGENTS.md, no docs, no pipelines, no templates):\n\
-             → Do NOT start building immediately.\n\
-             → Interview the user first. Ask:\n\
-               1. What are you building? Describe the domain, data model, and key user flows.\n\
-               2. Do you have an existing database? If yes, share the schema or connection slug.\n\
-               3. What are the first 2-3 pages or API endpoints you need?\n\
-               4. Any auth requirements? (login, JWT, roles?)\n\
-             \n\
-             **If DB connections exist but no schema doc**:\n\
-             → Run `connection_describe` on each connection and save to `docs/db_schema.md`\n\
-               before writing any SQL queries.\n\
-             \n\
-             **If AGENTS.md exists**:\n\
-             → Follow those instructions. They override everything else.\n\
-             \n\
-             **If the user's request doesn't match the project's available data/connections**:\n\
-             → Point out the mismatch and ask what they actually have before proceeding.\n\
-             \n\
-             Only proceed to build when you have enough context to do it correctly."
-                .to_string(),
+        // Built-in Nodes — auto from definitions
+        let node_defs = crate::pipeline::nodes::builtin_node_definitions();
+        out.push_str(&format!("\n### Built-in Nodes  ({} total)\n", node_defs.len()));
+        out.push_str("Full flags + schema: `help(\"pipeline/nodes/<kind>\")`\n\n");
+        for d in &node_defs {
+            out.push_str(&format!("  {:<28} — {}\n", d.kind, d.title));
+        }
+
+        // Reference
+        out.push_str(
+            "\n### Reference\n\
+             `help()`                       — full docs index\n\
+             `help(\"pipeline/dsl\")`          — DSL syntax\n\
+             `help(\"pipeline/nodes\")`        — all nodes with every flag\n\
+             `help(\"web\")`                   — TSX templates\n\
+             `help_search(\"query\")`          — search all docs + nodes\n"
         );
 
-        // Help pointers — auto-generated from HELP array
-        let help_index = crate::platform::help::help_root_index();
+        // ── Agent Memory ──────────────────────────────────────────────────────
+        out.push_str(
+            "\n---\n\n## Agent Memory\n\
+             `docs_agent_read name=MEMORY.md`                      — read notes from previous sessions\n\
+             `docs_agent_write name=MEMORY.md content=<notes>`     — save what you discover\n\n\
+             Save: schema decisions, patterns that work, project-specific discoveries, user preferences.\n\
+             Update at end of every session.\n"
+        );
 
-        sections.push(format!(
-            "## Next: Help Tools\n\
-             {help_index}\n\n\
-             - `pipeline_list` — see existing pipelines\n\
-             - `docs_agent_read name=MEMORY.md` — read previous session notes",
-        ));
-
-        OpsResult::ok(sections.join("\n\n---\n\n"))
+        OpsResult::ok(out)
     }
 }
 
@@ -269,40 +231,103 @@ impl PlatformOps {
 
     pub fn help_search(&self, query: &str) -> OpsResult {
         let query_lower = query.to_lowercase();
-        let terms: Vec<&str> = query_lower.split_whitespace().collect();
-        let all = crate::platform::help::all_help_text();
+        let terms: Vec<String> = query_lower
+            .split_whitespace()
+            .filter(|t| t.len() >= 2)
+            .map(|t| t.to_string())
+            .collect();
 
-        let mut results: Vec<String> = Vec::new();
-        let context_lines = 5usize;
-        let max_chars = 3000usize;
-        let mut total_chars = 0usize;
+        if terms.is_empty() {
+            return OpsResult::ok(
+                "Provide search terms. Example: help_search(\"webhook credential\")".to_string(),
+            );
+        }
 
-        'outer: for (path, title, content) in &all {
+        // Search corpus: static HELP files + dynamic node catalog
+        let all = crate::platform::help::all_searchable_content();
+
+        struct DocMatch {
+            path: String,
+            title: String,
+            term_coverage: usize, // distinct query terms found anywhere in doc
+            chunks: Vec<String>,  // matched lines with context
+        }
+
+        let context_lines = 3usize;
+        let mut doc_matches: Vec<DocMatch> = Vec::new();
+
+        for (path, title, content) in &all {
             let lines: Vec<&str> = content.lines().collect();
+            let mut chunks: Vec<String> = Vec::new();
+            let mut last_end = 0usize;
             let mut i = 0;
+
             while i < lines.len() {
                 let line_lower = lines[i].to_lowercase();
-                let matches = terms.iter().all(|t| line_lower.contains(t));
-                if matches {
-                    let start = i.saturating_sub(context_lines);
+                // Any term matching this line → include with context
+                let hit = terms.iter().any(|t| line_lower.contains(t.as_str()));
+                if hit {
+                    let start = i.saturating_sub(context_lines).max(last_end);
                     let end = (i + context_lines + 1).min(lines.len());
-                    let chunk = lines[start..end].join("\n");
-                    let entry = format!("### Match in `{}` ({})\n{}\n", path, title, chunk);
-                    total_chars += entry.len();
-                    results.push(entry);
+                    chunks.push(lines[start..end].join("\n"));
+                    last_end = end;
                     i = end;
-                    if total_chars >= max_chars { break 'outer; }
                 } else {
                     i += 1;
                 }
             }
+
+            if !chunks.is_empty() {
+                let doc_lower = content.to_lowercase();
+                let term_coverage = terms.iter().filter(|t| doc_lower.contains(t.as_str())).count();
+                doc_matches.push(DocMatch { path: path.clone(), title: title.clone(), term_coverage, chunks });
+            }
         }
 
-        if results.is_empty() {
-            OpsResult::ok(format!("No results for '{query}'. Try different terms or call help() for the full index."))
-        } else {
-            OpsResult::ok(results.join("\n---\n\n"))
+        if doc_matches.is_empty() {
+            return OpsResult::ok(format!(
+                "No results for '{}'. Try broader terms or call help() for the full index.",
+                query
+            ));
         }
+
+        // Sort: most term coverage first (docs matching more of your query terms rank higher)
+        doc_matches.sort_by(|a, b| b.term_coverage.cmp(&a.term_coverage).then(b.chunks.len().cmp(&a.chunks.len())));
+
+        let mut out = format!(
+            "## Search: `{}` — {} document(s) matched\n\n",
+            query, doc_matches.len()
+        );
+        let max_chars = 8000usize;
+        let mut total = out.len();
+        let mut shown = 0usize;
+
+        for dm in &doc_matches {
+            if total >= max_chars { break; }
+            let header = format!(
+                "### `{}` — {} ({}/{} terms)\n",
+                dm.path, dm.title, dm.term_coverage, terms.len()
+            );
+            out.push_str(&header);
+            total += header.len();
+            for chunk in &dm.chunks {
+                if total >= max_chars { break; }
+                let block = format!("```\n{}\n```\n\n", chunk);
+                total += block.len();
+                out.push_str(&block);
+            }
+            out.push_str("---\n\n");
+            shown += 1;
+        }
+
+        if shown < doc_matches.len() {
+            out.push_str(&format!(
+                "*{} more result(s) not shown — narrow your query or call `help(\"path\")` directly.*\n",
+                doc_matches.len() - shown
+            ));
+        }
+
+        OpsResult::ok(out)
     }
 }
 
@@ -498,6 +523,68 @@ impl PlatformOps {
             Err(e) => OpsResult::err(e.to_string()),
         }
     }
+
+    pub fn template_search(&self, pattern: &str, glob: Option<&str>, context: usize) -> OpsResult {
+        if pattern.trim().is_empty() {
+            return OpsResult::err("pattern must not be empty");
+        }
+        match self.platform.projects.search_template_files(&self.owner, &self.project, pattern, glob, context) {
+            Err(e) => OpsResult::err(e.to_string()),
+            Ok(matches) if matches.is_empty() => OpsResult::ok(format!(
+                "No matches for '{}' in templates{}.",
+                pattern,
+                glob.map(|g| format!(" (glob: {g})")).unwrap_or_default()
+            )),
+            Ok(matches) => {
+                let mut out = format!("{} match(es) for '{}':\n\n", matches.len(), pattern);
+                for (rel, line_no, block) in &matches {
+                    if context == 0 {
+                        out.push_str(&format!("{}:{}: {}\n", rel, line_no, block.trim()));
+                    } else {
+                        out.push_str(&format!("{}:{}:\n```\n{}\n```\n\n", rel, line_no, block));
+                    }
+                }
+                OpsResult::ok(out)
+            }
+        }
+    }
+
+    pub fn pipeline_search(&self, pattern: &str, glob: Option<&str>, context: usize) -> OpsResult {
+        if pattern.trim().is_empty() {
+            return OpsResult::err("pattern must not be empty");
+        }
+        match self.platform.projects.search_pipeline_files(&self.owner, &self.project, pattern, glob, context) {
+            Err(e) => OpsResult::err(e.to_string()),
+            Ok(matches) if matches.is_empty() => OpsResult::ok(format!(
+                "No matches for '{}' in pipelines{}.",
+                pattern,
+                glob.map(|g| format!(" (glob: {g})")).unwrap_or_default()
+            )),
+            Ok(matches) => {
+                let mut out = format!("{} match(es) for '{}':\n\n", matches.len(), pattern);
+                for (rel, line_no, block) in &matches {
+                    if context == 0 {
+                        out.push_str(&format!("{}:{}: {}\n", rel, line_no, block.trim()));
+                    } else {
+                        out.push_str(&format!("{}:{}:\n```\n{}\n```\n\n", rel, line_no, block));
+                    }
+                }
+                OpsResult::ok(out)
+            }
+        }
+    }
+
+    pub fn template_edit(&self, rel_path: &str, old_string: &str, new_string: &str) -> OpsResult {
+        if old_string.is_empty() {
+            return OpsResult::err("old_string must not be empty");
+        }
+        match self.platform.projects.edit_template_file(&self.owner, &self.project, rel_path, old_string, new_string) {
+            Ok(line_no) => OpsResult::ok(format!(
+                "Replaced at line {} in {}.", line_no, rel_path
+            )),
+            Err(e) => OpsResult::err(e.to_string()),
+        }
+    }
 }
 
 // ── Project Docs ──────────────────────────────────────────────────────────────
@@ -606,12 +693,18 @@ impl PlatformOps {
         match self.platform.credentials.list_project_credentials(&self.owner, &self.project) {
             Ok(items) => OpsResult::ok(
                 serde_json::to_string_pretty(&json!({
-                    "credentials": items.iter().map(|c| json!({
-                        "id": c.credential_id,
-                        "title": c.title,
-                        "kind": c.kind,
-                        "notes": c.notes,
-                    })).collect::<Vec<_>>(),
+                    "credentials": items.iter().map(|c| {
+                        let mut entry = json!({
+                            "id": c.credential_id,
+                            "title": c.title,
+                            "kind": c.kind,
+                            "notes": c.notes,
+                        });
+                        if !c.auth_roles.is_empty() {
+                            entry["auth_roles"] = json!(c.auth_roles);
+                        }
+                        entry
+                    }).collect::<Vec<_>>(),
                     "count": items.len(),
                 })).unwrap_or_default()
             ),

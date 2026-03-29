@@ -54,6 +54,36 @@ struct TemplateWriteParams {
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
+struct TemplateSearchParams {
+    /// Pattern to search for (case-insensitive substring).
+    pattern: String,
+    /// Optional glob to filter files (e.g. "pages/*.tsx", "**/*.tsx"). Omit to search all files.
+    glob: Option<String>,
+    /// Number of context lines to include before and after each match. Default 0 (match line only).
+    context: Option<u32>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct PipelineSearchParams {
+    /// Pattern to search for (case-insensitive substring).
+    pattern: String,
+    /// Optional glob to filter pipeline files (e.g. "pipelines/api/*.zf.json"). Omit to search all .zf.json files.
+    glob: Option<String>,
+    /// Number of context lines to include before and after each match. Default 0 (match line only).
+    context: Option<u32>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateEditParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+    /// Exact string to find. Must match exactly once — provide enough context to be unique.
+    old_string: String,
+    /// Replacement string.
+    new_string: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
 struct TemplateCreateParams {
     /// Kind of entry to create: "page", "component", "script", or "folder".
     kind: String,
@@ -313,6 +343,22 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
+    #[tool(
+        description = "Search pipeline .zf.json files for a pattern. Returns file:line matches. \
+                       Use glob to narrow scope (e.g. \"pipelines/api/*.zf.json\"). \
+                       Equivalent to Grep across pipelines — find which pipelines use a credential, path, or node kind."
+    )]
+    async fn pipeline_search(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PipelineSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "pipeline_search")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.pipeline_search(&params.pattern, params.glob.as_deref(), params.context.unwrap_or(0) as usize))
+    }
+
     #[tool(description = "Get a specific pipeline by file-relative path")]
     async fn pipeline_get(
         &self,
@@ -369,7 +415,8 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Patch one node in a saved pipeline without rewriting the full graph. \
-                       Call pipeline_describe first to get node IDs. \
+                       node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query'), \
+                       or kind+index (e.g. 'pg.query[1]') when multiple nodes share the same kind. \
                        Pipeline status becomes stale after patching — call pipeline_activate to make it live again."
     )]
     async fn pipeline_patch(
@@ -526,6 +573,39 @@ impl ZebflowMcpHandler {
         let result = ops.template_write(&params.rel_path, &params.content);
         // navigate is ignored for MCP
         ok_or_err(result)
+    }
+
+    #[tool(
+        description = "Search template files for a pattern. Returns file:line matches. \
+                       Use glob to narrow scope (e.g. \"pages/*.tsx\", \"**/*.tsx\"). \
+                       Equivalent to Grep across templates — find which files use an import, component, or value."
+    )]
+    async fn template_search(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_search")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.template_search(&params.pattern, params.glob.as_deref(), params.context.unwrap_or(0) as usize))
+    }
+
+    #[tool(
+        description = "Surgical string replacement in a template file. \
+                       Equivalent to Edit — no need to read the full file first. \
+                       Fails if old_string is not found or matches more than once (provide more context). \
+                       Returns the line number of the replacement."
+    )]
+    async fn template_edit(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateEditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_edit")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.template_edit(&params.rel_path, &params.old_string, &params.new_string))
     }
 
     // ── Project Docs ─────────────────────────────────────────────────────────

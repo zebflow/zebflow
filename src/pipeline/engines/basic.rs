@@ -16,7 +16,7 @@ use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, function_call, http_request, logic, pg_query,
     script, sjtable_mutate, sjtable_query,
     trigger::{function as trigger_function, manual, schedule, webhook, weberror},
-    web_render, ws_emit, ws_sync_state, ws_trigger,
+    web_render, web_response, ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::platform::services::PlatformService;
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
@@ -206,6 +206,20 @@ impl BasicPipelineEngine {
                     node_id: node.id.clone(),
                     config,
                 })
+            }
+            web_response::NODE_KIND => {
+                let config: web_response::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| {
+                        PipelineError::new("FW_NODE_WEB_RESPONSE_CONFIG", err.to_string())
+                    })?;
+                if config.template.is_some() {
+                    Ok(NodeDispatch::InlineWebResponse {
+                        node_id: node.id.clone(),
+                        config,
+                    })
+                } else {
+                    Ok(NodeDispatch::WebResponse(web_response::Node::new(config)))
+                }
             }
             agent::NODE_KIND => {
                 let config: agent::Config =
@@ -510,6 +524,82 @@ impl PipelineEngine for BasicPipelineEngine {
                         })
                     }
                 }
+                NodeDispatch::InlineWebResponse { node_id, config } => {
+                    let markup = config.markup.as_deref().unwrap_or("").trim();
+                    if markup.is_empty() {
+                        Err(PipelineError::new(
+                            "FW_NODE_WEB_RESPONSE_CONFIG",
+                            format!("node '{node_id}' --template set but markup not loaded"),
+                        ))
+                    } else {
+                        // Resolve response envelope from config + input
+                        let status = config.status
+                            .or_else(|| if config.location.is_some() { Some(302) } else { None });
+                        let cookie = config.set_cookie.as_deref()
+                            .and_then(|s| web_response::parse_cookie_spec(s, &input.payload));
+                        let headers = config.headers.clone();
+
+                        // Compile + render template (same cache path as InlineWebRender)
+                        let key = hash_markup(markup);
+                        let cached = self.web_render_cache.as_ref().and_then(|c| {
+                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+                        });
+                        let wr_config = web_render::Config {
+                            template_path: config.template.clone().unwrap_or_default(),
+                            template_id: config.template.clone().unwrap_or_default(),
+                            markup: Some(markup.to_string()),
+                            ..Default::default()
+                        };
+                        let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
+                            Ok(hit)
+                        } else {
+                            let fresh = web_render::Node::compile(
+                                &node_id,
+                                &wr_config,
+                                &TemplateSource {
+                                    id: wr_config.template_id.clone(),
+                                    source_path: None,
+                                    markup: markup.to_string(),
+                                },
+                                self.rwe.as_ref(),
+                                self.language.as_ref(),
+                            )
+                            .map_err(|e| PipelineError::new("FW_NODE_WEB_RESPONSE_COMPILE", e.to_string()))
+                            .map(Arc::new);
+                            if let Ok(ref fresh_arc) = fresh {
+                                if let Some(cache) = &self.web_render_cache {
+                                    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, fresh_arc.clone());
+                                }
+                            }
+                            fresh
+                        };
+
+                        compiled_result.and_then(|compiled| {
+                            let render_out = web_render::render_with_engines(
+                                &compiled,
+                                input.payload,
+                                input.metadata,
+                                self.rwe.as_ref(),
+                                self.language.as_ref(),
+                                &ctx.request_id,
+                            )?;
+                            let envelope = serde_json::json!({
+                                "status": status,
+                                "set_cookie": cookie,
+                                "headers": headers,
+                                "html": render_out.payload.get("html"),
+                                "compiled_scripts": render_out.payload.get("compiled_scripts"),
+                                "hydration_payload": render_out.payload.get("hydration_payload"),
+                            });
+                            Ok(NodeExecutionOutput {
+                                output_pins: render_out.output_pins,
+                                payload: serde_json::json!({ "__zf_response": envelope }),
+                                trace: render_out.trace,
+                            })
+                        })
+                    }
+                }
+                NodeDispatch::WebResponse(node) => node.execute_async(input).await,
                 NodeDispatch::Agent(node) => node.execute_async(input).await,
                 NodeDispatch::LogicIf(node) => node.execute_async(input).await,
                 NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
@@ -649,6 +739,11 @@ enum NodeDispatch {
         node_id: String,
         config: web_render::Config,
     },
+    InlineWebResponse {
+        node_id: String,
+        config: web_response::Config,
+    },
+    WebResponse(web_response::Node),
     Agent(agent::Node),
     LogicIf(logic::if_::Node),
     LogicSwitch(logic::switch::Node),
