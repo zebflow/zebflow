@@ -43,7 +43,7 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 
 ```
 | trigger.webhook --path /api/forum/rooms --method POST
-| script -- "const b = input.body; if (!b.name) return { error: 'name required', __status: 400 }; return { id: b.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name: b.name, created_at: Date.now(), last_activity: Date.now() }"
+| script -- "if (!input.name) return { error: 'name required', __status: 400 }; return { id: input.name.toLowerCase().replace(/[^a-z0-9]+/g,'-'), name: input.name, created_at: Date.now(), last_activity: Date.now() }"
 | sekejap.query --table forum_rooms --op upsert
 | script -- "return { ok: true, id: input.id }"
 ```

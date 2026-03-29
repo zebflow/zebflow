@@ -26,7 +26,7 @@ Label each node with `[id]`, then declare edges with `->`. Use for conditional r
 
 ```zf
 [a] trigger.webhook --path /ingest --method POST
-[b] logic.switch --expr "input.body.type" --cases normal,urgent --default other
+[b] logic.switch --expr "input.type" --cases normal,urgent --default other
 [c] sekejap.query --table normal_queue --op upsert
 [d] http.request --url https://alert.svc/send --method POST
 [e] sekejap.query --table other_queue --op upsert
@@ -128,7 +128,7 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 
 ```
 | trigger.webhook --path /api/posts --method POST
-| script -- "return { title: input.body.title, slug: input.body.title.toLowerCase().replace(/\s+/g,'-'), created_at: Date.now() }"
+| script -- "return { title: input.title, slug: input.title.toLowerCase().replace(/\s+/g,'-'), created_at: Date.now() }"
 | sekejap.query --table posts --op upsert
 | script -- "return { ok: true, slug: input.slug }"
 ```
@@ -154,7 +154,7 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 ```
 | trigger.schedule --cron "0 * * * *"
 | http.request --url https://api.example.com/feed --method GET
-| script -- "return input.body.items.slice(0,10)"
+| script -- "return input.response.body.items.slice(0,10)"
 | sekejap.query --table feed_cache --op upsert
 ```
 

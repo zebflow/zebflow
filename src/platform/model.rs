@@ -1568,6 +1568,8 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         // UI catalog install tools
         "list_ui_catalog" => Some(ProjectCapability::PipelinesRead),
         "install_ui_components" => Some(ProjectCapability::PipelinesWrite),
+        // Move resource (requires both pipelines write + templates write — use higher capability)
+        "move_resource" => Some(ProjectCapability::PipelinesWrite),
         _ => None,
     }
 }

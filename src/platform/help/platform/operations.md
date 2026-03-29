@@ -157,7 +157,7 @@ Three ways to interact with a project — same capability model enforces the sam
 
 | Channel | Entry point | Best for |
 |---------|-------------|----------|
-| **MCP Tools** | 25 structured tool calls | LLM agents (Cursor, Claude, etc.) |
+| **MCP Tools** | Structured tool calls (see `help(topic="platform/agent")` for full list) | LLM agents (Cursor, Claude, etc.) |
 | **Project Assistant** | `execute_pipeline_dsl` + DSL string | Interactive chat, exploratory/diagnostic work |
 | **REST API** | `/api/projects/{owner}/{project}/...` | Programmatic access, CI/CD, integrations |
 
@@ -195,6 +195,8 @@ git_command  subcommand=commit   message="feat: add blog pipeline and home page"
 **Blocked (safety):** `reset`, `rebase`, `force-push`, `checkout .`
 
 Use descriptive commit messages. Convention: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`.
+
+**Commit author identity** is taken from the user's platform profile (`git_name` and `git_email` fields). Set these in the UI under your user profile settings. If empty, Zebflow falls back to the owner slug + `owner@zebflow.local`.
 
 ---
 

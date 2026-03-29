@@ -297,6 +297,21 @@ impl AssistantPlatformTools {
                     }
                 }),
             },
+            ToolDef {
+                name: "move_resource".to_string(),
+                description: "Rename or reorganize a pipeline or template file. \
+                    Domain detected from path: .zf.json = pipeline, anything else = template. \
+                    For pipelines: deactivate → move → re-activate lifecycle is automatic. \
+                    Parent folders created automatically. No cross-domain moves.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["from_path", "to_path"],
+                    "properties": {
+                        "from_path": { "type": "string", "description": "Source path. Pipeline: file_rel_path e.g. 'pipelines/api/old.zf.json'. Template: rel_path e.g. 'pages/old.tsx'." },
+                        "to_path": { "type": "string", "description": "Destination path. Same domain as from_path. Parent folders created automatically." }
+                    }
+                }),
+            },
             // ── Project Docs ───────────────────────────────────────────────────
             ToolDef {
                 name: "docs_project_list".to_string(),
@@ -522,6 +537,12 @@ impl AssistantPlatformTools {
                 args["old_string"].as_str().unwrap_or(""),
                 args["new_string"].as_str().unwrap_or(""),
             ),
+            "move_resource" => {
+                ops.move_resource(
+                    args["from_path"].as_str().unwrap_or(""),
+                    args["to_path"].as_str().unwrap_or(""),
+                ).await
+            }
 
             // ── Project Docs ───────────────────────────────────────────────────
             "docs_project_list" => ops.docs_project_list(),

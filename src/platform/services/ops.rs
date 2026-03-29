@@ -585,6 +585,167 @@ impl PlatformOps {
             Err(e) => OpsResult::err(e.to_string()),
         }
     }
+
+    /// Rename or reorganize a pipeline or template file.
+    ///
+    /// Domain is detected automatically:
+    /// - `.zf.json` extension (or `pipelines/` prefix) → pipeline domain
+    /// - anything else → template domain
+    ///
+    /// Cross-domain moves (pipeline ↔ template) are rejected.
+    /// For pipelines: deactivate → move → re-activate lifecycle is handled automatically.
+    /// Parent folders are created automatically.
+    pub async fn move_resource(&self, from_path: &str, to_path: &str) -> OpsResult {
+        let from_path = from_path.trim();
+        let to_path = to_path.trim();
+
+        if from_path.is_empty() || to_path.is_empty() {
+            return OpsResult::err("from_path and to_path must not be empty");
+        }
+
+        let from_is_pipeline = pipeline_path_heuristic(from_path);
+        let to_is_pipeline = pipeline_path_heuristic(to_path);
+
+        if from_is_pipeline != to_is_pipeline {
+            return OpsResult::err(
+                "Cross-domain move not supported. \
+                 Pipeline paths end with .zf.json; template paths do not. \
+                 Cannot mix the two in a single move.",
+            );
+        }
+
+        if from_is_pipeline {
+            self.move_pipeline(from_path, to_path).await
+        } else {
+            self.move_template(from_path, to_path)
+        }
+    }
+
+    async fn move_pipeline(&self, from_path: &str, to_path: &str) -> OpsResult {
+        use crate::platform::services::project::normalize_pipeline_file_rel_path;
+        let owner = &self.owner;
+        let project = &self.project;
+        let projects = &self.platform.projects;
+        let runtime = &self.platform.pipeline_runtime;
+
+        let from = normalize_pipeline_file_rel_path(from_path);
+        let to = normalize_pipeline_file_rel_path(to_path);
+
+        if from == to {
+            return OpsResult::err("from_path and to_path resolve to the same pipeline");
+        }
+
+        // Check destination doesn't already exist
+        match projects.get_pipeline_meta_by_file_id(owner, project, &to) {
+            Err(e) => return OpsResult::err(e.to_string()),
+            Ok(Some(_)) => return OpsResult::err(format!("Destination '{}' already exists", to)),
+            Ok(None) => {}
+        }
+
+        // Load source metadata
+        let meta = match projects.get_pipeline_meta_by_file_id(owner, project, &from) {
+            Err(e) => return OpsResult::err(e.to_string()),
+            Ok(None) => return OpsResult::err(format!("Pipeline '{}' not found", from)),
+            Ok(Some(m)) => m,
+        };
+        let was_active = meta.active_hash.is_some();
+
+        // Read source JSON
+        let source = match projects.read_pipeline_source(owner, project, &from) {
+            Err(e) => return OpsResult::err(e.to_string()),
+            Ok(s) => s,
+        };
+
+        // Patch the "id" field to the new file_rel_path
+        let new_source = match patch_pipeline_id_field(&source, &to) {
+            Ok(s) => s,
+            Err(e) => return OpsResult::err(format!("Failed to patch pipeline id: {e}")),
+        };
+
+        // Register at new path (creates file + DB entry, not yet active)
+        if let Err(e) = projects.upsert_pipeline_definition(
+            owner, project, &to,
+            &meta.title, &meta.description, &meta.trigger_kind,
+            &new_source,
+        ) {
+            return OpsResult::err(format!("Failed to register at new path: {e}"));
+        }
+
+        // Re-activate at new path if was active before
+        if was_active {
+            if let Err(e) = projects.activate_pipeline_definition(owner, project, &to) {
+                return OpsResult::err(format!("Failed to activate at new path: {e}"));
+            }
+            let _ = runtime.refresh_pipeline(owner, project, &to);
+        }
+
+        // Remove old pipeline (file + DB metadata)
+        if let Err(e) = projects.delete_pipeline(owner, project, &from) {
+            return OpsResult::err(format!("Failed to delete old pipeline: {e}"));
+        }
+
+        // Evict old path from runtime (it was already deleted from DB so refresh_pipeline would fail)
+        runtime.evict(owner, project, &from);
+
+        OpsResult::ok(format!(
+            "Moved pipeline {} → {}{}",
+            from, to,
+            if was_active { " (re-activated at new path)" } else { " (draft)" }
+        ))
+    }
+
+    fn move_template(&self, from_path: &str, to_path: &str) -> OpsResult {
+        let layout = match self.platform.file.ensure_project_layout(&self.owner, &self.project) {
+            Err(e) => return OpsResult::err(e.to_string()),
+            Ok(l) => l,
+        };
+
+        let root = &layout.repo_pipelines_dir;
+        let from_abs = root.join(from_path);
+        let to_abs = root.join(to_path);
+
+        if !from_abs.starts_with(root) || !to_abs.starts_with(root) {
+            return OpsResult::err("Path escapes template root");
+        }
+
+        if !from_abs.is_file() {
+            return OpsResult::err(format!("Template '{}' not found", from_path));
+        }
+
+        if to_abs.exists() {
+            return OpsResult::err(format!("Destination '{}' already exists", to_path));
+        }
+
+        if let Some(parent) = to_abs.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return OpsResult::err(format!("Failed to create parent dirs: {e}"));
+            }
+        }
+
+        if let Err(e) = std::fs::rename(&from_abs, &to_abs) {
+            return OpsResult::err(format!("Failed to move file: {e}"));
+        }
+
+        OpsResult::ok(format!("Moved template {} → {}", from_path, to_path))
+    }
+}
+
+/// Returns true if the path looks like a pipeline file.
+fn pipeline_path_heuristic(path: &str) -> bool {
+    path.ends_with(".zf.json") || path.starts_with("pipelines/")
+}
+
+/// Parses JSON source, sets the `"id"` field to `new_file_rel_path`, returns pretty-printed JSON.
+fn patch_pipeline_id_field(source: &str, new_file_rel_path: &str) -> Result<String, String> {
+    let mut obj: serde_json::Value =
+        serde_json::from_str(source).map_err(|e| format!("invalid JSON: {e}"))?;
+    if let Some(map) = obj.as_object_mut() {
+        map.insert(
+            "id".to_string(),
+            serde_json::Value::String(new_file_rel_path.to_string()),
+        );
+    }
+    serde_json::to_string_pretty(&obj).map_err(|e| format!("serialize error: {e}"))
 }
 
 // ── Project Docs ──────────────────────────────────────────────────────────────

@@ -41,7 +41,7 @@ A multiplayer game where all clients share synchronized state through WebSocket 
 
 ```
 | trigger.webhook --path /api/game/rooms --method POST
-| script -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: input.body.name || id, status: 'waiting', players: {}, board: {}, created_at: Date.now() }"
+| script -- "const id = 'room-' + Math.random().toString(36).slice(2,8); return { id, name: input.name || id, status: 'waiting', players: {}, board: {}, created_at: Date.now() }"
 | sekejap.query --table game_rooms --op upsert
 | script -- "return { ok: true, room_id: input.id }"
 ```

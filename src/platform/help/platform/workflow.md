@@ -155,7 +155,7 @@ write_doc
 
   ## Auth strategy
   Script node on all admin routes:
-    const auth = input.request.headers['authorization'] ?? ''
+    const auth = input.headers['authorization'] ?? ''
     const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
     if (user !== 'admin' || pass !== credentials.admin_pass.secret) {
       return { __redirect: '/login', status: 401 }
@@ -221,7 +221,7 @@ register_pipeline
   body="""
   | trigger.webhook --path /admin/posts --method GET
   | script -- "
-      const auth = input.request.headers['authorization'] ?? ''
+      const auth = input.headers['authorization'] ?? ''
       try {
         const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
         if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
@@ -245,7 +245,7 @@ register_pipeline
   body="""
   | trigger.webhook --path /admin/post --method GET
   | script -- "
-      const auth = input.request.headers['authorization'] ?? ''
+      const auth = input.headers['authorization'] ?? ''
       try {
         const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
         if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
@@ -270,12 +270,12 @@ register_pipeline
   body="""
   | trigger.webhook --path /admin/post --method PUT
   | script -- "
-      const auth = input.request.headers['authorization'] ?? ''
+      const auth = input.headers['authorization'] ?? ''
       try {
         const [user, pass] = atob(auth.replace('Basic ', '')).split(':')
         if (user !== 'admin') return { __status: 401, __body: 'Unauthorized' }
       } catch { return { __status: 401, __body: 'Unauthorized' } }
-      const { slug, title, body, status } = input.request.body
+      const { slug, title, body, status } = input
       if (!slug || !title || !body) return { __status: 400, __body: 'Missing fields' }
       return { slug, title, body, status: status || 'draft' }
     "
