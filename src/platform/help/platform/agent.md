@@ -34,6 +34,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | Tool | What it does |
 |------|-------------|
 | `start_here` | First call — returns overview, project context, doc list, connections, template tree |
+| `version` | Returns the running platform version string |
 | `help` (no topic) | Full help index — all available topics |
 | `help(topic="pipeline")` | Pipeline DSL guide — syntax, pipe mode, web patterns, examples + live node appendix |
 | `help(topic="web")` | Web pages — TSX templates, server render, hooks, pipeline `input` |
@@ -50,12 +51,13 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `pipeline_get` | Get pipeline graph JSON |
 | `pipeline_describe` | Describe nodes, edges, trigger config in detail |
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
-| `pipeline_patch` | Update a node's config inside an existing pipeline |
+| `pipeline_patch` | Update a node's config inside an existing pipeline. `node_id` accepts opaque ID, kind (`trigger.webhook`), or kind+index (`pg.query[1]`) — no describe needed |
+| `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines |
 | `pipeline_activate` | Promote draft to active — goes live immediately |
 | `pipeline_deactivate` | Remove from active registry — stops serving traffic |
 | `pipeline_execute` | Run the active version of a saved pipeline |
 | `pipeline_run` | Run a pipeline body once — not saved, not logged |
-| `git_command` | Run git: status, log, diff, add, commit |
+| `git_command` | Run git: status, log, diff, add, commit. Commit author uses the user's configured `git_name` / `git_email` from their profile |
 
 ### Templates
 
@@ -65,6 +67,9 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `template_get` | Read a template file's full content |
 | `template_create` | Scaffold a new template file with boilerplate |
 | `template_write` | Write (overwrite) a template file's content |
+| `template_search` | Grep across all template files with optional glob filter and context lines (e.g. `context=3` for 3 lines before/after each match) |
+| `template_edit` | Exact string replacement inside a template file — `old_string` → `new_string`. Fails if `old_string` is not unique in the file |
+| `move_resource` | Rename or reorganize a pipeline or template file. Domain auto-detected from extension (`.zf.json` = pipeline, else template). Pipeline lifecycle (deactivate → move → re-activate) handled automatically. Parent folders created. No cross-domain moves |
 
 ### Docs
 
@@ -99,6 +104,8 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `connection_list` | List DB connections (slug, label, kind) |
 | `connection_describe` | Describe DB schema — tables, columns, types |
 | `credential_list` | List credentials (id, title, kind — values never exposed) |
+| `list_ui_catalog` | List all available shadcn-compatible UI components and whether each is installed |
+| `install_ui_components` | Install one or more UI components into `shared/ui/` (e.g. `names=["button","card"]`) |
 
 ---
 

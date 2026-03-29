@@ -23,7 +23,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 ```
 | trigger.schedule --cron "*/30 * * * *"
 | http.request --url "https://example.com/feed.json" --method GET
-| script -- "const items = input.body.items || []; return items.map(i => ({ id: i.guid || i.url, title: i.title, url: i.url, summary: i.description?.slice(0,500), published_at: new Date(i.pubDate).getTime(), source: 'example-feed', fetched_at: Date.now() }))"
+| script -- "const items = input.response.body.items || []; return items.map(i => ({ id: i.guid || i.url, title: i.title, url: i.url, summary: i.description?.slice(0,500), published_at: new Date(i.pubDate).getTime(), source: 'example-feed', fetched_at: Date.now() }))"
 | script -- "return input.filter(i => i.id && i.title)"
 | sekejap.query --table scraped_items --op upsert
 ```
@@ -33,7 +33,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 ```
 | trigger.schedule --cron "0 3 * * *"
 | http.request --url "https://api.example.com/articles?page=1&per_page=100" --method GET
-| script -- "const items = input.body.data || []; return { items: items.map(a => ({ id: a.id.toString(), title: a.title, author: a.author?.name, category: a.category, url: a.url, body: a.content?.slice(0,2000), fetched_at: Date.now() })), total: input.body.total }"
+| script -- "const items = input.response.body.data || []; return { items: items.map(a => ({ id: a.id.toString(), title: a.title, author: a.author?.name, category: a.category, url: a.url, body: a.content?.slice(0,2000), fetched_at: Date.now() })), total: input.response.body.total }"
 | sekejap.query --table articles --op upsert
 | script -- "return { stored: input.items?.length || 0, total: input.total }"
 ```
@@ -43,7 +43,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 ```
 | trigger.schedule --cron "0 * * * *"
 | http.request --url "https://example.com/prices" --method GET
-| script -- "const html = input.body; const matches = [...html.matchAll(/<div class=\"product\"[^>]*>([\s\S]*?)<\/div>/g)]; return matches.map((m,i) => { const name = m[1].match(/<h3>([^<]+)<\/h3>/)?.[1] || 'unknown'; const price = m[1].match(/\$([0-9.]+)/)?.[1]; return { id: 'product-' + i, name, price: price ? parseFloat(price) : null, fetched_at: Date.now() } })"
+| script -- "const html = input.response.body; const matches = [...html.matchAll(/<div class=\"product\"[^>]*>([\s\S]*?)<\/div>/g)]; return matches.map((m,i) => { const name = m[1].match(/<h3>([^<]+)<\/h3>/)?.[1] || 'unknown'; const price = m[1].match(/\$([0-9.]+)/)?.[1]; return { id: 'product-' + i, name, price: price ? parseFloat(price) : null, fetched_at: Date.now() } })"
 | script -- "return input.filter(p => p.name && p.price !== null)"
 | sekejap.query --table product_prices --op upsert
 ```

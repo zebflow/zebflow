@@ -166,46 +166,61 @@ Key config fields and their DSL flag equivalents:
 | `n.pg.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds. e.g. `"identifier"` |
 | `n.pg.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params. e.g. `"[input.id, input.name]"` |
 | `n.script` | `source` | `-- <code>` (body) | Script source code |
-| `n.web.response` | `template_path` | `--template-path` | Full TSX path relative to `templates/`, must include `.tsx` |
+| `n.web.response` | `template` | `--template` | TSX path relative to `templates/`, e.g. `pages/home.tsx` (`.tsx` extension optional) |
+| `n.web.response` | `location` | `--location` | Redirect URL; supports `$.field` for dynamic resolution from payload |
+| `n.web.response` | `set_cookie` | `--set-cookie` | Cookie spec string: `name=X,value=$.token,http-only,max-age=86400` |
+| `n.web.response` | `status` | `--status` | HTTP status code |
 | `n.trigger.webhook` | `auth_type` | `--auth-type` | `none`, `jwt`, `hmac`, `api_key` |
 | `n.trigger.webhook` | `auth_credential` | `--auth-credential` | Credential ID for auth verification |
 | `n.auth.token.create` | `credential_id` | `--credential` | JWT signing key credential ID |
 | `n.auth.token.create` | `expires_in` | `--expires-in` | Token lifetime in seconds |
-| `n.auth.token.create` | `set_cookie` | `--set-cookie` | Set token as HttpOnly cookie |
-| `n.auth.token.create` | `cookie_name` | `--cookie-name` | Cookie name (default: `zebflow_session`) |
-
----
-
-## Script Node Output
-
-The `n.script` node runs JS. The return value becomes the next node's input.
-
-Special keys in the return value:
-
-| Key | Effect |
-|---|---|
-| `__status` | Set HTTP response status code (e.g. `401`, `404`) |
-| `_redirect` | Redirect the response to a URL |
-| `_set_cookie` | Set a cookie in the response |
-
-```js
-// Return early with 401
-return { __status: 401, error: "Unauthorized" };
-
-// Redirect
-return { _redirect: "/auth/login" };
-```
 
 ---
 
 ## Webhook Input Shape
 
-POST body fields are merged to root. Path params and query string are nested:
+Body fields are always merged to root — regardless of encoding. Path params and query string are nested. This means a pipeline works the same whether the client sends JSON, a form POST, or a multipart upload.
+
+### `application/json`
+
+```json
+{ "email": "user@example.com", "password": "secret" }
+```
+
+→ `input.email`, `input.password`
+
+### `application/x-www-form-urlencoded` (native HTML form POST)
+
+```
+email=user%40example.com&password=secret
+```
+
+→ same: `input.email`, `input.password` — percent-decoded automatically
+
+### `multipart/form-data` (file upload)
+
+Text fields merge to root. Files go under `input.files.{field_name}`:
 
 ```json
 {
-  "identifier": "12345",
-  "password": "secret",
+  "email": "user@example.com",
+  "files": {
+    "avatar": {
+      "filename": "photo.jpg",
+      "content_type": "image/jpeg",
+      "size": 12345,
+      "data": "<base64>"
+    }
+  }
+}
+```
+
+`data` is base64-encoded — pipe it to a script node to store, forward, or process.
+
+### Always present
+
+```json
+{
   "params": { "id": "42" },
   "query": { "page": "1" },
   "auth": { "player_id": "...", "roles": [] }

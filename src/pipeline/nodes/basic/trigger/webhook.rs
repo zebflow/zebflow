@@ -29,14 +29,17 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Webhook Trigger".to_string(),
         description: "Start pipeline run from inbound HTTP path + method. \
+            Body fields are always merged to root regardless of encoding: \
+            application/json → fields at root; \
+            application/x-www-form-urlencoded → fields at root (percent-decoded); \
+            multipart/form-data → text fields at root, files under input.files.{field} as {filename,content_type,size,data(base64)}. \
+            GET query params appear at root and also at input.query. Path params at input.params. \
             Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
             jwt auth checks Authorization: Bearer header first, then Cookie: zebflow_session fallback — \
-            verified claims are injected into input.auth. \
-            Output with _status sets HTTP response status code. \
-            Output with _set_cookie sets an HttpOnly cookie in the response.".to_string(),
+            verified claims are injected into input.auth.".to_string(),
         input_schema: serde_json::json!({
-            "type":"object",
-            "description":"Request payload forwarded from webhook ingress."
+            "type": "object",
+            "description": "Normalised request payload. Body fields (JSON / form-urlencoded / multipart text) are merged to root. Files land under input.files.{field}. Query params also at input.query, path params at input.params, JWT claims at input.auth."
         }),
         output_schema: serde_json::json!({
             "type":"object",

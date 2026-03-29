@@ -48,7 +48,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| pg.query --credential my-pg --params-expr "[input.body.identifier]" \
+| pg.query --credential my-pg --params-expr "[input.identifier]" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
 | script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { player_id: user.player_id, name: user.fullname, role: user.role }"
 | auth.token.create --credential my-jwt --claim sub=$.player_id --claim name=$.name --claim role=$.role --expires-in 86400

@@ -239,6 +239,17 @@ struct InstallUiComponentsParams {
     overwrite: Option<bool>,
 }
 
+#[derive(serde::Deserialize, JsonSchema)]
+struct MoveParams {
+    /// Source path to move from.
+    /// Pipelines: file_rel_path e.g. "pipelines/api/old-name.zf.json" or just "old-name".
+    /// Templates: rel_path e.g. "pages/old-name.tsx" or "components/old-card.tsx".
+    from_path: String,
+    /// Destination path to move to. Same domain as from_path.
+    /// Parent folders are created automatically.
+    to_path: String,
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 /// Zebflow MCP handler with project-scoped tools.
@@ -802,6 +813,27 @@ impl ZebflowMcpHandler {
         self.check_tool_capability(&session, "install_ui_components")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.install_ui_components(params.names, params.overwrite);
+        ok_or_err(result)
+    }
+
+    // ── Move Resource ─────────────────────────────────────────────────────────
+
+    #[tool(
+        description = "Rename or reorganize a pipeline or template file. \
+            Domain detected automatically from path: .zf.json = pipeline, anything else = template. \
+            For pipelines: deactivate → move → re-activate lifecycle handled automatically. \
+            Parent folders created automatically. No cross-domain moves (pipeline ↔ template). \
+            node_id can be: opaque ID (e.g. n0), kind (e.g. trigger.webhook), or kind+index (e.g. pg.query[1])."
+    )]
+    async fn move_resource(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<MoveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "move_resource")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.move_resource(&params.from_path, &params.to_path).await;
         ok_or_err(result)
     }
 

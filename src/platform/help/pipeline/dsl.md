@@ -43,7 +43,7 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 ```zf
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
-  [b] logic.switch --expr "input.body.type" --cases normal,urgent --default unknown \
+  [b] logic.switch --expr "input.type" --cases normal,urgent --default unknown \
   [c] sekejap.query --table normal_queue --op upsert \
   [d] http.request --url https://alerts.api/send --method POST \
   [e] sekejap.query --table unknown_queue --op upsert \
@@ -146,14 +146,21 @@ Patch metadata or one node without rewriting the full graph:
 # Metadata only
 patch pipeline blog-home --path /new-path --title "Blog v2"
 
-# One node config flag
+# One node config flag — by opaque ID
 patch pipeline blog-home node b --credential new-db
+
+# One node config flag — by node kind (no describe needed)
+patch pipeline blog-home node trigger.webhook --auth-type jwt --auth-credential my-jwt
+
+# By kind + index when multiple nodes of the same kind exist
+patch pipeline blog-home node pg.query[1] -- "SELECT id, title FROM posts WHERE published = true"
 
 # One node body (e.g. SQL)
 patch pipeline blog-home node b -- "SELECT id, title, slug FROM posts WHERE published = true"
 ```
 
-Node IDs (`a`, `b`, `c`, ...) come from `describe pipeline` output.
+`node_id` accepts: opaque ID (`b`, `n0`), kind (`trigger.webhook`, `pg.query`), or kind+index (`pg.query[0]`, `pg.query[1]`).
+When using kind, the first matching node is used. If multiple nodes match with no index, an error lists the options.
 After patching, the pipeline is `stale` until re-activated.
 
 ### activate / deactivate

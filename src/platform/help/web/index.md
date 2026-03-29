@@ -51,6 +51,30 @@ export default function MyWidget({ label }) {
 }
 ```
 
+### `.ts` behavior files — use camelCase exports, never ALL_CAPS
+
+The bundler automatically renames `UPPER_SNAKE_CASE` top-level `const/let/var` declarations with a unique per-file prefix to avoid collisions in the flat output bundle. This means an exported `ALL_CAPS` name is no longer exported under its original name — imports of it resolve to `undefined`.
+
+**Always export camelCase from `.ts` files:**
+
+```ts
+// ✓ CORRECT — camelCase, name preserved through bundling
+export const apiUrl = "https://api.example.com";
+export const defaultPageSize = 20;
+export const myConfig = { timeout: 5000 };
+
+// ✗ WRONG — UPPER_SNAKE_CASE gets prefixed, import resolves to undefined
+export const API_URL = "https://api.example.com";
+export const DEFAULT_PAGE_SIZE = 20;
+export const MY_CONFIG = { timeout: 5000 };
+```
+
+Consuming page:
+```tsx
+import { apiUrl, defaultPageSize } from "@/behavior/config";
+// ✓ works — camelCase names survive bundling
+```
+
 ---
 
 ## Page File Shape

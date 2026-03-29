@@ -20,8 +20,11 @@ Path params (`:id`), query strings (`?status=x`), and body fields all land in th
 | Path param `:id` | `input.params.id` | `--path /api/users/:id` |
 | Query string `?status=x` | `input.query.status` | `?status=active` |
 | GET root (merged) | `input.id` | path params + query merged to root for GET |
-| POST JSON body field | `input.name` | JSON object body fields merged to root |
-| POST raw/nested body | `input.body` | non-object JSON or text |
+| POST JSON body field | `input.name` | `application/json` object fields merged to root |
+| POST form field | `input.name` | `application/x-www-form-urlencoded` fields merged to root (percent-decoded) |
+| POST multipart text field | `input.name` | `multipart/form-data` text fields merged to root |
+| POST multipart file | `input.files.avatar` | `{ filename, content_type, size, data }` — data is base64 |
+| Raw / non-object body | `input.body` | non-object JSON or plain text fallback |
 
 ---
 
@@ -118,6 +121,6 @@ Combine path param and body fields with `--params-expr`:
 
 ## Nodes Used
 
-- `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, body merged to root for POST JSON
+- `trigger.webhook` — HTTP endpoints; path params in `input.params.<name>`, body merged to root for JSON, form-urlencoded, and multipart text fields
 - `pg.query` — parameterized SQL; `--params-path` (single value) or `--params-expr` (multiple/conditional)
 - `script` — validation, 404 guard, response shaping, chaining multiple queries

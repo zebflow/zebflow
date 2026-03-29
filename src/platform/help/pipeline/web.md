@@ -4,8 +4,6 @@ This doc covers **serving HTTP responses** from pipelines: HTML pages, JSON, red
 
 See also: **`pipeline-dsl`** (full DSL), **`web-templates`** (how to write `.tsx` pages).
 
-> `n.web.render` is the old name — it still works as an alias but **always use `web.response`** in new pipelines.
-
 ---
 
 ## What `n.web.response` does
@@ -23,7 +21,7 @@ All HTTP concerns (status, cookies, headers, redirects) are explicit flags — n
 |------|-------------|
 | `--template pages/foo.tsx` | TSX page to render. Activates RWE mode — upstream payload becomes `input` in the template. |
 | `--status 404` | HTTP status code (default: 200, or 302 when `--location` is set). |
-| `--location /path` | Redirect URL. Implies 302 unless `--status` overrides. |
+| `--location /path` | Redirect URL. Implies 302 unless `--status` overrides. Supports `$.field` to resolve from upstream payload (e.g. `--location $.redirect_url`). |
 | `--message "text"` | Plain-text response body. |
 | `--body $.field` | JSON path into upstream payload to use as response body. |
 | `--set-cookie spec` | Set a cookie — see spec format below. |
@@ -79,11 +77,22 @@ name=session,value=$.access_token,http-only,max-age=86400,secure,same-site=Stric
 | web.response --template pages/not-found.tsx --status 404
 ```
 
-### Redirect
+### Redirect — static URL
 
 ```zf
 | trigger.webhook --path /go/signup --method GET
-| web.response --location /auth/register --status 302
+| web.response --location /auth/register
+```
+
+### Redirect — dynamic URL from payload
+
+`$.field` resolves the redirect target from the upstream payload at execution time.
+
+```zf
+| trigger.webhook --path /auth/login --method POST
+| pg.query --credential main-db -- "SELECT dashboard_url FROM users WHERE email = $1"
+| script -- "return { redirect_url: input.rows?.[0]?.dashboard_url ?? '/home' }"
+| web.response --location $.redirect_url
 ```
 
 ### Login — set session cookie

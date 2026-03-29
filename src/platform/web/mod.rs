@@ -9093,7 +9093,7 @@ async fn public_webhook_ingress(
             .as_millis()
     );
     let mut input =
-        build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params);
+        build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params).await;
     // Inject JWT claims as `auth` field when auth_type == "jwt".
     if let Some(claims) = auth_claims {
         if let Value::Object(ref mut map) = input {
@@ -9381,7 +9381,7 @@ async fn public_webhook_ingress_root(
     .await
 }
 
-fn build_webhook_ingress_input(
+async fn build_webhook_ingress_input(
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
@@ -9389,6 +9389,8 @@ fn build_webhook_ingress_input(
     path: &str,
     path_params: &serde_json::Map<String, Value>,
 ) -> Value {
+    use base64::Engine as _;
+
     let query = parse_query_to_json(uri.query());
     let params = Value::Object(path_params.clone());
     let method_value = method.as_str().to_string();
@@ -9433,8 +9435,10 @@ fn build_webhook_ingress_input(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
-        .to_ascii_lowercase();
-    if content_type.contains("application/json")
+        .to_string();
+    let content_type_lc = content_type.to_ascii_lowercase();
+
+    if content_type_lc.contains("application/json")
         && let Ok(parsed) = serde_json::from_slice::<Value>(body)
     {
         if let Value::Object(mut obj) = parsed {
@@ -9454,6 +9458,56 @@ fn build_webhook_ingress_input(
                 "params": params
             }
         });
+    }
+
+    if content_type_lc.contains("application/x-www-form-urlencoded") {
+        if let Ok(fields) = serde_urlencoded::from_bytes::<Vec<(String, String)>>(body) {
+            let mut obj = serde_json::Map::new();
+            for (k, v) in fields {
+                obj.insert(k, Value::String(v));
+            }
+            attach_context(&mut obj);
+            return Value::Object(obj);
+        }
+    }
+
+    if content_type_lc.contains("multipart/form-data") {
+        if let Ok(boundary) = multer::parse_boundary(&content_type) {
+            let body_clone = body.clone();
+            let stream = futures::stream::once(async move {
+                Ok::<_, std::io::Error>(body_clone)
+            });
+            let mut mp = multer::Multipart::new(stream, boundary);
+            let mut obj = serde_json::Map::new();
+            let mut files = serde_json::Map::new();
+            while let Ok(Some(mut field)) = mp.next_field().await {
+                let name = field.name().unwrap_or("").to_string();
+                let filename = field.file_name().map(|s| s.to_string());
+                let field_ct = field.content_type().map(|ct| ct.to_string());
+                let mut data: Vec<u8> = Vec::new();
+                while let Ok(Some(chunk)) = field.chunk().await {
+                    data.extend_from_slice(&chunk);
+                }
+                if let Some(filename) = filename {
+                    let size = data.len();
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
+                    files.insert(name, json!({
+                        "filename": filename,
+                        "content_type": field_ct.unwrap_or_default(),
+                        "size": size,
+                        "data": encoded,
+                    }));
+                } else {
+                    let text = String::from_utf8_lossy(&data).to_string();
+                    obj.insert(name, Value::String(text));
+                }
+            }
+            if !files.is_empty() {
+                obj.insert("files".to_string(), Value::Object(files));
+            }
+            attach_context(&mut obj);
+            return Value::Object(obj);
+        }
     }
 
     let body_text = String::from_utf8_lossy(body).to_string();

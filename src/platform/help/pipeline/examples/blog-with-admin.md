@@ -50,7 +50,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 
 ```
 | trigger.webhook --path /api/posts --method POST
-| script -- "const b = input.body; if (!b.title) return { error: 'title required', __status: 400 }; const slug = b.slug || b.title.toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { ...b, slug, updated_at: Date.now(), created_at: b.created_at || Date.now() }"
+| script -- "if (!input.title) return { error: 'title required', __status: 400 }; const slug = input.slug || input.title.toLowerCase().replace(/[^a-z0-9]+/g,'-'); return { ...input, slug, updated_at: Date.now(), created_at: input.created_at || Date.now() }"
 | sekejap.query --table posts --op upsert
 | script -- "return { ok: true, slug: input.slug }"
 ```
@@ -67,7 +67,7 @@ A public blog with paginated listing and post detail pages, plus a JWT-protected
 
 ```
 | trigger.webhook --path /auth/login --method POST
-| script -- "const { username, password } = input.body; if (username === 'admin' && password === process.env.ADMIN_PASSWORD) { return { user: username, role: 'admin', token: btoa(JSON.stringify({ user: username, role: 'admin', exp: Date.now() + 86400000 })) }; } return { error: 'invalid credentials', __status: 401 }"
+| script -- "const { username, password } = input; if (username === 'admin' && password === process.env.ADMIN_PASSWORD) { return { user: username, role: 'admin', token: btoa(JSON.stringify({ user: username, role: 'admin', exp: Date.now() + 86400000 })) }; } return { error: 'invalid credentials', __status: 401 }"
 ```
 
 ---
