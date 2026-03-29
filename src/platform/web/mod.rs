@@ -124,9 +124,8 @@ pub struct PlatformAppState {
     pub platform: Arc<PlatformService>,
     frontend: PlatformFrontend,
     render_script_cache: Option<Arc<RenderScriptCache>>,
-    /// Shared compile cache for `n.web.render` pipeline nodes.
-    /// Keyed by markup content hash — reused across every webhook request.
-    web_render_cache: crate::pipeline::engines::basic::WebRenderCache,
+    /// Shared template compile cache — keyed by markup content hash, reused across requests.
+    template_cache: crate::pipeline::engines::basic::TemplateCache,
     /// Background cron scheduler — kept alive for the lifetime of the process.
     scheduler: Arc<PipelineScheduler>,
     /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
@@ -504,7 +503,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             platform,
             frontend,
             render_script_cache,
-            web_render_cache: crate::pipeline::engines::basic::new_web_render_cache(),
+            template_cache: crate::pipeline::engines::basic::new_template_cache(),
             scheduler,
             preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
@@ -6314,7 +6313,7 @@ async fn api_execute_pipeline(
                 .into_response();
         }
     };
-    if let Err(err) = hydrate_web_render_markup_from_templates(&state, &owner, &project, &mut graph)
+    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph)
     {
         state.platform.pipeline_hits.record_failure(
             &owner,
@@ -6398,7 +6397,8 @@ async fn api_execute_pipeline(
         Some(credentials),
         Some(simple_tables),
     )
-    .with_web_render_cache(state.web_render_cache.clone());
+    .with_template_cache(state.template_cache.clone())
+    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok());
     match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => {
             state
@@ -7340,12 +7340,12 @@ fn rwe_library_git_commit(
     cmd.output().map(|_| ()).map_err(|_| ())
 }
 
-/// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.render`
+/// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.response`
 /// node's `config.options` before pipeline execution.
 ///
 /// Also parses the node-level `--load-scripts` comma-separated string and injects it
 /// as a proper `Vec<String>` into `options.load_scripts`.  Called immediately after
-/// `hydrate_web_render_markup_from_templates` in the webhook and manual-execute paths.
+/// `hydrate_template_markup` in the webhook and manual-execute paths.
 fn apply_rwe_project_options(
     state: &PlatformAppState,
     owner: &str,
@@ -7364,7 +7364,7 @@ fn apply_rwe_project_options(
         .map(|p| p.display().to_string());
 
     for node in &mut graph.nodes {
-        if node.kind != "n.web.render" {
+        if node.kind != "n.web.response" {
             continue;
         }
 
@@ -8876,7 +8876,8 @@ async fn dispatch_weberror(
         Some(credentials),
         Some(simple_tables),
     )
-    .with_web_render_cache(state.web_render_cache.clone());
+    .with_template_cache(state.template_cache.clone())
+    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok());
 
     let ctx = PipelineContext {
         owner: owner.to_string(),
@@ -8892,7 +8893,7 @@ async fn dispatch_weberror(
     let status =
         StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
-    // Prefer HTML output from n.web.render.
+    // Prefer rendered HTML output.
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
         let mut html = html.to_string();
         if let Some(css) = output
@@ -9054,7 +9055,7 @@ async fn public_webhook_ingress(
     };
 
     let mut graph = selected.compiled.graph.clone();
-    if let Err(err) = hydrate_web_render_markup_from_templates(&state, &owner, &project, &mut graph)
+    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph)
     {
         state.platform.pipeline_hits.record_failure(
             &owner,
@@ -9118,7 +9119,8 @@ async fn public_webhook_ingress(
         Some(credentials),
         Some(simple_tables),
     )
-    .with_web_render_cache(state.web_render_cache.clone());
+    .with_template_cache(state.template_cache.clone())
+    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok());
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
         Err(err) => {
@@ -9279,7 +9281,7 @@ async fn public_webhook_ingress(
             Some(parts.join("; "))
         });
 
-    // ── HTML response (n.web.render output) ──────────────────────────────────
+    // ── HTML response (rendered template output) ─────────────────────────────
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
         let mut html = html.to_string();
         // Re-inject Tailwind CSS from hydration_payload (extracted by RWE engine).
@@ -9816,16 +9818,14 @@ fn validate_execute_trigger(
     }
 }
 
-fn hydrate_web_render_markup_from_templates(
+fn hydrate_template_markup(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
     graph: &mut PipelineGraph,
 ) -> Result<(), PlatformError> {
     for node in &mut graph.nodes {
-        let is_render = node.kind == "n.web.render";
-        let is_response = node.kind == "n.web.response";
-        if !is_render && !is_response {
+        if node.kind != "n.web.response" {
             continue;
         }
 
@@ -9839,17 +9839,9 @@ fn hydrate_web_render_markup_from_templates(
             continue;
         }
 
-        // n.web.render uses "template_path"; n.web.response uses "template"
-        let template_rel = if is_response {
-            node.config.get("template").and_then(Value::as_str)
-        } else {
-            node.config
-                .get("template_path")
-                .or_else(|| node.config.get("template_rel_path"))
-                .and_then(Value::as_str)
-        }
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+        let template_rel = node.config.get("template").and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         let Some(template_rel) = template_rel else {
             continue;

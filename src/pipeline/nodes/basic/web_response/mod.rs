@@ -2,8 +2,7 @@
 //!
 //! Single unified node for all web response concerns. Without `--template` it
 //! serves the pipeline payload as JSON (or a redirect / plain-text message).
-//! With `--template` it renders a TSX page through the RWE engine (identical
-//! to the old `n.web.render`, which is now an alias for this node).
+//! With `--template` it renders a TSX page through the RWE engine.
 //!
 //! # Decision matrix for agents
 //!
@@ -34,9 +33,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::language::LanguageEngine;
 use crate::pipeline::{NodeDefinition, PipelineError};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
+use crate::rwe::{CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, TemplateSource};
 
 pub const NODE_KIND: &str = "n.web.response";
 const INPUT_PIN_IN: &str = "in";
@@ -277,8 +278,17 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
+        // Resolve location — supports $.field references into the payload.
+        let location = self.config.location.as_deref().map(|loc| {
+            if loc.starts_with("$.") || loc == "$" {
+                resolve_json_path_string(&input.payload, loc).unwrap_or_else(|| loc.to_string())
+            } else {
+                loc.to_string()
+            }
+        });
+
         let status = self.config.status
-            .or_else(|| if self.config.location.is_some() { Some(302) } else { None });
+            .or_else(|| if location.is_some() { Some(302) } else { None });
 
         let cookie = self.config.set_cookie.as_deref()
             .and_then(|spec| parse_cookie_spec(spec, &input.payload));
@@ -288,7 +298,7 @@ impl NodeHandler for Node {
 
         let envelope = json!({
             "status": status,
-            "location": self.config.location,
+            "location": location,
             "message": self.config.message,
             "body": body,
             "set_cookie": cookie,
@@ -385,4 +395,87 @@ pub fn resolve_json_path(payload: &Value, path: &str) -> Option<Value> {
         current = current.get(segment)?;
     }
     Some(current.clone())
+}
+
+// ── Internal page compile/render ─────────────────────────────────────────────
+// Used by BasicPipelineEngine for the template rendering path.
+
+/// A compiled TSX page held in the engine's render cache.
+pub struct CompiledPage {
+    pub node_id: String,
+    pub template: CompiledTemplate,
+}
+
+/// Compile a TSX template into a cached page artifact.
+pub fn compile_page(
+    node_id: &str,
+    template: &TemplateSource,
+    options: &ReactiveWebOptions,
+    rwe: &dyn ReactiveWebEngine,
+    language: &dyn LanguageEngine,
+) -> Result<CompiledPage, PipelineError> {
+    let compiled_template = rwe
+        .compile_template(template, language, options)
+        .map_err(|e| {
+            PipelineError::new(
+                "WEB_RESPONSE_COMPILE",
+                format!("failed compiling node '{}': {}", node_id, e),
+            )
+        })?;
+    Ok(CompiledPage {
+        node_id: node_id.to_string(),
+        template: compiled_template,
+    })
+}
+
+/// Render a previously compiled page artifact.
+pub fn render_compiled_page(
+    compiled: &CompiledPage,
+    state: Value,
+    metadata: Value,
+    rwe: &dyn ReactiveWebEngine,
+    language: &dyn LanguageEngine,
+    request_id: &str,
+) -> Result<NodeExecutionOutput, PipelineError> {
+    let route = metadata
+        .get("route")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("/")
+        .to_string();
+
+    let rendered = rwe
+        .render(
+            &compiled.template,
+            state,
+            language,
+            &crate::rwe::RenderContext {
+                route,
+                request_id: request_id.to_string(),
+                metadata,
+            },
+        )
+        .map_err(|e| {
+            PipelineError::new(
+                "WEB_RESPONSE_RENDER",
+                format!("failed rendering node '{}': {}", compiled.node_id, e),
+            )
+        })?;
+
+    let mut trace = vec![
+        format!("node={}", compiled.node_id),
+        format!("node_kind={NODE_KIND}"),
+        format!("output_pin={OUTPUT_PIN_OUT}"),
+    ];
+    trace.extend(rendered.trace);
+
+    Ok(NodeExecutionOutput {
+        output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+        payload: json!({
+            "html": rendered.html,
+            "compiled_scripts": rendered.compiled_scripts,
+            "hydration_payload": rendered.hydration_payload,
+        }),
+        trace,
+    })
 }
