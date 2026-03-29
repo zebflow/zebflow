@@ -30,6 +30,9 @@ pub struct WebhookTriggerSpec {
     /// Credential ID for auth verification.
     #[serde(default)]
     pub auth_credential: String,
+    /// Required roles — JWT claim `role` must match one. Empty = any authenticated user.
+    #[serde(default)]
+    pub auth_required_role: Vec<String>,
 }
 
 /// One extracted weberror trigger from an active compiled pipeline.
@@ -159,12 +162,23 @@ impl CompiledPipeline {
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or_default()
                         .to_string();
+                    let auth_required_role = node
+                        .config
+                        .get("auth_required_role")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(ToString::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     webhook_triggers.push(WebhookTriggerSpec {
                         node_id: node.id.clone(),
                         path,
                         method,
                         auth_type,
                         auth_credential,
+                        auth_required_role,
                     });
                 }
                 "n.trigger.weberror" => {

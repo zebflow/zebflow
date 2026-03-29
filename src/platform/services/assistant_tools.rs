@@ -98,6 +98,20 @@ impl AssistantPlatformTools {
                 parameters: json!({ "type": "object", "properties": {} }),
             },
             ToolDef {
+                name: "pipeline_search".to_string(),
+                description: "Search pipeline .zf.json files for a pattern. Returns file:line matches. \
+                    Optional glob filters files. Use to find which pipelines use a credential, path, or node kind.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Case-insensitive substring to search for." },
+                        "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'pipelines/api/*.zf.json')." },
+                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." }
+                    }
+                }),
+            },
+            ToolDef {
                 name: "pipeline_get".to_string(),
                 description: "Get a specific pipeline definition by file-relative path.".to_string(),
                 parameters: json!({
@@ -140,14 +154,15 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_patch".to_string(),
                 description: "Patch one node in a saved pipeline without rewriting the full graph. \
-                    Call pipeline_describe first to get node IDs. \
+                    node_id accepts: opaque ID (e.g. 'n0'), node kind (e.g. 'trigger.webhook', 'pg.query'), \
+                    or kind+index (e.g. 'pg.query[1]') when multiple nodes share the same kind. \
                     Pipeline status becomes stale after patching — call pipeline_activate to make it live again.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["file_rel_path", "node_id"],
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline." },
-                        "node_id": { "type": "string", "description": "Node ID to patch (e.g. 'n0', 'b', 'trigger')." },
+                        "node_id": { "type": "string", "description": "Node ID, kind, or kind+index (e.g. 'n0', 'trigger.webhook', 'pg.query[1]')." },
                         "flags": { "type": "string", "description": "Space-separated --flag value pairs (e.g. '--credential new-db --path /updated')." },
                         "body": { "type": "string", "description": "Body content for the node (SQL for pg.query, JS for script nodes)." }
                     }
@@ -249,6 +264,36 @@ impl AssistantPlatformTools {
                     "properties": {
                         "rel_path": { "type": "string", "description": "Relative path under templates/ (e.g. 'pages/blog-home.tsx')." },
                         "content": { "type": "string", "description": "Full file content to write." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "template_search".to_string(),
+                description: "Search template files for a pattern. Returns file:line matches. \
+                    Optional glob filters which files to search (e.g. 'pages/*.tsx', '**/*.tsx'). \
+                    Use to find which templates use an import, component, or variable.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["pattern"],
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Case-insensitive substring to search for." },
+                        "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'pages/*.tsx')." },
+                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "template_edit".to_string(),
+                description: "Surgical string replacement in a template file. \
+                    No need to read the full file first — just provide old_string and new_string. \
+                    Fails if old_string not found or matches more than once.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["rel_path", "old_string", "new_string"],
+                    "properties": {
+                        "rel_path": { "type": "string", "description": "Relative path to the template file." },
+                        "old_string": { "type": "string", "description": "Exact string to replace. Must match exactly once." },
+                        "new_string": { "type": "string", "description": "Replacement string." }
                     }
                 }),
             },
@@ -461,6 +506,21 @@ impl AssistantPlatformTools {
             "template_write" => ops.template_write(
                 args["rel_path"].as_str().unwrap_or(""),
                 args["content"].as_str().unwrap_or(""),
+            ),
+            "template_search" => ops.template_search(
+                args["pattern"].as_str().unwrap_or(""),
+                args.get("glob").and_then(|v| v.as_str()),
+                args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            ),
+            "pipeline_search" => ops.pipeline_search(
+                args["pattern"].as_str().unwrap_or(""),
+                args.get("glob").and_then(|v| v.as_str()),
+                args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+            ),
+            "template_edit" => ops.template_edit(
+                args["rel_path"].as_str().unwrap_or(""),
+                args["old_string"].as_str().unwrap_or(""),
+                args["new_string"].as_str().unwrap_or(""),
             ),
 
             // ── Project Docs ───────────────────────────────────────────────────

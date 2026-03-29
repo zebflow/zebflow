@@ -15,7 +15,7 @@ Use `|` to chain nodes left-to-right. Every node receives the previous node's ou
 ```zf
 | trigger.webhook --path /blog --method GET
 | pg.query --credential main-db -- "SELECT id, title, slug FROM posts ORDER BY created_at DESC LIMIT 20"
-| web.render --template-path pages/blog-home.tsx --route /blog
+| web.response --template pages/blog-home.tsx --route /blog
 ```
 
 Pass this as the `body` to `pipeline_register`.
@@ -44,7 +44,7 @@ A **node** is one step in the pipeline. Each node has a **kind** (trigger, query
 
 - **Triggers** start a run (`trigger.webhook`, `trigger.schedule`, …).
 - **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `logic.if`, …).
-- **Last nodes** often produce the HTTP response (`web.render` / `n.web.render` for HTML, or a `script` that returns JSON / redirect fields).
+- **Last nodes** produce the HTTP response (`web.response` for HTML pages, JSON, redirects, or cookies — see `help(topic="pipeline/web")`).
 
 ### How to open the full node reference
 
@@ -86,7 +86,7 @@ blog-home                  →  pipelines/blog-home.zf.json
 pipeline_register
   file_rel_path = "pipelines/pages/blog-home"
   title = "Blog Home"
-  body = "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\" | web.render --template-path pages/blog-home.tsx --route /blog"
+  body = "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\" | web.response --template pages/blog-home.tsx --route /blog"
 ```
 
 ### Step 2: Activate (goes live)
@@ -121,7 +121,7 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 ```
 | trigger.webhook --path /blog --method GET
 | pg.query --credential main-db -- "SELECT id, title, body, created_at FROM posts ORDER BY created_at DESC"
-| web.render --template-path pages/blog-home.tsx --route /blog
+| web.response --template pages/blog-home.tsx --route /blog
 ```
 
 ### POST JSON API — insert and return JSON
@@ -139,7 +139,7 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 | trigger.webhook --path /dashboard --method GET
 | script -- "const tok = input.headers['authorization']?.replace('Bearer ',''); if (!tok) return { __redirect: '/login' }; return input;"
 | pg.query --credential main-db -- "SELECT id, name, role FROM users WHERE id = '{{input.user_id}}'"
-| web.render --template-path pages/dashboard.tsx --route /dashboard
+| web.response --template pages/dashboard.tsx --route /dashboard
 ```
 
 ### Redirect
@@ -171,5 +171,6 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 ## Next steps
 
 - `help(topic="pipeline/nodes")` — same live catalog as the appendix on `help(topic="pipeline")`, or one node via `topic="pipeline/nodes/{kind}"`
-- `help(topic="web")` — TSX pages and `n.web.render` / `input`
+- `help(topic="web")` — TSX pages, `input` / `ctx`, hydration modes
+- `help(topic="pipeline/web")` — `n.web.response` flags, cookie spec, redirect, custom headers
 - `help(topic="pipeline/examples")` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)

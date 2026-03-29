@@ -28,9 +28,9 @@ uxui/
 tests/
 .github/
 
-# Markdown repo-wide, except skills shipped in the binary (include_str!)
+# Markdown repo-wide, except content shipped in the binary via include_str!
 **/*.md
-!src/platform/skills/**/*.md
+!src/platform/help/**/*.md
 
 # Library READMEs / notes — not referenced by include_bytes!
 libraries/**/*.md

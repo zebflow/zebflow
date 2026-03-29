@@ -287,6 +287,9 @@ pub enum NodeFieldDataSource {
     /// Active function pipelines (trigger_kind = "function") in the current project.
     /// Returns pipeline slugs for datalist rendering in `n.function.call`.
     FunctionPipelines,
+    /// Roles registered in the JWT credential selected in the sibling `auth_credential` field.
+    /// Reads `auth_roles` from that credential's list item. Used by `n.trigger.webhook`.
+    CredentialJwtRoles,
 }
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.

@@ -31,7 +31,7 @@ Covers ~80% of pipelines: webhooks, scheduled jobs, simple data flows.
 register blog-home --path /pages \
   | trigger.webhook --path /blog --method GET \
   | pg.query --credential main-db -- "SELECT * FROM posts ORDER BY created_at DESC" \
-  | web.render --template-path pages/blog-home.tsx --route /blog
+  | web.response --template pages/blog-home.tsx
 ```
 
 ### Graph mode (branching, fan-out, fan-in, loops)
@@ -109,7 +109,7 @@ trigger:  webhook → /blog GET
 nodes:
   [a] n.trigger.webhook   path=/blog method=GET
   [b] n.pg.query          credential_id=main-db
-  [c] n.web.render        template=blog-home route=/blog
+  [c] n.web.response        template=blog-home route=/blog
 
 edges:
   [a]:out → [b]:in
@@ -263,15 +263,15 @@ n.logic.switch --help           # same
 
 | Short name | Full kind | Config flags |
 |---|---|---|
-| `trigger.webhook` | `n.trigger.webhook` | `--path <path> --method <GET\|POST\|...>` |
+| `trigger.webhook` | `n.trigger.webhook` | `--path <path> --method <GET\|POST\|...> [--auth-type jwt\|hmac\|api_key] [--auth-credential <id>] [--auth-required-role <roles>]` |
 | `trigger.schedule` | `n.trigger.schedule` | `--cron <expr> --timezone <tz>` |
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|py\|...>` or `-- <code>` |
-| `web.render` | `n.web.render` | `--template-path <pages/name.tsx>` (must include `.tsx`) |
+| `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--set-cookie`, `--header` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST>` |
 | `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
 | `pg.query` | `n.pg.query` | `--credential <id> [--params-path <dot.path>] [--params-expr <js-expr>]` + `-- <sql>` |
-| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--set-cookie true] [--cookie-name <name>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` |
+| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
@@ -524,4 +524,4 @@ describe pipeline blog-home && activate pipeline blog-home
 | MCP tool | `execute_pipeline_dsl` tool with `dsl` param |
 | Assistant | Natural language → assistant generates and submits DSL |
 
-See also: **pipeline-dsl-web** (HTML pages + `n.web.render`), **pipeline-dsl-web-auto** (web.auto language).
+See also: **pipeline-dsl-web** (HTML pages + `n.web.response`), **pipeline-dsl-web-auto** (web.auto language).

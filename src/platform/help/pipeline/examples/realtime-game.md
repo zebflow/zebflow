@@ -25,7 +25,7 @@ A multiplayer game where all clients share synchronized state through WebSocket 
 | trigger.webhook --path /game --method GET
 | sekejap.query --table game_rooms --op scan
 | script -- "return { rooms: input.filter(r => r.status === 'waiting') }"
-| web.render --template-path pages/game-lobby.tsx --route /game
+| web.response --template pages/game-lobby.tsx --route /game
 ```
 
 ### game-room — room with initial state
@@ -34,7 +34,7 @@ A multiplayer game where all clients share synchronized state through WebSocket 
 | trigger.webhook --path /game/:room --method GET
 | sekejap.query --table game_rooms --op get --key "{{input.params.room}}"
 | script -- "if (!input) return { __redirect: '/game' }; return { room: input }"
-| web.render --template-path pages/game-room.tsx --route /game/:room
+| web.response --template pages/game-room.tsx --route /game/:room
 ```
 
 ### api-room-create — create game room
@@ -80,7 +80,7 @@ A multiplayer game where all clients share synchronized state through WebSocket 
 - `trigger.ws` — WebSocket event handlers (join, move, leave)
 - `sekejap.query` — persist room state and history
 - `script` — move validation, state transforms
-- `web.render` — TSX templates
+- `web.response` — TSX templates
 - `ws.sync_state` — merge patches into the server-side room state object
 - `ws.emit` — broadcast events to all players in the room
 

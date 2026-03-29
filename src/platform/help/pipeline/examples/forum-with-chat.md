@@ -25,7 +25,7 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 | trigger.webhook --path /forum --method GET
 | sekejap.query --table forum_rooms --op scan
 | script -- "return { rooms: input.sort((a,b)=>b.last_activity-a.last_activity) }"
-| web.render --template-path pages/forum-home.tsx --route /forum
+| web.response --template pages/forum-home.tsx --route /forum
 ```
 
 ### forum-room — room view with recent messages
@@ -36,7 +36,7 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 | script -- "return { room: input }"
 | sekejap.query --table forum_messages --op scan
 | script -- "return { ...input, messages: input.messages?.filter(m => m.room === input.room?.id).slice(-50) || [] }"
-| web.render --template-path pages/forum-room.tsx --route /forum/:room
+| web.response --template pages/forum-room.tsx --route /forum/:room
 ```
 
 ### api-room-create — create a new room
@@ -65,7 +65,7 @@ A forum with threaded discussion rooms. Each room has a WebSocket connection for
 - `trigger.ws` — WebSocket event handler
 - `sekejap.query` — rooms and messages storage (scan, get, upsert)
 - `script` — validation, transforms, auth checks
-- `web.render` — TSX templates
+- `web.response` — TSX templates
 - `ws.emit` — broadcast message to all room participants
 
 ---

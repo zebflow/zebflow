@@ -55,7 +55,7 @@ Scheduled pipelines that invoke an AI agent (zebtune) to analyze data, generate 
 | trigger.webhook --path /admin/reports --method GET
 | sekejap.query --table ai_summaries --op scan
 | script -- "return { reports: input.sort((a,b)=>b.generated_at-a.generated_at).slice(0,30) }"
-| web.render --template-path pages/admin-reports.tsx --route /admin/reports
+| web.response --template pages/admin-reports.tsx --route /admin/reports
 ```
 
 ---
@@ -67,7 +67,7 @@ Scheduled pipelines that invoke an AI agent (zebtune) to analyze data, generate 
 - `script` — filter, transform, time window calculations
 - `zebtune` — AI agent for analysis, classification, generation
 - `http.request` — send reports/alerts to external webhooks
-- `web.render` — admin reporting page
+- `web.response` — admin reporting page
 
 ---
 

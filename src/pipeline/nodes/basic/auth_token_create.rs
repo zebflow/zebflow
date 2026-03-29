@@ -47,8 +47,6 @@ pub fn definition() -> NodeDefinition {
         "properties": {
             "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
             "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
-            "set_cookie": { "type": "boolean", "description": "When true, sets the token as an HttpOnly cookie in the response." },
-            "cookie_name": { "type": "string", "description": "Cookie name (default: zebflow_session)." },
             "claims": { "type": "object", "description": "Map of claim_name → JSON pointer path ($.field) or literal value." },
             "issuer": { "type": "string" },
             "audience": { "type": "string" }
@@ -66,20 +64,6 @@ pub fn definition() -> NodeDefinition {
                 flag: "--expires-in".to_string(),
                 config_key: "expires_in".to_string(),
                 description: "Token lifetime in seconds (default 900).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Scalar,
-                required: false,
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--set-cookie".to_string(),
-                config_key: "set_cookie".to_string(),
-                description: "When true, instructs the webhook ingress to set the token as an HttpOnly cookie (name controlled by --cookie-name).".to_string(),
-                kind: crate::pipeline::model::DslFlagKind::Bool,
-                required: false,
-            },
-            crate::pipeline::model::DslFlag {
-                flag: "--cookie-name".to_string(),
-                config_key: "cookie_name".to_string(),
-                description: "Cookie name to use when --set-cookie is true (default: zebflow_session).".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
             },
@@ -152,12 +136,6 @@ pub struct Config {
     /// Optional JWT audience (`aud`).
     #[serde(default)]
     pub audience: Option<String>,
-    /// When true, instruct the webhook ingress to set the token as an HttpOnly cookie.
-    #[serde(default)]
-    pub set_cookie: bool,
-    /// Cookie name when `set_cookie` is true (default: `zebflow_session`).
-    #[serde(default)]
-    pub cookie_name: Option<String>,
 }
 
 pub struct Node {
@@ -329,27 +307,12 @@ impl NodeHandler for Node {
             }
         };
 
-        let mut output = json!({
+        let output = json!({
             "access_token": token,
             "token_type": "bearer",
             "expires_in": expires_in,
             "profile": profile,
         });
-
-        // Inject _set_cookie directive for the webhook ingress to pick up.
-        if self.config.set_cookie {
-            let name = self.config.cookie_name.as_deref().unwrap_or("zebflow_session");
-            if let Value::Object(ref mut map) = output {
-                map.insert("_set_cookie".to_string(), json!({
-                    "name": name,
-                    "value": token,
-                    "max_age": expires_in,
-                    "http_only": true,
-                    "same_site": "Lax",
-                    "path": "/"
-                }));
-            }
-        }
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

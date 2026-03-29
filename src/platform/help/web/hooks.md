@@ -112,7 +112,7 @@ setTitle("Updated");
 Design `usePageState` to match what your pipeline's last node outputs:
 
 ```
-pipeline:  trigger.webhook → pg.query → n.web.render --template-path pages/posts
+pipeline:  trigger.webhook → pg.query → web.response --template pages/posts.tsx
                                ↓
 template:  input = { rows: [...], total: 42 }
            const state = usePageState(input.state ?? { rows: [], total: 0 });

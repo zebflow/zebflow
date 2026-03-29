@@ -38,7 +38,7 @@ Zebflow is a pipeline-based reactive web automation platform. Projects contain:
 
 **Project**: Isolated workspace. Each project has its own pipelines, templates, tables, credentials.
 
-**Pipeline**: A graph of nodes. Trigger nodes receive HTTP requests or cron ticks; action nodes transform data; web_render nodes produce HTML output.
+**Pipeline**: A graph of nodes. Trigger nodes receive HTTP requests or cron ticks; action nodes transform data; web.response nodes produce HTML output.
 
 **Activation**: Pipelines must be explicitly activated to serve live traffic. Draft changes don't affect production until activated.
 

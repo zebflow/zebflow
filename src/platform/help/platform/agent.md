@@ -151,7 +151,7 @@ See `help(topic="db/sekejap")` for the full query language reference.
 ```
 | trigger.webhook --path /blog --method GET
 | pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
-| n.web.render --template-path pages/blog-home
+| n.web.response --template pages/blog-home
 ```
 
 Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g. `pipelines/pages/blog-home.zf.json`).

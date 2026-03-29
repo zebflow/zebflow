@@ -54,7 +54,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 | trigger.webhook --path /data/items --method GET
 | sekejap.query --table scraped_items --op scan
 | script -- "const items = input.sort((a,b)=>b.fetched_at-a.fetched_at).slice(0, parseInt(input.query?.limit || 50, 10)); return { items, count: items.length }"
-| web.render --template-path pages/scraped-items.tsx --route /data/items
+| web.response --template pages/scraped-items.tsx --route /data/items
 ```
 
 ### scraped-item-detail — single item
@@ -63,7 +63,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 | trigger.webhook --path /data/items/:id --method GET
 | sekejap.query --table scraped_items --op get --key "{{input.params.id}}"
 | script -- "if (!input) return { __redirect: '/data/items' }; return { item: input }"
-| web.render --template-path pages/scraped-item-detail.tsx --route /data/items/:id
+| web.response --template pages/scraped-item-detail.tsx --route /data/items/:id
 ```
 
 ---
@@ -75,7 +75,7 @@ Scheduled pipelines that fetch external web pages or APIs, parse/extract data wi
 - `http.request` — outbound HTTP to fetch external pages/APIs
 - `script` — HTML parsing with regex, data normalization, deduplication, filtering
 - `sekejap.query` — store scraped data (upsert = idempotent by id, scan = list all)
-- `web.render` — display scraped data
+- `web.response` — display scraped data
 
 ---
 

@@ -191,7 +191,7 @@ register_pipeline
       ORDER BY created_at DESC
       LIMIT 20
     "
-  | web.render --template pages/blog-list --route /blog
+  | web.response --template pages/blog-list --route /blog
   """
 ```
 
@@ -209,7 +209,7 @@ register_pipeline
         AND status = 'published'
       LIMIT 1
     "
-  | web.render --template pages/blog-post --route /blog/post
+  | web.response --template pages/blog-post --route /blog/post
   """
 ```
 
@@ -233,7 +233,7 @@ register_pipeline
       FROM posts
       ORDER BY created_at DESC
     "
-  | web.render --template pages/admin-posts --route /admin/posts
+  | web.response --template pages/admin-posts --route /admin/posts
   """
 ```
 
@@ -258,7 +258,7 @@ register_pipeline
       WHERE slug = '{{input.query.slug}}'
       LIMIT 1
     "
-  | web.render --template pages/admin-editor --route /admin/post
+  | web.response --template pages/admin-editor --route /admin/post
   """
 ```
 

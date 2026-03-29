@@ -9,7 +9,7 @@ A server-rendered HTML page triggered by HTTP GET. The query result flows direct
 ## Core Pattern
 
 ```
-trigger.webhook → (optional query node) → web.render
+trigger.webhook → (optional query node) → web.response --template pages/foo.tsx
 ```
 
 The upstream node's entire output becomes `input` inside the TSX template. `input.rows` for pg.query results, `input.data` or whatever shape the script returns.
@@ -23,7 +23,7 @@ The upstream node's entire output becomes `input` inside the TSX template. `inpu
 ```
 | trigger.webhook --path /hello --method GET
 | script -- "return { message: 'Hello World', ts: Date.now() }"
-| web.render --template-path pages/hello.tsx --template-id pages/hello.tsx --route /hello
+| web.response --template pages/hello.tsx
 ```
 
 ### Page with PostgreSQL list
@@ -32,7 +32,7 @@ The upstream node's entire output becomes `input` inside the TSX template. `inpu
 | trigger.webhook --path /programmes --method GET
 | pg.query --credential my-pg \
     -- "SELECT unit_id::text, code, title->>'id' as title, slug FROM academic.academic_unit WHERE unit_type = 'programme' AND is_active = true ORDER BY code"
-| web.render --template-path pages/programmes.tsx --template-id pages/programmes.tsx --route /programmes
+| web.response --template pages/programmes.tsx
 ```
 
 In `pages/programmes.tsx` — `input.rows` is the array of DB rows:
@@ -52,20 +52,31 @@ return (
 | trigger.webhook --path /programmes/:unit_id --method GET
 | pg.query --credential my-pg --params-path params.unit_id \
     -- "SELECT unit_id::text, code, title, description FROM academic.academic_unit WHERE unit_id = $1::uuid AND is_active = true"
-| script -- "const r = input.rows?.[0]; if (!r) return { __status: 404, error: 'not found' }; return r"
-| web.render --template-path pages/programme-detail.tsx --template-id pages/programme-detail.tsx --route /programmes/:unit_id
+| script -- "const r = input.rows?.[0]; if (!r) return { notfound: true }; return r"
+| web.response --template pages/programme-detail.tsx --status 404
+```
+
+Wait — the status 404 should only apply when not found. Better pattern: two separate pipelines, or use a script to set the status conditionally. For the not-found case:
+
+```
+| script -- "const r = input.rows?.[0]; if (!r) return { notfound: true }; return r"
+| web.response --template pages/not-found.tsx --status 404
 ```
 
 In `pages/programme-detail.tsx`:
 
 ```tsx
-if (input?.error) return <p>Not found</p>;
-return (
-  <div>
-    <h1>{input?.title?.id}</h1>
-    <p>{input?.code}</p>
-  </div>
-);
+export default function Page(input) {
+  if (input?.notfound) return <Page><main><h1>Not Found</h1></main></Page>;
+  return (
+    <Page>
+      <main>
+        <h1>{input?.title?.id}</h1>
+        <p>{input?.code}</p>
+      </main>
+    </Page>
+  );
+}
 ```
 
 ### Page with query string filter — `?faculty_id=uuid`
@@ -74,7 +85,7 @@ return (
 | trigger.webhook --path /programmes --method GET
 | pg.query --credential my-pg --params-expr "[input.query.faculty_id ?? null]" \
     -- "SELECT unit_id::text, code, title->>'id' as title FROM academic.academic_unit WHERE unit_type = 'programme' AND ($1::uuid IS NULL OR parent_unit_id = $1::uuid) ORDER BY code"
-| web.render --template-path pages/programmes.tsx --template-id pages/programmes.tsx --route /programmes
+| web.response --template pages/programmes.tsx
 ```
 
 ---
@@ -83,12 +94,13 @@ return (
 
 - `trigger.webhook` — GET endpoint; path params in `input.params.<name>`, query string in `input.query.<name>`
 - `pg.query` — fetch data; `--params-path params.unit_id` binds `:unit_id` as `$1`
-- `script` — 404 guard, data transform; `__status` sets HTTP response code
-- `web.render` — TSX template; upstream output = `input` in template
+- `script` — 404 guard, data transform
+- `web.response` — renders TSX template; upstream output = `input` in template; supports `--status`, `--set-cookie`, `--header`
 
 ---
 
 ## Templates Needed
 
 Use `template_create kind=page name=<page-name>` then `template_write` to fill content.
-Access upstream data via `input` — it's whatever the previous node returned.
+Access upstream data via `input` (function parameter) — it's whatever the previous node returned.
+`ctx` is the same object available as `globalThis.ctx` in both SSR and browser.

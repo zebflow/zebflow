@@ -125,13 +125,15 @@ interface PageInput {
 
 ## Data from the Pipeline
 
-The object reaching **`n.web.render`** becomes the page's **`input`**:
+The upstream payload passed to **`n.web.response --template`** becomes `input` in the page:
 
 ```
-pipeline:  trigger → pg.query → web.render
+pipeline:  trigger → pg.query → web.response --template pages/foo.tsx
                          ↓
-template:  input.state = { rows: [...] }  (pg.query output)
+template:  input = { rows: [...], row_count: 20 }  (pg.query output)
 ```
+
+`input` is the function parameter (props). `ctx` is the same object exposed as `globalThis.ctx` — usable in both SSR and browser contexts. Use `input` for server-seeded data, `useState` for client-side state.
 
 ---
 

@@ -691,6 +691,168 @@ impl ProjectService {
         Ok(template_payload_from_content(&rel, &req.content))
     }
 
+    /// Search template files for a pattern. Returns (rel_path, line_number, block) tuples.
+    /// Optional `glob` filters which files to search (e.g. "pages/*.tsx", "**/*.tsx").
+    /// `context` lines before and after each match are included in the block.
+    pub fn search_template_files(
+        &self,
+        owner: &str,
+        project: &str,
+        pattern: &str,
+        glob: Option<&str>,
+        context: usize,
+    ) -> Result<Vec<(String, usize, String)>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let root = &layout.repo_pipelines_dir;
+
+        let pattern_lower = pattern.to_lowercase();
+        let mut matches: Vec<(String, usize, String)> = Vec::new();
+
+        let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+        collect_all_files(root, root, &mut all_files);
+
+        for (rel, abs) in &all_files {
+            if let Some(g) = glob {
+                if !template_glob_matches(g, rel) {
+                    continue;
+                }
+            }
+            let content = match fs::read_to_string(abs) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if context == 0 {
+                for (line_idx, line) in content.lines().enumerate() {
+                    if line.to_lowercase().contains(&pattern_lower) {
+                        matches.push((rel.clone(), line_idx + 1, line.to_string()));
+                    }
+                }
+            } else {
+                let all_lines: Vec<&str> = content.lines().collect();
+                for (line_idx, line) in all_lines.iter().enumerate() {
+                    if line.to_lowercase().contains(&pattern_lower) {
+                        let start = line_idx.saturating_sub(context);
+                        let end = (line_idx + context + 1).min(all_lines.len());
+                        let block = all_lines[start..end].join("\n");
+                        matches.push((rel.clone(), line_idx + 1, block));
+                    }
+                }
+            }
+        }
+
+        Ok(matches)
+    }
+
+    /// Search pipeline `.zf.json` files for a pattern. Returns (rel_path, line_number, block) tuples.
+    /// Optional `glob` filters which files to search.
+    /// `context` lines before and after each match are included in the block.
+    pub fn search_pipeline_files(
+        &self,
+        owner: &str,
+        project: &str,
+        pattern: &str,
+        glob: Option<&str>,
+        context: usize,
+    ) -> Result<Vec<(String, usize, String)>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let root = &layout.repo_pipelines_dir;
+
+        let pattern_lower = pattern.to_lowercase();
+        let mut matches: Vec<(String, usize, String)> = Vec::new();
+
+        let mut all_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+        collect_all_files(root, root, &mut all_files);
+
+        for (rel, abs) in &all_files {
+            if !rel.ends_with(".zf.json") {
+                continue;
+            }
+            if let Some(g) = glob {
+                if !template_glob_matches(g, rel) {
+                    continue;
+                }
+            }
+            let content = match fs::read_to_string(abs) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if context == 0 {
+                for (line_idx, line) in content.lines().enumerate() {
+                    if line.to_lowercase().contains(&pattern_lower) {
+                        matches.push((rel.clone(), line_idx + 1, line.to_string()));
+                    }
+                }
+            } else {
+                let all_lines: Vec<&str> = content.lines().collect();
+                for (line_idx, line) in all_lines.iter().enumerate() {
+                    if line.to_lowercase().contains(&pattern_lower) {
+                        let start = line_idx.saturating_sub(context);
+                        let end = (line_idx + context + 1).min(all_lines.len());
+                        let block = all_lines[start..end].join("\n");
+                        matches.push((rel.clone(), line_idx + 1, block));
+                    }
+                }
+            }
+        }
+
+        Ok(matches)
+    }
+
+    /// Surgical string replacement in a template file.
+    /// Fails if old_string not found or appears more than once.
+    pub fn edit_template_file(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        old_string: &str,
+        new_string: &str,
+    ) -> Result<usize, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+
+        let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        if !abs.is_file() {
+            return Err(PlatformError::new(
+                "PLATFORM_TEMPLATE_MISSING",
+                format!("template file '{}' not found", rel),
+            ));
+        }
+
+        let content = fs::read_to_string(&abs)?;
+        let count = content.matches(old_string).count();
+
+        if count == 0 {
+            return Err(PlatformError::new(
+                "PLATFORM_TEMPLATE_EDIT",
+                "old_string not found in file",
+            ));
+        }
+        if count > 1 {
+            return Err(PlatformError::new(
+                "PLATFORM_TEMPLATE_EDIT",
+                format!("old_string matches {} times — provide more context to make it unique", count),
+            ));
+        }
+
+        let line_number = content
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(old_string))
+            .map(|(i, _)| i + 1)
+            .unwrap_or(0);
+
+        let new_content = content.replacen(old_string, new_string, 1);
+        fs::write(&abs, &new_content)?;
+
+        Ok(line_number)
+    }
+
     /// Creates one controlled template entry.
     pub fn create_template_entry(
         &self,
@@ -1609,6 +1771,76 @@ fn slug_preserving_extension(raw: &str) -> String {
     } else {
         slug_segment(raw)
     }
+}
+
+/// Recursively collect all files under `dir` as (rel_path, abs_path) pairs.
+fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_all_files(root, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            out.push((rel_str, path));
+        }
+    }
+}
+
+/// Simple glob match: `*` matches non-slash chars, `**` matches anything.
+fn template_glob_matches(pattern: &str, path: &str) -> bool {
+    if pattern.is_empty() {
+        return true;
+    }
+    // Split on `**` first
+    let segments: Vec<&str> = pattern.split("**").collect();
+    if segments.len() == 1 {
+        // No **, use single-star match (no slash crossing)
+        glob_star_match(pattern, path)
+    } else {
+        // Must match first segment at start, last at end, rest anywhere
+        let mut remaining = path;
+        for (i, seg) in segments.iter().enumerate() {
+            if seg.is_empty() {
+                continue;
+            }
+            if i == 0 {
+                if !glob_star_match_prefix(seg, remaining) {
+                    return false;
+                }
+                remaining = &remaining[seg.trim_matches('*').len().min(remaining.len())..];
+            } else if i == segments.len() - 1 {
+                if !remaining.ends_with(seg.trim_matches('*')) {
+                    return false;
+                }
+            } else if let Some(pos) = remaining.find(seg.trim_matches('*')) {
+                remaining = &remaining[pos + seg.trim_matches('*').len()..];
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn glob_star_match(pattern: &str, path: &str) -> bool {
+    // Split pattern and path by '/', match each segment (single * = any non-slash chars)
+    let pat_parts: Vec<&str> = pattern.split('/').collect();
+    let path_parts: Vec<&str> = path.split('/').collect();
+    if pat_parts.len() != path_parts.len() {
+        return false;
+    }
+    pat_parts.iter().zip(path_parts.iter()).all(|(p, s)| {
+        if *p == "*" { true } else { p == s }
+    })
+}
+
+fn glob_star_match_prefix(pattern: &str, path: &str) -> bool {
+    let trimmed = pattern.trim_end_matches('/').trim_end_matches('*');
+    path.starts_with(trimmed)
 }
 
 fn resolve_template_entry(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
