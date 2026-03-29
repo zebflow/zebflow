@@ -109,6 +109,19 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 ---
 
+## Know Exact Names Before You Use Them
+
+Two values in pipelines are often hallucinated wrong — always use the actual value from the project:
+
+| What you're writing | Source of truth | How to get it |
+|---------------------|----------------|---------------|
+| `web.response --template <path>` | exact `rel_path` from the project | `template_list` |
+| `--credential <slug>` on any node | exact `slug` from the project | `connection_list` |
+
+**Rule:** If you already have the exact value in your current context (e.g. from a recent `template_list` or `connection_list` call), use it directly. If you're not certain, call the tool first. Never guess, never use memory from a different project.
+
+---
+
 ## The 3 Domains
 
 Master these before building anything:

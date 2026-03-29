@@ -4,6 +4,11 @@ Pipelines are directed graphs stored as `.zf.json` files under `repo/pipelines/`
 Use the **DSL** (`pipeline_register`) to author them — the JSON is auto-generated.
 Read this doc for the underlying model. See `help("pipeline/dsl")` for the DSL.
 
+> **Before you write a pipeline node that references a template or credential:**
+> - `web.response --template <path>` — the path must be an exact `rel_path` from `template_list`. Call it if you don't have the value in your current context.
+> - `--credential <slug>` — the slug must be exact from `connection_list`. Call it if unsure.
+> Never guess these values. A wrong template path silently serves nothing; a wrong credential slug causes auth failures.
+
 ---
 
 ## File Location

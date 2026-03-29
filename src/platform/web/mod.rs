@@ -913,6 +913,34 @@ fn externalize_rwe_scripts(
         if script.content_hash.trim().is_empty() {
             continue;
         }
+
+        // When `deployment_asset_base` is set, the HTML script-tag src is already
+        // rewritten to `{base}/rwe/scripts/{hash}`. But the compiled script *content*
+        // has `/assets/libraries/` paths baked in at render time (preact bundle,
+        // zeb/* library imports). Those paths resolve against the page origin at
+        // runtime — they must be rewritten to point to the same CDN base.
+        // We do a content-patch here, store under the new hash, and use the new
+        // hash for the script tag src so CAS integrity is maintained.
+        let maybe_patched: Option<CompiledScript> = if let Some(ref base) = deployment_asset_base {
+            const LIB_FROM: &str = "/assets/libraries/";
+            if script.content.contains(LIB_FROM) {
+                use sha2::{Digest, Sha256};
+                let lib_to = format!("{}/libraries/", base.trim_end_matches('/'));
+                let new_content = script.content.replace(LIB_FROM, &lib_to);
+                let new_hash = hex::encode(Sha256::digest(new_content.as_bytes()));
+                Some(CompiledScript {
+                    content: new_content,
+                    content_hash: new_hash,
+                    ..script.clone()
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let script = maybe_patched.as_ref().unwrap_or(script);
+
         let store_res = match project_scope {
             Some((owner, project)) => cache.store_scoped(owner, project, script),
             None => cache.store(script),
