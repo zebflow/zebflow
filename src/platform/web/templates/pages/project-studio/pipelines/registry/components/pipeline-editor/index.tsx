@@ -31,6 +31,7 @@ import { extractNodeConfig } from "@/pages/project-studio/pipelines/registry/com
 import NodeDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/node-dialog";
 import WebRenderDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/web-render-dialog";
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
+import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 
 // ── graphui bundle loader (sets globalThis.PipelineGraph) ────────────────────
 let _graphuiPromise: Promise<void> | null = null;
@@ -94,6 +95,7 @@ interface PipelineEditorProps {
   snapToGrid?: boolean;
   graphuiPackageLabel?: string;
   onDeleteClick?: () => void;
+  onLockToggle?: (locked: boolean) => void;
 }
 
 export default function PipelineEditor({
@@ -106,6 +108,7 @@ export default function PipelineEditor({
   snapToGrid = true,
   graphuiPackageLabel = "Graph UI",
   onDeleteClick,
+  onLockToggle,
 }: PipelineEditorProps) {
   const graphRef = useRef(null);
   const nav = useNavigate();
@@ -515,6 +518,17 @@ export default function PipelineEditor({
           >
             {draftLabel}
           </span>
+          {onLockToggle && currentMeta && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => onLockToggle(!currentLocked)}
+              title={currentLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
+              className={currentLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
+            >
+              {currentLocked ? <LockIcon /> : <LockOpenIcon />}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="xs"

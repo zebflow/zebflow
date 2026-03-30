@@ -220,7 +220,12 @@ impl ProjectService {
     ) -> Result<Vec<PipelineMeta>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let mut rows = self.data.list_pipeline_meta(&owner, &project)?;
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let raw_rows = self.data.list_pipeline_meta(&owner, &project)?;
+        let mut rows: Vec<PipelineMeta> = raw_rows
+            .into_iter()
+            .filter(|m| layout.repo_dir.join(&m.file_rel_path).is_file())
+            .collect();
         // Re-derive virtual_path from file_rel_path (source of truth).
         for m in &mut rows {
             m.virtual_path = virtual_path_from_file_rel_path(&m.file_rel_path);

@@ -8,6 +8,14 @@ use crate::platform::model::{
     ZebflowJsonRweLibraryEntry, slug_segment,
 };
 
+/// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
+pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
+    locked.iter().any(|p| {
+        rel_path == p.as_str()
+            || rel_path.starts_with(&format!("{}/", p.trim_end_matches('/')))
+    })
+}
+
 /// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.json`.
 pub struct ZebflowJsonService {
     users_root: PathBuf,
@@ -142,6 +150,47 @@ impl ZebflowJsonService {
             cfg.rwe.libraries.remove(name);
         })?;
         Ok(())
+    }
+
+    /// Returns whether `rel_path` is in the locked templates list.
+    pub fn is_template_locked(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<bool, PlatformError> {
+        let cfg = self.read_or_default(owner, project);
+        Ok(is_template_path_locked(&cfg.locks.templates, rel_path))
+    }
+
+    /// Adds or removes `rel_path` from the locked templates list.
+    pub fn set_template_locked(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        locked: bool,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            let templates = &mut cfg.locks.templates;
+            if locked {
+                if !templates.iter().any(|p| p == rel_path) {
+                    templates.push(rel_path.to_string());
+                }
+            } else {
+                templates.retain(|p| p != rel_path);
+            }
+        })?;
+        Ok(())
+    }
+
+    /// Returns all locked template paths from zebflow.json.
+    pub fn get_locked_templates(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<String>, PlatformError> {
+        Ok(self.read_or_default(owner, project).locks.templates)
     }
 
     /// Initializes zebflow.json with defaults if it doesn't already exist.

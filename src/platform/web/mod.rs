@@ -282,6 +282,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_upsert_pipeline_definition).delete(api_delete_pipeline_definition),
         )
         .route(
+            "/api/projects/{owner}/{project}/pipelines/lock-toggle",
+            post(api_pipeline_lock_toggle),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/templates/lock-toggle",
+            post(api_template_lock_toggle),
+        )
+        .route(
             "/api/projects/{owner}/{project}/git/status",
             get(api_repo_git_status),
         )
@@ -2583,6 +2591,28 @@ async fn render_project_editor(
         })
         .collect::<Vec<_>>();
 
+    // Locked templates list (for both sidebar indicators and lock toggle)
+    let locked_templates = state.platform.zebflow_cfg
+        .get_locked_templates(&owner, &project)
+        .unwrap_or_default();
+
+    // Pipeline lock map for sidebar indicators
+    let pipeline_lock_map: std::collections::HashMap<String, bool> = {
+        let mut m = std::collections::HashMap::new();
+        for item in &listing.pipelines {
+            let locked = match state.platform.projects.read_pipeline_source(
+                &owner,
+                &project,
+                &item.file_rel_path,
+            ) {
+                Ok(source) => pipeline_source_is_locked(&source),
+                Err(_) => false,
+            };
+            m.insert(item.file_rel_path.clone(), locked);
+        }
+        m
+    };
+
     // Sidebar pipelines — pipelines at current scope with new editor URLs
     let sidebar_pipelines = listing
         .pipelines
@@ -2590,6 +2620,7 @@ async fn render_project_editor(
         .map(|item| {
             let file_id = item.file_rel_path.clone();
             let is_selected = file_param.as_deref() == Some(file_id.as_str());
+            let is_locked = pipeline_lock_map.get(&file_id).copied().unwrap_or(false);
             json!({
                 "id": file_id,
                 "name": item.name,
@@ -2599,6 +2630,7 @@ async fn render_project_editor(
                 "is_active": item.is_active,
                 "has_draft": item.has_draft,
                 "is_selected": is_selected,
+                "is_locked": is_locked,
                 "status_label": if item.is_active { "active" } else if item.has_draft { "draft" } else { "inactive" },
                 "editor_href": format!("{editor_base}?type=pipeline&path={scope_path}&file={file_id}"),
                 "git_status": item.git_status,
@@ -2865,6 +2897,13 @@ async fn render_project_editor(
         Value::Null
     };
 
+    let selected_template_locked = if effective_type == "template" {
+        let file = file_param.as_deref().unwrap_or("");
+        crate::platform::services::project_config::is_template_path_locked(&locked_templates, file)
+    } else {
+        false
+    };
+
     let (seo_title, current_menu) = if nav_sub == "registry" {
         (format!("{} - Pipelines", project_info.title), "Pipelines / Registry")
     } else {
@@ -2889,6 +2928,8 @@ async fn render_project_editor(
         "template": template_payload,
         "doc": doc_payload,
         "folder": folder_payload,
+        "locked_templates": locked_templates,
+        "selected_template_locked": selected_template_locked,
         "assets": {
             "api": format!("/api/projects/{owner}/{project}/assets"),
         },
@@ -5705,41 +5746,7 @@ async fn api_upsert_pipeline_definition(
         return response;
     }
 
-    // Check if pipeline exists and is locked.
     let self_file_rel_path = req.file_rel_path.clone();
-    let existing_meta = match state.platform.projects.get_pipeline_meta_by_file_id(
-        &owner,
-        &project,
-        &self_file_rel_path,
-    ) {
-        Ok(meta) => meta,
-        Err(err) => return internal_error(err),
-    };
-
-    if let Some(meta) = &existing_meta {
-        let locked = match state.platform.projects.read_pipeline_source(
-            &owner,
-            &project,
-            &meta.file_rel_path,
-        ) {
-            Ok(source) => pipeline_source_is_locked(&source),
-            Err(_) => false,
-        };
-        if locked {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "PLATFORM_PIPELINE_LOCKED",
-                        "message": "pipeline is locked and cannot be edited"
-                    }
-                })),
-            )
-                .into_response();
-        }
-    }
-
     // Conflict check: reject if any active pipeline already owns the same webhook path.
     if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&req.source) {
         let conflicts = state.platform.pipeline_runtime.check_webhook_path_conflict(
@@ -5811,6 +5818,121 @@ async fn api_delete_pipeline_definition(
         }
         Err(err) => internal_error(err),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct PipelineLockToggleRequest {
+    file_rel_path: String,
+    locked: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct TemplateLockToggleRequest {
+    rel_path: String,
+    locked: bool,
+}
+
+async fn api_pipeline_lock_toggle(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<PipelineLockToggleRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+    let pipeline_path = layout.repo_dir.join(&req.file_rel_path);
+    let source = match std::fs::read_to_string(&pipeline_path) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "pipeline not found"}))).into_response(),
+    };
+    let mut value: Value = match serde_json::from_str(&source) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response(),
+    };
+    value["metadata"]["locked"] = Value::Bool(req.locked);
+    let serialized = match serde_json::to_string_pretty(&value) {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response(),
+    };
+    if let Err(e) = std::fs::write(&pipeline_path, &serialized) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+    }
+    // Auto-commit
+    let name = req.file_rel_path.rsplit('/').next().unwrap_or(&req.file_rel_path).replace(".zf.json", "");
+    let verb = if req.locked { "lock" } else { "unlock" };
+    let commit_msg = format!("{verb}: pipeline {name}");
+    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let git_cfg = &zebflow_cfg.git;
+    let identity_args = git_identity_args(git_cfg, &project_slug);
+    let _ = {
+        let mut add_cmd = std::process::Command::new("git");
+        add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg(&req.file_rel_path);
+        add_cmd.output()
+    };
+    let _ = {
+        let mut commit_cmd = std::process::Command::new("git");
+        for arg in &identity_args { commit_cmd.arg(arg); }
+        commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(&commit_msg);
+        commit_cmd.output()
+    };
+    Json(json!({"ok": true, "is_locked": req.locked})).into_response()
+}
+
+async fn api_template_lock_toggle(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<TemplateLockToggleRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(err) = state.platform.zebflow_cfg.set_template_locked(&owner, &project, &req.rel_path, req.locked) {
+        return internal_error(err);
+    }
+    // Auto-commit
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+    let verb = if req.locked { "lock" } else { "unlock" };
+    let commit_msg = format!("{verb}: template {}", req.rel_path);
+    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let git_cfg = &zebflow_cfg.git;
+    let identity_args = git_identity_args(git_cfg, &project_slug);
+    let _ = {
+        let mut add_cmd = std::process::Command::new("git");
+        add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg("zebflow.json");
+        add_cmd.output()
+    };
+    let _ = {
+        let mut commit_cmd = std::process::Command::new("git");
+        for arg in &identity_args { commit_cmd.arg(arg); }
+        commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(&commit_msg);
+        commit_cmd.output()
+    };
+    Json(json!({"ok": true, "is_locked": req.locked})).into_response()
 }
 
 async fn api_repo_git_status(

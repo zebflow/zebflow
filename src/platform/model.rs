@@ -1150,6 +1150,16 @@ pub struct ZebflowJson {
     pub remote: ZebflowJsonGitRemote,
     #[serde(default)]
     pub assets: ZebflowJsonAssets,
+    #[serde(default)]
+    pub locks: ZebflowJsonLocks,
+}
+
+/// Lock settings stored in `zebflow.json` — controls which resources agents cannot access.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonLocks {
+    /// Template rel_paths (files or folder prefixes) blocked from agent read/write.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<String>,
 }
 
 /// Git identity section of `zebflow.json`.
