@@ -24,7 +24,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Create Auth Token".to_string(),
-        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms.".to_string(),
+        description: "Signs a JWT access token from input data using a stored jwt_signing_key credential. Supports HS256 and RS256 algorithms. Claims marked with `:public` (e.g. `--claim name=$.fullname:public`) are the only ones exposed in the browser via `ctx.auth`; all others remain server-only.".to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Input payload for claim extraction."
@@ -47,7 +47,7 @@ pub fn definition() -> NodeDefinition {
         "properties": {
             "credential_id": { "type": "string", "description": "ID of the jwt_signing_key credential." },
             "expires_in": { "type": "integer", "description": "Token lifetime in seconds (default 900)." },
-            "claims": { "type": "object", "description": "Map of claim_name → JSON pointer path ($.field) or literal value." },
+            "claims": { "type": "object", "description": "Map of claim_name → value. Append `:public` to expose a claim in the browser (e.g. `name=$.fullname:public`). Claims without `:public` are signed into the JWT but never reach the browser DOM." },
             "issuer": { "type": "string" },
             "audience": { "type": "string" }
         }
@@ -70,7 +70,7 @@ pub fn definition() -> NodeDefinition {
             crate::pipeline::model::DslFlag {
                 flag: "--claim".to_string(),
                 config_key: "claims".to_string(),
-                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name=$.field_path or claim_name=literal. e.g. --claim player_id=$.player_id --claim fullname=$.fullname".to_string(),
+                description: "Map a JWT claim from the input payload. Repeat for each claim. Format: claim_name=$.field_path or claim_name=literal. Append :public to expose the claim in the browser via ctx.auth (e.g. --claim name=$.fullname:public). Claims without :public are signed but never reach the browser DOM. e.g. --claim sub=$.id --claim name=$.fullname:public --claim role=$.role:public".to_string(),
                 kind: crate::pipeline::model::DslFlagKind::KeyValuePairs,
                 required: false,
             },
@@ -97,7 +97,7 @@ pub fn definition() -> NodeDefinition {
                 NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, placeholder: Some("900".to_string()), ..Default::default() },
                 NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
                 NodeFieldDef { name: "audience".to_string(), label: "Audience (aud)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Map claim name → $.field_path or literal value. e.g. sub=$.user_id, role=admin".to_string()), ..Default::default() },
+                NodeFieldDef { name: "claims".to_string(), label: "Claims".to_string(), field_type: NodeFieldType::ClaimsPairs, help: Some("Map claim name → $.field_path or literal. Toggle \"Public\" to expose that claim in the browser via ctx.auth. Private claims (no toggle) are signed into the JWT but never reach the browser DOM.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
@@ -227,8 +227,30 @@ impl NodeHandler for Node {
 
         // --- Build claims from input payload ---
         let mut claims_map = Map::new();
+        let mut public_keys: Vec<String> = Vec::new();
         for (key, val) in &self.config.claims {
-            claims_map.insert(key.clone(), resolve_claim(val, &input.payload));
+            // Check for `:public` suffix on the value string to mark this claim
+            // as safe to expose in the browser via __rwe_payload.
+            let (resolved_val, is_public) = if let Value::String(s) = val {
+                if let Some(stripped) = s.strip_suffix(":public") {
+                    (resolve_claim(&Value::String(stripped.to_string()), &input.payload), true)
+                } else {
+                    (resolve_claim(val, &input.payload), false)
+                }
+            } else {
+                (resolve_claim(val, &input.payload), false)
+            };
+            if is_public {
+                public_keys.push(key.clone());
+            }
+            claims_map.insert(key.clone(), resolved_val);
+        }
+        // Embed public claim list into the JWT so web.response can filter at render time.
+        if !public_keys.is_empty() {
+            claims_map.insert(
+                "_zf_public".to_string(),
+                Value::Array(public_keys.iter().map(|k| Value::String(k.clone())).collect()),
+            );
         }
 
         // Copy profile before adding standard JWT fields

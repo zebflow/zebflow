@@ -6733,6 +6733,20 @@ async fn api_template_save(
                 .file
                 .ensure_project_layout(&owner_slug, &project_slug)
             {
+                // Re-run import rewriting so any @/ imports in the saved file and its
+                // neighbours get resolved to absolute paths. This is idempotent.
+                let _ = crate::rwe::core::prepare_template_root(&layout.repo_pipelines_dir);
+
+                // Invalidate the compiled template cache. The cache key is a hash of
+                // the page markup only — it does NOT include imported component content.
+                // Without clearing here, editing a component file would not take effect
+                // until the importing page itself is also edited.
+                state
+                    .template_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+
                 if let Err(err) = trigger_project_asset_prepare_on_template_save(
                     &state,
                     &owner_slug,
@@ -6771,7 +6785,23 @@ async fn api_template_create(
         .projects
         .create_template_entry(&owner, &project, &req)
     {
-        Ok(file) => Json(file).into_response(),
+        Ok(file) => {
+            let owner_slug = crate::platform::model::slug_segment(&owner);
+            let project_slug = crate::platform::model::slug_segment(&project);
+            if let Ok(layout) = state
+                .platform
+                .file
+                .ensure_project_layout(&owner_slug, &project_slug)
+            {
+                let _ = crate::rwe::core::prepare_template_root(&layout.repo_pipelines_dir);
+                state
+                    .template_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clear();
+            }
+            Json(file).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }

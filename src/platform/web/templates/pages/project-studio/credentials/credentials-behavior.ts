@@ -81,8 +81,8 @@ const SECRET_SCHEMAS = {
     },
     { key: "secret", label: "HMAC Secret", type: "password", fullWidth: true, generate: "random_hex_32", help: "Secret for HS* algorithms. Click Generate for a secure 256-bit random value." },
     { key: "private_key", label: "Private Key (PEM)", type: "textarea", rows: 6, fullWidth: true, help: "PEM private key for RS*/ES* algorithms. Leave blank for HS*." },
-    { key: "auth_redirect", label: "Login Success Redirect", placeholder: "/dashboard", help: "Path to redirect to after a protected webhook successfully verifies a token. Leave blank to return JSON." },
-    { key: "auth_forbidden_redirect", label: "Auth Failure Redirect", placeholder: "/login", help: "Path to redirect to when JWT verification fails or the required role is missing. Leave blank to return 401/403 JSON." },
+    { key: "auth_redirect", label: "Unauthenticated Redirect", placeholder: "/login", help: "Where to redirect when the token is missing or invalid. Leave blank to return 401 JSON." },
+    { key: "auth_forbidden_redirect", label: "Forbidden Redirect", placeholder: "/403", help: "Where to redirect when the token is valid but the role is insufficient. Leave blank to return 403 JSON." },
   ],
   browser_browserless: [
     { key: "url", label: "URL", placeholder: "http://localhost:3000", fullWidth: true, help: "Browserless instance root URL. Self-hosted or cloud endpoint." },

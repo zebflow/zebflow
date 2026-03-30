@@ -50,7 +50,7 @@ Create a `jwt_signing_key` credential with RBAC config in the secret:
 | pg.query --credential main-db --params-expr "[input.username]" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
 | script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, role: user.role }"
-| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username --claim role=$.role --expires-in 86400
+| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username:public --claim role=$.role:public --expires-in 86400
 | web.response --location /dashboard --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
 ```
 
@@ -107,7 +107,7 @@ Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
 - `trigger.webhook --auth-required-role <roles>` — comma-separated roles from credential `auth_roles`
 - `pg.query` — user lookup and insert
-- `auth.token.create --claim key=$.field` — sign JWT; output `$.access_token`
+- `auth.token.create --claim key=$.field` — sign JWT; output `$.access_token`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim role=$.role:public`). Private claims like `sub` never reach the browser DOM.
 - `web.response --set-cookie` — set HttpOnly session cookie
 - `web.response --location` — redirect after login/logout/register
 - `web.response --template` — render protected pages
