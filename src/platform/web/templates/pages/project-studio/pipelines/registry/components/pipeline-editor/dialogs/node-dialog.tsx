@@ -121,7 +121,7 @@ export default function NodeDialog({
               value={String(formState.__node_slug || "")}
               onInput={(e) => handleChange("__node_slug", e.currentTarget.value)}
             />
-            <small className="text-xs text-slate-500 mt-1">
+            <small className="text-xs text-gray-500 mt-1">
               Unique key for this node in pipeline graph edges.
             </small>
           </Field>

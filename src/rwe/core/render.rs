@@ -23,7 +23,7 @@ pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
     Ok(())
 }
 
-pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput, EngineError> {
+pub fn render(compiled: &CompiledTemplate, vars: &Value, enabled_libraries: &[String]) -> Result<RenderOutput, EngineError> {
     let started = Instant::now();
     let ssr = deno_worker::render_ssr(
         &compiled.server_module_source,
@@ -32,7 +32,7 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value) -> Result<RenderOutput,
     )?;
     // Scan original source for zeb/* imports BEFORE stripping so the preamble
     // can be injected into the outer script even though the inner bundle strips them.
-    let zeb_preamble = build_zeb_preamble(&compiled.client_module_source);
+    let zeb_preamble = build_zeb_preamble(&compiled.client_module_source, enabled_libraries);
     let transpiled_client =
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let ssr_ms = started.elapsed().as_millis();
@@ -198,7 +198,7 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
 /// imports like `/assets/libraries/…` resolve correctly. The inner user
 /// bundle (loaded as a `data:` URL) then just uses the symbols as globals —
 /// its `import { … } from "zeb/*"` lines are stripped by `strip_rwe_client_imports`.
-fn build_zeb_preamble(source: &str) -> String {
+fn build_zeb_preamble(source: &str, enabled_libraries: &[String]) -> String {
     let libs = collect_zeb_libraries(source);
     if libs.is_empty() {
         return String::new();
@@ -210,6 +210,10 @@ fn build_zeb_preamble(source: &str) -> String {
     // globals have been installed above.
     let mut out = String::new();
     for lib in &libs {
+        // Non-empty enabled list = strict mode: skip unlisted libraries.
+        if !enabled_libraries.is_empty() && !enabled_libraries.contains(lib) {
+            continue;
+        }
         if let Some(url) = zeb_bundle_url(lib) {
             let var = lib.replace('/', "_").replace('-', "_");
             out.push_str(&format!(

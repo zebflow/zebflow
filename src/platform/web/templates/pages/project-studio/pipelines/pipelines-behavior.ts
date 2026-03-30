@@ -200,7 +200,7 @@ export function initPipelineRegistryBehavior() {
         cb.className = "git-commit-file-cb";
 
         const code = document.createElement("code");
-        const colorCls = f.code === "A" ? "text-green-400" : f.code === "D" ? "text-red-400" : f.code === "M" ? "text-yellow-400" : f.code === "R" ? "text-blue-400" : "text-slate-400";
+        const colorCls = f.code === "A" ? "text-green-400" : f.code === "D" ? "text-red-400" : f.code === "M" ? "text-yellow-400" : f.code === "R" ? "text-blue-400" : "text-gray-400";
         code.className = `font-mono text-[0.7rem] font-bold px-1 rounded ${colorCls}`;
         code.textContent = f.code === "??" ? "??" : f.code;
 

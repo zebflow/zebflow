@@ -68,6 +68,7 @@ function defaultFor(type: NodeFieldType): unknown {
   if (type === "checkbox") return false;
   if (type === "multi_checkbox") return [];
   if (type === "key_value_pairs") return {};
+  if (type === "claims_pairs") return {};
   return "";
 }
 
@@ -88,6 +89,7 @@ const FULL_WIDTH_TYPES: NodeFieldType[] = [
   "section",
   "multi_checkbox",
   "key_value_pairs",
+  "claims_pairs",
 ];
 
 function isFullWidth(field: NodeFieldDef): boolean {

@@ -97,6 +97,10 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
         extensions: [
           cm.basicSetup,
           cm.oneDark,
+          cm.EditorView.theme({
+            "&": { minHeight: "160px", maxHeight: "320px" },
+            ".cm-scroller": { overflow: "auto", maxHeight: "320px" },
+          }),
           cm.EditorView.updateListener.of((update: any) => {
             if (update.docChanged) {
               const newVal = update.state.doc.toString();
@@ -158,7 +162,6 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
           "flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden",
           "bg-[#282c34]" // oneDark background
         )}
-        style={{ minHeight: "160px", maxHeight: "320px" }}
       >
         <div
           ref={containerRef}

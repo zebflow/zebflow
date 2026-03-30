@@ -115,7 +115,7 @@ Two values in pipelines are often hallucinated wrong — always use the actual v
 
 | What you're writing | Source of truth | How to get it |
 |---------------------|----------------|---------------|
-| `web.response --template <path>` | exact `rel_path` from the project | `template_list` |
+| `web.response --template <path>` | exact `rel_path` from the project (always ends in `.tsx`, e.g. `pages/home.tsx`) | `template_list` |
 | `--credential <slug>` on any node | exact `slug` from the project | `connection_list` |
 
 **Rule:** If you already have the exact value in your current context (e.g. from a recent `template_list` or `connection_list` call), use it directly. If you're not certain, call the tool first. Never guess, never use memory from a different project.
@@ -171,7 +171,7 @@ See `help(topic="db/sekejap")` for the full query language reference.
 ```
 | trigger.webhook --path /blog --method GET
 | pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 20"
-| n.web.response --template pages/blog-home
+| n.web.response --template pages/blog-home.tsx
 ```
 
 Pass this as `body` to `pipeline_register` with a canonical `file_rel_path` (e.g. `pipelines/pages/blog-home.zf.json`).

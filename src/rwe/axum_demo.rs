@@ -254,6 +254,7 @@ fn render_page(
                 route: route.to_string(),
                 request_id: format!("req-{page}"),
                 metadata: json!({ "demo": true }),
+                enabled_libraries: Vec::new(),
             },
         )
         .map_err(|e| format!("render failed for '{page}': {e}"))?;

@@ -610,10 +610,10 @@ function NodeRegistryPanel({ groups, count }) {
                         </div>
                         <div className="flex items-center flex-wrap gap-[0.3rem] shrink-0 pt-[0.1rem]">
                           {node?.script_available ? (
-                            <Badge label="n.script access" variant="outline" className="text-[0.65rem] text-slate-200 border-white/25 bg-transparent" />
+                            <Badge label="n.script access" variant="outline" className="text-[0.65rem] text-gray-200 border-white/25 bg-transparent" />
                           ) : null}
                           {node?.ai_registered ? (
-                            <Badge label="agent tool" variant="outline" className="text-[0.65rem] text-slate-200 border-white/25 bg-transparent" />
+                            <Badge label="agent tool" variant="outline" className="text-[0.65rem] text-gray-200 border-white/25 bg-transparent" />
                           ) : null}
                           <span className="inline-flex items-center px-2 py-[0.25rem] rounded-full border border-[rgba(74,222,128,0.3)] text-[#4ade80] text-[0.65rem] font-mono uppercase tracking-widest">● installed</span>
                         </div>

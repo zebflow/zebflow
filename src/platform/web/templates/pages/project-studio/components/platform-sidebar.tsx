@@ -65,7 +65,7 @@ export default function PlatformSidebar(props) {
                 "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
                 isLight
                   ? "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100"
-                  : "border-slate-600 bg-slate-800 text-slate-400 hover:bg-slate-700",
+                  : "border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700",
               )}
               aria-label="Collapse sidebar"
               aria-expanded={expanded}
@@ -91,7 +91,7 @@ export default function PlatformSidebar(props) {
                 "inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors",
                 isLight
                   ? "border-dark-border bg-gray-50 text-slate-500 hover:bg-slate-100"
-                  : "border-dark-border bg-gray-800 text-slate-400 hover:bg-slate-700",
+                  : "border-dark-border bg-gray-800 text-gray-400 hover:bg-gray-700",
               )}
               aria-label="Expand sidebar"
               onClick={() => setExpanded(true)}
@@ -217,7 +217,7 @@ export default function PlatformSidebar(props) {
         <div className="flex justify-center p-2">
           <span
             className={cx(
-              "font-mono text-[0.65rem] tracking-wider text-slate-500 transition-opacity",
+              "font-mono text-[0.65rem] tracking-wider text-gray-500 transition-opacity",
               !expanded && "hidden",
             )}
             aria-hidden={!expanded}

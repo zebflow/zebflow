@@ -125,7 +125,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
         compiled: &CompiledTemplate,
         state: Value,
         _language: &dyn LanguageEngine,
-        _ctx: &RenderContext,
+        ctx: &RenderContext,
     ) -> Result<RenderOutput, ReactiveWebError> {
         let payload = compiled.engine_payload.as_ref().ok_or_else(|| {
             ReactiveWebError::new(
@@ -142,7 +142,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 )
             })?;
 
-        let rendered = crate::rwe::core::render(&rwe_compiled, &state).map_err(|err| {
+        let rendered = crate::rwe::core::render(&rwe_compiled, &state, &ctx.enabled_libraries).map_err(|err| {
             ReactiveWebError::new(
                 "RWE_RENDER",
                 format!("rwe render failed: {}", err.message),

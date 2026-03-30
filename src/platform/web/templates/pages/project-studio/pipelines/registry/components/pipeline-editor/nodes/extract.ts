@@ -86,12 +86,16 @@ export function extractNodeConfig(
       continue;
     }
 
-    // JSON fields
+    // JSON fields — value is already an object when coming from claims/kv editors
     if (JSON_FIELDS.has(key)) {
-      try {
-        next[key] = JSON.parse(String(value || "{}"));
-      } catch {
-        next[key] = {};
+      if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+        next[key] = value;
+      } else {
+        try {
+          next[key] = JSON.parse(String(value || "{}"));
+        } catch {
+          next[key] = {};
+        }
       }
       continue;
     }

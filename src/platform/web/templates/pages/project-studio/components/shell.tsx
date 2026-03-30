@@ -41,7 +41,7 @@ export default function ProjectStudioShell(props) {
       data-studio-theme={isLight ? "light" : "dark"}
       className={cx(
         "flex h-screen w-screen flex-col overflow-hidden",
-        isLight ? "bg-slate-50" : "bg-slate-950",
+        isLight ? "bg-gray-50" : "bg-dark-background",
       )}
     >
       <StudioChromeProvider>
@@ -51,9 +51,9 @@ export default function ProjectStudioShell(props) {
           <main
             className={cx(
               "ml-16 flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
-              isLight ? "bg-slate-50" : "bg-red-500",
+              isLight ? "bg-gray-50" : "bg-dark-background",
             )}
-            tw-variants={"bg-slate-50 bg-red-500"}
+            tw-variants={"bg-gray-50 bg-dark-background"}
           >
             <header
               className={cx(
@@ -67,7 +67,7 @@ export default function ProjectStudioShell(props) {
                     href="/home"
                     className={cx(
                       "transition-colors",
-                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-slate-100",
+                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-gray-100",
                     )}
                     aria-label="Go to home"
                   >
@@ -82,7 +82,7 @@ export default function ProjectStudioShell(props) {
                     href={props?.projectHref ?? "#"}
                     className={cx(
                       "truncate transition-colors",
-                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-slate-100",
+                      isLight ? "text-slate-500 hover:text-slate-900" : "text-dark-text1 hover:text-gray-100",
                     )}
                   >
                     {props?.projectLabel ?? "Project"}
@@ -100,26 +100,13 @@ export default function ProjectStudioShell(props) {
                   </span>
                 </nav>
 
-                <div className="flex items-center gap-1.5">
-                  {/* <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => setTheme(isLight ? "dark" : "light")}
-                    title="Toggle theme"
-                    className={cx(
-                      isLight
-                        ? "border-slate-200 bg-white text-slate-700"
-                        : "border-slate-600 bg-slate-900 text-slate-200 rounded-none",
-                    )}
-                  >
-                    {isLight ? <SunIcon /> : <MoonIcon />}
-                  </Button> */}
-
+                <div className="flex items-center gap-0.5">
                   <button
                     className={cx(
                       isLight
-                        ? "border-slate-200 bg-white text-slate-700 rounded-none"
-                        : "border-dark-border bg-dark-accent3 !text-dark-menus px-3 h-9 rounded-none",
+                        ? "bg-slate-200 text-slate-700"
+                        : "bg-dark-accent3 !text-dark-menus",
+                      "flex items-center justify-center h-9 w-9 rounded-none",
                     )}
                   >
                     <TerminalIcon />
