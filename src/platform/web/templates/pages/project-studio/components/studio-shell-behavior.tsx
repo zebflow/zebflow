@@ -310,8 +310,8 @@ function initConsoleBehavior(owner: string, project: string) {
       const isHistory = cmdHistory.includes(item);
       const hl = escHtml(item.slice(0, matchLen));
       const rest = escHtml(item.slice(matchLen));
-      const base = "flex items-center gap-1 px-4 py-[0.22rem] font-mono text-[0.78rem] text-slate-400 cursor-pointer";
-      const active = i === acIndex ? " bg-white/[0.06] text-slate-200" : "";
+      const base = "flex items-center gap-1 px-4 py-[0.22rem] font-mono text-[0.78rem] text-gray-400 cursor-pointer";
+      const active = i === acIndex ? " bg-white/[0.06] text-gray-200" : "";
       const histBadge = isHistory ? `<span class="cli-ac-hist">hist</span>` : "";
       return `<div class="${base}${active}" data-ac-index="${i}"><span class="cli-ac-hl">${hl}</span>${rest}${histBadge}</div>`;
     }).join("");

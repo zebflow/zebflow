@@ -522,6 +522,14 @@ impl PipelineEngine for BasicPipelineEngine {
                         };
 
                         compiled_result.and_then(|compiled| {
+                            let enabled_libraries: Vec<String> = self.platform
+                                .as_ref()
+                                .and_then(|p| {
+                                    p.zebflow_cfg.get_rwe_libraries(&ctx.owner, &ctx.project).ok()
+                                })
+                                .map(|libs| libs.into_keys().collect())
+                                .unwrap_or_default();
+
                             let render_out = web_response::render_compiled_page(
                                 &compiled,
                                 input.payload,
@@ -529,6 +537,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                 self.rwe.as_ref(),
                                 self.language.as_ref(),
                                 &ctx.request_id,
+                                enabled_libraries,
                             )?;
                             let envelope = serde_json::json!({
                                 "status": status,

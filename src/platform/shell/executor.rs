@@ -487,10 +487,51 @@ impl DslExecutor {
             }
         };
         let node = &mut graph.nodes[node_idx];
+        let node_kind = node.kind.clone();
+
+        // Build raw_flag_key → config_key map for KeyValuePairs flags so that
+        // e.g. --claim (raw "claim") correctly writes into "claims" as a JSON object.
+        let kv_config_keys: std::collections::HashMap<String, String> = {
+            let defs = crate::pipeline::nodes::builtin_node_definitions();
+            defs.iter()
+                .find(|d| d.kind == node_kind)
+                .map(|d| d.dsl_flags.iter()
+                    .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::KeyValuePairs)
+                    .map(|f| (
+                        f.flag.trim_start_matches("--").replace('-', "_"),
+                        f.config_key.clone(),
+                    ))
+                    .collect()
+                )
+                .unwrap_or_default()
+        };
 
         if let Value::Object(ref mut cfg) = node.config {
             for (k, v) in &flags {
-                cfg.insert(k.clone(), v.clone());
+                if let Some(config_key) = kv_config_keys.get(k) {
+                    // KeyValuePairs: parse each "key=value" string and merge into the map.
+                    // v may be a single string or an array (when flag repeated multiple times).
+                    let items: Vec<&str> = match v {
+                        Value::Array(arr) => arr.iter().filter_map(|x| x.as_str()).collect(),
+                        Value::String(s) => vec![s.as_str()],
+                        _ => vec![],
+                    };
+                    let entry = cfg
+                        .entry(config_key.clone())
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if let Value::Object(m) = entry {
+                        for pair in items {
+                            let (pk, pv) = if let Some(eq) = pair.find('=') {
+                                (&pair[..eq], &pair[eq + 1..])
+                            } else {
+                                (pair, "")
+                            };
+                            m.insert(pk.to_string(), json!(pv));
+                        }
+                    }
+                } else {
+                    cfg.insert(k.clone(), v.clone());
+                }
             }
             if let Some(body_val) = body {
                 let body_key = if node.kind.contains("pg.query") { "query" }

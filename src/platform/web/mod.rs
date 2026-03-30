@@ -799,6 +799,7 @@ fn render_page(
                 route: route.to_string(),
                 request_id: format!("zebflow-{page}"),
                 metadata: json!({"zebflow": true}),
+                enabled_libraries: Vec::new(),
             },
         )
         .map_err(|e| PlatformError::new("PLATFORM_RWE_RENDER", e.to_string()))?;
@@ -10996,6 +10997,7 @@ async fn preview_page(
         route: format!("/preview/{owner}/{project}"),
         request_id: "preview".to_string(),
         metadata: json!({}),
+        enabled_libraries: Vec::new(),
     };
 
     let out = match state.frontend.rwe.render(&compiled, json!({}), state.frontend.language.as_ref(), &ctx) {

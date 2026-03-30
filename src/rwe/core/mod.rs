@@ -18,8 +18,9 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
 pub fn render(
     compiled: &CompiledTemplate,
     vars: &serde_json::Value,
+    enabled_libraries: &[String],
 ) -> Result<RenderOutput, EngineError> {
-    render::render(compiled, vars)
+    render::render(compiled, vars, enabled_libraries)
 }
 
 pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {

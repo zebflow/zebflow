@@ -121,7 +121,7 @@ register scrape-blog --path /jobs \
 register articles-page --path /pages \
   | trigger.webhook --path /articles --method GET \
   | sekejap.query --table cached_articles --op query \
-  | web.response --template articles-home --route /articles
+  | web.response --template pages/articles-home.tsx --route /articles
 ```
 
 ---

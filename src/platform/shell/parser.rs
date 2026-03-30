@@ -291,7 +291,7 @@ pub fn parse_node_config(
 /// Used only by `parse_patch` where node kind is not known at parse time.
 /// Validation against DslFlags happens later in the executor.
 fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value>, Option<String>) {
-    let mut flags = HashMap::new();
+    let mut flags: HashMap<String, Value> = HashMap::new();
     let mut body: Option<String> = None;
     let mut i = 0;
 
@@ -304,7 +304,23 @@ fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value
         if let Some(key) = t.strip_prefix("--") {
             let val = tokens.get(i + 1).cloned().unwrap_or_default();
             let config_key = key.replace('-', "_");
-            flags.insert(config_key, coerce_scalar_value(&val));
+            let new_val = coerce_scalar_value(&val);
+            // Accumulate repeated flags as an array to preserve all occurrences
+            // (e.g. --claim sub=$.id --claim name=$.fullname:public)
+            match flags.entry(config_key) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    match e.get_mut() {
+                        Value::Array(arr) => arr.push(new_val),
+                        existing => {
+                            let prev = existing.clone();
+                            *existing = Value::Array(vec![prev, new_val]);
+                        }
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(new_val);
+                }
+            }
             i += 2;
         } else {
             i += 1;

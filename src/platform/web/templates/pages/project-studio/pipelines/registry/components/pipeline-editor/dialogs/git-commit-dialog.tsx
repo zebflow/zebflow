@@ -107,7 +107,7 @@ export default function GitCommitDialog({
                   f.code === "A" ? "text-green-400" :
                   f.code === "D" ? "text-red-400" :
                   f.code === "M" ? "text-yellow-400" :
-                  f.code === "R" ? "text-blue-400" : "text-slate-400"
+                  f.code === "R" ? "text-blue-400" : "text-gray-400"
                 )}
               >
                 {f.code}

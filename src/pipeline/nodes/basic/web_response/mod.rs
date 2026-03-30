@@ -502,6 +502,7 @@ pub fn render_compiled_page(
     rwe: &dyn ReactiveWebEngine,
     language: &dyn LanguageEngine,
     request_id: &str,
+    enabled_libraries: Vec<String>,
 ) -> Result<NodeExecutionOutput, PipelineError> {
     let route = metadata
         .get("route")
@@ -522,6 +523,7 @@ pub fn render_compiled_page(
                 route,
                 request_id: request_id.to_string(),
                 metadata,
+                enabled_libraries,
             },
         )
         .map_err(|e| {

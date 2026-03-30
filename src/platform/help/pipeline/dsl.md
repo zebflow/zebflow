@@ -109,7 +109,7 @@ trigger:  webhook → /blog GET
 nodes:
   [a] n.trigger.webhook   path=/blog method=GET
   [b] n.pg.query          credential_id=main-db
-  [c] n.web.response        template=blog-home route=/blog
+  [c] n.web.response        template=pages/blog-home.tsx route=/blog
 
 edges:
   [a]:out → [b]:in

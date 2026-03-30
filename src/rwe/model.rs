@@ -267,6 +267,10 @@ pub struct RenderContext {
     pub request_id: String,
     /// Additional metadata for SSR/runtime bootstrap.
     pub metadata: Value,
+    /// Libraries enabled for this project (from zebflow.json rwe.libraries keys).
+    /// Empty = no restriction — all zeb/* imports inject (backward compat).
+    #[serde(default)]
+    pub enabled_libraries: Vec<String>,
 }
 
 /// Render result returned by RWE engines.

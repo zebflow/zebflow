@@ -266,21 +266,14 @@ export function SessionPanel({ owner, project }) {
   return (
     <details ref={sessionDetailsRef} className="relative inline-block group" data-dropdown-menu="true">
       <summary
-        className={cx(
-          "list-none cursor-pointer outline-none",
-          "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border transition-all text-sm",
-          "border-border bg-surface-2",
-          "text-body-soft hover:text-body hover:bg-surface-3",
-          enabled && "border-green-800/60 text-green-400 hover:text-green-300"
-        )}
+        className="list-none cursor-pointer outline-none relative flex items-center justify-center h-9 w-9 rounded-none bg-dark-accent1 !text-dark-menus"
         onClick={() => {
           if (!open) openHeaderPanel("session");
           setOpen((o) => !o);
         }}
       >
         <SessionIcon />
-        <span className="text-xs">MCP</span>
-        {enabled && <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />}
+        {enabled && <span className="absolute bottom-0 right-0 w-[7px] h-[7px] bg-green-500 pointer-events-none" />}
       </summary>
 
       <DropdownMenuContent
@@ -298,7 +291,7 @@ export function SessionPanel({ owner, project }) {
                   ? "bg-green-900/40 text-green-400 border border-green-800/60"
                   : "bg-surface-3 text-body-soft border border-border"
               )}>
-                <span className={cx("w-1.5 h-1.5 rounded-full", enabled ? "bg-green-500" : "bg-slate-500")} />
+                <span className={cx("w-1.5 h-1.5 rounded-full", enabled ? "bg-green-500" : "bg-gray-500")} />
                 {enabled ? "Active" : "Inactive"}
               </span>
             </div>
