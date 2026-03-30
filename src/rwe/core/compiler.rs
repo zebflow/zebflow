@@ -52,9 +52,9 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let bundled_server = bundle_for_client(&normalized_page_source, &imports)?;
+    let bundled_server = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
-    let bundled_client = bundle_for_client(&normalized_page_source, &imports)?;
+    let bundled_client = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let hydrate_mode = detect_hydrate_mode(source);
 
@@ -375,12 +375,54 @@ fn rewrite_page_root_tag(source: &str) -> String {
         .replace("<Page ", "<Fragment ")
 }
 
+/// Rewrite `@/` alias imports in a component source to absolute filesystem paths.
+///
+/// Component files written via the template API may not have been pre-processed
+/// by `prepare_template_root`. When `collect_inlined_module` reads such a file,
+/// its `@/` imports are still in short-form and invisible to the
+/// `extract_filesystem_import_paths` filter (which only matches paths starting
+/// with `/`). Resolving them here makes transitive inlining work correctly
+/// regardless of whether `prepare_template_root` has been called.
+fn rewrite_at_imports(source: &str, template_root: &Path) -> String {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return source.to_string();
+    }
+
+    let mut out = source.to_string();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let spec = import.source.value.as_str();
+            if !spec.starts_with("@/") {
+                continue;
+            }
+            let rel = spec.trim_start_matches("@/");
+            let joined = template_root.join(rel);
+            if let Ok(resolved) = resolve_module_path(&joined) {
+                if let Ok(canonical) = canonical_or_fallback(&resolved) {
+                    let abs = normalize_path(&canonical);
+                    let abs_str = abs.to_string_lossy();
+                    out = out.replace(&format!("\"{spec}\""), &format!("\"{}\"", abs_str));
+                    out = out.replace(&format!("'{spec}'"), &format!("'{}'", abs_str));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// At compile time, inline all filesystem-path imports into one self-contained
 /// module. The result has zero filesystem imports — only npm:/jsr:/https: imports
 /// (handled later by build_client_module in render.rs) and pure code.
 fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
+    template_root: Option<&str>,
 ) -> Result<String, EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
@@ -400,7 +442,7 @@ fn bundle_for_client(
             .as_deref()
             .unwrap_or(&edge.source);
         if path.starts_with('/') && !is_rwe_runtime_path(path) {
-            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names)?;
+            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names, template_root)?;
         }
     }
 
@@ -422,18 +464,31 @@ fn collect_inlined_module(
     visited: &mut HashSet<String>,
     counter: &mut usize,
     rwe_names: &mut HashSet<String>,
+    template_root: Option<&str>,
 ) -> Result<(), EngineError> {
     if visited.contains(path) {
         return Ok(());
     }
     visited.insert(path.to_string());
 
-    let content = fs::read_to_string(path).map_err(|e| {
+    let raw = fs::read_to_string(path).map_err(|e| {
         EngineError::new(
             "RWE_BUNDLE_READ",
             format!("cannot read '{path}': {e}"),
         )
     })?;
+
+    // Resolve any remaining @/ alias imports to absolute paths.
+    // Component files written via the API may not have been pre-processed by
+    // prepare_template_root, so @/ imports are still present as-is on disk.
+    // Without rewriting them here, extract_filesystem_import_paths (which only
+    // matches paths starting with '/') would miss them, leaving unresolved
+    // imports in the inlined bundle.
+    let content = if let Some(root) = template_root {
+        rewrite_at_imports(&raw, Path::new(root))
+    } else {
+        raw
+    };
 
     // Collect rwe imports from this file before stripping them
     rwe_names.extend(extract_rwe_import_names(&content));
@@ -441,7 +496,7 @@ fn collect_inlined_module(
     // Recursively inline this file's own filesystem imports first (depth-first)
     let sub_paths = extract_filesystem_import_paths(&content);
     for sub_path in &sub_paths {
-        collect_inlined_module(sub_path, parts, visited, counter, rwe_names)?;
+        collect_inlined_module(sub_path, parts, visited, counter, rwe_names, template_root)?;
     }
 
     // Strip import lines on original content (import paths must be visible to the filter).

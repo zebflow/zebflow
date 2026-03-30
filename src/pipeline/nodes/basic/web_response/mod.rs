@@ -458,6 +458,42 @@ pub fn compile_page(
     })
 }
 
+/// Strip private JWT claims from `payload["auth"]` before it reaches the browser.
+///
+/// Only keys listed in `_zf_public` survive. If no keys are marked public,
+/// `auth` is set to `null` (secure by default). Pipeline nodes upstream still
+/// see the full claims — this filtering only applies at the render boundary.
+fn strip_private_auth_claims(mut payload: Value) -> Value {
+    let auth = match payload.get("auth") {
+        Some(Value::Object(m)) => m.clone(),
+        _ => return payload,
+    };
+
+    let public_keys: Vec<String> = match auth.get("_zf_public") {
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        _ => vec![],
+    };
+
+    if let Some(obj) = payload.as_object_mut() {
+        if public_keys.is_empty() {
+            obj.insert("auth".to_string(), Value::Null);
+        } else {
+            let mut public_auth = Map::new();
+            for key in &public_keys {
+                if let Some(v) = auth.get(key) {
+                    public_auth.insert(key.clone(), v.clone());
+                }
+            }
+            obj.insert("auth".to_string(), Value::Object(public_auth));
+        }
+    }
+
+    payload
+}
+
 /// Render a previously compiled page artifact.
 pub fn render_compiled_page(
     compiled: &CompiledPage,
@@ -473,6 +509,9 @@ pub fn render_compiled_page(
         .filter(|s| !s.is_empty())
         .unwrap_or("/")
         .to_string();
+
+    // Strip private JWT claims before the payload reaches the browser DOM.
+    let state = strip_private_auth_claims(state);
 
     let rendered = rwe
         .render(

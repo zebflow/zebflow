@@ -255,6 +255,16 @@ get credentials    # names + kinds only — values are never exposed
 **Credential create/update/delete is blocked in DSL — use the UI.**
 Any write attempt returns: `credentials can only be managed from the UI`.
 
+### jwt_signing_key credential fields
+
+| Field | Description |
+|---|---|
+| `algorithm` | Signing algorithm: `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, `ES256`, `ES384` |
+| `secret` | Shared secret for HS* algorithms |
+| `private_key` | PEM private key for RS*/ES* algorithms |
+| `auth_redirect` | Path to redirect to when a protected webhook receives a **missing or invalid token** (e.g. `/login`). Leave blank to return 401 JSON. |
+| `auth_forbidden_redirect` | Path to redirect to when the token is valid but the **role is insufficient** (e.g. `/403`). Leave blank to return 403 JSON. |
+
 ---
 
 ## Node Catalog
@@ -277,8 +287,8 @@ n.logic.switch --help           # same
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
-| `pg.query` | `n.pg.query` | `--credential <id> [--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
-| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` |
+| `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
+| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |

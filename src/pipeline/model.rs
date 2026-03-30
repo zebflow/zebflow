@@ -262,6 +262,12 @@ pub enum NodeFieldType {
     /// Repeating key-value pair rows: [key input][value input][×] with [+ Add] button.
     /// Config value is stored as a JSON object (`Map<String, String>`).
     KeyValuePairs,
+    /// Specialized claims editor for `auth.token.create`.
+    /// Same layout as `KeyValuePairs` but each row has a "Public" checkbox
+    /// that appends/strips the `:public` suffix from the value string.
+    /// Claims marked public are exposed in the browser via `ctx.auth`;
+    /// unmarked claims stay server-only.
+    ClaimsPairs,
 }
 
 impl Default for NodeFieldType {
