@@ -378,6 +378,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_get")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_get(&params.file_rel_path);
         ok_or_err(result)
@@ -396,6 +402,16 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_register")?;
+        // Check lock on existing pipeline (by resolved file_rel_path if provided)
+        if let Some(ref frp) = params.file_rel_path {
+            let frp = crate::platform::services::project::normalize_pipeline_file_rel_path(frp);
+            if self.pipeline_locked(&session.owner, &session.project, &frp) {
+                return Err(McpError::invalid_params(
+                    "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                    None,
+                ));
+            }
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_register(
             &params.body,
@@ -419,6 +435,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_describe")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_describe(&params.file_rel_path).await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
@@ -437,6 +459,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_patch")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_patch(
             &params.file_rel_path,
@@ -459,6 +487,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_activate")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_activate(&params.file_rel_path).await;
         // navigate is ignored for MCP
@@ -476,6 +510,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_deactivate")?;
+        if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
+            return Err(McpError::invalid_params(
+                "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_deactivate(&params.file_rel_path).await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
@@ -543,6 +583,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_get")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_get(&params.rel_path);
         ok_or_err(result)
@@ -561,6 +607,15 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_create")?;
+        // Check lock on parent folder if provided
+        if let Some(ref parent) = params.parent_rel_path {
+            if self.template_locked(&session.owner, &session.project, parent) {
+                return Err(McpError::invalid_params(
+                    "This template folder is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                    None,
+                ));
+            }
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_create(&params.kind, &params.name, params.parent_rel_path.as_deref());
         // navigate is ignored for MCP
@@ -580,6 +635,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_write")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_write(&params.rel_path, &params.content);
         // navigate is ignored for MCP
@@ -835,6 +896,35 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.move_resource(&params.from_path, &params.to_path).await;
         ok_or_err(result)
+    }
+
+    // ── Lock helpers ──────────────────────────────────────────────────────────
+
+    /// Returns true if the pipeline at `file_rel_path` is locked.
+    fn pipeline_locked(&self, owner: &str, project: &str, file_rel_path: &str) -> bool {
+        self.platform
+            .projects
+            .read_pipeline_source(owner, project, file_rel_path)
+            .map(|source| {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(&source) else {
+                    return false;
+                };
+                value
+                    .get("metadata")
+                    .and_then(|m| m.get("locked"))
+                    .and_then(serde_json::Value::as_bool)
+                    .or_else(|| value.get("locked").and_then(serde_json::Value::as_bool))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Returns true if the template at `rel_path` is locked.
+    fn template_locked(&self, owner: &str, project: &str, rel_path: &str) -> bool {
+        self.platform
+            .zebflow_cfg
+            .is_template_locked(owner, project, rel_path)
+            .unwrap_or(false)
     }
 
     // ── Auth helpers ──────────────────────────────────────────────────────────

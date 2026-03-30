@@ -14,6 +14,7 @@ import DropdownMenuItem from "@/components/ui/dropdown-menu-item";
 import {
   PipelineIcon, FolderIcon, FileKindIcon, StatusDot, TrashIcon, PlusIcon, DownloadIcon, DocIcon,
 } from "@/pages/project-studio/pipelines/registry/components/editor-icons";
+import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import {
   pipelineNavLastSegment, expandFolderPaths, getDirectChildFolders, peSanitizeSegment, peNormalizeVirtualPath, peEmptyPipelineGraph,
 } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
@@ -236,6 +237,14 @@ export default function UnifiedRegistryEditor(input) {
     return "";
   }
 
+  // ── Lock data ─────────────────────────────────────────────────────────────
+  const lockedTemplates: string[] = Array.isArray(input?.locked_templates) ? input.locked_templates : [];
+  const selectedTemplateLocked: boolean = !!input?.selected_template_locked;
+
+  function isTemplatePathLocked(relPath: string): boolean {
+    return lockedTemplates.some(p => relPath === p || relPath.startsWith(p.replace(/\/$/, "") + "/"));
+  }
+
   // ── Pipeline editor data ──────────────────────────────────────────────────
   const pipeline = input?.pipeline ?? {};
   const editorApi = pipeline?.api ?? {};
@@ -260,6 +269,32 @@ export default function UnifiedRegistryEditor(input) {
     min: 220,
     max: 480,
   });
+
+  // ── Lock handlers ──────────────────────────────────────────────────────────
+
+  async function handleTogglePipelineLock(newLocked: boolean) {
+    const selectedId = pipeline?.selected_id ?? "";
+    if (!selectedId) return;
+    try {
+      await requestJson(`/api/projects/${input?.owner ?? ""}/${input?.project ?? ""}/pipelines/lock-toggle`, {
+        method: "POST",
+        body: JSON.stringify({ file_rel_path: selectedId, locked: newLocked }),
+      });
+      nav(window.location.href);
+    } catch (_) {}
+  }
+
+  async function handleToggleTemplateLock() {
+    const relPath = template?.rel_path ?? "";
+    if (!relPath) return;
+    try {
+      await requestJson(`/api/projects/${input?.owner ?? ""}/${input?.project ?? ""}/templates/lock-toggle`, {
+        method: "POST",
+        body: JSON.stringify({ rel_path: relPath, locked: !selectedTemplateLocked }),
+      });
+      nav(window.location.href);
+    } catch (_) {}
+  }
 
   // ── Creation dialogs ──────────────────────────────────────────────────────
   const owner = String(input?.owner ?? "");
@@ -847,6 +882,7 @@ export default function UnifiedRegistryEditor(input) {
                         <div className="flex items-center gap-1.5">
                           <PipelineIcon className="w-3.5 h-3.5 text-accent" />
                           <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
+                          {item?.is_locked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
                           <span className="pipeline-editor-item-name">{item?.name}</span>
                         </div>
                         <span className="pipeline-editor-item-status">{item?.status_label}</span>
@@ -879,6 +915,7 @@ export default function UnifiedRegistryEditor(input) {
                           <div className="pipeline-editor-item-head">
                             <div className="flex items-center gap-1.5">
                               <FileKindIcon name={file?.name ?? ""} />
+                              {isTemplatePathLocked(file?.rel_path ?? "") && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
                               <span className="pipeline-editor-item-name">{file?.name}</span>
                             </div>
                             {file?.git_status ? (
@@ -978,6 +1015,7 @@ export default function UnifiedRegistryEditor(input) {
                       <Link href={item?.editor_href ?? "#"} className="pipeline-registry-row-link">
                         <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
                         <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
+                        {item?.is_locked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
                         <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
                         <Badge variant="secondary">{item?.trigger_kind}</Badge>
                       </Link>
@@ -1005,6 +1043,7 @@ export default function UnifiedRegistryEditor(input) {
                     >
                       <Link href={file?.editor_href ?? "#"} className="pipeline-registry-row-link">
                         <span className="shrink-0 flex items-center text-body-soft"><FileKindIcon name={file?.name ?? ""} /></span>
+                        {isTemplatePathLocked(file?.rel_path ?? "") && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
                         <span className="pipeline-registry-row-name">{file?.name}</span>
                       </Link>
                       <button
@@ -1047,6 +1086,15 @@ export default function UnifiedRegistryEditor(input) {
                         {previewActive ? "● Live" : "Live Preview"}
                       </Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={handleToggleTemplateLock}
+                      title={selectedTemplateLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
+                      className={selectedTemplateLocked ? "text-dark-accent1" : "text-body-soft hover:text-dark-accent1"}
+                    >
+                      {selectedTemplateLocked ? <LockIcon /> : <LockOpenIcon />}
+                    </Button>
                     <Button variant="outline" size="xs" onClick={handleSaveTemplate}>Save</Button>
                     <Button
                       variant="destructive"
@@ -1131,6 +1179,7 @@ export default function UnifiedRegistryEditor(input) {
                   setDeleteInput("");
                   setDeleteError(null);
                 }}
+                onLockToggle={handleTogglePipelineLock}
               />
             )}
 

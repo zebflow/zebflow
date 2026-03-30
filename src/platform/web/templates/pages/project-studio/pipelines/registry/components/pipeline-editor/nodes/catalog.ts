@@ -7,17 +7,19 @@ export const nodeCategories: Record<string, string[]> = {
     "n.trigger.manual",
     "n.trigger.ws",
     "n.trigger.weberror",
+    "n.trigger.function",
   ],
-  data: ["n.sekejap.query", "n.pg.query"],
+  data: ["n.sekejap.query", "n.pg.query", "n.sjtable.mutate"],
   logic: [
     "n.script",
     "n.logic.if",
     "n.logic.switch",
     "n.logic.branch",
     "n.logic.merge",
+    "n.function.call",
     "n.ai.agent",
   ],
-  web: ["n.http.request", "n.browser.run", "n.web.render", "n.ws.sync_state", "n.ws.emit"],
+  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.ws.sync_state", "n.ws.emit"],
   security: ["n.auth.token.create", "n.crypto"],
 };
 
@@ -42,6 +44,10 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.auth.token.create": "#78350f",
   "n.crypto": "#6b21a8",
   "n.browser.run": "#0369a1",
+  "n.trigger.function": "#166534",
+  "n.sjtable.mutate": "#0f766e",
+  "n.function.call": "#1e40af",
+  "n.web.response": "#9d174d",
 };
 
 export function nodeColor(kind: string): string {

@@ -83,6 +83,7 @@ const SECRET_SCHEMAS = {
     { key: "private_key", label: "Private Key (PEM)", type: "textarea", rows: 6, fullWidth: true, help: "PEM private key for RS*/ES* algorithms. Leave blank for HS*." },
     { key: "auth_redirect", label: "Unauthenticated Redirect", placeholder: "/login", help: "Where to redirect when the token is missing or invalid. Leave blank to return 401 JSON." },
     { key: "auth_forbidden_redirect", label: "Forbidden Redirect", placeholder: "/403", help: "Where to redirect when the token is valid but the role is insufficient. Leave blank to return 403 JSON." },
+    { key: "auth_roles", label: "Allowed Roles", type: "tags", fullWidth: true, placeholder: "e.g. admin", help: "Roles available for this credential. Used by webhook nodes to populate the Required Role checkboxes." },
   ],
   browser_browserless: [
     { key: "url", label: "URL", placeholder: "http://localhost:3000", fullWidth: true, help: "Browserless instance root URL. Self-hosted or cloud endpoint." },
@@ -166,6 +167,28 @@ function createHelpTooltip(text: string): HTMLElement {
   return wrapper;
 }
 
+function addTagChip(container: HTMLElement, value: string) {
+  const v = String(value || "").trim();
+  if (!v) return;
+  const existing = Array.from(container.querySelectorAll("[data-tag-value]"))
+    .map((el) => el.getAttribute("data-tag-value"));
+  if (existing.includes(v)) return;
+  const chip = document.createElement("span");
+  chip.className = "inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-surface-2 border border-border text-body";
+  chip.setAttribute("data-tag-value", v);
+  const label = document.createElement("span");
+  label.textContent = v;
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "text-body-soft hover:text-danger leading-none cursor-pointer bg-transparent border-0 p-0";
+  removeBtn.setAttribute("aria-label", `Remove ${v}`);
+  removeBtn.textContent = "×";
+  removeBtn.addEventListener("click", () => chip.remove());
+  chip.appendChild(label);
+  chip.appendChild(removeBtn);
+  container.appendChild(chip);
+}
+
 function generateValue(type) {
   if (type === "random_hex_32") {
     const bytes = new Uint8Array(32);
@@ -198,7 +221,47 @@ function renderSecretFields(container, kind, secret = {}) {
     row.appendChild(labelRow);
 
     let input;
-    if (field.type === "select") {
+    if (field.type === "tags") {
+      // Array tags input — stores a JSON array in the secret
+      const wrap = document.createElement("div");
+      wrap.className = "flex flex-col gap-1.5";
+      wrap.setAttribute("data-secret-key", field.key);
+      wrap.setAttribute("data-tags-input", "true");
+
+      const tagsContainer = document.createElement("div");
+      tagsContainer.className = "flex flex-wrap gap-1 min-h-6";
+
+      const existing = Array.isArray(payload[field.key]) ? payload[field.key] : [];
+      existing.forEach((tag) => addTagChip(tagsContainer, String(tag)));
+
+      const addRow = document.createElement("div");
+      addRow.className = "flex gap-1.5 items-stretch";
+      const textInput = document.createElement("input");
+      textInput.type = "text";
+      textInput.placeholder = field.placeholder || "Add role...";
+      textInput.className = "flex-1 min-w-0";
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "credential-gen-btn";
+      addBtn.textContent = "+ Add";
+      addBtn.addEventListener("click", () => {
+        addTagChip(tagsContainer, textInput.value);
+        textInput.value = "";
+        textInput.focus();
+      });
+      textInput.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Enter") { e.preventDefault(); addBtn.click(); }
+      });
+
+      addRow.appendChild(textInput);
+      addRow.appendChild(addBtn);
+      wrap.appendChild(tagsContainer);
+      wrap.appendChild(addRow);
+
+      row.appendChild(wrap);
+      container.appendChild(row);
+      return; // skip the rest (no data-secret-key on a plain input)
+    } else if (field.type === "select") {
       input = document.createElement("select");
       const currentVal = typeof payload[field.key] === "string" ? payload[field.key] : (field.default || "");
       (field.options || []).forEach((opt) => {
@@ -268,10 +331,21 @@ function collectSecret(container, kind) {
   const out = {};
   container.querySelectorAll("[data-secret-key]").forEach((field) => {
     const key = field.getAttribute("data-secret-key");
-    if (!key) {
+    if (!key) return;
+
+    // Tags (array) field
+    if (field.getAttribute("data-tags-input") === "true") {
+      const chips = field.querySelectorAll("[data-tag-value]");
+      const values = Array.from(chips)
+        .map((c) => String(c.getAttribute("data-tag-value") || "").trim())
+        .filter((v) => v);
+      if (values.length > 0) {
+        out[key] = values;
+      }
       return;
     }
-    const value = String(field.value || "").trim();
+
+    const value = String((field as any).value || "").trim();
     if (value) {
       out[key] = value;
     }
