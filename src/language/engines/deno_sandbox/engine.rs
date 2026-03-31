@@ -124,13 +124,14 @@ impl DenoSandboxEngine {
         })
     }
 
-    /// Runs an already compiled script with JSON input.
+    /// Runs an already compiled script with JSON input and optional execution context.
     pub fn run_compiled(
         &self,
         compiled: &CompiledDenoSandboxScript,
         input: &Value,
+        ctx: Value,
     ) -> Result<Value, LanguageError> {
-        run_compiled_script(compiled, input).map_err(|e| {
+        run_compiled_script(compiled, input, ctx).map_err(|e| {
             LanguageError::new(
                 "LANG_DENO_RUN",
                 format!("sandbox execution failed for '{}': {e}", compiled.script_id),
@@ -146,7 +147,7 @@ impl DenoSandboxEngine {
         run_patch: Option<&DenoSandboxConfigPatch>,
     ) -> Result<Value, LanguageError> {
         let compiled = self.compile_script(source, run_patch)?;
-        self.run_compiled(&compiled, input)
+        self.run_compiled(&compiled, input, Value::Null)
     }
 
 }
@@ -227,7 +228,13 @@ impl LanguageEngine for DenoSandboxEngine {
             script = self.compile_script(&script.original_source, Some(&run_patch))?;
         }
 
-        let value = self.run_compiled(&script, &input)?;
+        let ctx_json = json!({
+            "pipeline": ctx.pipeline,
+            "request_id": ctx.request_id,
+            "trigger": ctx.trigger,
+            "nodes": ctx.metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+        });
+        let value = self.run_compiled(&script, &input, ctx_json)?;
 
         Ok(ExecutionOutput {
             value,

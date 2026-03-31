@@ -68,6 +68,74 @@ Both modes compile to the same JSON graph model.
 - **Body**: `-- <content>` passes inline content (script source, SQL, JSON input, etc.).
 - **Help**: append `--help` to any command or node name to show its usage.
 
+### Flag value kinds
+
+| Kind | Example | Produces |
+|------|---------|---------|
+| Scalar | `--template pages/foo.tsx` | `"pages/foo.tsx"` string |
+| Comma list | `--auth-required-role admin,lecturer` | `["admin","lecturer"]` array |
+| Bool | `--http-only` | `true` (no value consumed) |
+| Key-value pairs | `--claim name=$.name --claim roles=$.roles` | `{"name":"$.name","roles":"$.roles"}` object |
+
+Key-value pairs (`--claim`, `--header`, `--set-cookie`) repeat the **same flag with a different key** each time — each occurrence adds one entry to a map.
+Comma lists repeat **values for the same key** — pass them all in one flag, comma-separated.
+There is no "repeat the same flag for a list" — `--role admin --role lecturer` is not valid; use `--role admin,lecturer`.
+
+---
+
+## Dynamic Config Expressions — `{{ expr }}`
+
+Any string field in a node's config can contain `{{ js_expr }}` placeholders.
+The engine resolves them **before** the node runs, in a hermetically sandboxed Deno context.
+
+### Scope variables
+
+| Variable          | Contents                                                        |
+|-------------------|-----------------------------------------------------------------|
+| `$input`          | The current payload flowing into this node                      |
+| `$input.field`    | Specific field from the upstream node's output                  |
+| `$trigger.auth`   | Verified JWT claims from the original request (full claims, not filtered) |
+| `$trigger.params` | URL path params (`:id`, `:slug`, etc.)                          |
+| `$trigger.query`  | Query string params (`?page=2` etc.)                            |
+| `$trigger.headers`| Safe subset of request headers (content-type, user-agent, etc.) |
+| `$nodes.id`       | Output payload of a completed upstream node by its graph ID     |
+| `$nodes.id.field` | Specific field from that node's output                          |
+| `$ctx.pipeline`   | Current pipeline identifier                                     |
+| `$ctx.request_id` | Unique execution request id                                     |
+
+> **`$trigger.auth` vs `ctx.auth` in templates**: In script node `{{ expr }}` expressions, `$trigger.auth` holds the full decoded JWT claims (all claims, including private). In templates rendered by `n.web.response`, `ctx.auth` holds only the `:public`-marked claims after filtering. Use `$trigger.auth` in expressions inside script/query configs; use `ctx.auth` in template TSX files.
+
+### Type preservation
+
+Whole-field expressions (`{{ expr }}` with no surrounding text) → **native JS type** (object, array, number, boolean).
+Interpolated expressions (`"Hello {{ name }}!"`) → **string** (result is stringified and concatenated).
+
+### Sandbox security
+
+Expressions run with `capabilities: []` — the `n.*` bridge is completely disabled.
+No database access, no HTTP, no side effects. Pre-existing locks on `eval`, `Function`, `fetch`, and timers remain in effect.
+A tight op budget (`maxOps: 500`) prevents runaway computation.
+
+### Examples
+
+```zf
+# Use path param in a Postgres query
+| trigger.webhook --path /users/:id --method GET
+| pg.query --credential main-db \
+    --params-expr "{{ [$trigger.params.id] }}" \
+    -- "SELECT * FROM users WHERE id = $1"
+
+# Build a URL from upstream node output
+| http.request --url "https://api.example.com/{{ $nodes.lookup.rows[0].slug }}"
+
+# Pass upstream data as JSON body
+| http.request --url https://notify.svc/send --method POST \
+    --body-expr "{{ { userId: $trigger.auth.sub, data: $input } }}"
+
+# Conditional auth redirect
+| script -- "return { target: $trigger.query.next || '/dashboard' }"
+```
+
 ---
 
 ## Pipeline Commands
@@ -263,7 +331,7 @@ Any write attempt returns: `credentials can only be managed from the UI`.
 | `secret` | Shared secret for HS* algorithms |
 | `private_key` | PEM private key for RS*/ES* algorithms |
 | `auth_redirect` | Path to redirect to when a protected webhook receives a **missing or invalid token** (e.g. `/login`). Leave blank to return 401 JSON. |
-| `auth_forbidden_redirect` | Path to redirect to when the token is valid but the **role is insufficient** (e.g. `/403`). Leave blank to return 403 JSON. |
+| `auth_forbidden_redirect` | Path to redirect to when the token is valid but the **roles are insufficient** (e.g. `/403`). Leave blank to return 403 JSON. |
 
 ---
 
@@ -288,11 +356,41 @@ n.logic.switch --help           # same
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
-| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
+| `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
 | `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
+
+### `n.trigger.webhook` — request payload shape
+
+The webhook trigger normalises all request bodies to a flat JSON object:
+
+| Source | Where it appears in payload |
+|---|---|
+| JSON body (`application/json`) | Fields merged to root |
+| Form body (`application/x-www-form-urlencoded`) | Fields merged to root (percent-decoded) |
+| Multipart form text fields | Fields merged to root |
+| Multipart form files | Under `input.files.{field}` as `{ filename, content_type, size, data }` (data = base64) |
+| Query string params | Merged to root **and** available at `input.query` |
+| URL path params | Available at `input.params` |
+| Verified JWT claims | Available at `input.auth` (downstream from trigger only — see `ctx.trigger.auth` for all nodes) |
+
+### `n.trigger.webhook` — authentication flags
+
+| Flag | Description |
+|---|---|
+| `--auth-type jwt` | Verify JWT. Checks `Authorization: Bearer <token>` first, then falls back to `Cookie: zebflow_session`. |
+| `--auth-type hmac` | Verify HMAC-SHA256 signature in `X-Hub-Signature-256` header (GitHub webhook style). |
+| `--auth-type api_key` | Verify static API key in `X-API-Key` header. |
+| `--auth-credential <id>` | Credential ID holding the signing key/secret. Required when `--auth-type` is not `none`. |
+| `--auth-required-role <roles>` | Comma-separated list of required roles. The JWT `roles` array claim must contain at least one. Empty = any authenticated user. |
+
+**On auth failure:**
+- Missing or invalid token → `auth_redirect` path from the credential (if set), or 401 JSON.
+- Valid token, wrong role → `auth_forbidden_redirect` path from the credential (if set), or 403 JSON.
+
+`auth_redirect` and `auth_forbidden_redirect` are properties of the **JWT signing key credential**, not node flags — configure them in the UI credentials panel.
 
 ### Logic / control-flow nodes (graph mode only)
 

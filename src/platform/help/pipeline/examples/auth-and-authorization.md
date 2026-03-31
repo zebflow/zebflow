@@ -8,7 +8,7 @@ Full JWT-based authentication: login page, register, session validation, role-ba
 
 ## JWT Credential
 
-Create a `jwt_signing_key` credential with RBAC config in the secret:
+Create a `jwt_signing_key` credential in the Credentials UI. Fields:
 
 ```json
 {
@@ -20,7 +20,20 @@ Create a `jwt_signing_key` credential with RBAC config in the secret:
 }
 ```
 
-`auth_redirect` and `auth_forbidden_redirect` trigger only on browser page navigation (Sec-Fetch-Mode: navigate). API/fetch calls always receive JSON 401/403.
+| Field | Purpose |
+|---|---|
+| `algorithm` | `HS256` / `HS384` / `HS512` (symmetric) or `RS256` / `RS384` / `RS512` / `ES256` / `ES384` (asymmetric) |
+| `secret` | Signing key for HS* algorithms |
+| `auth_roles` | Roles registered for this credential — used to populate the **Required Role** checkboxes in webhook nodes. Defines what values are valid in the JWT `role` claim. |
+| `auth_redirect` | Where to redirect on 401 (browser navigation only — `Sec-Fetch-Mode: navigate`) |
+| `auth_forbidden_redirect` | Where to redirect on 403 (browser navigation only) |
+
+`auth_redirect` and `auth_forbidden_redirect` trigger only on browser page navigation. API/fetch calls always receive JSON 401/403.
+
+### `--auth-required-role` behaviour
+
+- **One or more roles selected** → JWT `role` claim must match one of the selected roles or request is rejected with 403.
+- **No roles selected (empty)** → any holder of a valid JWT may access — role is not checked. Use this for "authenticated but unrestricted" routes.
 
 ---
 
@@ -49,10 +62,12 @@ Create a `jwt_signing_key` credential with RBAC config in the secret:
 | trigger.webhook --path /auth/login --method POST
 | pg.query --credential main-db --params-expr "[input.username]" \
     -- "SELECT id::text, username, role FROM users WHERE username = $1 LIMIT 1"
-| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, role: user.role }"
-| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username:public --claim role=$.role:public --expires-in 86400
+| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { id: user.id, username: user.username, roles: [user.role] }"
+| auth.token.create --credential my-jwt --claim sub=$.id --claim username=$.username:public --claim roles=$.roles:public --expires-in 86400
 | web.response --location /dashboard --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
 ```
+
+> **Note:** `roles` must be an array in the JWT claim — wrap a single DB `role` string with `[user.role]`. If your schema already returns an array (junction table, `text[]` column), use it directly.
 
 ### auth-register-page — render register form
 
@@ -105,7 +120,7 @@ Role mismatch → `auth_forbidden_redirect` fires (browser) or 403 JSON (fetch).
 ## Nodes Used
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verify JWT; `input.auth` = decoded claims
-- `trigger.webhook --auth-required-role <roles>` — comma-separated roles from credential `auth_roles`
+- `trigger.webhook --auth-required-role <roles>` — comma-separated roles; checks against JWT `roles` array claim. Empty = any authenticated user.
 - `pg.query` — user lookup and insert
 - `auth.token.create --claim key=$.field` — sign JWT; output `$.access_token`. Append `:public` to expose that claim in the browser via `ctx.auth` (e.g. `--claim role=$.role:public`). Private claims like `sub` never reach the browser DOM.
 - `web.response --set-cookie` — set HttpOnly session cookie

@@ -182,6 +182,42 @@ Every MCP session has scoped permissions. Your session token determines what too
 
 ---
 
+## Locking Resources (Agent-Only Restriction)
+
+Owners can mark pipelines or templates as **locked** from the UI. Locked resources are invisible to write — agents that attempt to read or modify them receive an error.
+
+### Pipeline lock
+
+Stored as `"metadata": { "locked": true }` inside the `.zf.json` file itself. Toggling the lock commits the change to git automatically.
+
+```json
+{
+  "metadata": { "locked": true },
+  "nodes": [...],
+  "edges": [...]
+}
+```
+
+### Template lock
+
+Stored in `repo/zebflow.json` under `locks.templates` as a list of `rel_path` strings. A folder prefix locks all files under it.
+
+```json
+{
+  "locks": {
+    "templates": ["components/auth", "pages/admin.tsx"]
+  }
+}
+```
+
+### Lock scope
+
+- `pipeline_list` / `template_list` — **still visible** (agents can see names)
+- All read/write tools (`get`, `describe`, `register`, `patch`, `activate`, `deactivate`, `template_get`, `template_write`, `template_create`) — **blocked with error**
+- Human web UI — **always works**, lock is agent-only
+
+---
+
 ## Git Workflow
 
 All project files under `repo/` are git-tracked. Commit after every logical chunk:

@@ -883,6 +883,14 @@ pub struct PipelineContext {
     /// The raw trigger payload that started this pipeline run.  Passed into the entry
     /// node and forwarded downstream through edges.
     pub input: Value,
+    /// Immutable trigger-event snapshot carried to every node in the run.
+    ///
+    /// Set once at pipeline entry by the trigger type; never mutated by nodes.
+    /// For webhook triggers: contains `auth` (decoded JWT claims), `params` (path
+    /// params), `query` (query string), `headers` (safe subset of request headers).
+    /// For schedule/manual/WS triggers: `None`.
+    #[serde(default)]
+    pub trigger: Option<Value>,
 }
 
 /// Per-node execution record captured by the pipeline engine during a run.

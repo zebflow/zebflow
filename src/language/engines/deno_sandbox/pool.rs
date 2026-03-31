@@ -199,6 +199,9 @@ pub(crate) struct ScriptWork {
     pub config: DenoSandboxConfig,
     /// JSON-serializable input value passed as first argument.
     pub input: Value,
+    /// Execution context passed as `ctx` to the script.
+    /// Contains `pipeline`, `request_id`, `trigger`, and `metadata`.
+    pub ctx: Value,
 }
 
 struct WorkItem {
@@ -287,7 +290,10 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
     let max_ops    = cfg.max_ops;
     let caps_expr  = build_capabilities_expr(cfg);
 
-    // Per-run setup: fresh budget, fetch policy, input, capabilities.
+    let ctx_json = serde_json::to_string(&work.ctx)
+        .map_err(|e| format!("DenoSandboxError: serialize ctx: {e}"))?;
+
+    // Per-run setup: fresh budget, fetch policy, input, capabilities, ctx.
     let setup = format!(
         r#"(function () {{
   "use strict";
@@ -301,6 +307,7 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
   globalThis.__fetchConfig  = {fetch_cfg_json};
   globalThis.__script_input = {input_json};
   globalThis.__script_n     = {caps_expr};
+  globalThis.__script_ctx   = {ctx_json};
 }})();"#
     );
 
@@ -314,7 +321,7 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
         r#"(async function () {{
   try {{
     var __fn = {fn_source};
-    var __r  = await __fn(globalThis.__script_input, globalThis.__script_n, null);
+    var __r  = await __fn(globalThis.__script_input, globalThis.__script_n, globalThis.__script_ctx);
     Deno.core.ops.op_script_result(JSON.stringify({{ ok: true, result: __r }}));
   }} catch (e) {{
     Deno.core.ops.op_script_result(JSON.stringify({{ ok: false, error: String(e && e.message || e) }}));

@@ -130,7 +130,13 @@ impl NodeHandler for Node {
                 let compiled = self.compiled.as_ref().ok_or_else(|| {
                     PipelineError::new("FW_NODE_LOGIC_BRANCH_NO_COMPILED", "by_expression mode requires expression")
                 })?;
-                let out = self.language.run(compiled, input.payload.clone(), &crate::language::ExecutionContext { project: String::new(), pipeline: String::new(), request_id: String::new(), metadata: serde_json::Value::Null })
+                let out = self.language.run(compiled, input.payload.clone(), &crate::language::ExecutionContext {
+                    project: input.metadata.get("project").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    pipeline: input.metadata.get("pipeline").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    request_id: input.metadata.get("request_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                    trigger: input.metadata.get("trigger").cloned().unwrap_or(serde_json::Value::Null),
+                    metadata: input.metadata.clone(),
+                })
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_BRANCH_RUN", format!("node '{}': {}", self.node_id, e)))?;
                 let pin = out.value.as_str().unwrap_or("").to_string();
                 vec![pin]

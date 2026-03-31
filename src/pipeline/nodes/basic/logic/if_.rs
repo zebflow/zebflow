@@ -98,7 +98,13 @@ impl NodeHandler for Node {
     fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_TRUE, OUTPUT_PIN_FALSE] }
 
     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
-        let out = self.language.run(&self.compiled, input.payload.clone(), &crate::language::ExecutionContext { project: String::new(), pipeline: String::new(), request_id: String::new(), metadata: serde_json::Value::Null })
+        let out = self.language.run(&self.compiled, input.payload.clone(), &crate::language::ExecutionContext {
+            project: input.metadata.get("project").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            pipeline: input.metadata.get("pipeline").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            request_id: input.metadata.get("request_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+            trigger: input.metadata.get("trigger").cloned().unwrap_or(serde_json::Value::Null),
+            metadata: input.metadata.clone(),
+        })
             .map_err(|e| PipelineError::new("FW_NODE_LOGIC_IF_RUN", format!("node '{}': {}", self.node_id, e)))?;
 
         let is_true = match &out.value {

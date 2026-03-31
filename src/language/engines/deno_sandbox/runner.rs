@@ -12,10 +12,12 @@ use super::pool::{ScriptWork, run_in_pool};
 pub(crate) fn run_compiled_script(
     compiled: &CompiledDenoSandboxScript,
     input: &Value,
+    ctx: Value,
 ) -> Result<Value, String> {
     run_in_pool(ScriptWork {
         fn_source: compiled.fn_source.clone(),
         config: compiled.resolved_config.clone(),
         input: input.clone(),
+        ctx,
     })
 }

@@ -109,6 +109,38 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 ---
 
+## Locked Resources
+
+Project owners can lock individual pipelines or templates (and entire template folders) to prevent agent access. This is enforced **at the MCP layer only** — human web UI always works normally.
+
+### What happens when a resource is locked
+
+| Tool | Behavior |
+|------|----------|
+| `pipeline_list` | Still shows the locked pipeline — you can see it exists |
+| `template_list` | Still shows the locked template/folder |
+| `pipeline_get` | ❌ Error — locked |
+| `pipeline_describe` | ❌ Error — locked |
+| `pipeline_register` (update) | ❌ Error — locked |
+| `pipeline_patch` | ❌ Error — locked |
+| `pipeline_activate` | ❌ Error — locked |
+| `pipeline_deactivate` | ❌ Error — locked |
+| `template_get` | ❌ Error — locked |
+| `template_write` | ❌ Error — locked |
+| `template_create` (inside locked folder) | ❌ Error — locked |
+
+Error message returned: `"This pipeline/template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it."`
+
+### Template folder locking
+
+Locking a folder path (e.g. `components/auth`) blocks access to all files under that prefix. You do not need to lock each file individually.
+
+### You cannot unlock resources
+
+Only the project owner can lock/unlock via the UI lock toggle button in the pipeline or template editor. If you encounter a locked resource that you need to modify, stop and inform the user.
+
+---
+
 ## Know Exact Names Before You Use Them
 
 Two values in pipelines are often hallucinated wrong — always use the actual value from the project:

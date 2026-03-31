@@ -183,6 +183,7 @@ impl PlatformService {
             ),
             route: Default::default(),
             input,
+            trigger: None,
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(
