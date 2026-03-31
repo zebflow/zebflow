@@ -20,7 +20,8 @@ export const DEFAULT_NODE_KIND_COLORS = {
   "n.trigger.schedule": "#14532d",
   "n.script": "#1e3a8a",
   "n.http.request": "#7c2d12",
-  "n.sjtable.query": "#0f766e",
+  "n.sekejap.query": "#0f766e",
+  "n.sekejap.mutate": "#0f766e",
   "n.pg.query": "#7c3aed",
   "n.web.render": "#be185d",
 };

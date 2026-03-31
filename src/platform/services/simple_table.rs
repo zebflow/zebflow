@@ -279,6 +279,34 @@ impl SimpleTableService {
         query_skql_rows(&db, dsl)
     }
 
+    /// Executes a raw SQL SELECT query against the project Sekejap DB.
+    ///
+    /// Uses the SQL dialect supported by Sekejap 0.5+:
+    /// `SELECT id, title FROM posts WHERE user_id = 'abc' LIMIT 20`
+    pub fn execute_query_sql(
+        &self,
+        owner: &str,
+        project: &str,
+        sql: &str,
+    ) -> Result<Vec<Value>, PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        let db = self.open_db(&layout)?;
+        query_skql_rows(&db, sql)
+    }
+
+    /// Executes a raw SQL mutation (INSERT / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE).
+    pub fn execute_mutate_sql(
+        &self,
+        owner: &str,
+        project: &str,
+        sql: &str,
+    ) -> Result<Value, PlatformError> {
+        let layout = self.project_layout(owner, project)?;
+        let db = self.open_db(&layout)?;
+        db.mutate(sql)
+            .map_err(|e| PlatformError::new("PLATFORM_SEKEJAP_MUTATE_SQL", e.to_string()))
+    }
+
     /// Executes one native Sekejap query payload against project DB and returns payload rows.
     ///
     /// Expected payload shape follows Sekejap query API, usually:

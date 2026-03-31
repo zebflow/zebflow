@@ -44,9 +44,9 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
   [b] logic.switch --expr "input.type" --cases normal,urgent --default unknown \
-  [c] sekejap.query --table normal_queue --op upsert \
+  [c] sekejap.mutate -- "INSERT INTO normal_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
   [d] http.request --url https://alerts.api/send --method POST \
-  [e] sekejap.query --table unknown_queue --op upsert \
+  [e] sekejap.mutate -- "INSERT INTO unknown_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
   [a] -> [b] \
   [b]:normal  -> [c] \
   [b]:urgent  -> [d] \
@@ -263,13 +263,13 @@ run | pg.query --credential main-db -- "SELECT count(*) FROM users"
 
 run \
   | http.request --url https://example.com --method GET \
-  | sekejap.query --table results --op upsert
+  | sekejap.mutate -- "INSERT INTO results (id, status) VALUES ('{{ $input.id }}', '{{ $input.status }}')"
 
 # Graph mode
 run \
   [a] http.request --url https://example.com --method GET \
   [b] logic.if --expr "input.status >= 400" \
-  [c] sekejap.query --table errors --op upsert \
+  [c] sekejap.mutate -- "INSERT INTO errors (id, status) VALUES ('{{ $input.id }}', '{{ $input.status }}')" \
   [a] -> [b] \
   [b]:true -> [c]
 
@@ -354,13 +354,39 @@ n.logic.switch --help           # same
 | `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
-| `sekejap.query` | `n.sekejap.query` | `--table <name> --op <query\|upsert>` |
+| `sekejap.query` | `n.sekejap.query` | `-- "SELECT ... FROM collection [WHERE ...] [LIMIT n]"` — raw SQL SELECT/TRAVERSE/VECTOR_NEAR; `{{ expr }}` placeholders resolved before execution; output `{ rows: [...] }` |
+| `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
 | `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
+
+### `sekejap.query` and `sekejap.mutate` — SQL examples
+
+```zf
+# SELECT — basic
+| sekejap.query -- "SELECT id, title FROM posts LIMIT 20"
+
+# SELECT — with path param via {{ expr }}
+| sekejap.query -- "SELECT * FROM orders WHERE user_id = '{{ $trigger.auth.sub }}' LIMIT 10"
+
+# SELECT — graph traversal
+| sekejap.query -- "SELECT id FROM cases TRAVERSE FORWARD caused_by TO causes HOPS 3 WHERE id = '{{ $trigger.params.id }}'"
+
+# INSERT
+| sekejap.mutate -- "INSERT INTO tasks (id, title, done) VALUES ('{{ $input.id }}', '{{ $input.title }}', false)"
+
+# UPDATE
+| sekejap.mutate -- "UPDATE tasks SET done = true WHERE id = '{{ $trigger.params.id }}'"
+
+# DELETE
+| sekejap.mutate -- "DELETE FROM tasks WHERE id = '{{ $trigger.params.id }}'"
+
+# CREATE COLLECTION (schema definition)
+| sekejap.mutate -- "CREATE COLLECTION tasks (id STRING INDEX hash, title STRING, done BOOLEAN)"
+```
 
 ### `n.trigger.webhook` — request payload shape
 
@@ -495,7 +521,7 @@ register event-router --path /webhooks \
   [c] script --lang js -- "return handleCreate(input);" \
   [d] script --lang js -- "return handleUpdate(input);" \
   [e] script --lang js -- "return handleDelete(input);" \
-  [f] sekejap.query --table unknown_events --op upsert \
+  [f] sekejap.mutate -- "INSERT INTO unknown_events (id, type) VALUES ('{{ $input.id }}', '{{ $input.type }}')" \
   [a] -> [b] \
   [b]:create  -> [c] \
   [b]:update  -> [d] \
@@ -547,7 +573,7 @@ register retry-job --path /jobs \
        -- "const n=(input.attempts||0)+1; return {...doWork(input), attempts:n};" \
   [c] logic.switch --expr "input.status" --cases done,failed --default retry \
   [d] script --lang js -- "return { result: input };" \
-  [e] sekejap.query --table failures --op upsert \
+  [e] sekejap.mutate -- "INSERT INTO failures (id, attempts) VALUES ('{{ $input.id }}', {{ $input.attempts }})" \
   [f] logic.if --expr "input.attempts < 5" \
   [a] -> [b] \
   [b] -> [c] \

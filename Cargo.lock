@@ -3768,13 +3768,14 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.4.0"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96d43fdb1b4ec57737508e749033e7a1be741cc7f5d9af9a41d3dfadb97ed9c2"
+checksum = "e97444fc739a9250d55ad105b7187afceb0ffe999c8880987767f7ea4fd3565a"
 dependencies = [
  "ahash",
  "bincode",
  "bytemuck",
+ "chrono",
  "crc32fast",
  "crossbeam-epoch",
  "dashmap",
@@ -3790,6 +3791,8 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "sqlparser",
+ "uuid",
 ]
 
 [[package]]
@@ -4069,6 +4072,15 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.53.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05a528114c392209b3264855ad491fcce534b94a38771b0a0b97a79379275ce8"
+dependencies = [
+ "log",
 ]
 
 [[package]]

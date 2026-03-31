@@ -9,7 +9,7 @@ export const nodeCategories: Record<string, string[]> = {
     "n.trigger.weberror",
     "n.trigger.function",
   ],
-  data: ["n.sekejap.query", "n.pg.query", "n.sjtable.mutate"],
+  data: ["n.sekejap.query", "n.sekejap.mutate", "n.pg.query"],
   logic: [
     "n.script",
     "n.logic.if",
@@ -45,7 +45,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.crypto": "#6b21a8",
   "n.browser.run": "#0369a1",
   "n.trigger.function": "#166534",
-  "n.sjtable.mutate": "#0f766e",
+  "n.sekejap.mutate": "#0f766e",
   "n.function.call": "#1e40af",
   "n.web.response": "#9d174d",
 };
