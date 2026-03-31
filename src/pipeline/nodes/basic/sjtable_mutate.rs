@@ -1,4 +1,4 @@
-//! Simple Table mutate node — delete and other row-level mutations.
+//! Sekejap SQL mutate node (INSERT / UPDATE / DELETE / CREATE COLLECTION / RELATE / UNRELATE).
 
 use std::sync::Arc;
 
@@ -10,29 +10,36 @@ use crate::pipeline::{
     PipelineError, NodeDefinition,
     nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
 };
-use crate::language::LanguageEngine;
 use crate::platform::services::SimpleTableService;
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef};
-use super::util::{eval_deno_expr, metadata_scope, resolve_path_cloned};
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
+use super::util::metadata_scope;
 
-pub const NODE_KIND: &str = "n.sjtable.mutate";
+pub const NODE_KIND: &str = "n.sekejap.mutate";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
-/// Unified node-definition metadata for `n.sjtable.mutate`.
+/// Unified node-definition metadata for `n.sekejap.mutate`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Simple Table Mutate".to_string(),
-        description: "Delete rows from project simple-table collections.".to_string(),
+        title: "Sekejap Mutate".to_string(),
+        description: "Run a SQL mutation (INSERT INTO, UPDATE, DELETE FROM, CREATE COLLECTION, \
+            RELATE, UNRELATE) against the project's embedded Sekejap database. Write the \
+            mutation in the body using `-- \"INSERT INTO ...\"`. \
+            Use `{{ expr }}` placeholders anywhere in the SQL — they are resolved before the node \
+            runs. Output: `{ ok: true, result: ... }`."
+            .to_string(),
         input_schema: serde_json::json!({
             "type": "object",
-            "description": "Input context used for row ID resolution."
+            "description": "Input context — values accessible via {{ $input.* }} in the SQL."
         }),
         output_schema: serde_json::json!({
             "type": "object",
-            "properties": { "deleted": { "type": "boolean" }, "row_id": { "type": "string" } }
+            "properties": {
+                "ok": { "type": "boolean" },
+                "result": {}
+            }
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -41,109 +48,66 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--table".to_string(),
-                config_key: "table".to_string(),
-                description: "Simple table name.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--op".to_string(),
-                config_key: "operation".to_string(),
-                description: "Mutation operation: delete.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--operation".to_string(),
-                config_key: "operation".to_string(),
-                description: "Mutation operation: delete.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--id-path".to_string(),
-                config_key: "row_id_path".to_string(),
-                description: "JSON pointer into input payload for the row ID.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--id-expr".to_string(),
-                config_key: "row_id_expr".to_string(),
-                description: "JS expression returning the row ID string. Overrides --id-path.".to_string(),
+                flag: "--sql".to_string(),
+                config_key: "sql".to_string(),
+                description: "SQL mutation (alternative to body `-- \"INSERT INTO ...\"`)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
-        fields: {
-            vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "table".to_string(), label: "Table".to_string(), field_type: NodeFieldType::Text, help: Some("Simple table slug to mutate.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "operation".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
-                    SelectOptionDef { value: "delete".to_string(), label: "delete".to_string() },
-                ], help: Some("delete removes the row permanently.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "row_id_path".to_string(), label: "Row ID Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer into the payload for the row ID (e.g. params.id).".to_string()), ..Default::default() },
-                NodeFieldDef { name: "row_id_expr".to_string(), label: "Row ID Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), ..Default::default() },
-            ]
-        },
+        fields: vec![
+            NodeFieldDef {
+                name: "sql".to_string(),
+                label: "SQL".to_string(),
+                field_type: NodeFieldType::Textarea,
+                rows: Some(6),
+                help: Some(
+                    "INSERT INTO tasks (id, title) VALUES ('{{ $input.id }}', '{{ $input.title }}')\n\
+                     Supports: INSERT INTO, UPDATE, DELETE FROM, CREATE COLLECTION, RELATE, UNRELATE."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        ],
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("operation".to_string())] },
-            LayoutItem::Field("table".to_string()),
-            LayoutItem::Row { row: vec![LayoutItem::Field("row_id_path".to_string()), LayoutItem::Field("row_id_expr".to_string())] },
+            crate::pipeline::model::LayoutItem::Field("sql".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "table_mutate".to_string(),
-            tool_description: "Upsert or delete rows in the embedded Sekejap table store. Args: mutation (required).".to_string(),
+            tool_description: "Run a SQL mutation against the embedded Sekejap database. \
+                Arg: sql (required) — INSERT / UPDATE / DELETE / CREATE COLLECTION / RELATE / UNRELATE."
+                .to_string(),
             tool_input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "mutation": { "type": "string", "description": "SekejapQL mutation string" }
+                    "sql": { "type": "string", "description": "SQL mutation string" }
                 },
-                "required": ["mutation"]
+                "required": ["sql"]
             }),
         },
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Operation {
-    #[default]
-    Delete,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    pub table: String,
+    /// SQL mutation — populated from DSL body `-- "INSERT INTO ..."`.
+    /// `{{ expr }}` placeholders are resolved before the node runs.
     #[serde(default)]
-    pub operation: Operation,
-    #[serde(default)]
-    pub row_id_path: Option<String>,
-    #[serde(default)]
-    pub row_id_expr: Option<String>,
+    pub sql: String,
 }
 
 pub struct Node {
     config: Config,
     simple_tables: Arc<SimpleTableService>,
-    language: Arc<dyn LanguageEngine>,
 }
 
 impl Node {
     pub fn new(
         config: Config,
         simple_tables: Arc<SimpleTableService>,
-        language: Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        if config.table.trim().is_empty() {
-            return Err(PipelineError::new(
-                "FW_NODE_SJTABLE_MUTATE_CONFIG",
-                "config.table must not be empty",
-            ));
-        }
-        Ok(Self { config, simple_tables, language })
+        Ok(Self { config, simple_tables })
     }
 }
 
@@ -164,40 +128,19 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let (owner, project, _pipeline, _request_id) = metadata_scope(&input.metadata)?;
-
-        let row_id = if let Some(expr) = self.config.row_id_expr.as_deref() {
-            eval_deno_expr(self.language.as_ref(), expr, &input.payload, &input.metadata)?
-                .as_str()
-                .map(ToString::to_string)
-                .ok_or_else(|| {
-                    PipelineError::new(
-                        "FW_NODE_SJTABLE_MUTATE",
-                        "row_id_expr must return string",
-                    )
-                })?
-        } else {
-            resolve_path_cloned(&input.payload, self.config.row_id_path.as_deref())
-                .and_then(|v| v.as_str().map(ToString::to_string))
-                .ok_or_else(|| {
-                    PipelineError::new(
-                        "FW_NODE_SJTABLE_MUTATE",
-                        "row_id_path must resolve to a non-empty string",
-                    )
-                })?
-        };
-
-        let payload = match self.config.operation {
-            Operation::Delete => {
-                self.simple_tables
-                    .delete_row(owner, project, &self.config.table, &row_id)
-                    .map_err(|e| PipelineError::new("FW_NODE_SJTABLE_MUTATE", e.to_string()))?;
-                json!({ "deleted": true, "row_id": row_id })
-            }
-        };
-
+        if self.config.sql.trim().is_empty() {
+            return Err(PipelineError::new(
+                "FW_NODE_SJ_MUTATE",
+                "sql must not be empty — use: -- \"INSERT INTO ...\"",
+            ));
+        }
+        let result = self
+            .simple_tables
+            .execute_mutate_sql(owner, project, &self.config.sql)
+            .map_err(|e| PipelineError::new("FW_NODE_SJ_MUTATE", e.to_string()))?;
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload,
+            payload: json!({ "ok": true, "result": result }),
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }

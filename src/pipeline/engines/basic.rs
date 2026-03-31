@@ -147,19 +147,18 @@ impl BasicPipelineEngine {
                 })?,
                 self.language.clone(),
             )?)),
-            sjtable_query::NODE_KIND | sjtable_query::NODE_KIND_ALIAS => {
+            sjtable_query::NODE_KIND => {
                 let Some(simple_tables) = &self.simple_tables else {
                     return Err(PipelineError::new(
                         "FW_NODE_SJTABLE_UNAVAILABLE",
                         "simple table service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::SimpleTable(sjtable_query::Node::new(
+                Ok(NodeDispatch::SekejapQuery(sjtable_query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SJTABLE_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_SJ_QUERY_CONFIG", err.to_string())
                     })?,
                     simple_tables.clone(),
-                    self.language.clone(),
                 )?))
             }
             sjtable_mutate::NODE_KIND => {
@@ -169,12 +168,11 @@ impl BasicPipelineEngine {
                         "simple table service is not configured on this framework engine",
                     ));
                 };
-                Ok(NodeDispatch::SimpleTableMutate(sjtable_mutate::Node::new(
+                Ok(NodeDispatch::SekejapMutate(sjtable_mutate::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SJTABLE_MUTATE_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_SJ_MUTATE_CONFIG", err.to_string())
                     })?,
                     simple_tables.clone(),
-                    self.language.clone(),
                 )?))
             }
             browser_run::NODE_KIND => {
@@ -482,8 +480,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::Script(node) => node.execute_async(input).await,
                 NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
                 NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
-                NodeDispatch::SimpleTable(node) => node.execute_async(input).await,
-                NodeDispatch::SimpleTableMutate(node) => node.execute_async(input).await,
+                NodeDispatch::SekejapQuery(node) => node.execute_async(input).await,
+                NodeDispatch::SekejapMutate(node) => node.execute_async(input).await,
                 NodeDispatch::Postgres(node) => node.execute_async(input).await,
                 NodeDispatch::InlineWebResponse { node_id, config } => {
                     let markup = config.markup.as_deref().unwrap_or("").trim();
@@ -722,8 +720,8 @@ enum NodeDispatch {
     Script(script::Node),
     HttpRequest(http_request::Node),
     BrowserRun(browser_run::Node),
-    SimpleTable(sjtable_query::Node),
-    SimpleTableMutate(sjtable_mutate::Node),
+    SekejapQuery(sjtable_query::Node),
+    SekejapMutate(sjtable_mutate::Node),
     Postgres(pg_query::Node),
     InlineWebResponse {
         node_id: String,
