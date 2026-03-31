@@ -100,9 +100,12 @@ name=session,value=$.access_token,http-only,max-age=86400,secure,same-site=Stric
 ```zf
 | trigger.webhook --path /auth/login --method POST
 | pg.query --credential main-db -- "SELECT id, role FROM users WHERE email = $1"
-| auth.token.create --credential my-jwt --claim sub=$.rows[0].id --claim role=$.rows[0].role
+| script -- "const u = input.rows[0]; return { ...u, roles: [u.role] }"
+| auth.token.create --credential my-jwt --claim sub=$.id --claim roles=$.roles:public
 | web.response --template pages/home.tsx --set-cookie name=session,value=$.access_token,http-only,max-age=86400
 ```
+
+> `roles` claim must be an array. Wrap a single DB `role` string with `[u.role]` in a script node before signing.
 
 ### Custom headers
 
@@ -138,6 +141,100 @@ export default function Page(input) {
 - Use `input` (function parameter) to access server data — works in both SSR and browser.
 - Use `useState`, `useEffect`, etc. for client interactivity — these are globals, no import needed.
 - `ctx` also works as a bare global if you prefer, but `input` as the function param is the convention.
+
+---
+
+## Trigger context in templates — `ctx.auth`, `ctx.params`, `ctx.query`, `ctx.headers`
+
+`n.web.response` **always injects trigger fields into the template state**, regardless of what upstream nodes did to the payload. Even when `pg.query` replaces `input` with `{rows:[...]}`, the template still sees:
+
+| Template field | Source | Description |
+|---|---|---|
+| `ctx.auth` | `trigger.auth` (after public-claim filter) | Verified JWT claims. Only claims marked `:public` when issued. `null` if no public claims or no JWT. |
+| `ctx.params` | `trigger.params` | URL path params (`:id`, `:slug`, etc.) |
+| `ctx.query` | `trigger.query` | Query string params (`?page=2` etc.) |
+| `ctx.headers` | `trigger.headers` | Safe request headers (content-type, user-agent, etc.) |
+
+These fields are injected by `inject_trigger_fields()` just before the template renders, and they come from `metadata["trigger"]` — the immutable trigger snapshot that flows through every node unchanged.
+
+### The `_zf_public` mechanism — what `ctx.auth` contains
+
+When a JWT is issued via `auth.token.create`, only claims explicitly marked `:public` are visible in the browser. Claims without `:public` are signed into the JWT but stripped before reaching the DOM.
+
+```zf
+# Only name and role reach the browser as ctx.auth.name and ctx.auth.role
+| auth.token.create --credential my-jwt \
+    --claim sub=$.id \
+    --claim name=$.fullname:public \
+    --claim role=$.role:public \
+    --claim internal_id=$.db_id   ← never visible in browser
+```
+
+**Effect in templates:**
+```tsx
+export default function Page(input) {
+  // ctx is always available as a global
+  const userName = ctx.auth?.name ?? 'Guest';   // only if marked :public
+  const userRole = ctx.auth?.role ?? null;
+  const userId = ctx.auth?.sub;                 // NOT available — sub not marked :public
+  ...
+}
+```
+
+If **no claims are marked `:public`**, `ctx.auth` is `null` even for authenticated users. This is intentional — secure by default.
+
+### Why this survives payload replacement
+
+```
+trigger.webhook --auth-type jwt  →  auth verified; trigger.auth = decoded claims
+pg.query                         →  payload becomes { rows: [...] } — auth is gone from input
+script                           →  transforms rows — auth still gone from input
+web.response --template ...      →  inject_trigger_fields() restores auth/params/query/headers
+                                    into state before rendering
+```
+
+The template always has `ctx.auth`, `ctx.params`, `ctx.query`, `ctx.headers` — no matter how many nodes transformed the payload between the trigger and the response.
+
+### Example — auth-aware template
+
+```tsx
+export default function Dashboard(input) {
+  // input = whatever pg.query returned — { rows: [...] }
+  // ctx.auth comes from the original JWT, not from input
+  const user = ctx.auth;  // { name: "Alice", role: "admin" } — public claims only
+  const params = ctx.params;  // { id: "42" } — from /dashboard/:id
+  const query = ctx.query;    // { tab: "overview" } — from ?tab=overview
+
+  if (!user) return <div>Not authenticated</div>;
+
+  return (
+    <main>
+      <h1>Hello {user.name}</h1>
+      <p>Role: {user.role}</p>
+      {input.rows.map(r => <div key={r.id}>{r.title}</div>)}
+    </main>
+  );
+}
+```
+
+---
+
+## Dynamic expressions in `n.web.response` flags
+
+`{{ expr }}` is supported in `--location`, `--set-cookie value=...`, and `--header` values, resolved from the pipeline payload just before the response is sent.
+
+```zf
+# Redirect to a URL built from trigger params and upstream data
+| web.response --location "/users/{{ $trigger.params.id }}/{{ $nodes.lookup.rows[0].slug }}"
+
+# Set a cookie whose value comes from auth.token.create output
+| web.response --set-cookie "name=session,value={{ $input.access_token }},http-only,max-age=86400"
+
+# Inject a custom header with the authenticated user's ID
+| web.response --header "X-User-Id={{ $trigger.auth.sub }}"
+```
+
+See `help(topic="pipeline/dsl")` for the full `{{ expr }}` scope reference.
 
 ---
 

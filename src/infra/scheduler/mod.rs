@@ -170,6 +170,7 @@ impl PipelineScheduler {
                         "fired_at": fired_at.to_rfc3339(),
                         "node_id": node_id,
                     }),
+                    trigger: None,
                 };
 
                 let exec_start = std::time::Instant::now();

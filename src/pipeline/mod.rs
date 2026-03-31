@@ -9,6 +9,7 @@
 //! This module does not embed script VM internals or template rendering logic.
 
 pub mod engines;
+pub mod expr;
 pub mod interface;
 pub mod model;
 pub mod nodes;

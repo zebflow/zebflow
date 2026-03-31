@@ -24,7 +24,7 @@ Create a credential of kind `jwt_signing_key` with these fields in the secret:
 |---|---|
 | `algorithm` | `HS256`, `HS384`, `HS512`, `RS256`, etc. |
 | `secret` | Signing key (HS algorithms) |
-| `auth_roles` | Roles available in this auth context — used by `--auth-required-role` in the UI |
+| `auth_roles` | Roles registered for this credential — populates the **Required Role** checkboxes in webhook nodes. Defines valid values for the JWT `role` claim. |
 | `auth_redirect` | Where to redirect on 401 (browser navigation only — Sec-Fetch aware) |
 | `auth_forbidden_redirect` | Where to redirect on 403 (browser navigation only) |
 
@@ -35,7 +35,7 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 ## Key Concepts
 
 - `trigger.webhook --auth-type jwt --auth-credential <id>` — auto-verifies JWT from `Authorization: Bearer` header or session cookie. On success: claims in `input.auth`. On failure: 302 redirect (page nav) or 401 JSON (fetch/API).
-- `trigger.webhook --auth-required-role admin,lecturer` — additionally checks `input.auth.role` against allowed roles. Failure: 302 redirect or 403 JSON.
+- `trigger.webhook --auth-required-role admin,lecturer` — additionally checks `input.auth.roles` array against the listed roles. Failure: 302 redirect or 403 JSON. **Empty (no roles specified) = any valid JWT is accepted — roles are not checked.**
 - `auth.token.create --credential <id> --claim sub=$.field --claim name=$.name:public` — signs a JWT; output is `$.access_token`. Claims with `:public` suffix are the only ones exposed in the browser via `ctx.auth` — all others remain server-only.
 - `web.response --set-cookie name=session,value=$.access_token,http-only,max-age=86400` — sets the session cookie.
 - `web.response --location /path` — issues a 302 redirect.
@@ -50,8 +50,8 @@ If `auth_redirect` / `auth_forbidden_redirect` are not set, auth failure returns
 | trigger.webhook --path /auth/login --method POST
 | pg.query --credential my-pg --params-expr "[input.identifier]" \
     -- "SELECT player_id::text, fullname, role FROM app.player WHERE identifier = $1 AND is_active = true"
-| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { player_id: user.player_id, name: user.fullname, role: user.role }"
-| auth.token.create --credential my-jwt --claim sub=$.player_id --claim name=$.name:public --claim role=$.role:public --expires-in 86400
+| script -- "const user = input.rows?.[0]; if (!user) return { ok: false, error: 'invalid credentials', __status: 401 }; return { player_id: user.player_id, name: user.fullname, roles: [user.role] }"
+| auth.token.create --credential my-jwt --claim sub=$.player_id --claim name=$.name:public --claim roles=$.roles:public --expires-in 86400
 | web.response --location /dashboard --set-cookie name=session,value=$.access_token,http-only,max-age=86400,path=/
 ```
 

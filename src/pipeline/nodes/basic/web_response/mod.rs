@@ -494,6 +494,35 @@ fn strip_private_auth_claims(mut payload: Value) -> Value {
     payload
 }
 
+/// Inject trigger-context fields into state so templates always have
+/// `ctx.auth`, `ctx.params`, `ctx.query` regardless of what upstream nodes
+/// did to the payload.
+fn inject_trigger_fields(mut state: Value, metadata: &Value) -> Value {
+    let Some(trigger) = metadata.get("trigger") else {
+        return state;
+    };
+    let Value::Object(ref mut map) = state else {
+        return state;
+    };
+
+    // params / query / headers: inject only when absent in state
+    for key in &["params", "query", "headers"] {
+        if !map.contains_key(*key) {
+            if let Some(v) = trigger.get(*key) {
+                map.insert(key.to_string(), v.clone());
+            }
+        }
+    }
+    // auth: always prefer trigger.auth — it carries _zf_public for correct
+    // filtering by strip_private_auth_claims which runs right after.
+    if !map.contains_key("auth") || map.get("auth") == Some(&Value::Null) {
+        if let Some(auth) = trigger.get("auth") {
+            map.insert("auth".to_string(), auth.clone());
+        }
+    }
+    state
+}
+
 /// Render a previously compiled page artifact.
 pub fn render_compiled_page(
     compiled: &CompiledPage,
@@ -511,6 +540,9 @@ pub fn render_compiled_page(
         .unwrap_or("/")
         .to_string();
 
+    // Inject trigger fields before filtering — ensures ctx.auth/params/query are
+    // always available in templates even when upstream nodes replaced the payload.
+    let state = inject_trigger_fields(state, &metadata);
     // Strip private JWT claims before the payload reaches the browser DOM.
     let state = strip_private_auth_claims(state);
 

@@ -89,6 +89,10 @@ pub fn definition() -> NodeDefinition {
                             SidebarItem { label: "n.http.request({...})".to_string(), type_hint: Some("Promise<response>".to_string()), description: Some("Make an HTTP request inline.".to_string()) },
                             SidebarItem { label: "ctx.pipeline".to_string(), type_hint: Some("string".to_string()), description: Some("Current pipeline id.".to_string()) },
                             SidebarItem { label: "ctx.request_id".to_string(), type_hint: Some("string".to_string()), description: Some("Unique execution request id.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.auth".to_string(), type_hint: Some("object|null".to_string()), description: Some("Verified JWT claims from the original request — immutable even after pg.query replaces the payload.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.params".to_string(), type_hint: Some("object".to_string()), description: Some("URL path params (:id etc) from the original request.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.query".to_string(), type_hint: Some("object".to_string()), description: Some("Query string params from the original request.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.headers".to_string(), type_hint: Some("object".to_string()), description: Some("Safe subset of request headers (content-type, user-agent, etc).".to_string()) },
                         ],
                     },
                 ],
@@ -217,6 +221,11 @@ impl NodeHandler for Node {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            trigger: input
+                .metadata
+                .get("trigger")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
             metadata: input.metadata.clone(),
         };
 

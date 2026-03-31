@@ -76,7 +76,7 @@ pub fn tokenize(s: &str) -> Vec<String> {
             '"' if !in_single => {
                 in_double = !in_double;
             }
-            ' ' | '\t' if !in_single && !in_double => {
+            ' ' | '\t' | '\n' | '\r' if !in_single && !in_double => {
                 if !current.is_empty() {
                     tokens.push(current.clone());
                     current.clear();
@@ -150,9 +150,11 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             vec!["in".to_string()],
             vec!["true".to_string(), "false".to_string()],
         ),
+        // n.logic.switch: output pins are dynamic (set per-instance from cases config).
+        // Return just ["default"] as the fallback; actual pins are set after config is parsed.
         "n.logic.switch" => (
             vec!["in".to_string()],
-            vec!["true".to_string(), "false".to_string(), "default".to_string()],
+            vec!["default".to_string()],
         ),
         "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
@@ -579,7 +581,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
     let raw_kind = &tokens[0];
     let full_kind =
         expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
-    let (input_pins, output_pins) = default_pins(full_kind);
+    let (input_pins, mut output_pins) = default_pins(full_kind);
     let all_defs = builtin_node_definitions();
     let dsl_flags = all_defs
         .iter()
@@ -591,10 +593,31 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         let body_key = match full_kind {
             "n.pg.query" => "query",
             "n.script" => "source",
+            "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
             _ => "body",
         };
         if let Value::Object(ref mut map) = config {
             map.insert(body_key.to_string(), json!(bval));
+        }
+    }
+    // For logic.switch, output pins are dynamic: the declared cases + the default pin.
+    if full_kind == "n.logic.switch" {
+        if let Value::Object(ref map) = config {
+            let cases: Vec<String> = map.get("cases")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let default_pin = map.get("default")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string();
+            let mut pins = cases;
+            if !pins.contains(&default_pin) {
+                pins.push(default_pin);
+            }
+            if !pins.is_empty() {
+                output_pins = pins;
+            }
         }
     }
     nodes.push(PipelineNode {
@@ -751,6 +774,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     let body_key = match node.kind.as_str() {
         "n.pg.query" => "query",
         "n.script" => "source",
+        "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
         _ => "body",
     };
     if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
@@ -874,7 +898,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
             .ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
 
         let node_id = format!("n{idx}");
-        let (input_pins, output_pins) = default_pins(full_kind);
+        let (input_pins, mut output_pins) = default_pins(full_kind);
         let dsl_flags = all_defs
             .iter()
             .find(|d| d.kind == full_kind)
@@ -891,6 +915,27 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
             };
             if let Value::Object(ref mut map) = config {
                 map.insert(body_key.to_string(), json!(bval));
+            }
+        }
+
+        // For logic.switch, output pins are dynamic: the declared cases + the default pin.
+        if full_kind == "n.logic.switch" {
+            if let Value::Object(ref map) = config {
+                let cases: Vec<String> = map.get("cases")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                let default_pin = map.get("default")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
+                let mut pins = cases;
+                if !pins.contains(&default_pin) {
+                    pins.push(default_pin);
+                }
+                if !pins.is_empty() {
+                    output_pins = pins;
+                }
             }
         }
 

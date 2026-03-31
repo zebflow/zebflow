@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_exprs};
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
@@ -376,7 +377,11 @@ impl PipelineEngine for BasicPipelineEngine {
             }
         }
         for node in &graph.nodes {
-            self.build_node(node)?;
+            // Skip upfront validation for nodes whose config contains {{ expr }} placeholders —
+            // those are resolved per-input at runtime, so type validation must happen there.
+            if scan_exprs(&node.config).is_empty() {
+                self.build_node(node)?;
+            }
         }
         Ok(())
     }
@@ -409,6 +414,9 @@ impl PipelineEngine for BasicPipelineEngine {
         };
 
         let step_tx = options.step_tx.clone();
+        // nodes_output: accumulates each completed node's output payload for $nodes access.
+        // Declared here (before the initial queue push) so entry-node metadata can include it.
+        let mut nodes_output = serde_json::Map::<String, Value>::new();
         let mut queue = VecDeque::new();
         for node_id in start_nodes {
             let node = node_map
@@ -425,6 +433,8 @@ impl PipelineEngine for BasicPipelineEngine {
                     "pipeline": ctx.pipeline,
                     "request_id": ctx.request_id,
                     "route": ctx.route,
+                    "trigger": ctx.trigger,
+                    "nodes": Value::Object(nodes_output.clone()),
                 }),
                 step_tx: step_tx.clone(),
             });
@@ -442,7 +452,22 @@ impl PipelineEngine for BasicPipelineEngine {
             let node = node_map.get(input.node_id.as_str()).ok_or_else(|| {
                 PipelineError::new("FW_EXEC_NODE", format!("node '{}' missing", input.node_id))
             })?;
-            let dispatch = self.build_node(node)?;
+
+            // Resolve {{ expr }} placeholders in the node's config before building.
+            // Uses input.metadata["nodes"] (snapshot at queue-time) for $nodes scope,
+            // so each node only sees outputs of its transitive predecessors.
+            let effective_config = resolve_config_expressions(
+                node.config.clone(),
+                &input.payload,
+                &input.metadata,
+                &self.language,
+            )?;
+            let dispatch = if effective_config == node.config {
+                // No expressions resolved — use original node directly (common fast path).
+                self.build_node(node)?
+            } else {
+                self.build_node(&PipelineNode { config: effective_config, ..(*node).clone() })?
+            };
 
             // Capture context for per-node trace before consuming `input`.
             let trace_node_id = node.id.clone();
@@ -574,6 +599,8 @@ impl PipelineEngine for BasicPipelineEngine {
 
             let output = match exec_result {
                 Ok(out) => {
+                    // Record this node's output so downstream nodes can access it via $nodes.
+                    nodes_output.insert(trace_node_id.clone(), out.payload.clone());
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id,
                         node_kind: trace_node_kind,
@@ -631,6 +658,8 @@ impl PipelineEngine for BasicPipelineEngine {
                                             "pipeline": ctx.pipeline,
                                             "request_id": ctx.request_id,
                                             "route": ctx.route,
+                                            "trigger": ctx.trigger,
+                                            "nodes": Value::Object(nodes_output.clone()),
                                         }),
                                         step_tx: step_tx.clone(),
                                     });
@@ -648,6 +677,8 @@ impl PipelineEngine for BasicPipelineEngine {
                                             "pipeline": ctx.pipeline,
                                             "request_id": ctx.request_id,
                                             "route": ctx.route,
+                                            "trigger": ctx.trigger,
+                                            "nodes": Value::Object(nodes_output.clone()),
                                         }),
                                         step_tx: step_tx.clone(),
                                     });
@@ -664,6 +695,8 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "pipeline": ctx.pipeline,
                                         "request_id": ctx.request_id,
                                         "route": ctx.route,
+                                        "trigger": ctx.trigger,
+                                        "nodes": Value::Object(nodes_output.clone()),
                                     }),
                                     step_tx: step_tx.clone(),
                                 });

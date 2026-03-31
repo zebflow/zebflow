@@ -126,6 +126,7 @@ pub fn eval_deno_expr(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        trigger: metadata.get("trigger").cloned().unwrap_or(Value::Null),
         metadata: metadata.clone(),
     };
     language

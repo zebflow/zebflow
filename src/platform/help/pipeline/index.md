@@ -1,6 +1,86 @@
 # Pipeline System Guide
 
-Pipelines are the core of Zebflow. A pipeline is a linear or branching chain of nodes that handles an HTTP request, WebSocket event, or scheduled trigger — and produces a response (HTML page, JSON, redirect, or side effects).
+## Mental Model
+
+**A pipeline is a function.**
+
+```
+pipeline(trigger_input) → response
+```
+
+Inside that function there are three distinct things:
+
+| Concept | What it is | Accessible via |
+|---------|-----------|----------------|
+| **Run context** | Immutable snapshot of the triggering event — who called, from where, verified identity. Set once at entry, available to every node unchanged. | `ctx.*` in script nodes |
+| **Nodes** | Individual operations — query, transform, decide, render. Each is a pure function: takes `input`, returns the next payload. | declared in graph |
+| **Graph** | The data flow — which node's output becomes which node's input. Explicit dependencies. Nothing flows unless you wire it. | edges (`->`) |
+
+### The two envelopes
+
+Every node receives **two separate things**:
+
+- **`input`** — the business payload flowing through edges. Each node transforms it. `pg.query` replaces it with `{rows:[...]}`. A `script` node shapes it. This is the graph's concern.
+- **`ctx`** — the run-level context. Same on every node. Never touched by edges. Contains `ctx.pipeline`, `ctx.request_id`, and for webhook-triggered pipelines: `ctx.trigger.auth`, `ctx.trigger.params`, `ctx.trigger.query`, `ctx.trigger.headers`.
+
+The mental model maps directly to code:
+
+```js
+// pipeline execution is essentially:
+function myPipeline(trigger_input, ctx) {
+  const a = nodeA(trigger_input, ctx);   // e.g. pg.query
+  const b = nodeB(a, ctx);              // e.g. script transform
+  const c = nodeC(b, ctx);              // e.g. web.response
+  return c;
+}
+// ctx is always available — it never flows through edges
+// input is whatever the upstream node returned — it can be anything
+```
+
+### Why this matters
+
+- **Lost auth problem**: if `pg.query` replaces the payload with `{rows:[...]}`, auth is gone from `input.auth` — but `ctx.trigger.auth` is never lost. Use `ctx.trigger.auth` in script nodes when you need caller identity regardless of where you are in the graph.
+- **Graph stays clean**: edges carry business data only. Auth, params, request identity are ambient — they don't pollute the data flow.
+- **`web.response` + templates**: `ctx.trigger.auth` public claims are always injected as `ctx.auth` in the template, same as `ctx.params` and `ctx.query` — regardless of what the pipeline chain did to the payload.
+
+### `ctx.trigger.*` reference
+
+Available in script nodes (`n.script`) as `ctx.trigger.*` and in templates as top-level state fields:
+
+| Field | Script node | Template | Description |
+|-------|-------------|----------|-------------|
+| `ctx.trigger.auth` | `ctx.trigger.auth.sub` | `ctx.auth.sub` | Verified JWT claims (public fields only in templates) |
+| `ctx.trigger.params` | `ctx.trigger.params.id` | `ctx.params.id` | URL path params from the request (`:id`, `:slug`, etc.) |
+| `ctx.trigger.query` | `ctx.trigger.query.page` | `ctx.query.page` | Query string params (`?page=2` etc.) |
+| `ctx.trigger.headers` | `ctx.trigger.headers["user-agent"]` | `ctx.headers["user-agent"]` | Safe subset of request headers |
+
+All fields are `null` / empty objects for non-webhook triggers (schedule, WS, manual).
+
+### JWT auth — Bearer + Cookie fallback
+
+When `--auth-type jwt` is set, the webhook checks:
+1. `Authorization: Bearer <token>` header
+2. `Cookie: zebflow_session` (fallback — used by browser sessions)
+
+Both paths verify with the same credential. If neither is present, auth fails.
+
+### `_zf_public` — what reaches `ctx.auth` in templates
+
+JWT claims are **private by default**. Only claims explicitly marked `:public` in `auth.token.create` are visible in the browser via `ctx.auth`:
+
+```zf
+| auth.token.create --credential my-jwt \
+    --claim sub=$.id \
+    --claim name=$.fullname:public \   ← visible as ctx.auth.name
+    --claim role=$.role:public         ← visible as ctx.auth.role
+    # sub is signed but never reaches the browser
+```
+
+If no claims are marked `:public`, `ctx.auth` is `null` even for authenticated requests — secure by default.
+
+In **script node `{{ expr }}` expressions**, `$trigger.auth` holds **all** claims (including private). The `_zf_public` filter only applies at the `n.web.response` render boundary.
+
+---
 
 When you call **`help(topic="pipeline")`** over MCP, the platform **appends a live node appendix** after this file: every node `kind`, description, pins, DSL flags, and input/output schemas come from the same Rust `definition()` as the pipeline editor node API (not from hand-written docs).
 
@@ -133,14 +213,15 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 | script -- "return { ok: true, slug: input.slug }"
 ```
 
-### Auth-Gated Route — check JWT before serving
+### Auth-Gated Route — JWT auto-verify
 
 ```
-| trigger.webhook --path /dashboard --method GET
-| script -- "const tok = input.headers['authorization']?.replace('Bearer ',''); if (!tok) return { __redirect: '/login' }; return input;"
-| pg.query --credential main-db -- "SELECT id, name, role FROM users WHERE id = '{{input.user_id}}'"
-| web.response --template pages/dashboard.tsx --route /dashboard
+| trigger.webhook --path /dashboard --method GET --auth-type jwt --auth-credential my-jwt
+| pg.query --credential main-db -- "SELECT id, name FROM users WHERE id = $1" --params-expr "[ctx.trigger.auth.sub]"
+| web.response --template pages/dashboard.tsx
 ```
+
+JWT missing/invalid → credential `auth_redirect` fires (browser) or 401 JSON (API). `ctx.trigger.auth` holds the decoded claims in all downstream nodes. Template gets `ctx.auth` automatically.
 
 ### Redirect
 
@@ -168,9 +249,35 @@ pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 
 ---
 
+## Dynamic expressions — `{{ expr }}`
+
+Any string field in a node's config can contain `{{ js_expr }}` placeholders resolved before the node runs.
+
+| Variable | Available from | Description |
+|----------|---------------|-------------|
+| `$input` | All nodes | Current payload flowing into this node |
+| `$trigger.auth` | All nodes | Verified JWT claims from the original request |
+| `$trigger.params` | All nodes | URL path params (`:id` etc.) |
+| `$trigger.query` | All nodes | Query string params |
+| `$nodes.id` | All nodes | Output payload of an upstream node by graph ID |
+| `$ctx` | All nodes | `{ pipeline, request_id, trigger }` |
+
+```zf
+# Path param → SQL param (whole-field expr → native array type)
+| pg.query --params-expr "{{ [$trigger.params.id] }}"
+
+# Dynamic URL from upstream output (interpolated expr → string)
+| http.request --url "https://api.example.com/{{ $nodes.userQuery.rows[0].slug }}"
+```
+
+See `help(topic="pipeline/dsl")` for the full `{{ expr }}` reference including sandbox security guarantees.
+
+---
+
 ## Next steps
 
 - `help(topic="pipeline/nodes")` — same live catalog as the appendix on `help(topic="pipeline")`, or one node via `topic="pipeline/nodes/{kind}"`
+- `help(topic="pipeline/dsl")` — `{{ expr }}` dynamic expressions, full node DSL flags
 - `help(topic="web")` — TSX pages, `input` / `ctx`, hydration modes
 - `help(topic="pipeline/web")` — `n.web.response` flags, cookie spec, redirect, custom headers
 - `help(topic="pipeline/examples")` — full archetype recipes (blog, chat, game, scheduling, scraping, auth)

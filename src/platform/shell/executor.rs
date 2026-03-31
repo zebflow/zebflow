@@ -668,6 +668,7 @@ impl DslExecutor {
             ),
             route: Default::default(),
             input,
+            trigger: None,
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(
@@ -755,6 +756,7 @@ impl DslExecutor {
                     ),
                     route: Default::default(),
                     input: initial_input.unwrap_or_else(|| json!({})),
+                    trigger: None,
                 };
 
                 let engine = crate::pipeline::BasicPipelineEngine::new(

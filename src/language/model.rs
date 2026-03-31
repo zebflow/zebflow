@@ -96,6 +96,10 @@ pub struct ExecutionContext {
     pub request_id: String,
     /// Additional metadata envelope.
     pub metadata: Value,
+    /// Trigger-event snapshot. `ctx.trigger.auth`, `ctx.trigger.params`, etc.
+    /// Null when the pipeline was not triggered by a webhook.
+    #[serde(default)]
+    pub trigger: Value,
 }
 
 /// Program execution output envelope.

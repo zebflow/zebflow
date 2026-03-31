@@ -6563,6 +6563,7 @@ async fn api_execute_pipeline(
         request_id: request_id.clone(),
         route: Default::default(),
         input: req.input.clone(),
+        trigger: None,
     };
     let engine = BasicPipelineEngine::new(
         Arc::new(DenoSandboxEngine::default()),
@@ -8940,15 +8941,20 @@ fn verify_webhook_auth(
             let claims = token_data.claims;
 
             // Role check — only applies when the trigger specifies required roles.
+            // Contract: JWT must carry a "roles" claim as an array of strings.
+            // Wrap your DB role value(s) into an array in a script node before auth.token.create.
             if !required_roles.is_empty() {
-                let jwt_role = claims
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if !required_roles.iter().any(|r| r == jwt_role) {
+                let user_roles: Vec<&str> = claims
+                    .get("roles")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let authorized = required_roles.iter().any(|r| user_roles.contains(&r.as_str()));
+                if !authorized {
                     return Err(AuthError::Forbidden {
                         message: format!(
-                            "role '{jwt_role}' is not permitted for this route"
+                            "roles {:?} are not permitted for this route",
+                            user_roles
                         ),
                         redirect_url: auth_forbidden_redirect.clone(),
                     });
@@ -9089,6 +9095,7 @@ async fn dispatch_weberror(
         request_id: format!("weberror-{error_code}"),
         route: Default::default(),
         input: error_payload,
+        trigger: None,
     };
 
     let output = engine.execute_async(&compiled.graph, &ctx).await.ok()?;
@@ -9304,6 +9311,14 @@ async fn public_webhook_ingress(
         }
     }
 
+    // Build immutable trigger snapshot — available to every node via metadata.
+    let trigger = json!({
+        "auth": input.get("auth").cloned().unwrap_or(Value::Null),
+        "params": input.get("params").cloned().unwrap_or(json!({})),
+        "query": input.get("query").cloned().unwrap_or(json!({})),
+        "headers": safe_headers(&headers),
+    });
+
     let credentials = state.platform.credentials.clone();
     let simple_tables = state.platform.simple_tables.clone();
     let graph_for_run = graph.clone();
@@ -9314,6 +9329,7 @@ async fn public_webhook_ingress(
         request_id: request_id.clone(),
         route: path.clone(),
         input: input.clone(),
+        trigger: Some(trigger),
     };
     let file_rel_path = selected.compiled.file_rel_path.clone();
     let engine = BasicPipelineEngine::new(
@@ -9582,6 +9598,25 @@ async fn public_webhook_ingress_root(
         body,
     )
     .await
+}
+
+/// Extract a safe subset of request headers for the trigger snapshot.
+/// Excludes Authorization and Cookie to avoid leaking credentials downstream.
+fn safe_headers(headers: &HeaderMap) -> Value {
+    const SAFE: &[&str] = &[
+        "content-type", "accept", "user-agent", "x-forwarded-for",
+        "x-real-ip", "referer", "origin", "sec-fetch-mode", "sec-fetch-dest",
+    ];
+    let map: serde_json::Map<String, Value> = SAFE
+        .iter()
+        .filter_map(|k| {
+            headers
+                .get(*k)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| (k.to_string(), Value::String(v.to_string())))
+        })
+        .collect();
+    Value::Object(map)
 }
 
 async fn build_webhook_ingress_input(
@@ -10611,6 +10646,7 @@ async fn ws_dispatch_event(
             ),
             route: Default::default(),
             input,
+            trigger: None,
         };
         let graph = compiled.graph.clone();
         let credentials = state.platform.credentials.clone();
