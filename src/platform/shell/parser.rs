@@ -595,6 +595,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
             "n.script" => "source",
             "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
             "n.sekejap.query" | "n.sekejap.mutate" => "sql",
+            "n.browser.run" => "code",
             _ => "body",
         };
         if let Value::Object(ref mut map) = config {
@@ -914,6 +915,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
                 "n.pg.query" => "query",
                 "n.script" => "source",
                 "n.sekejap.query" | "n.sekejap.mutate" => "sql",
+                "n.browser.run" => "code",
                 _ => "body",
             };
             if let Value::Object(ref mut map) = config {

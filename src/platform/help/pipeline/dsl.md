@@ -358,6 +358,7 @@ n.logic.switch --help           # same
 | `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
+| `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }` |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
@@ -387,6 +388,60 @@ n.logic.switch --help           # same
 # CREATE COLLECTION (schema definition)
 | sekejap.mutate -- "CREATE COLLECTION tasks (id STRING INDEX hash, title STRING, done BOOLEAN)"
 ```
+
+### `n.file.save` — saving uploaded files
+
+Reads a file from `input.files.{field}` (set by `trigger.webhook` multipart parsing), validates it,
+and saves it to the project's file storage at `files/{dest}/{uuid}.{ext}`.
+
+The saved file is immediately accessible at the URL returned in `saved.url`.
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--field` | `file` | Multipart field name from the upload form |
+| `--dest` | `uploads` | Subdirectory under project `files/` |
+| `--allowed-types` | _(all)_ | Comma-separated MIME allowlist, supports wildcards (`image/*`, `application/pdf`) |
+| `--max-size` | `10` | Maximum file size in MB |
+
+**Output:** `{ saved: { path, url, original_name, content_type, size } }`
+
+- `path` — relative path under `files/` (e.g. `uploads/a1b2c3.jpg`)
+- `url` — public URL to serve the file (e.g. `/files/{owner}/{project}/uploads/a1b2c3.jpg`)
+- `original_name` — the original filename from the upload
+- `content_type` — MIME type reported by the browser
+- `size` — actual decoded file size in bytes
+
+**Examples:**
+
+```zf
+# Accept any file, save to uploads/
+register upload-file --path /api \
+  | trigger.webhook --path /upload --method POST --auth-type jwt --auth-credential my-jwt \
+  | file.save \
+  | web.response
+
+# Accept images only, save to avatars/
+register upload-avatar --path /api \
+  | trigger.webhook --path /avatar --method POST --auth-type jwt --auth-credential my-jwt \
+  | file.save --field avatar --dest avatars --allowed-types "image/*" --max-size 5 \
+  | sekejap.mutate -- "UPDATE users SET avatar_url = '{{ $input.saved.url }}' WHERE id = '{{ $trigger.auth.sub }}'" \
+  | web.response
+
+# Save PDF, store reference in DB
+register upload-document --path /api \
+  | trigger.webhook --path /documents --method POST --auth-type jwt --auth-credential my-jwt \
+  | file.save --field document --dest documents --allowed-types "application/pdf" --max-size 20 \
+  | sekejap.mutate -- "INSERT INTO documents (id, url, name) VALUES ('{{ $input.saved.path }}', '{{ $input.saved.url }}', '{{ $input.saved.original_name }}')" \
+  | web.response
+```
+
+**Security notes:**
+- Files are stored using a UUID filename — the original filename is never used for storage (path traversal safe).
+- Files live outside the git-synced `repo/` folder — they are not committed with your codebase.
+- Always use `--auth-type jwt` on the webhook trigger for authenticated uploads.
+- Use `--allowed-types` to restrict what users can upload; leave empty only for trusted internal endpoints.
 
 ### `n.trigger.webhook` — request payload shape
 

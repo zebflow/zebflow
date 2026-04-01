@@ -3,7 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -14,8 +14,8 @@ use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
-    agent, auth_token_create, browser_run, crypto, function_call, http_request, logic, pg_query,
-    script, sjtable_mutate, sjtable_query,
+    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request, logic,
+    pg_query, script, sjtable_mutate, sjtable_query,
     trigger::{function as trigger_function, manual, schedule, webhook, weberror},
     web_response, ws_emit, ws_sync_state, ws_trigger,
 };
@@ -33,11 +33,14 @@ use crate::infra::transport::ws::WsHub;
 ///
 /// When a user saves a template the markup changes → new hash → cache miss → recompile.
 /// Subsequent requests with the same markup → cache hit → skip compile, just re-render.
-pub type TemplateCache = Arc<Mutex<HashMap<u64, Arc<web_response::CompiledPage>>>>;
+///
+/// Uses `RwLock` so concurrent reads (cache hits) never block each other;
+/// only cache-miss writes take an exclusive lock.
+pub type TemplateCache = Arc<RwLock<HashMap<u64, Arc<web_response::CompiledPage>>>>;
 
 /// Create a new empty template compile cache.
 pub fn new_template_cache() -> TemplateCache {
-    Arc::new(Mutex::new(HashMap::new()))
+    Arc::new(RwLock::new(HashMap::new()))
 }
 
 fn hash_markup(s: &str) -> u64 {
@@ -312,6 +315,17 @@ impl BasicPipelineEngine {
                     self.platform.clone(),
                 )))
             }
+            file_save::NODE_KIND => {
+                let config: file_save::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FILE_SAVE",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::FileSave(file_save::Node::new(config, platform.clone())?))
+            }
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -473,7 +487,13 @@ impl PipelineEngine for BasicPipelineEngine {
             let node_start = std::time::Instant::now();
             let input_snapshot = input.payload.clone();
 
-            let exec_result: Result<NodeExecutionOutput, PipelineError> = match dispatch {
+            // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
+            let node_timeout_secs: u64 = std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30);
+            let exec_fut = async {
+            match dispatch {
                 NodeDispatch::Webhook(node) => node.execute_async(input).await,
                 NodeDispatch::Schedule(node) => node.execute_async(input).await,
                 NodeDispatch::Manual(node) => node.execute_async(input).await,
@@ -519,7 +539,7 @@ impl PipelineEngine for BasicPipelineEngine {
 
                         let key = hash_markup(markup);
                         let cached = self.template_cache.as_ref().and_then(|c| {
-                            c.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+                            c.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
                         });
                         let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
                             Ok(hit)
@@ -538,7 +558,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             .map(Arc::new);
                             if let Ok(ref fresh_arc) = fresh {
                                 if let Some(cache) = &self.template_cache {
-                                    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, fresh_arc.clone());
+                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, fresh_arc.clone());
                                 }
                             }
                             fresh
@@ -593,7 +613,20 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::Crypto(node) => node.execute_async(input).await,
                 NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
                 NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
-            };
+                NodeDispatch::FileSave(node) => node.execute_async(input).await,
+            }
+            }; // end exec_fut
+            let timeout_node_id = trace_node_id.clone();
+            let exec_result: Result<NodeExecutionOutput, PipelineError> =
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(node_timeout_secs),
+                    exec_fut,
+                )
+                .await
+                .unwrap_or_else(|_| Err(PipelineError::new(
+                    "FW_NODE_TIMEOUT",
+                    format!("node '{}' timed out after {node_timeout_secs}s", timeout_node_id),
+                )));
 
             let output = match exec_result {
                 Ok(out) => {
@@ -741,6 +774,7 @@ enum NodeDispatch {
     Crypto(crypto::Node),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function_call::Node),
+    FileSave(file_save::Node),
 }
 
 enum MergeStrategy {

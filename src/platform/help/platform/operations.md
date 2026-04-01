@@ -236,6 +236,34 @@ Use descriptive commit messages. Convention: `feat:`, `fix:`, `refactor:`, `docs
 
 ---
 
+## Health and Readiness Probes
+
+Two unauthenticated endpoints for K8s liveness and readiness probes:
+
+| Endpoint | Purpose | Returns |
+|----------|---------|---------|
+| `GET /health` | Liveness — is the process alive? | `200 {"status":"ok","version":"..."}` always |
+| `GET /ready` | Readiness — can it serve traffic? | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
+
+`/ready` checks that at least one V8 SSR worker in the pool is alive. Use it as the K8s `readinessProbe` so traffic is held until the JS runtime is warm.
+
+Suggested K8s probe config:
+```yaml
+livenessProbe:
+  httpGet: { path: /health, port: 10610 }
+  initialDelaySeconds: 10
+  periodSeconds: 5
+readinessProbe:
+  httpGet: { path: /ready, port: 10610 }
+  initialDelaySeconds: 5
+  periodSeconds: 3
+  failureThreshold: 2
+```
+
+The server handles `SIGTERM` gracefully — it stops accepting new connections and waits for in-flight requests to finish before exiting with code 0.
+
+---
+
 ## Webhook Ingress
 
 Activated pipelines with `trigger.webhook` are reachable at:

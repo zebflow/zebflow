@@ -6,6 +6,7 @@ pub mod agent;
 pub mod auth_token_create;
 pub mod browser_run;
 pub mod crypto;
+pub mod file_save;
 pub mod function_call;
 pub mod http_request;
 pub mod logic;
@@ -26,6 +27,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         agent::definition(),
         auth_token_create::definition(),
         browser_run::definition(),
+        file_save::definition(),
         function_call::definition(),
         trigger::function::definition(),
         trigger::webhook::definition(),

@@ -43,6 +43,9 @@ pub struct CompiledTemplate {
     pub diagnostics: Vec<Diagnostic>,
     pub hydrate_mode: HydrateMode,
     pub compile_options: CompileOptions,
+    /// All `zeb/*` library specifiers found across the page and all inlined components.
+    #[serde(default)]
+    pub detected_zeb_libs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

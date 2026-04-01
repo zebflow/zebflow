@@ -15,8 +15,8 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use deno_core::{
@@ -81,21 +81,53 @@ enum JsResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Singleton JS thread, started lazily on first use.
+// Worker pool — N JS threads, round-robin dispatch, auto-respawn on death.
 // ---------------------------------------------------------------------------
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Restart a V8 runtime after this many renders to prevent memory accumulation.
+const RESTART_AFTER_RENDERS: u64 = 500;
 
-static JS_CHANNEL: LazyLock<tokio::sync::mpsc::UnboundedSender<JsRequest>> =
-    LazyLock::new(|| {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JsRequest>();
-        std::thread::Builder::new()
-            .name("rwe-js-runtime".into())
-            .spawn(move || run_js_thread(rx))
-            .expect("failed spawning rwe-js-runtime thread");
-        tx
-    });
+struct WorkerPool {
+    workers: Vec<Mutex<tokio::sync::mpsc::UnboundedSender<JsRequest>>>,
+    next: AtomicUsize,
+}
 
-fn run_js_thread(mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>) {
+static WORKER_POOL: LazyLock<WorkerPool> = LazyLock::new(|| {
+    let count = std::env::var("RWE_WORKER_COUNT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(3)
+        .max(1);
+    eprintln!("rwe-js-runtime: starting {count} worker(s) (RWE_WORKER_COUNT={count})");
+    let workers = (0..count).map(|i| Mutex::new(spawn_js_thread(i))).collect();
+    WorkerPool { workers, next: AtomicUsize::new(0) }
+});
+
+fn spawn_js_thread(worker_id: usize) -> tokio::sync::mpsc::UnboundedSender<JsRequest> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<JsRequest>();
+    std::thread::Builder::new()
+        .name(format!("rwe-js-runtime-{worker_id}"))
+        .spawn(move || run_js_thread(worker_id, rx))
+        .expect("failed spawning rwe-js-runtime thread");
+    tx
+}
+
+/// Get a JS channel from the pool (round-robin), respawning any dead worker slot.
+fn get_channel() -> tokio::sync::mpsc::UnboundedSender<JsRequest> {
+    let pool = &*WORKER_POOL;
+    let i = pool.next.fetch_add(1, Ordering::Relaxed) % pool.workers.len();
+    let mut guard = pool.workers[i].lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_closed() {
+        eprintln!("rwe-js-runtime[{i}] died — respawning");
+        *guard = spawn_js_thread(i);
+    }
+    guard.clone()
+}
+
+fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>) {
+    // Clean up leftover temp modules from previous runs.
+    cleanup_temp_modules();
+
     // Dedicated single-threaded Tokio runtime for this thread.
     // JsRuntime is !Send so it must stay on this exact thread.
     let tokio_rt = tokio::runtime::Builder::new_current_thread()
@@ -111,23 +143,60 @@ fn run_js_thread(mut rx: tokio::sync::mpsc::UnboundedReceiver<JsRequest>) {
         });
 
         // Load the preact SSR globals once.
-        js_rt
-            .execute_script("<preact_ssr_init>", FastString::from_static(PREACT_SSR_INIT))
-            .expect("rwe-js-runtime: preact_ssr_init failed");
+        if let Err(e) = js_rt.execute_script("<preact_ssr_init>", FastString::from_static(PREACT_SSR_INIT)) {
+            eprintln!("rwe-js-runtime[{worker_id}]: preact_ssr_init failed: {e}");
+            return;
+        }
+        if let Err(e) = js_rt.execute_script("<tool_init>", FastString::from_static(TOOL_INIT)) {
+            eprintln!("rwe-js-runtime[{worker_id}]: tool_init failed: {e}");
+            return;
+        }
 
-        // Load the Tool built-in (time, arr, stat, geo) once.
-        js_rt
-            .execute_script("<tool_init>", FastString::from_static(TOOL_INIT))
-            .expect("rwe-js-runtime: tool_init failed");
+        let mut render_count: u64 = 0;
 
-        // Process requests sequentially (one SSR at a time).
+        // Process requests sequentially (one SSR at a time per worker).
         while let Some(req) = rx.recv().await {
-            let result = match req.op {
-                JsOp::RenderSsr { source, ctx } => {
-                    do_render_ssr(&mut js_rt, &source, &ctx).await
+            // Periodic restart: spawn a replacement worker to handle this request,
+            // then exit cleanly so the pool slot is refreshed on the next request.
+            // The user never sees a RWE_RESTART error.
+            if render_count >= RESTART_AFTER_RENDERS {
+                eprintln!(
+                    "rwe-js-runtime[{worker_id}]: scheduled restart after {render_count} renders \
+                     — forwarding to fresh worker"
+                );
+                let one_shot_tx = spawn_js_thread(worker_id);
+                // Forward the request; one_shot_tx drop after this fn closes the channel
+                // once the one-shot worker has received and processed the message.
+                let _ = one_shot_tx.send(req);
+                return; // Exit current thread; pool slot respawns on next get_channel() call.
+            }
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // We need a way to run async in catch_unwind. Use block_on nested.
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(
+                        do_render_ssr(&mut js_rt, match &req.op {
+                            JsOp::RenderSsr { source, .. } => source,
+                        }, match &req.op {
+                            JsOp::RenderSsr { ctx, .. } => ctx,
+                        })
+                    )
+                })
+            }));
+
+            let result = match result {
+                Ok(r) => r,
+                Err(_panic) => {
+                    eprintln!("rwe-js-runtime[{worker_id}]: panic during render — thread will respawn");
+                    let _ = req.reply.send(Err(EngineError::new(
+                        "RWE_PANIC",
+                        "SSR render panicked — runtime will respawn",
+                    )));
+                    return; // Exit thread; get_channel() will respawn on next request.
                 }
             };
             let _ = req.reply.send(result);
+            render_count += 1;
         }
     });
 }
@@ -327,7 +396,7 @@ pub fn render_ssr(
     timeout_ms: u64,
 ) -> Result<SsrResult, EngineError> {
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-    JS_CHANNEL
+    get_channel()
         .send(JsRequest {
             op: JsOp::RenderSsr {
                 source: module_source.to_string(),
@@ -345,6 +414,15 @@ pub fn render_ssr(
     match response? {
         JsResponse::Rendered { html, page_config } => Ok(SsrResult { html, page_config }),
     }
+}
+
+/// Non-blocking check: returns true if at least one worker slot is alive.
+/// Used by the /ready health endpoint.
+pub fn is_pool_ready() -> bool {
+    let pool = &*WORKER_POOL;
+    pool.workers.iter().any(|slot| {
+        !slot.lock().unwrap_or_else(|e| e.into_inner()).is_closed()
+    })
 }
 
 /// Transpile a TSX/TSX source to plain browser JS (no JsRuntime needed).
@@ -507,6 +585,30 @@ fn strip_rwe_imports(js: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Delete `/tmp/rwe-module-*.js` files older than 5 minutes.
+/// Called at worker startup and can be triggered periodically to avoid disk exhaustion.
+pub fn cleanup_temp_modules() {
+    let tmp_dir = std::env::temp_dir();
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(300))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    if let Ok(entries) = std::fs::read_dir(&tmp_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("rwe-module-") && name_str.ends_with(".js") {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if modified < cutoff {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn write_temp_module(js: &str) -> Result<std::path::PathBuf, EngineError> {

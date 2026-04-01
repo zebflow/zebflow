@@ -22,7 +22,12 @@ Quick reference for developers — what is live, what is partial, what is a stub
 | Skills system | ✅ Done | embedded markdown, MCP exposed |
 | UI component catalog (38 components) | ✅ Done | `src/platform/catalog/ui/` |
 | RWE compiler (OXC, import resolution) | ✅ Done | `src/rwe/core/compiler.rs` |
-| RWE SSR (deno_core embedded V8) | ✅ Done | singleton thread, side module loading |
+| RWE SSR (deno_core embedded V8) | ✅ Done | worker pool (N threads), round-robin, auto-respawn |
+| RWE SSR cache | ✅ Done | 200-entry in-memory, TTL 30s, `RWE_SSR_CACHE_TTL_SECS` |
+| RWE circuit breaker | ✅ Done | per-template, opens after 3 failures, 30s cooldown |
+| Per-node pipeline timeout | ✅ Done | `tokio::time::timeout`, default 30s, `PIPELINE_NODE_TIMEOUT_SECS` |
+| Graceful SIGTERM shutdown | ✅ Done | `axum::serve.with_graceful_shutdown`, drains in-flight requests |
+| K8s health probes | ✅ Done | `GET /health` (liveness) + `GET /ready` (readiness, checks V8 pool) |
 | RWE Tailwind processor | 🚧 Partial | `dark:` / `placeholder:` / some variants unsupported — see §14 |
 | RWE SSR runtime injection | 🚧 Partial | `data-rwe-runtime` / `data-rwe-for-template` attrs not yet injected |
 | `infra/storage` | 🚧 Stub | declared in `src/infra/mod.rs`, no implementation |
@@ -81,7 +86,7 @@ src/
 ├── rwe/                 TSX compile (OXC) + SSR (deno_core) + client hydration
 │   ├── core/compiler.rs TSX parse, import resolve, bundle_for_client
 │   ├── core/render.rs   SSR render, client module bootstrap, HTML shell assembly
-│   ├── core/deno_worker.rs  singleton V8 thread (deno_core 0.390)
+│   ├── core/deno_worker.rs  V8 worker pool (deno_core 0.390), round-robin, auto-respawn
 │   └── engines/rwe.rs   RweReactiveWebEngine (implements ReactiveWebEngine trait)
 ├── automaton/           5-layer agent infrastructure (see §26) — n.ai.agent node exposed
 ├── platform/            Axum server, services, MCP, DSL shell
@@ -98,6 +103,9 @@ src/
 ## 2. HTTP Routes
 
 ```
+GET  /health                         → liveness probe (always 200 if process alive)
+GET  /ready                          → readiness probe (200 if V8 pool up, 503 otherwise)
+
 GET  /                               → redirect to /home
 GET  /login          POST /login     → login page + submit
 POST /logout

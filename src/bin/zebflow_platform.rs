@@ -7,6 +7,36 @@ use std::net::SocketAddr;
 
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
 
+/// Resolves when SIGTERM or Ctrl-C arrives, allowing axum's graceful shutdown
+/// to drain in-flight requests (max 15 s is K8s default termination grace period).
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    eprintln!("Zebflow: graceful shutdown initiated — draining in-flight requests…");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = PlatformConfig::default();
@@ -43,6 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Zebflow platform listening on http://{}", addr);
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    eprintln!("Zebflow: shutdown complete.");
     Ok(())
 }

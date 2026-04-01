@@ -176,6 +176,9 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone());
 
     let router = Router::new()
+        // Liveness/readiness probes — no auth, always fast.
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
         .route("/assets/platform/{asset}", get(platform_asset))
@@ -194,6 +197,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/assets/{owner}/{project}/{*path}", get(project_asset))
         .route("/assets/libraries/{*path}", get(library_asset))
         .route("/p/{owner}/{project}/assets/{*path}", get(project_static_asset))
+        .route("/files/{owner}/{project}/{*path}", get(project_file_serve))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -358,6 +362,18 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/templates/diagnostics",
             post(api_template_diagnostics),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/list",
+            get(api_files_list),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/mkdir",
+            post(api_files_mkdir),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/rm",
+            post(api_files_rm),
         )
         .route(
             "/api/projects/{owner}/{project}/credentials",
@@ -1022,6 +1038,25 @@ fn inject_before_body_end(html: &str, chunk: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Liveness + readiness probes (no auth required — used by K8s probes)
+// ---------------------------------------------------------------------------
+
+/// GET /health — liveness probe: always 200 if the process is alive.
+async fn health_handler() -> impl IntoResponse {
+    Json(json!({"status": "ok", "version": APP_VERSION}))
+}
+
+/// GET /ready — readiness probe: 200 if V8 worker pool is alive, 503 otherwise.
+async fn ready_handler() -> impl IntoResponse {
+    use crate::rwe::core::deno_worker;
+    if deno_worker::is_pool_ready() {
+        (StatusCode::OK, Json(json!({"status": "ready"}))).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status": "not_ready"}))).into_response()
+    }
+}
+
 async fn root_redirect() -> Redirect {
     Redirect::to(LOGIN_PATH)
 }
@@ -1419,6 +1454,66 @@ async fn project_static_asset(
     *resp.status_mut() = StatusCode::OK;
     if let Ok(v) = HeaderValue::from_str(content_type_for_path(&abs)) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    resp
+}
+
+/// Route: GET /files/{owner}/{project}/{*path}
+/// Serves files written by n.file.save from the project's files_dir.
+/// Files under `private/` require a valid session cookie.
+/// Files under `public/` are served without auth.
+async fn project_file_serve(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, path)): Path<(String, String, String)>,
+) -> Response {
+    let valid_segment = |value: &str| {
+        value.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
+    };
+    if !valid_segment(&owner) || !valid_segment(&project) {
+        return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
+    }
+
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() || normalized.contains("..") || normalized.contains('\0') {
+        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
+    }
+
+    // Files under private/ require a valid session
+    if normalized.starts_with("private/") || normalized == "private" {
+        if session_owner(&headers).is_none() {
+            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+        }
+    }
+
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(err) => return internal_error(err),
+    };
+    let files_root = &layout.files_dir;
+    let abs = files_root.join(&normalized);
+
+    // Strict containment check — prevent path traversal
+    if !abs.starts_with(files_root) {
+        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
+    }
+    if !abs.is_file() {
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    }
+
+    let bytes = match std::fs::read(&abs) {
+        Ok(b) => b,
+        Err(err) => return internal_error(PlatformError::new("PLATFORM_FILE_SERVE", err.to_string())),
+    };
+
+    let mut resp = Response::new(Body::from(bytes));
+    *resp.status_mut() = StatusCode::OK;
+    if let Ok(v) = HeaderValue::from_str(content_type_for_path(&abs)) {
+        resp.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    // No caching for dynamic upload files — content can change
+    if let Ok(v) = HeaderValue::from_str("no-cache") {
+        resp.headers_mut().insert(axum::http::header::CACHE_CONTROL, v);
     }
     resp
 }
@@ -3279,20 +3374,24 @@ async fn project_files_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    render_files_page(state, headers, owner, project, "files").await
+    let browse_path = params.get("path").cloned().unwrap_or_default();
+    render_files_page(state, headers, owner, project, "files", browse_path).await
 }
 
 async fn project_files_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, tab)): Path<(String, String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let tab = match tab.trim() {
         "s3" => "s3",
         _ => "files",
     };
-    render_files_page(state, headers, owner, project, tab).await
+    let browse_path = params.get("path").cloned().unwrap_or_default();
+    render_files_page(state, headers, owner, project, tab, browse_path).await
 }
 
 async fn render_files_page(
@@ -3301,6 +3400,7 @@ async fn render_files_page(
     owner: String,
     project: String,
     tab: &str,
+    browse_path: String,
 ) -> Response {
     if let Err(response) =
         require_project_page_capability(&state, &headers, &owner, &project, ProjectCapability::FilesRead)
@@ -3311,28 +3411,80 @@ async fn render_files_page(
         Ok(Some(info)) => {
             let nav = nav_classes(&owner, &project, "files", None);
             let route = format!("/projects/{owner}/{project}/files");
+
+            // Build file listing for the requested browse_path
+            let (folders, files, rel_path) = if tab == "files" {
+                match state.platform.file.ensure_project_layout(&owner, &project) {
+                    Ok(layout) => {
+                        let rel = sanitize_file_path(browse_path.trim().trim_start_matches('/'));
+                        let dir = if rel.is_empty() {
+                            layout.files_dir.clone()
+                        } else {
+                            layout.files_dir.join(&rel)
+                        };
+                        let protected_roots = ["public", "private"];
+                        let mut fds: Vec<serde_json::Value> = Vec::new();
+                        let mut fls: Vec<serde_json::Value> = Vec::new();
+                        if dir.is_dir() && dir.starts_with(&layout.files_dir) {
+                            if let Ok(entries) = std::fs::read_dir(&dir) {
+                                let mut entries: Vec<_> = entries.flatten().collect();
+                                entries.sort_by_key(|e| e.file_name());
+                                for entry in entries {
+                                    let name = entry.file_name().to_string_lossy().into_owned();
+                                    let entry_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                                    let is_protected = rel.is_empty() && protected_roots.contains(&name.as_str());
+                                    if entry.path().is_dir() {
+                                        fds.push(json!({
+                                            "name": name,
+                                            "path": entry_rel,
+                                            "protected": is_protected,
+                                        }));
+                                    } else {
+                                        let meta = entry.path().metadata().ok();
+                                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                                        let modified = meta.as_ref()
+                                            .and_then(|m| m.modified().ok())
+                                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                            .map(|d| d.as_secs()).unwrap_or(0);
+                                        fls.push(json!({
+                                            "name": name,
+                                            "path": entry_rel,
+                                            "size": size,
+                                            "modified": modified,
+                                            "url": format!("/files/{owner}/{project}/{entry_rel}"),
+                                        }));
+                                    }
+                                }
+                            }
+                        }
+                        (fds, fls, rel)
+                    }
+                    Err(_) => (vec![], vec![], String::new()),
+                }
+            } else {
+                (vec![], vec![], String::new())
+            };
+
             let input = json!({
                 "seo": {
                     "title": format!("{} - Files", info.title),
-                    "description": "Git-sync friendly project files and assets."
+                    "description": "Project file storage — public and private."
                 },
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
                 "project_href": format!("/projects/{owner}/{project}"),
                 "current_menu": "Files",
-                "page_title": if tab == "s3" { "Object Storage" } else { "Files" },
-                "page_subtitle": if tab == "s3" {
-                    "Connect an S3-compatible object store as the file backend for this project."
-                } else {
-                    "Git-sync friendly project files and assets."
-                },
                 "active_tab": tab,
-                "cards": if tab == "s3" { vec![] } else {
-                    vec![
-                        json!({"title":"File Browser","description":"Browse templates, scripts, and static assets."}),
-                        json!({"title":"Git Sync","description":"Track and sync project files with git repositories."}),
-                    ]
+                "api": {
+                    "list":  format!("/api/projects/{owner}/{project}/files/list"),
+                    "mkdir": format!("/api/projects/{owner}/{project}/files/mkdir"),
+                    "rm":    format!("/api/projects/{owner}/{project}/files/rm"),
+                },
+                "browser": {
+                    "path": rel_path,
+                    "folders": folders,
+                    "files": files,
                 },
                 "nav": nav,
             });
@@ -6867,7 +7019,7 @@ async fn api_template_save(
                 // until the importing page itself is also edited.
                 state
                     .template_cache
-                    .lock()
+                    .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .clear();
 
@@ -6920,7 +7072,7 @@ async fn api_template_create(
                 let _ = crate::rwe::core::prepare_template_root(&layout.repo_pipelines_dir);
                 state
                     .template_cache
-                    .lock()
+                    .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .clear();
             }
@@ -7036,6 +7188,168 @@ async fn api_template_diagnostics(
 
     let response = compile_template_buffer(&state, &layout.repo_pipelines_dir, &req);
     Json(response).into_response()
+}
+
+// ── File browser API ──────────────────────────────────────────────────────────
+
+/// GET /api/projects/{owner}/{project}/files/list?path=public/uploads
+/// Returns folders and files at a given path inside files_dir.
+async fn api_files_list(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+
+    let rel = params.get("path").map(|s| s.trim().trim_start_matches('/')).unwrap_or("").to_string();
+    let rel = sanitize_file_path(&rel);
+
+    let dir = if rel.is_empty() {
+        layout.files_dir.clone()
+    } else {
+        layout.files_dir.join(&rel)
+    };
+
+    // Security: must stay within files_dir
+    if !dir.starts_with(&layout.files_dir) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+    }
+
+    let mut folders: Vec<serde_json::Value> = Vec::new();
+    let mut files: Vec<serde_json::Value> = Vec::new();
+
+    if dir.is_dir() {
+        let protected_roots = ["public", "private"];
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let entry_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let is_protected_root = rel.is_empty() && protected_roots.contains(&name.as_str());
+                if entry.path().is_dir() {
+                    folders.push(json!({
+                        "name": name,
+                        "path": entry_rel,
+                        "protected": is_protected_root,
+                    }));
+                } else {
+                    let meta = entry.path().metadata().ok();
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let modified = meta.as_ref()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    files.push(json!({
+                        "name": name,
+                        "path": entry_rel,
+                        "size": size,
+                        "modified": modified,
+                        "url": format!("/files/{owner}/{project}/{entry_rel}"),
+                    }));
+                }
+            }
+        }
+    }
+
+    Json(json!({ "path": rel, "folders": folders, "files": files })).into_response()
+}
+
+/// POST /api/projects/{owner}/{project}/files/mkdir  { "path": "public/photos" }
+async fn api_files_mkdir(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+
+    let path_str = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().trim_start_matches('/').to_string();
+    let path_str = sanitize_file_path(&path_str);
+    if path_str.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"path is required"}))).into_response();
+    }
+
+    let abs = layout.files_dir.join(&path_str);
+    if !abs.starts_with(&layout.files_dir) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+    }
+
+    match std::fs::create_dir_all(&abs) {
+        Ok(_) => Json(json!({ "ok": true, "path": path_str })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// POST /api/projects/{owner}/{project}/files/rm  { "path": "public/uploads/abc.jpg" }
+async fn api_files_rm(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+
+    let path_str = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().trim_start_matches('/').to_string();
+    let path_str = sanitize_file_path(&path_str);
+    if path_str.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"path is required"}))).into_response();
+    }
+
+    // Protect root dirs: public/ and private/ themselves cannot be deleted
+    let protected_roots = ["public", "private"];
+    if protected_roots.contains(&path_str.as_str()) {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"cannot delete protected root folder"}))).into_response();
+    }
+
+    let abs = layout.files_dir.join(&path_str);
+    if !abs.starts_with(&layout.files_dir) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+    }
+
+    let result = if abs.is_dir() {
+        std::fs::remove_dir_all(&abs)
+    } else {
+        std::fs::remove_file(&abs)
+    };
+
+    match result {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+fn sanitize_file_path(path: &str) -> String {
+    path.split('/')
+        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 async fn api_list_credentials(
@@ -9415,6 +9729,20 @@ async fn public_webhook_ingress(
         // HTML (template mode)
         if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
             let mut html = html.to_string();
+            // Inject project styles/main.css as inline <style> so CSS vars are available.
+            if let Ok(tmpl_root) = state.platform.projects.get_project_template_root(&owner, &project) {
+                let main_css_path = tmpl_root.join("styles").join("main.css");
+                if let Ok(project_css) = std::fs::read_to_string(&main_css_path) {
+                    if !project_css.trim().is_empty() {
+                        let style_block = format!("<style data-project-theme>{project_css}</style>");
+                        if let Some(pos) = html.find("</head>") {
+                            html.insert_str(pos, &style_block);
+                        } else {
+                            html = format!("{style_block}{html}");
+                        }
+                    }
+                }
+            }
             if let Some(css) = resp_cfg
                 .get("hydration_payload")
                 .and_then(|hp| hp.get("css"))

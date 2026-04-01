@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -17,6 +17,109 @@ const TOOL_INIT: &str = include_str!("../../language/runtime/tool_init.js");
 static CLIENT_TRANSPILE_CACHE: LazyLock<Mutex<HashMap<u64, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+// ---------------------------------------------------------------------------
+// Phase 2a: SSR result cache
+// ---------------------------------------------------------------------------
+
+struct SsrCacheEntry {
+    html: String,
+    page_config: Option<Value>,
+    expires_at: Instant,
+}
+
+struct SsrCache {
+    entries: Mutex<HashMap<u64, SsrCacheEntry>>,
+}
+
+impl SsrCache {
+    fn new() -> Self {
+        Self { entries: Mutex::new(HashMap::new()) }
+    }
+
+    fn get(&self, key: u64) -> Option<(String, Option<Value>)> {
+        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.get(&key) {
+            if entry.expires_at > Instant::now() {
+                return Some((entry.html.clone(), entry.page_config.clone()));
+            }
+        }
+        guard.remove(&key);
+        None
+    }
+
+    fn insert(&self, key: u64, html: String, page_config: Option<Value>, ttl: Duration) {
+        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        // Evict expired entries first; fall back to a full clear if still over capacity.
+        if guard.len() >= 200 {
+            let now = Instant::now();
+            guard.retain(|_, v| v.expires_at > now);
+            if guard.len() >= 200 {
+                guard.clear();
+            }
+        }
+        guard.insert(key, SsrCacheEntry { html, page_config, expires_at: Instant::now() + ttl });
+    }
+}
+
+static SSR_CACHE: LazyLock<SsrCache> = LazyLock::new(SsrCache::new);
+
+// ---------------------------------------------------------------------------
+// Phase 2b: Circuit breaker per template
+// ---------------------------------------------------------------------------
+
+struct CircuitState {
+    failures: u32,
+    open_until: Option<Instant>,
+}
+
+static CIRCUIT: LazyLock<Mutex<HashMap<String, CircuitState>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
+const CIRCUIT_OPEN_SECS: u64 = 30;
+
+/// Check if the circuit is open (i.e. this template is failing fast).
+/// Returns Some(error_message) if the circuit is open, None if safe to proceed.
+fn circuit_check(template_id: &str) -> Option<String> {
+    let guard = CIRCUIT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = guard.get(template_id) {
+        if let Some(open_until) = state.open_until {
+            if Instant::now() < open_until {
+                return Some(format!(
+                    "template '{template_id}' circuit breaker open — render skipped for {}s",
+                    CIRCUIT_OPEN_SECS,
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// Record a render failure for a template; open the circuit after the threshold.
+fn circuit_record_failure(template_id: &str) {
+    let mut guard = CIRCUIT.lock().unwrap_or_else(|e| e.into_inner());
+    let state = guard.entry(template_id.to_string()).or_insert(CircuitState {
+        failures: 0,
+        open_until: None,
+    });
+    state.failures += 1;
+    if state.failures >= CIRCUIT_FAILURE_THRESHOLD {
+        let open_until = Instant::now() + Duration::from_secs(CIRCUIT_OPEN_SECS);
+        eprintln!(
+            "rwe: circuit breaker OPEN for '{}' after {} failures — cooling down for {}s",
+            template_id, state.failures, CIRCUIT_OPEN_SECS,
+        );
+        state.open_until = Some(open_until);
+        state.failures = 0; // reset counter so next window starts fresh
+    }
+}
+
+/// Record a successful render — reset the failure counter and close the circuit.
+fn circuit_record_success(template_id: &str) {
+    let mut guard = CIRCUIT.lock().unwrap_or_else(|e| e.into_inner());
+    guard.remove(template_id);
+}
+
 pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
     let _ = transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let _ = deno_worker::render_ssr(&compiled.server_module_source, &json!({}), compiled.deno_timeout_ms)?;
@@ -25,14 +128,51 @@ pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
 
 pub fn render(compiled: &CompiledTemplate, vars: &Value, enabled_libraries: &[String]) -> Result<RenderOutput, EngineError> {
     let started = Instant::now();
-    let ssr = deno_worker::render_ssr(
-        &compiled.server_module_source,
-        vars,
-        compiled.deno_timeout_ms,
-    )?;
-    // Scan original source for zeb/* imports BEFORE stripping so the preamble
-    // can be injected into the outer script even though the inner bundle strips them.
-    let zeb_preamble = build_zeb_preamble(&compiled.client_module_source, enabled_libraries);
+
+    // Template ID for circuit breaker and cache key derivation.
+    let template_id = compiled.source_path.as_deref().unwrap_or("unknown");
+
+    // Phase 2b: Check circuit breaker before touching V8.
+    if let Some(cb_msg) = circuit_check(template_id) {
+        return Err(EngineError::new("RWE_CIRCUIT_OPEN", cb_msg));
+    }
+
+    // Phase 2a: Check SSR cache.
+    let ssr_cache_ttl_secs = std::env::var("RWE_SSR_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(30);
+    let vars_json = serde_json::to_string(vars).unwrap_or_default();
+    let ssr_cache_key = stable_hash_u64(&compiled.server_module_source)
+        ^ stable_hash_u64(&vars_json);
+
+    let ssr = if let Some((cached_html, cached_config)) = SSR_CACHE.get(ssr_cache_key) {
+        deno_worker::SsrResult { html: cached_html, page_config: cached_config }
+    } else {
+        match deno_worker::render_ssr(
+            &compiled.server_module_source,
+            vars,
+            compiled.deno_timeout_ms,
+        ) {
+            Ok(result) => {
+                // Cache the successful result.
+                SSR_CACHE.insert(
+                    ssr_cache_key,
+                    result.html.clone(),
+                    result.page_config.clone(),
+                    Duration::from_secs(ssr_cache_ttl_secs),
+                );
+                circuit_record_success(template_id);
+                result
+            }
+            Err(e) => {
+                circuit_record_failure(template_id);
+                return Err(e);
+            }
+        }
+    };
+    // Use detected_zeb_libs collected at compile time (includes libs from all inlined components).
+    let zeb_preamble = build_zeb_preamble(&compiled.detected_zeb_libs, enabled_libraries);
     let transpiled_client =
         transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
     let ssr_ms = started.elapsed().as_millis();
@@ -95,81 +235,32 @@ fn strip_rwe_client_imports(source: &str) -> String {
         .join("\n")
 }
 
-/// Scan source for `import { … } from "zeb/<name>"` lines and return the
-/// unique library specifiers used (e.g. `["zeb/threejs"]`).
-fn collect_zeb_libraries(source: &str) -> Vec<String> {
-    // Join multi-line import statements into single logical lines before scanning.
-    let logical = join_import_lines(source);
-    let mut libs: Vec<String> = Vec::new();
-    for line in logical.lines() {
-        let t = line.trim();
-        if !t.starts_with("import ") {
-            continue;
-        }
-        for quote in ['"', '\''] {
-            let marker = format!("from {quote}zeb/");
-            if t.contains(&marker) {
-                let after_from = format!("from {quote}");
-                if let Some(pos) = t.rfind(&after_from) {
-                    let rest = &t[pos + after_from.len()..];
-                    let end = rest.find(quote).unwrap_or(rest.len());
-                    let lib = rest[..end].to_string();
-                    if !libs.contains(&lib) {
-                        libs.push(lib);
-                    }
-                }
-                break;
-            }
-        }
-    }
-    libs
-}
 
 /// Collapse multi-line `import { … } from "…"` statements into a single line each.
-///
-/// ES import declarations can span multiple lines:
-/// ```text
-/// import {
-///   WebGLRenderer,
-///   Scene,
-/// } from "zeb/threejs";
-/// ```
-/// Line-by-line scanners miss the `from "zeb/threejs"` part because it appears
-/// on a line that does not start with `import`. This function joins continuation
-/// lines (those between `import {` and the closing `} from "…"`) into one line
-/// so that the scanners see a complete `import { … } from "…"` statement.
 fn join_import_lines(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut buf: Option<String> = None;
-
     for line in source.lines() {
         let t = line.trim();
-
         if let Some(ref mut acc) = buf {
-            // Inside a multi-line import — append stripped content.
             acc.push(' ');
             acc.push_str(t);
-            // The closing `} from "…"` ends the declaration.
             if t.contains("from \"") || t.contains("from '") {
                 out.push_str(acc);
                 out.push('\n');
                 buf = None;
             }
         } else if t.starts_with("import ") && t.contains('{') && !t.contains("from ") {
-            // Opening of a multi-line import: `import {` with no `from` yet.
             buf = Some(t.to_string());
         } else {
             out.push_str(line);
             out.push('\n');
         }
     }
-
-    // Flush any unclosed buffer (shouldn't happen in valid source, but be safe).
     if let Some(acc) = buf {
         out.push_str(&acc);
         out.push('\n');
     }
-
     out
 }
 
@@ -198,8 +289,8 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
 /// imports like `/assets/libraries/…` resolve correctly. The inner user
 /// bundle (loaded as a `data:` URL) then just uses the symbols as globals —
 /// its `import { … } from "zeb/*"` lines are stripped by `strip_rwe_client_imports`.
-fn build_zeb_preamble(source: &str, enabled_libraries: &[String]) -> String {
-    let libs = collect_zeb_libraries(source);
+fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) -> String {
+    let libs = detected_libs;
     if libs.is_empty() {
         return String::new();
     }
@@ -209,7 +300,7 @@ fn build_zeb_preamble(source: &str, enabled_libraries: &[String]) -> String {
     // Dynamic imports run in-order during script body execution, after the preact
     // globals have been installed above.
     let mut out = String::new();
-    for lib in &libs {
+    for lib in libs {
         // Non-empty enabled list = strict mode: skip unlisted libraries.
         if !enabled_libraries.is_empty() && !enabled_libraries.contains(lib) {
             continue;
