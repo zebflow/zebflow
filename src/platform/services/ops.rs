@@ -56,30 +56,44 @@ impl PlatformOps {
         let project = &self.project;
         let mut out = String::new();
 
-        // ── Overview ──────────────────────────────────────────────────────────
+        // ── Header ────────────────────────────────────────────────────────────
         out.push_str(&format!(
-            "# Overview\n\
-             Zebflow is a pipeline-based platform: HTTP/WS/schedule triggers chain through\n\
-             nodes (query, script, AI, render) to produce APIs, pages, automations, and\n\
-             real-time systems — all authored as .zf.json pipelines + TSX templates.\n\n\
-             → Project current state:  ## The Project\n\
-             → Platform how-to:        ## Zebflow Docs\n\n\
-             Webhook URL pattern: `/wh/{owner}/{project}{{path}}`\n"
+            "# Project: {owner}/{project}\n\
+             Zebflow: pipeline triggers → nodes → APIs / pages / automations.\n\
+             Webhook base: `/wh/{owner}/{project}{{path}}`\n"
         ));
 
-        // ── The Project ───────────────────────────────────────────────────────
-        out.push_str(&format!("\n---\n\n## The Project: {owner}/{project}\n"));
-
-        // AGENTS.md
-        out.push_str("\n### AGENTS.md\n");
+        // ── AGENTS.md — project rules for this agent ──────────────────────────
+        out.push_str("\n---\n\n## Instructions (AGENTS.md)\n");
         match self.platform.projects.read_agent_doc(owner, project, "AGENTS.md") {
             Ok(content) => out.push_str(&content),
-            Err(_) => out.push_str("(not found — create one to set project rules for all agents)"),
+            Err(_) => out.push_str("(none — create with `docs_agent_write name=\"AGENTS.md\" content=...`)"),
         }
 
-        // Docs
-        out.push_str("\n\n### Docs  [repo/docs/]\n");
-        out.push_str("Read before building. Update as the project evolves.\n\n");
+        // ── SOUL.md — personality / tone (only if customised) ─────────────────
+        if let Ok(soul) = self.platform.projects.read_agent_doc(owner, project, "SOUL.md") {
+            if !soul.trim_start().starts_with("# Soul\n\nDescribe the assistant") && soul.len() > 60 {
+                out.push_str("\n\n## Personality (SOUL.md)\n");
+                out.push_str(&soul);
+            }
+        }
+
+        // ── MEMORY.md — inline so agent starts with full context ──────────────
+        out.push_str("\n\n## Memory (MEMORY.md)\n");
+        match self.platform.projects.read_agent_doc(owner, project, "MEMORY.md") {
+            Ok(mem) => {
+                let is_default = mem.contains("_(This file is managed by the assistant.") && mem.len() < 300;
+                if is_default {
+                    out.push_str("(empty — write discoveries here: `docs_agent_write name=\"MEMORY.md\" content=...`)");
+                } else {
+                    out.push_str(&mem);
+                }
+            }
+            Err(_) => out.push_str("(none)"),
+        }
+
+        // ── Docs — read before building ───────────────────────────────────────
+        out.push_str("\n\n---\n\n## Docs  [repo/docs/]  ← READ BEFORE BUILDING\n");
         match self.platform.projects.list_project_docs(owner, project) {
             Ok(docs) if !docs.is_empty() => {
                 for d in &docs {
@@ -87,57 +101,55 @@ impl PlatformOps {
                 }
             }
             Ok(_) => {
-                out.push_str(
-                    "(none yet)\n\
-                     Interview the user first — what to build, DB schema, first pages/endpoints, auth needs?\n\
-                     Then write: `docs_project_write path=\"REQUIREMENTS.md\" content=...`"
-                );
+                out.push_str("(none — interview the user: what to build, DB schema, auth needs?)\n");
+                out.push_str("Then: `docs_project_write path=\"REQUIREMENTS.md\" content=...`\n");
             }
-            Err(e) => out.push_str(&format!("(error: {e})")),
+            Err(e) => out.push_str(&format!("(error: {e})\n")),
         }
+
+        // ── State ─────────────────────────────────────────────────────────────
+        out.push_str("\n---\n\n## State\n");
 
         // Pipelines
-        out.push_str("\n\n### Pipelines\n");
         match self.platform.projects.list_pipeline_meta_rows(owner, project) {
-            Ok(pipelines) if !pipelines.is_empty() => {
-                let active = pipelines.iter().filter(|p| p.active_hash.is_some()).count();
-                let draft = pipelines.len() - active;
-                out.push_str(&format!("[{active} active, {draft} draft]\n\n"));
-                for p in &pipelines {
-                    out.push_str(&format!(
-                        "  {} [{}] → `pipeline_describe file_rel_path=\"{}\"`\n",
-                        p.file_rel_path,
-                        if p.active_hash.is_some() { "active" } else { "draft" },
-                        p.file_rel_path
-                    ));
+            Ok(ps) if !ps.is_empty() => {
+                let active = ps.iter().filter(|p| p.active_hash.is_some()).count();
+                let draft = ps.len() - active;
+                out.push_str(&format!("\n### Pipelines [{active} active, {draft} draft]\n"));
+                for p in &ps {
+                    let status = if p.active_hash.is_some() { "active" } else { "draft" };
+                    let trigger = if !p.trigger_kind.is_empty() {
+                        format!(" | {}", p.trigger_kind)
+                    } else {
+                        String::new()
+                    };
+                    out.push_str(&format!("  {} [{status}{trigger}]\n", p.file_rel_path));
                 }
+                out.push_str("  → `pipeline_describe file_rel_path=\"...\"` for full graph + node IDs\n");
             }
-            Ok(_) => out.push_str("(none yet — use `pipeline_register` to create one)\n"),
-            Err(e) => out.push_str(&format!("(error: {e})\n")),
+            Ok(_) => out.push_str("\n### Pipelines\n  (none — use `pipeline_register` to create)\n"),
+            Err(e) => out.push_str(&format!("\n### Pipelines\n  (error: {e})\n")),
         }
 
-        // Templates
-        out.push_str("\n### Templates  [repo/templates/]\n");
+        // Templates — with type hints
         match self.platform.projects.list_template_workspace(owner, project) {
             Ok(workspace) => {
-                let files: Vec<_> = workspace.items.iter()
-                    .filter(|i| i.kind == "file")
-                    .collect();
+                let files: Vec<_> = workspace.items.iter().filter(|i| i.kind == "file").collect();
+                out.push_str(&format!("\n### Templates [{} files]\n", files.len()));
                 if files.is_empty() {
-                    out.push_str("(none yet — use `template_create` to scaffold)\n");
+                    out.push_str("  (none — use `template_create` to scaffold)\n");
                 } else {
-                    for item in files.iter().take(30) {
-                        out.push_str(&format!(
-                            "  {} → `template_get rel_path=\"{}\"`\n",
-                            item.rel_path, item.rel_path
-                        ));
+                    for item in files.iter().take(40) {
+                        let tag = template_type_tag(&item.rel_path);
+                        out.push_str(&format!("  [{}] {}\n", tag, item.rel_path));
                     }
-                    if files.len() > 30 {
-                        out.push_str(&format!("  ... ({} more)\n", files.len() - 30));
+                    if files.len() > 40 {
+                        out.push_str(&format!("  ... ({} more)\n", files.len() - 40));
                     }
+                    out.push_str("  → `template_get rel_path=\"...\"` to read\n");
                 }
             }
-            Err(e) => out.push_str(&format!("(error: {e})\n")),
+            Err(e) => out.push_str(&format!("\n### Templates\n  (error: {e})\n")),
         }
 
         // Connections & Credentials
@@ -151,66 +163,43 @@ impl PlatformOps {
                     ));
                 }
             }
-            Ok(_) => out.push_str("  Connections: (none — add via UI Settings → Connections)\n"),
-            Err(e) => out.push_str(&format!("  Connections: (error: {e})\n")),
+            Ok(_) => out.push_str("  (none — add via UI Settings → Connections)\n"),
+            Err(e) => out.push_str(&format!("  (error: {e})\n")),
         }
-        out.push_str("  Sekejap (embedded DB, always available) — `help(\"db/sekejap\")`\n");
+        out.push_str("  sekejap (embedded, always available) → `help(\"db/sekejap\")`\n");
         match self.platform.credentials.list_project_credentials(owner, project) {
             Ok(items) if !items.is_empty() => {
-                out.push_str("  Credentials: ");
                 let creds: Vec<String> = items.iter().map(|c| format!("{} ({})", c.title, c.kind)).collect();
-                out.push_str(&creds.join(", "));
-                out.push('\n');
+                out.push_str(&format!("  Credentials: {}\n", creds.join(", ")));
             }
             Ok(_) => out.push_str("  Credentials: (none)\n"),
             Err(_) => {}
         }
 
-        // ── Zebflow Docs ──────────────────────────────────────────────────────
-        out.push_str("\n---\n\n## Zebflow Docs\n");
-
-        // Pipeline Examples — auto from HELP array
-        out.push_str("\n### Pipeline Examples\n");
-        out.push_str("Full DSL recipe: `help(\"pipeline/examples/<slug>\")`\n\n");
-        let examples: Vec<_> = crate::platform::help::HELP
-            .iter()
-            .filter(|n| n.path.starts_with("pipeline/examples/"))
-            .collect();
-        if examples.is_empty() {
-            out.push_str("(none)\n");
-        } else {
-            for ex in &examples {
-                let slug = ex.path.trim_start_matches("pipeline/examples/");
-                out.push_str(&format!("  {:<32} — {}\n", slug, ex.excerpt));
+        // ── Recent Activity ───────────────────────────────────────────────────
+        let git = self.git_command("log", Some("--oneline -8"), None).await;
+        if !git.text.starts_with("Error") && !git.text.trim().is_empty() {
+            out.push_str("\n---\n\n## Recent Activity (git log)\n");
+            for line in git.text.lines().take(8) {
+                out.push_str(&format!("  {line}\n"));
             }
         }
 
-        // Built-in Nodes — auto from definitions
-        let node_defs = crate::pipeline::nodes::builtin_node_definitions();
-        out.push_str(&format!("\n### Built-in Nodes  ({} total)\n", node_defs.len()));
-        out.push_str("Full flags + schema: `help(\"pipeline/nodes/<kind>\")`\n\n");
-        for d in &node_defs {
-            out.push_str(&format!("  {:<28} — {}\n", d.kind, d.title));
-        }
-
-        // Reference
-        out.push_str(
-            "\n### Reference\n\
-             `help()`                       — full docs index\n\
-             `help(\"pipeline/dsl\")`          — DSL syntax\n\
-             `help(\"pipeline/nodes\")`        — all nodes with every flag\n\
-             `help(\"web\")`                   — TSX templates\n\
-             `help_search(\"query\")`          — search all docs + nodes\n"
-        );
-
-        // ── Agent Memory ──────────────────────────────────────────────────────
-        out.push_str(
-            "\n---\n\n## Agent Memory\n\
-             `docs_agent_read name=MEMORY.md`                      — read notes from previous sessions\n\
-             `docs_agent_write name=MEMORY.md content=<notes>`     — save what you discover\n\n\
-             Save: schema decisions, patterns that work, project-specific discoveries, user preferences.\n\
-             Update at end of every session.\n"
-        );
+        // ── Platform reference (compact) ──────────────────────────────────────
+        let node_count = crate::pipeline::nodes::builtin_node_definitions().len();
+        let example_count = crate::platform::help::HELP
+            .iter()
+            .filter(|n| n.path.starts_with("pipeline/examples/"))
+            .count();
+        out.push_str(&format!(
+            "\n---\n\n## Platform\n\
+             Nodes ({node_count} built-in): `help(\"pipeline/nodes\")` — full catalog with every flag\n\
+             DSL syntax:                   `help(\"pipeline/dsl\")`\n\
+             TSX templates:                `help(\"web\")`\n\
+             Examples ({example_count}):              `help(\"pipeline/examples\")` — ready-to-use DSL recipes\n\
+             Search anything:              `help_search(\"query\")`\n\
+             Save discoveries:             `docs_agent_write name=\"MEMORY.md\" content=...`\n"
+        ));
 
         OpsResult::ok(out)
     }
@@ -728,6 +717,16 @@ impl PlatformOps {
 
         OpsResult::ok(format!("Moved template {} → {}", from_path, to_path))
     }
+}
+
+/// Single-letter type tag for a template file based on its path prefix.
+/// P=page, C=component, L=layout, S=script/behavior, F=other file.
+fn template_type_tag(rel_path: &str) -> &'static str {
+    if rel_path.starts_with("pages/") { "P" }
+    else if rel_path.starts_with("components/") { "C" }
+    else if rel_path.starts_with("layout/") { "L" }
+    else if rel_path.starts_with("scripts/") || rel_path.starts_with("behavior/") { "S" }
+    else { "F" }
 }
 
 /// Returns true if the path looks like a pipeline file.

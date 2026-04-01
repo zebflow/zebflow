@@ -15,6 +15,20 @@ use super::security;
 const JSX_PRELUDE: &str = "/** @jsxImportSource npm:preact */\n";
 
 pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate, EngineError> {
+    // Wrap in catch_unwind — OXC parser can panic on pathological inputs.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compile_inner(source, options)
+    }));
+    match result {
+        Ok(r) => r,
+        Err(_) => {
+            let _ = std::fs::write("/tmp/rwe-parse-failed.tsx", source);
+            Err(EngineError::new("RWE_PARSE_PANIC", "oxc compiler panicked — source written to /tmp/rwe-parse-failed.tsx"))
+        }
+    }
+}
+
+fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTemplate, EngineError> {
     let alloc = Allocator::default();
     let source_type = source_type_from_options(&options);
     let parsed = Parser::new(&alloc, source, source_type).parse();
@@ -52,9 +66,9 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let bundled_server = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_server, _) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
-    let bundled_client = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_client, detected_zeb_libs) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let hydrate_mode = detect_hydrate_mode(source);
 
@@ -69,6 +83,7 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
         diagnostics,
         hydrate_mode,
         compile_options: options,
+        detected_zeb_libs,
     })
 }
 
@@ -197,7 +212,7 @@ fn rewrite_imports(
     let mut out = Vec::new();
 
     for import in imports {
-        if import == "zeb" {
+        if import == "zeb" || import.starts_with("zeb/") {
             continue;
         }
 
@@ -423,26 +438,25 @@ fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
     template_root: Option<&str>,
-) -> Result<String, EngineError> {
+) -> Result<(String, Vec<String>), EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
     let mut counter: usize = 0;
     let mut rwe_names: HashSet<String> = HashSet::new();
+    let mut zeb_libs: HashSet<String> = HashSet::new();
 
-    // Collect rwe imports from the main page itself
+    // Collect rwe + zeb imports from the main page itself
     rwe_names.extend(extract_rwe_import_names(page_source));
+    zeb_libs.extend(extract_zeb_lib_specifiers(page_source));
 
     // Depth-first: inline all filesystem imports from the page.
-    // The resolved path is preferred, but when files on disk are already rewritten
-    // with absolute paths (by prepare_template_root), edge.source IS the absolute
-    // path and edge.resolved is None — so fall back to edge.source.
     for edge in imports {
         let path = edge
             .resolved
             .as_deref()
             .unwrap_or(&edge.source);
         if path.starts_with('/') && !is_rwe_runtime_path(path) {
-            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names, template_root)?;
+            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names, &mut zeb_libs, template_root)?;
         }
     }
 
@@ -455,7 +469,9 @@ fn bundle_for_client(
         result.push('\n');
     }
     result.push_str(&clean_main);
-    Ok(result)
+    let mut libs: Vec<String> = zeb_libs.into_iter().collect();
+    libs.sort();
+    Ok((result, libs))
 }
 
 fn collect_inlined_module(
@@ -464,6 +480,7 @@ fn collect_inlined_module(
     visited: &mut HashSet<String>,
     counter: &mut usize,
     rwe_names: &mut HashSet<String>,
+    zeb_libs: &mut HashSet<String>,
     template_root: Option<&str>,
 ) -> Result<(), EngineError> {
     if visited.contains(path) {
@@ -490,14 +507,18 @@ fn collect_inlined_module(
         raw
     };
 
-    // Collect rwe imports from this file before stripping them
+    // Collect rwe + zeb imports from this file before stripping them
     rwe_names.extend(extract_rwe_import_names(&content));
+    zeb_libs.extend(extract_zeb_lib_specifiers(&content));
 
     // Recursively inline this file's own filesystem imports first (depth-first)
     let sub_paths = extract_filesystem_import_paths(&content);
     for sub_path in &sub_paths {
-        collect_inlined_module(sub_path, parts, visited, counter, rwe_names, template_root)?;
+        collect_inlined_module(sub_path, parts, visited, counter, rwe_names, zeb_libs, template_root)?;
     }
+
+    // Collect exported names BEFORE localize_exports strips the export keywords.
+    let exported = collect_top_level_exported_names(&content);
 
     // Strip import lines on original content (import paths must be visible to the filter).
     let stripped = strip_local_imports(&content);
@@ -511,11 +532,11 @@ fn collect_inlined_module(
     // Localize exports: "export default function X" → "function X" etc.
     let localized = localize_exports(&masked);
 
-    // Auto-prefix module-scope UPPER_SNAKE_CASE constants to avoid name collisions
+    // Auto-prefix all module-scope non-exported declarations to avoid name collisions
     // in the flat inlined bundle.
     let prefix = format!("__c{counter}_");
     *counter += 1;
-    let prefixed = prefix_module_locals(&localized, &prefix);
+    let prefixed = prefix_module_locals(&localized, &prefix, &exported);
 
     // Restore original string contents.
     let processed = super::js_masker::unmask(&prefixed, &masks);
@@ -524,33 +545,166 @@ fn collect_inlined_module(
     Ok(())
 }
 
-/// Auto-prefix all module-scope UPPER_SNAKE_CASE constants in a component
-/// with a unique per-component prefix so they don't collide when inlined
-/// into a single flat bundle. Developers write clean code; the bundler
-/// owns the scoping.
-fn prefix_module_locals(source: &str, prefix: &str) -> String {
-    // Collect UPPER_SNAKE_CASE names from top-level const/let/var declarations.
-    let local_names: Vec<String> = source
-        .lines()
-        .filter_map(|line| {
-            let t = line.trim();
-            for kw in &["const ", "let ", "var "] {
-                if let Some(rest) = t.strip_prefix(kw) {
-                    let name: String = rest
-                        .chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect();
-                    if !name.is_empty()
-                        && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-                        && name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
-                    {
-                        return Some(name);
+/// Collect all top-level exported binding names from a module source (before export stripping).
+/// These names must NOT be prefixed — other files import them by exact name.
+fn collect_top_level_exported_names(source: &str) -> HashSet<String> {
+    use oxc_ast::ast::{Declaration, ExportDefaultDeclarationKind, ModuleExportName};
+
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return HashSet::new();
+    }
+
+    let mut exported: HashSet<String> = HashSet::new();
+
+    for stmt in &parsed.program.body {
+        match stmt {
+            Statement::ExportNamedDeclaration(ed) => {
+                // `export function Foo`, `export const X`, `export class Bar`
+                if let Some(decl) = &ed.declaration {
+                    match decl {
+                        Declaration::FunctionDeclaration(f) => {
+                            if let Some(id) = &f.id {
+                                exported.insert(id.name.as_str().to_string());
+                            }
+                        }
+                        Declaration::ClassDeclaration(c) => {
+                            if let Some(id) = &c.id {
+                                exported.insert(id.name.as_str().to_string());
+                            }
+                        }
+                        Declaration::VariableDeclaration(vd) => {
+                            for d in &vd.declarations {
+                                if let Some(name) = binding_ident_name(&d.id) {
+                                    exported.insert(name);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // `export { foo, bar as baz }` — the exported name is `bar`/`baz`
+                for spec in &ed.specifiers {
+                    let name = match &spec.exported {
+                        ModuleExportName::IdentifierName(n) => n.name.as_str().to_string(),
+                        ModuleExportName::IdentifierReference(r) => r.name.as_str().to_string(),
+                        ModuleExportName::StringLiteral(s) => s.value.as_str().to_string(),
+                    };
+                    exported.insert(name);
+                }
+            }
+            Statement::ExportDefaultDeclaration(edd) => {
+                match &edd.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                        if let Some(id) = &f.id {
+                            exported.insert(id.name.as_str().to_string());
+                        }
+                    }
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                        if let Some(id) = &c.id {
+                            exported.insert(id.name.as_str().to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    exported
+}
+
+/// Get the simple identifier name from a binding pattern, or `None` for destructuring patterns.
+fn binding_ident_name(pattern: &oxc_ast::ast::BindingPattern) -> Option<String> {
+    if let oxc_ast::ast::BindingPattern::BindingIdentifier(id) = pattern {
+        Some(id.name.as_str().to_string())
+    } else {
+        None
+    }
+}
+
+/// Auto-prefix all module-scope non-exported declarations with a unique per-component
+/// prefix so they don't collide when inlined into a flat bundle.
+/// Uses OXC AST — catches all declaration forms, not just UPPER_SNAKE_CASE.
+fn prefix_module_locals(source: &str, prefix: &str, exported: &HashSet<String>) -> String {
+    use oxc_ast::ast::Declaration;
+
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return source.to_string();
+    }
+
+    let mut local_names: Vec<String> = Vec::new();
+
+    for stmt in &parsed.program.body {
+        match stmt {
+            Statement::FunctionDeclaration(f) => {
+                if let Some(id) = &f.id {
+                    let name = id.name.as_str().to_string();
+                    if !exported.contains(&name) {
+                        local_names.push(name);
                     }
                 }
             }
-            None
-        })
-        .collect();
+            Statement::ClassDeclaration(c) => {
+                if let Some(id) = &c.id {
+                    let name = id.name.as_str().to_string();
+                    if !exported.contains(&name) {
+                        local_names.push(name);
+                    }
+                }
+            }
+            Statement::VariableDeclaration(vd) => {
+                for d in &vd.declarations {
+                    if let Some(name) = binding_ident_name(&d.id) {
+                        if !exported.contains(&name) {
+                            local_names.push(name);
+                        }
+                    }
+                }
+            }
+            // ExportNamedDeclaration/ExportDefaultDeclaration appear here when localize_exports
+            // leaves a remnant (shouldn't happen, but be safe).
+            Statement::ExportNamedDeclaration(ed) => {
+                if let Some(decl) = &ed.declaration {
+                    match decl {
+                        Declaration::FunctionDeclaration(f) => {
+                            if let Some(id) = &f.id {
+                                let name = id.name.as_str().to_string();
+                                if !exported.contains(&name) { local_names.push(name); }
+                            }
+                        }
+                        Declaration::ClassDeclaration(c) => {
+                            if let Some(id) = &c.id {
+                                let name = id.name.as_str().to_string();
+                                if !exported.contains(&name) { local_names.push(name); }
+                            }
+                        }
+                        Declaration::VariableDeclaration(vd) => {
+                            for d in &vd.declarations {
+                                if let Some(name) = binding_ident_name(&d.id) {
+                                    if !exported.contains(&name) { local_names.push(name); }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     if local_names.is_empty() {
         return source.to_string();
@@ -624,7 +778,7 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            if specifier == "zeb" {
+            if specifier == "zeb" || specifier.starts_with("zeb/") {
                 if let Some(ref specifiers) = import.specifiers {
                     for s in specifiers {
                         match s {
@@ -642,6 +796,32 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
         }
     }
     names
+}
+
+/// Extract all `zeb/*` library specifiers (e.g. `"zeb/use"`, `"zeb/icons"`) from import declarations.
+fn extract_zeb_lib_specifiers(source: &str) -> Vec<String> {
+    let alloc = Allocator::default();
+    let source_type = SourceType::default()
+        .with_module(true)
+        .with_jsx(true)
+        .with_typescript(true);
+    let parsed = Parser::new(&alloc, source, source_type).parse();
+    if parsed.panicked {
+        return Vec::new();
+    }
+    let mut libs = Vec::new();
+    for stmt in &parsed.program.body {
+        if let Statement::ImportDeclaration(import) = stmt {
+            let specifier = import.source.value.as_str();
+            if specifier.starts_with("zeb/") {
+                let s = specifier.to_string();
+                if !libs.contains(&s) {
+                    libs.push(s);
+                }
+            }
+        }
+    }
+    libs
 }
 
 /// Extract absolute filesystem paths from import declarations using OXC AST.
@@ -693,6 +873,7 @@ fn strip_local_imports(source: &str) -> String {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
             let should_strip = specifier == "zeb"
+                || specifier.starts_with("zeb/")
                 || specifier.starts_with('/');
             if should_strip {
                 let start = import.span.start as usize;
