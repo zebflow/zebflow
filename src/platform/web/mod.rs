@@ -177,6 +177,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         // Liveness/readiness probes — no auth, always fast.
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
+        // OAuth discovery endpoints (RFC 9728 / MCP 2025-03-26 spec) — no auth required.
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource_handler),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth_authorization_server_handler),
+        )
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
         .route("/assets/platform/{asset}", get(platform_asset))
@@ -1041,6 +1050,46 @@ async fn ready_handler() -> impl IntoResponse {
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status": "not_ready"}))).into_response()
     }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth discovery endpoints (RFC 9728 / MCP 2025-03-26 spec)
+// No auth required — these are public discovery documents.
+// ---------------------------------------------------------------------------
+
+/// GET /.well-known/oauth-protected-resource
+async fn oauth_protected_resource_handler(headers: HeaderMap) -> impl IntoResponse {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
+        "http"
+    } else {
+        "https"
+    };
+    Json(json!({
+        "resource": format!("{}://{}", scheme, host),
+        "bearer_methods_supported": ["header"]
+    }))
+}
+
+/// GET /.well-known/oauth-authorization-server
+async fn oauth_authorization_server_handler(headers: HeaderMap) -> impl IntoResponse {
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
+        "http"
+    } else {
+        "https"
+    };
+    Json(json!({
+        "issuer": format!("{}://{}", scheme, host),
+        "token_endpoint": format!("{}://{}/api/mcp/token", scheme, host),
+        "response_types_supported": ["token"]
+    }))
 }
 
 async fn root_redirect() -> Redirect {
@@ -6984,10 +7033,6 @@ async fn api_template_save(
                 .file
                 .ensure_project_layout(&owner_slug, &project_slug)
             {
-                // Re-run import rewriting so any @/ imports in the saved file and its
-                // neighbours get resolved to absolute paths. This is idempotent.
-                let _ = crate::rwe::core::prepare_template_root(&layout.repo_pipelines_dir);
-
                 // Invalidate the compiled template cache. The cache key is a hash of
                 // the page markup only — it does NOT include imported component content.
                 // Without clearing here, editing a component file would not take effect
@@ -7037,20 +7082,11 @@ async fn api_template_create(
         .create_template_entry(&owner, &project, &req)
     {
         Ok(file) => {
-            let owner_slug = crate::platform::model::slug_segment(&owner);
-            let project_slug = crate::platform::model::slug_segment(&project);
-            if let Ok(layout) = state
-                .platform
-                .file
-                .ensure_project_layout(&owner_slug, &project_slug)
-            {
-                let _ = crate::rwe::core::prepare_template_root(&layout.repo_pipelines_dir);
-                state
-                    .template_cache
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
-            }
+            state
+                .template_cache
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             Json(file).into_response()
         }
         Err(err) => internal_error(err),
