@@ -494,6 +494,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/install/ui",
             post(api_install_ui_components),
         )
+        .route(
+            "/api/projects/{owner}/{project}/reindex",
+            post(api_reindex_project),
+        )
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
@@ -3646,6 +3650,7 @@ async fn render_settings_tab_page(
                     "settings_api": format!("/api/projects/{owner}/{project}/settings/assets"),
                     "config": zebflow_cfg.assets
                 },
+                "reindex_api": format!("/api/projects/{owner}/{project}/reindex"),
                 "mcp": {
                     "active": mcp_session.is_some(),
                     "status_label": if mcp_session.is_some() { "active" } else { "inactive" },
@@ -10863,6 +10868,87 @@ async fn api_install_ui_components(
         Ok(report) => Json(json!({ "ok": true, "report": report })).into_response(),
         Err(e) => Json(json!({ "ok": false, "error": e })).into_response(),
     }
+}
+
+/// `POST /api/projects/{owner}/{project}/reindex` — scan repo files on disk and re-register
+/// them into the catalog. Useful after a catalog DB wipe or crash recovery where `repo/`
+/// files survive but their metadata rows are lost.
+///
+/// Returns `{ ok, pipelines, templates, assets, errors }`.
+async fn api_reindex_project(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+    ) {
+        return r;
+    }
+
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+
+    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+
+    let repo_root = layout.repo_pipelines_dir.clone();
+    let mut pipelines_indexed: usize = 0;
+    let mut templates_indexed: usize = 0;
+    let mut assets_indexed: usize = 0;
+    let mut errors: Vec<String> = Vec::new();
+
+    // Iterative directory walk using an explicit stack.
+    let mut stack = vec![repo_root.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname.starts_with('.') { continue; }
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() {
+                let rel = match path.strip_prefix(&repo_root) {
+                    Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                    Err(_) => continue,
+                };
+                if rel.starts_with("assets/") {
+                    assets_indexed += 1;
+                } else if rel.ends_with(".zf.json") {
+                    match std::fs::read_to_string(&path) {
+                        Ok(source) => {
+                            let file_rel_path = format!("pipelines/{rel}");
+                            match state.platform.projects.upsert_pipeline_definition(
+                                &owner_slug, &project_slug, &file_rel_path,
+                                "", "", "", &source,
+                            ) {
+                                Ok(_) => pipelines_indexed += 1,
+                                Err(e) => errors.push(format!("{rel}: {e}")),
+                            }
+                        }
+                        Err(e) => errors.push(format!("{rel}: read error: {e}")),
+                    }
+                } else if rel.ends_with(".tsx") || rel.ends_with(".ts") {
+                    templates_indexed += 1;
+                }
+            }
+        }
+    }
+
+    Json(json!({
+        "ok": true,
+        "pipelines": pipelines_indexed,
+        "templates": templates_indexed,
+        "assets": assets_indexed,
+        "errors": errors
+    }))
+    .into_response()
 }
 
 async fn project_settings_clone_ui_preview_page(

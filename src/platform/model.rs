@@ -1186,7 +1186,7 @@ pub struct ZebflowJsonGitRemote {
 }
 
 /// Asset management section of `zebflow.json`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZebflowJsonAssets {
     /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
     #[serde(default = "default_max_asset_size_mb")]
@@ -1195,6 +1195,12 @@ pub struct ZebflowJsonAssets {
 
 fn default_max_asset_size_mb() -> u32 {
     10
+}
+
+impl Default for ZebflowJsonAssets {
+    fn default() -> Self {
+        Self { max_asset_size_mb: 10 }
+    }
 }
 
 /// RWE settings section of `zebflow.json`.
