@@ -2,12 +2,10 @@
 //!
 //! This layer is intentionally separate from platform metadata storage.
 //! Platform metadata lives in one global catalog DB, while each project gets
-//! its own runtime data stores (for nodes such as SimpleTable).
+//! its own runtime data stores (for nodes such as SQLite).
 
 use std::path::Path;
 use std::sync::Arc;
-
-use sekejap::SekejapDB;
 
 use crate::platform::error::PlatformError;
 use crate::platform::model::ProjectFileLayout;
@@ -30,24 +28,7 @@ pub trait ProjectDataFactory: Send + Sync {
     fn enabled_engines(&self) -> Vec<&'static str>;
 }
 
-/// Project SeKejap runtime DB engine.
-#[derive(Default)]
-pub struct ProjectSekejapEngine;
-
-impl ProjectDataEngine for ProjectSekejapEngine {
-    fn id(&self) -> &'static str {
-        "project_data.sekejap"
-    }
-
-    fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
-        std::fs::create_dir_all(&layout.data_sekejap_dir)?;
-        let _db = SekejapDB::new(&layout.data_sekejap_dir, 500_000)
-            .map_err(|e| PlatformError::new("PROJECT_DATA_SEKEJAP_INIT", e.to_string()))?;
-        Ok(())
-    }
-}
-
-/// Project SQLite runtime DB engine — halted, not implemented.
+/// Project SQLite runtime DB engine — creates a WAL-mode `local.db` in the project data dir.
 #[derive(Default)]
 pub struct ProjectSqliteEngine;
 
@@ -56,7 +37,13 @@ impl ProjectDataEngine for ProjectSqliteEngine {
         "project_data.sqlite"
     }
 
-    fn initialize(&self, _layout: &ProjectFileLayout) -> Result<(), PlatformError> {
+    fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
+        std::fs::create_dir_all(&layout.data_dir)?;
+        let db_path = layout.data_dir.join("local.db");
+        let conn = rusqlite::Connection::open(&db_path)
+            .map_err(|e| PlatformError::new("PROJECT_DATA_SQLITE_INIT", e.to_string()))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+            .map_err(|e| PlatformError::new("PROJECT_DATA_SQLITE_PRAGMA", e.to_string()))?;
         Ok(())
     }
 }
@@ -75,7 +62,7 @@ impl ProjectDataEngine for ProjectPostgresEngine {
     }
 }
 
-/// Default factory enabling local project SeKejap + SQLite stores.
+/// Default factory enabling local project SQLite store.
 pub struct DefaultProjectDataFactory {
     engines: Vec<Arc<dyn ProjectDataEngine>>,
 }
@@ -83,7 +70,7 @@ pub struct DefaultProjectDataFactory {
 impl Default for DefaultProjectDataFactory {
     fn default() -> Self {
         Self {
-            engines: vec![Arc::new(ProjectSekejapEngine)],
+            engines: vec![Arc::new(ProjectSqliteEngine)],
         }
     }
 }

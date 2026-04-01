@@ -78,7 +78,6 @@ impl FileAdapter for FilesystemFileAdapter {
         let data_dir = root.join("data");
         let data_runtime_dir = data_dir.join("runtime");
         let data_runtime_pipelines_dir = data_runtime_dir.join("pipelines");
-        let data_sekejap_dir = data_dir.join("sekejap");
         let files_dir = root.join("files");
         let repo_dir = root.join("repo");
         let repo_git_dir = repo_dir.join(".git");
@@ -93,7 +92,6 @@ impl FileAdapter for FilesystemFileAdapter {
             &data_dir,
             &data_runtime_dir,
             &data_runtime_pipelines_dir,
-            &data_sekejap_dir,
             &files_dir,
             &files_dir.join("public"),
             &files_dir.join("private"),
@@ -119,7 +117,6 @@ impl FileAdapter for FilesystemFileAdapter {
             data_dir,
             data_runtime_dir,
             data_runtime_pipelines_dir,
-            data_sekejap_dir,
             files_dir,
             repo_dir,
             repo_git_dir,

@@ -12,8 +12,8 @@ pub mod http_request;
 pub mod logic;
 pub mod pg_query;
 pub mod script;
-pub mod sjtable_mutate;
-pub mod sjtable_query;
+pub mod sqlite_mutate;
+pub mod sqlite_query;
 pub mod trigger;
 mod util;
 pub mod web_response;
@@ -36,8 +36,8 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         ws_trigger::definition(),
         script::definition(),
         http_request::definition(),
-        sjtable_mutate::definition(),
-        sjtable_query::definition(),
+        sqlite_mutate::definition(),
+        sqlite_query::definition(),
         pg_query::definition(),
         web_response::definition(),
         ws_sync_state::definition(),

@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DataAdapterKind {
-    /// Sekejap-backed metadata store.
+    /// SQLite-backed platform catalog (WAL mode, bundled SQLite 3.47).
     #[default]
-    Sekejap,
-    /// Placeholder adapter.
     Sqlite,
     /// Placeholder adapter.
     DynamoDb,
@@ -54,7 +52,7 @@ impl Default for PlatformConfig {
     fn default() -> Self {
         Self {
             data_root: PathBuf::from(".zebflow-platform-data"),
-            data_adapter: DataAdapterKind::Sekejap,
+            data_adapter: DataAdapterKind::Sqlite,
             file_adapter: FileAdapterKind::Filesystem,
             default_owner: "superadmin".to_string(),
             default_password: String::new(),
@@ -164,7 +162,7 @@ pub struct ProjectDbConnection {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sekejap`, `postgresql`, ...).
+    /// Database kind (`sqlite`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -185,7 +183,7 @@ pub struct ProjectDbConnectionListItem {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sekejap`, `postgresql`, ...).
+    /// Database kind (`sqlite`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -819,7 +817,7 @@ pub struct SimpleTableDefinition {
     pub table: String,
     /// Display title.
     pub title: String,
-    /// Backing Sekejap collection name.
+    /// Backing collection name.
     pub collection: String,
     /// Attribute schema definitions.
     #[serde(default)]
@@ -871,7 +869,7 @@ pub struct UpsertProjectDbConnectionRequest {
     pub connection_slug: String,
     /// Display label.
     pub connection_label: String,
-    /// Database kind (`sekejap`, `postgresql`, ...).
+    /// Database kind (`sqlite`, `postgresql`, ...).
     pub database_kind: String,
     /// Optional linked credential id.
     pub credential_id: Option<String>,
@@ -951,7 +949,7 @@ pub struct ProjectDbConnectionDescribeResult {
     pub connection_id: String,
     /// Stable route slug.
     pub connection_slug: String,
-    /// Database kind (`sekejap`, `postgresql`, ...).
+    /// Database kind (`sqlite`, `postgresql`, ...).
     pub database_kind: String,
     /// Effective scope.
     pub scope: String,
@@ -993,7 +991,7 @@ pub struct ProjectDbConnectionQueryResult {
     pub connection_id: String,
     /// Stable route slug.
     pub connection_slug: String,
-    /// Database kind (`sekejap`, `postgresql`, ...).
+    /// Database kind (`sqlite`, `postgresql`, ...).
     pub database_kind: String,
     /// Returned columns.
     #[serde(default)]
@@ -1090,8 +1088,6 @@ pub struct ProjectFileLayout {
     pub data_runtime_dir: PathBuf,
     /// `.../data/runtime/pipelines`
     pub data_runtime_pipelines_dir: PathBuf,
-    /// `.../data/sekejap` (project runtime db — general-purpose blank DB for user business data).
-    pub data_sekejap_dir: PathBuf,
     /// `.../files`
     pub files_dir: PathBuf,
     /// `.../repo` (git-sync workspace root).
@@ -1308,7 +1304,7 @@ impl ZebflowJsonLogging {
     }
 }
 
-/// One recorded pipeline invocation (persisted to Sekejap).
+/// One recorded pipeline invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineInvocationEntry {
     /// Unix timestamp (seconds).

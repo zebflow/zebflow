@@ -166,7 +166,6 @@ impl PlatformOps {
             Ok(_) => out.push_str("  (none — add via UI Settings → Connections)\n"),
             Err(e) => out.push_str(&format!("  (error: {e})\n")),
         }
-        out.push_str("  sekejap (embedded, always available) → `help(\"db/sekejap\")`\n");
         match self.platform.credentials.list_project_credentials(owner, project) {
             Ok(items) if !items.is_empty() => {
                 let creds: Vec<String> = items.iter().map(|c| format!("{} ({})", c.title, c.kind)).collect();
@@ -210,7 +209,7 @@ impl PlatformOps {
 impl PlatformOps {
     /// Unified help browser. No topic = root index. Hierarchical paths:
     /// "pipeline", "pipeline/dsl", "pipeline/nodes", "pipeline/nodes/{kind}",
-    /// "web", "web/hooks", "tool", "db", "db/sekejap", "platform", etc.
+    /// "web", "web/hooks", "tool", "db", "platform", etc.
     pub fn help(&self, topic: &str) -> OpsResult {
         match crate::platform::help::get_help(topic) {
             Ok(content) => OpsResult::ok(content),

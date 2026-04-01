@@ -9,12 +9,11 @@ use crate::platform::model::{
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, slug_segment,
 };
 
-use super::{CredentialService, DbConnectionService, SimpleTableService};
+use super::{CredentialService, DbConnectionService};
 
 pub struct DbRuntimeService {
     db_connections: Arc<DbConnectionService>,
     credentials: Arc<CredentialService>,
-    simple_tables: Arc<SimpleTableService>,
     drivers: DbDriverRegistry,
 }
 
@@ -23,12 +22,10 @@ impl DbRuntimeService {
     pub fn new(
         db_connections: Arc<DbConnectionService>,
         credentials: Arc<CredentialService>,
-        simple_tables: Arc<SimpleTableService>,
     ) -> Self {
         Self {
             db_connections,
             credentials,
-            simple_tables,
             drivers: DbDriverRegistry::with_defaults(),
         }
     }
@@ -55,7 +52,6 @@ impl DbRuntimeService {
             project,
             connection,
             credentials: self.credentials.clone(),
-            simple_tables: self.simple_tables.clone(),
         };
         driver.describe(&ctx, req).await
     }
@@ -82,7 +78,6 @@ impl DbRuntimeService {
             project,
             connection,
             credentials: self.credentials.clone(),
-            simple_tables: self.simple_tables.clone(),
         };
         driver.query(&ctx, req).await
     }

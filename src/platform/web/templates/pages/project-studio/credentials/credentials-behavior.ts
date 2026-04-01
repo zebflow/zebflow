@@ -422,13 +422,14 @@ async function initCredentials(root) {
     }
 
     state.items.forEach((item) => {
+      const updatedAtStr = formatTs(item.updated_at);
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${item.credential_id || ""}</td>
         <td>${item.title || ""}</td>
         <td>${item.kind || ""}</td>
         <td>${item.has_secret ? "yes" : "no"}</td>
-        <td>${formatTs(item.updated_at)}</td>
+        <td>${updatedAtStr}</td>
         <td><button type="button" class="project-inline-chip" data-edit-id="${item.credential_id || ""}">Edit</button></td>
       `;
       tr.querySelectorAll("td").forEach((cell) => {

@@ -12,8 +12,6 @@ use crate::platform::model::{
     TestProjectDbConnectionRequest, UpsertProjectDbConnectionRequest, now_ts, slug_segment,
 };
 
-const DB_KIND_SJTABLE: &str = "sekejap";
-
 /// Project-scoped DB connections stored in the metadata catalog.
 pub struct DbConnectionService {
     data: Arc<dyn DataAdapter>,
@@ -25,7 +23,7 @@ impl DbConnectionService {
         Self { data }
     }
 
-    /// Lists project DB connections (ensures the default Sekejap connection exists).
+    /// Lists project DB connections (ensures the default connection exists).
     pub fn list_project_connections(
         &self,
         owner: &str,
@@ -209,18 +207,6 @@ impl DbConnectionService {
 
         // Now actually test the connection based on database kind
         match database_kind.as_str() {
-            DB_KIND_SJTABLE => {
-                // For sjtable, verify the sekejap data adapter is working
-                // This is a simple validation - the default connection should always work
-                Ok(ProjectDbConnectionTestResult {
-                    ok: true,
-                    message: "SekejapDB connection is valid".to_string(),
-                    details: json!({
-                        "database_kind": database_kind,
-                        "mode": "connection_test"
-                    }),
-                })
-            }
             "postgresql" => {
                 // Test PostgreSQL connection using sqlx (async)
                 let credential = self
@@ -353,7 +339,7 @@ impl DbConnectionService {
             connection_id: generate_connection_id(),
             connection_slug: "default".to_string(),
             connection_label: "Default Data Store".to_string(),
-            database_kind: DB_KIND_SJTABLE.to_string(),
+            database_kind: "sqlite".to_string(),
             credential_id: None,
             config: json!({}),
             created_at: now,
@@ -369,11 +355,11 @@ impl DbConnectionService {
         credential_id: Option<&str>,
     ) -> Result<(), PlatformError> {
         match database_kind {
-            DB_KIND_SJTABLE => {
+            "sqlite" => {
                 if credential_id.is_some() {
                     return Err(PlatformError::new(
                         "PLATFORM_DB_CONNECTION_INVALID",
-                        "sekejap connection must not bind credential_id",
+                        format!("{database_kind} connection must not bind credential_id"),
                     ));
                 }
                 Ok(())
@@ -460,7 +446,6 @@ fn generate_connection_id() -> String {
 fn normalize_database_kind(raw: &str) -> Result<String, PlatformError> {
     let normalized = slug_segment(raw);
     let kind = match normalized.as_str() {
-        "sekejap" => DB_KIND_SJTABLE,
         "postgres" | "postgresql" | "pg" => "postgresql",
         "mysql" => "mysql",
         "sqlite" => "sqlite",

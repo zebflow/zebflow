@@ -675,7 +675,6 @@ impl DslExecutor {
             Arc::new(crate::language::DenoSandboxEngine::default()),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.platform.credentials.clone()),
-            Some(self.platform.simple_tables.clone()),
         )
         .with_platform(self.platform.clone())
         .with_template_root(
@@ -763,7 +762,6 @@ impl DslExecutor {
                     Arc::new(crate::language::DenoSandboxEngine::default()),
                     crate::rwe::resolve_engine_or_default(None),
                     Some(self.platform.credentials.clone()),
-                    Some(self.platform.simple_tables.clone()),
                 )
                 .with_platform(self.platform.clone())
                 .with_template_root(

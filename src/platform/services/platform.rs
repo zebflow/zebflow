@@ -10,7 +10,7 @@ use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformCo
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, CredentialService,
     DbConnectionService, DbRuntimeService, LibraryService, McpSessionService, PipelineHitsService,
-    PipelineRuntimeService, ProjectService, SimpleTableService, UserService, ZebLockService,
+    PipelineRuntimeService, ProjectService, UserService, ZebLockService,
     ZebflowJsonService,
 };
 use crate::infra::transport::ws::WsHub;
@@ -24,7 +24,7 @@ pub struct PlatformService {
     pub data: Arc<dyn DataAdapter>,
     /// File/project backend.
     pub file: Arc<dyn FileAdapter>,
-    /// Project runtime data factory (sekejap/sqlite/...).
+    /// Project runtime data factory.
     pub project_data: Arc<dyn ProjectDataFactory>,
     /// User domain service.
     pub users: Arc<UserService>,
@@ -48,8 +48,6 @@ pub struct PlatformService {
     pub pipeline_runtime: Arc<PipelineRuntimeService>,
     /// Lightweight execution hit/error counters per pipeline.
     pub pipeline_hits: Arc<PipelineHitsService>,
-    /// Project Simple Table management service.
-    pub simple_tables: Arc<SimpleTableService>,
     /// MCP session management (in-memory tokens for project-scoped remote control).
     pub mcp_sessions: Arc<McpSessionService>,
     /// WebSocket hub — real-time room management for WS pipelines.
@@ -85,11 +83,9 @@ impl PlatformService {
         let credentials = Arc::new(CredentialService::new(data.clone()));
         let assistant_configs = Arc::new(AssistantConfigService::new(data.clone(), zebflow_cfg.clone()));
         let db_connections = Arc::new(DbConnectionService::new(data.clone()));
-        let simple_tables = Arc::new(SimpleTableService::new(file.clone(), project_data.clone()));
         let db_runtime = Arc::new(DbRuntimeService::new(
             db_connections.clone(),
             credentials.clone(),
-            simple_tables.clone(),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
@@ -112,7 +108,6 @@ impl PlatformService {
             projects,
             pipeline_runtime,
             pipeline_hits,
-            simple_tables,
             mcp_sessions,
             ws_hub,
             library,
@@ -190,7 +185,6 @@ impl PlatformService {
             std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
             crate::rwe::resolve_engine_or_default(None),
             Some(self.credentials.clone()),
-            Some(self.simple_tables.clone()),
         )
         .with_platform(std::sync::Arc::new(self.clone()));
 

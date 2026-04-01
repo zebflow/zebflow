@@ -2,7 +2,6 @@
 
 mod dynamodb;
 mod firebase;
-mod sekejap;
 mod sqlite;
 
 use std::path::Path;
@@ -14,8 +13,6 @@ use crate::platform::model::{
     PlatformUser, ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding,
     StoredUser,
 };
-
-pub use sekejap::SekejapDataAdapter;
 
 /// Metadata adapter contract used by platform services.
 pub trait DataAdapter: Send + Sync {
@@ -147,7 +144,7 @@ pub trait DataAdapter: Send + Sync {
             "Admin DB access not supported by this adapter",
         ))
     }
-    /// Admin: run a raw SekejapQL pipeline JSON. Default impl returns unsupported error.
+    /// Admin: run a raw query pipeline JSON. Default impl returns unsupported error.
     fn admin_raw_query(&self, pipeline_json: &str) -> Result<Vec<serde_json::Value>, PlatformError> {
         let _ = pipeline_json;
         Err(PlatformError::new(
@@ -203,8 +200,7 @@ pub fn build_data_adapter(
     data_root: &Path,
 ) -> Result<Arc<dyn DataAdapter>, PlatformError> {
     match kind {
-        DataAdapterKind::Sekejap => Ok(Arc::new(SekejapDataAdapter::new(data_root)?)),
-        DataAdapterKind::Sqlite => Ok(Arc::new(sqlite::SqliteDataAdapter::default())),
+        DataAdapterKind::Sqlite => Ok(Arc::new(sqlite::SqliteDataAdapter::new(data_root)?)),
         DataAdapterKind::DynamoDb => Ok(Arc::new(dynamodb::DynamoDbDataAdapter::default())),
         DataAdapterKind::Firebase => Ok(Arc::new(firebase::FirebaseDataAdapter::default())),
     }

@@ -306,7 +306,7 @@ impl ZebflowMcpHandler {
         'pipeline/nodes' (live catalog), 'pipeline/nodes/{kind}' (one node), \
         'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
         'web' (TSX pages), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
-        'tool' (Tool.time/arr/stat/geo), 'db', 'db/sekejap', \
+        'tool' (Tool.time/arr/stat/geo), 'db', \
         'platform', 'platform/agent', 'platform/api', 'platform/operations', 'platform/workflow'. \
         Call help() before writing pipelines or templates.")]
     async fn help(
@@ -327,7 +327,7 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
         web template docs, node catalog, and all help files. Use for any concept, node name, DSL flag, \
-        or syntax question. Example: query='jwt', query='sekejap upsert', query='web.response'.")]
+        or syntax question. Example: query='jwt', query='sqlite query', query='web.response'.")]
     async fn help_search(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -779,7 +779,7 @@ impl ZebflowMcpHandler {
 
     // ── Connections & Credentials ─────────────────────────────────────────────
 
-    #[tool(description = "List all DB connections for this project — returns slug, label, and kind (postgres, mysql, sekejap). Use the slug with connection_describe and in --credential flags.")]
+    #[tool(description = "List all DB connections for this project — returns slug, label, and kind (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags.")]
     async fn connection_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,

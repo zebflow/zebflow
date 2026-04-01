@@ -7,7 +7,7 @@ use crate::platform::model::{
     DescribeProjectDbConnectionRequest, ProjectDbConnection, ProjectDbConnectionDescribeResult,
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest,
 };
-use crate::platform::services::{CredentialService, SimpleTableService};
+use crate::platform::services::CredentialService;
 
 /// Shared context passed to one DB driver call.
 #[derive(Clone)]
@@ -16,13 +16,12 @@ pub struct DbDriverContext {
     pub project: String,
     pub connection: ProjectDbConnection,
     pub credentials: Arc<CredentialService>,
-    pub simple_tables: Arc<SimpleTableService>,
 }
 
 /// Runtime driver contract for one database kind.
 #[async_trait]
 pub trait DbDriver: Send + Sync {
-    /// Stable kind key (`sekejap`, `postgresql`, ...).
+    /// Stable kind key (`sqlite`, `postgresql`, ...).
     fn kind(&self) -> &'static str;
 
     /// Describes objects available in one connection.

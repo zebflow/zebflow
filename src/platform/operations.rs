@@ -193,7 +193,7 @@ pub const OPERATIONS: &[OperationSpec] = &[
         path: "/api/projects/{owner}/{project}/assets/prepare",
         params_schema: r#"{"library":"string?","version":"string?","entries":"string[]?"}"#,
     },
-    // DB connections (sjtable + credential-backed external engines)
+    // DB connections
     OperationSpec {
         id: "list_db_connections",
         category: "db",
@@ -330,11 +330,11 @@ pub const OPERATIONS: &[OperationSpec] = &[
         path: "/api/projects/{owner}/{project}/docs",
         params_schema: r#"{"path":"string","content":"string"}"#,
     },
-    // Tables (simple tables in default Sekejap connection)
+    // Tables
     OperationSpec {
         id: "list_tables",
         category: "tables",
-        description: "List simple table names in the default Sekejap connection (sjtable/default)",
+        description: "List simple table names",
         capability: ProjectCapability::TablesRead,
         method: "GET",
         path: "/api/projects/{owner}/{project}/tables",

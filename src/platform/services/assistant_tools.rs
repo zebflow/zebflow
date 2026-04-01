@@ -68,7 +68,7 @@ impl AssistantPlatformTools {
                     'pipeline/examples' (index), 'pipeline/examples/{slug}' (full recipe), \
                     'web' (TSX pages + imports), 'web/hooks', 'web/tailwind', 'web/design-system', 'web/libraries', \
                     'tool' (Tool.time/arr/stat/geo globals), \
-                    'db' (database overview), 'db/sekejap' (SekejapQL), \
+                    'db' (database overview), \
                     'platform' (overview), 'platform/agent', 'platform/api', 'platform/operations', 'platform/workflow'. \
                     Call help() before writing pipelines or templates.".to_string(),
                 parameters: json!({
@@ -382,7 +382,7 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "connection_list".to_string(),
                 description: "List all DB connections for this project — returns slug, label, and kind \
-                    (postgres, mysql, sekejap). Use the slug with connection_describe and in --credential flags.".to_string(),
+                    (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags.".to_string(),
                 parameters: json!({ "type": "object", "properties": {} }),
             },
             ToolDef {
