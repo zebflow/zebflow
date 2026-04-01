@@ -245,7 +245,8 @@ function renderCredentialSelect(state, preferredCredentialId = "") {
   }
 
   if (required) {
-    state.credentialHelp.textContent = `Select one ${credentialKindForDatabaseKind(dbKind)} credential.`;
+    const credKindLabel = credentialKindForDatabaseKind(dbKind);
+    state.credentialHelp.textContent = `Select one ${credKindLabel} credential.`;
     return;
   }
 
@@ -412,6 +413,7 @@ async function initDbConnections(root) {
       const credentialLabel = credential
         ? String(credential.title || "").trim() || String(credential.credential_id || "")
         : item.credential_id || "-";
+      const updatedAtStr = formatTs(item.updated_at);
       tr.innerHTML = `
         <td>
           <span class="db-connection-name">
@@ -427,7 +429,7 @@ async function initDbConnections(root) {
           </span>
         </td>
         <td>${credentialLabel || "-"}</td>
-        <td>${formatTs(item.updated_at)}</td>
+        <td>${updatedAtStr}</td>
         <td>
           <a href="${openPath}" class="project-inline-chip">Open</a>
           <button type="button" class="project-inline-chip" data-edit-slug="${slug}">Edit</button>

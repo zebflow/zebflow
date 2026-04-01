@@ -33,18 +33,17 @@ use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, Pipe
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest,
+    CreateProjectRequest, CreateUserRequest,
     DeletePipelineRequest, DescribeProjectDbConnectionRequest, ExecutePipelineRequest,
     GitCommitRequest, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
     PipelineExecuteTrigger, PipelineInvocationEntry,
     PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    QueryProjectDbConnectionRequest, SimpleTableQueryRequest, TemplateCompileRequest,
+    QueryProjectDbConnectionRequest, TemplateCompileRequest,
     TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
     TemplateSaveRequest, TestProjectDbConnectionRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
     UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
     UpdateSettingsSectionRequest,
-    UpsertSimpleTableRowRequest,
 };
 use crate::platform::services::PlatformService;
 use crate::rwe::{
@@ -98,7 +97,6 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ("platform-project-tables",                 "platform.project.tables",                 "pages/project-studio/connections/page.tsx"),
     ("platform-project-table-connection",       "platform.project.table_connection",       "pages/project-studio/connections/db/connection/page.tsx"),
     ("platform-project-table-connection-postgresql", "platform.project.table_connection.postgresql", "pages/project-studio/connections/db/postgresql/page.tsx"),
-    ("platform-project-table-connection-sjtable",    "platform.project.table_connection.sjtable",    "pages/project-studio/connections/db/sekejap/page.tsx"),
     ("platform-design-system",                  "platform.dev.design_system",              "pages/dev/design-system/page.tsx"),
     ("platform-project-settings-clone-ui-preview", "platform.project.settings.clone_ui_preview", "pages/project-studio/settings/clone/ui/preview/page.tsx"),
 ];
@@ -148,15 +146,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
 
     let render_script_cache = build_render_script_cache(&platform.config.data_root);
 
-    // Build a BasicPipelineEngine for the scheduler (script + sekejap nodes).
+    // Build a BasicPipelineEngine for the scheduler.
     let sched_engine = Arc::new(
         BasicPipelineEngine::new(
             Arc::new(DenoSandboxEngine::default()),
             crate::rwe::resolve_engine_or_default(None),
             Some(platform.credentials.clone()),
-            Some(platform.simple_tables.clone()),
         )
-        .with_ws_hub(platform.ws_hub.clone()),
+        .with_ws_hub(platform.ws_hub.clone())
+        .with_data_root(platform.config.data_root.clone()),
     );
 
     let scheduler = PipelineScheduler::start(
@@ -462,22 +460,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/agent-docs/file",
             get(api_read_agent_doc).put(api_upsert_agent_doc_file),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/tables",
-            get(api_list_simple_tables).post(api_create_simple_table),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/tables/{table}",
-            get(api_get_simple_table).delete(api_delete_simple_table),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/tables/rows",
-            post(api_upsert_simple_table_row),
-        )
-        .route(
-            "/api/projects/{owner}/{project}/tables/query",
-            post(api_query_simple_table_rows),
         )
         .route(
             "/api/projects/{owner}/{project}/mcp/session",
@@ -3163,11 +3145,7 @@ async fn project_db_connections_page(
                         "icon_class": db_connection_icon_class(&item.database_kind),
                         "credential_id": item.credential_id,
                         "updated_at": item.updated_at,
-                        "description": if item.database_kind == "sekejap" {
-                            "Project-local Sekejap embedded database (graph, vector, full-text, temporal)."
-                        } else {
-                            "Credential-backed external database connection."
-                        },
+                        "description": "Credential-backed external database connection.",
                         "path": format!(
                             "/projects/{owner}/{project}/db/{}/{}/tables",
                             item.database_kind,
@@ -3271,7 +3249,6 @@ async fn project_db_suite_page(
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
             let table_page_key = match connection_info.database_kind.as_str() {
                 "postgresql" => "platform-project-table-connection-postgresql",
-                "sekejap" => "platform-project-table-connection-sjtable",
                 _ => "platform-project-table-connection",
             };
 
@@ -3280,12 +3257,7 @@ async fn project_db_suite_page(
                 |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.',
                 "-",
             );
-            let query_example = if connection_info.database_kind == "sekejap" {
-                let tname = selected_table.split('.').next_back().unwrap_or("your_table");
-                format!("collection \"sjtable__{tname}\"\ntake 200")
-            } else {
-                "-- Write SQL and click Run Query.".to_string()
-            };
+            let query_example = "-- Write SQL and click Run Query.".to_string();
 
             let table_query = if selected_table.is_empty() {
                 String::new()
@@ -4039,7 +4011,6 @@ fn db_connection_icon_class(database_kind: &str) -> &'static str {
         "redis" => "devicon-redis-plain colored",
         "mongodb" => "devicon-mongodb-plain colored",
         "qdrant" => "devicon-vectorlogozone-plain",
-        "sekejap" => "zf-icon-sjtable",
         _ => "zf-icon-default-db",
     }
 }
@@ -6706,7 +6677,6 @@ async fn api_execute_pipeline(
             .as_millis()
     );
     let credentials = state.platform.credentials.clone();
-    let simple_tables = state.platform.simple_tables.clone();
     let graph_for_run = graph.clone();
     let ctx = PipelineContext {
         owner: owner.clone(),
@@ -6721,10 +6691,10 @@ async fn api_execute_pipeline(
         Arc::new(DenoSandboxEngine::default()),
         state.frontend.rwe.clone(),
         Some(credentials),
-        Some(simple_tables),
     )
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok());
+    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_data_root(state.platform.config.data_root.clone());
     match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => {
             state
@@ -8067,7 +8037,7 @@ async fn api_project_assistant_chat(
              - **Pipelines**: `pipeline_list`, `pipeline_get`, `pipeline_register`, `pipeline_describe`, `pipeline_patch`, `pipeline_activate`, `pipeline_deactivate`, `pipeline_execute`, `pipeline_run`\n\
              - **Templates**: `template_list`, `template_get`, `template_create`, `template_write`\n\
              - **Docs**: `docs_project_list`, `docs_project_read`, `docs_project_write`, `docs_agent_list`, `docs_agent_read`, `docs_agent_write`\n\
-             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query` or `n.sekejap.query` nodes to execute queries\n\
+             - **Database**: `connection_list`, `connection_describe` — then use `pipeline_run` with `pg.query` or `n.sqlite.query` nodes to execute queries\n\
              - **Credentials**: `credential_list`\n\
              - **Git**: `git_command` — subcommands: status, log, diff, add, commit\n\
              - **UI Components**: `list_ui_catalog`, `install_ui_components`\n\
@@ -8948,146 +8918,6 @@ async fn api_upsert_agent_doc_file(
     }
 }
 
-async fn api_list_simple_tables(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesRead,
-    ) {
-        return response;
-    }
-    match state.platform.simple_tables.list_tables(&owner, &project) {
-        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_create_simple_table(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    Json(req): Json<CreateSimpleTableRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesWrite,
-    ) {
-        return response;
-    }
-    match state
-        .platform
-        .simple_tables
-        .create_table(&owner, &project, &req)
-    {
-        Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_get_simple_table(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project, table)): Path<(String, String, String)>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesRead,
-    ) {
-        return response;
-    }
-    match state.platform.simple_tables.get_table(&owner, &project, &table) {
-        Ok(Some(table)) => Json(json!({"ok": true, "table": table})).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": {"code":"PLATFORM_SIMPLE_TABLE_MISSING","message":"simple table not found"}}))).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_delete_simple_table(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project, table)): Path<(String, String, String)>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesWrite,
-    ) {
-        return response;
-    }
-    match state
-        .platform
-        .simple_tables
-        .delete_table(&owner, &project, &table)
-    {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_upsert_simple_table_row(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    Json(req): Json<UpsertSimpleTableRowRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesWrite,
-    ) {
-        return response;
-    }
-    match state
-        .platform
-        .simple_tables
-        .upsert_row(&owner, &project, &req)
-    {
-        Ok(row) => Json(json!({"ok": true, "row": row})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
-async fn api_query_simple_table_rows(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    Json(req): Json<SimpleTableQueryRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::TablesRead,
-    ) {
-        return response;
-    }
-    match state
-        .platform
-        .simple_tables
-        .query_rows(&owner, &project, &req)
-    {
-        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
 // ── Webhook auth helper ──────────────────────────────────────────────────────
 
 /// Auth failure kinds returned by [`verify_webhook_auth`].
@@ -9392,15 +9222,14 @@ async fn dispatch_weberror(
     let (_, compiled) = best?;
 
     let credentials = state.platform.credentials.clone();
-    let simple_tables = state.platform.simple_tables.clone();
     let engine = BasicPipelineEngine::new(
         Arc::new(DenoSandboxEngine::default()),
         state.frontend.rwe.clone(),
         Some(credentials),
-        Some(simple_tables),
     )
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok());
+    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
+    .with_data_root(state.platform.config.data_root.clone());
 
     let ctx = PipelineContext {
         owner: owner.to_string(),
@@ -9634,7 +9463,6 @@ async fn public_webhook_ingress(
     });
 
     let credentials = state.platform.credentials.clone();
-    let simple_tables = state.platform.simple_tables.clone();
     let graph_for_run = graph.clone();
     let ctx = PipelineContext {
         owner: owner.clone(),
@@ -9650,10 +9478,10 @@ async fn public_webhook_ingress(
         Arc::new(DenoSandboxEngine::default()),
         state.frontend.rwe.clone(),
         Some(credentials),
-        Some(simple_tables),
     )
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok());
+    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_data_root(state.platform.config.data_root.clone());
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
         Err(err) => {
@@ -10978,17 +10806,17 @@ async fn ws_dispatch_event(
         };
         let graph = compiled.graph.clone();
         let credentials = state.platform.credentials.clone();
-        let simple_tables = state.platform.simple_tables.clone();
         let rwe = state.frontend.rwe.clone();
         let ws_hub = state.platform.ws_hub.clone();
+        let data_root = state.platform.config.data_root.clone();
         tokio::spawn(async move {
             let engine = crate::pipeline::BasicPipelineEngine::new(
                 std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
                 rwe,
                 Some(credentials),
-                Some(simple_tables),
             )
-            .with_ws_hub(ws_hub);
+            .with_ws_hub(ws_hub)
+            .with_data_root(data_root);
             let _ = engine.execute_async(&graph, &ctx).await;
         });
     }

@@ -114,9 +114,6 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "script" | "n.script" => Some("n.script"),
         "web.response" | "n.web.response" => Some("n.web.response"),
         "http.request" | "n.http.request" => Some("n.http.request"),
-        "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
-        // Backward-compat alias — old pipelines using n.sjtable.query still work
-        "sjtable.query" | "n.sjtable.query" => Some("n.sekejap.query"),
         "fanout" | "n.fanout" | "logic.branch" | "n.logic.branch" => Some("n.logic.branch"),
         "zebtune" | "n.zebtune" => Some("n.zebtune"),
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
@@ -142,7 +139,7 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sekejap.query" | "n.sjtable.query" | "n.script" | "n.http.request"
+        "n.pg.query" | "n.script" | "n.http.request"
         | "n.zebtune" | "n.logic.branch" | "n.logic.merge" => {
             (vec!["in".to_string()], vec!["out".to_string()])
         }
@@ -594,7 +591,6 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
             "n.pg.query" => "query",
             "n.script" => "source",
             "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
-            "n.sekejap.query" | "n.sekejap.mutate" => "sql",
             "n.browser.run" => "code",
             _ => "body",
         };
@@ -777,7 +773,6 @@ fn node_to_segment(node: &PipelineNode) -> String {
         "n.pg.query" => "query",
         "n.script" => "source",
         "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
-        "n.sekejap.query" | "n.sjtable.query" | "n.sekejap.mutate" | "n.sjtable.mutate" => "sql",
         _ => "body",
     };
     if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
@@ -914,7 +909,6 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
             let body_key = match full_kind {
                 "n.pg.query" => "query",
                 "n.script" => "source",
-                "n.sekejap.query" | "n.sekejap.mutate" => "sql",
                 "n.browser.run" => "code",
                 _ => "body",
             };

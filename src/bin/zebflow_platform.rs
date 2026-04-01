@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.default_project = project;
     }
 
-    config.data_adapter = DataAdapterKind::Sekejap;
+    config.data_adapter = DataAdapterKind::Sqlite;
     config.file_adapter = FileAdapterKind::Filesystem;
 
     let app = build_router(config).await.map_err(std::io::Error::other)?;

@@ -128,9 +128,15 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
     // Clean up leftover temp modules from previous runs.
     cleanup_temp_modules();
 
-    // Dedicated single-threaded Tokio runtime for this thread.
-    // JsRuntime is !Send so it must stay on this exact thread.
-    let tokio_rt = tokio::runtime::Builder::new_current_thread()
+    // Multi-threaded Tokio runtime (1 worker thread) for this JS thread.
+    // `block_in_place` — used inside `catch_unwind` to run async SSR — requires a
+    // multi-threaded runtime.  `new_current_thread` always panics with
+    // "can call blocking only when running on the multi-threaded runtime".
+    // One worker thread keeps overhead the same as current_thread while allowing
+    // `block_in_place`.  JsRuntime (!Send) stays pinned to this OS thread because
+    // `block_in_place` never moves the current closure to a different thread.
+    let tokio_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .expect("rwe-js-runtime: failed building tokio runtime");

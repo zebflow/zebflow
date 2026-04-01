@@ -5,7 +5,7 @@
 //! | Module | Responsibility |
 //! |---|---|
 //! | [`transport`] | Real-time connection management (WebSocket rooms, future: MQTT, SSE) |
-//! | [`storage`] | Persistent data adapters (Sekejap, PostgreSQL) — stubs, WIP |
+//! | [`storage`] | Persistent data adapters (PostgreSQL, SQLite) — stubs, WIP |
 //! | [`scheduler`] | Background job scheduling (cron) — stubs, WIP |
 //!
 //! # Infra vs. Pipeline nodes

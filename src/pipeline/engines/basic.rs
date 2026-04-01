@@ -15,14 +15,14 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request, logic,
-    pg_query, script, sjtable_mutate, sjtable_query,
+    pg_query, script, sqlite_mutate, sqlite_query,
     trigger::{function as trigger_function, manual, schedule, webhook, weberror},
     web_response, ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::platform::services::PlatformService;
 use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
 use crate::language::{DenoSandboxEngine, LanguageEngine};
-use crate::platform::services::{CredentialService, SimpleTableService};
+use crate::platform::services::CredentialService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 use crate::infra::transport::ws::WsHub;
 
@@ -54,12 +54,13 @@ pub struct BasicPipelineEngine {
     language: Arc<dyn LanguageEngine>,
     rwe: Arc<dyn ReactiveWebEngine>,
     credentials: Option<Arc<CredentialService>>,
-    simple_tables: Option<Arc<SimpleTableService>>,
     template_cache: Option<TemplateCache>,
     ws_hub: Option<Arc<WsHub>>,
     platform: Option<Arc<PlatformService>>,
     /// Filesystem root for resolving `@/` alias imports in TSX templates.
     template_root: Option<std::path::PathBuf>,
+    /// Platform data root — used by SQLite nodes to locate the project DB.
+    data_root: Option<std::path::PathBuf>,
 }
 
 impl Default for BasicPipelineEngine {
@@ -69,11 +70,11 @@ impl Default for BasicPipelineEngine {
             language: Arc::new(DenoSandboxEngine::default()),
             rwe: resolve_engine_or_default(rwe_engine_id.as_deref()),
             credentials: None,
-            simple_tables: None,
             template_cache: None,
             ws_hub: None,
             platform: None,
             template_root: None,
+            data_root: None,
         }
     }
 }
@@ -83,17 +84,16 @@ impl BasicPipelineEngine {
         language: Arc<dyn LanguageEngine>,
         rwe: Arc<dyn ReactiveWebEngine>,
         credentials: Option<Arc<CredentialService>>,
-        simple_tables: Option<Arc<SimpleTableService>>,
     ) -> Self {
         Self {
             language,
             rwe,
             credentials,
-            simple_tables,
             template_cache: None,
             ws_hub: None,
             platform: None,
             template_root: None,
+            data_root: None,
         }
     }
 
@@ -119,6 +119,12 @@ impl BasicPipelineEngine {
     /// Attach the platform service so n.function.call nodes can invoke sub-pipelines.
     pub fn with_platform(mut self, platform: Arc<PlatformService>) -> Self {
         self.platform = Some(platform);
+        self
+    }
+
+    /// Attach the platform data root so SQLite nodes can locate the project DB.
+    pub fn with_data_root(mut self, root: std::path::PathBuf) -> Self {
+        self.data_root = Some(root);
         self
     }
 
@@ -150,32 +156,32 @@ impl BasicPipelineEngine {
                 })?,
                 self.language.clone(),
             )?)),
-            sjtable_query::NODE_KIND => {
-                let Some(simple_tables) = &self.simple_tables else {
+            sqlite_query::NODE_KIND => {
+                let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
-                        "FW_NODE_SJTABLE_UNAVAILABLE",
-                        "simple table service is not configured on this framework engine",
+                        "FW_NODE_SQLITE_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SekejapQuery(sjtable_query::Node::new(
+                Ok(NodeDispatch::SqliteQuery(sqlite_query::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SJ_QUERY_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_SQLITE_QUERY_CONFIG", err.to_string())
                     })?,
-                    simple_tables.clone(),
+                    data_root.clone(),
                 )?))
             }
-            sjtable_mutate::NODE_KIND => {
-                let Some(simple_tables) = &self.simple_tables else {
+            sqlite_mutate::NODE_KIND => {
+                let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
-                        "FW_NODE_SJTABLE_UNAVAILABLE",
-                        "simple table service is not configured on this framework engine",
+                        "FW_NODE_SQLITE_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::SekejapMutate(sjtable_mutate::Node::new(
+                Ok(NodeDispatch::SqliteMutate(sqlite_mutate::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_SJ_MUTATE_CONFIG", err.to_string())
+                        PipelineError::new("FW_NODE_SQLITE_MUTATE_CONFIG", err.to_string())
                     })?,
-                    simple_tables.clone(),
+                    data_root.clone(),
                 )?))
             }
             browser_run::NODE_KIND => {
@@ -500,8 +506,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::Script(node) => node.execute_async(input).await,
                 NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
                 NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
-                NodeDispatch::SekejapQuery(node) => node.execute_async(input).await,
-                NodeDispatch::SekejapMutate(node) => node.execute_async(input).await,
+                NodeDispatch::SqliteQuery(node) => node.execute_async(input).await,
+                NodeDispatch::SqliteMutate(node) => node.execute_async(input).await,
                 NodeDispatch::Postgres(node) => node.execute_async(input).await,
                 NodeDispatch::InlineWebResponse { node_id, config } => {
                     let markup = config.markup.as_deref().unwrap_or("").trim();
@@ -753,8 +759,8 @@ enum NodeDispatch {
     Script(script::Node),
     HttpRequest(http_request::Node),
     BrowserRun(browser_run::Node),
-    SekejapQuery(sjtable_query::Node),
-    SekejapMutate(sjtable_mutate::Node),
+    SqliteQuery(sqlite_query::Node),
+    SqliteMutate(sqlite_mutate::Node),
     Postgres(pg_query::Node),
     InlineWebResponse {
         node_id: String,

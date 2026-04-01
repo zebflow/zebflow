@@ -68,20 +68,6 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
         }
     }
 
-    // contains sekejap.query (or legacy sjtable.query) — navigate to sekejap tables page
-    if lower.contains("sekejap.query") || lower.contains("sjtable.query") {
-        let table_name = tokens.windows(2)
-            .find(|w| w[0] == "--table")
-            .map(|w| w[1])
-            .unwrap_or("");
-        if !table_name.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/db/sekejap/default/tables?table={table_name}"
-            ));
-        }
-        return Some(format!("/projects/{owner}/{project}/db/sekejap/default/tables"));
-    }
-
     // contains pg.query
     if lower.contains("pg.query") {
         return Some(format!("/projects/{owner}/{project}/db"));
@@ -109,7 +95,7 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
 
     // get tables
     if lower.starts_with("get tables") {
-        return Some(format!("/projects/{owner}/{project}/db/sekejap/default/tables"));
+        return Some(format!("/projects/{owner}/{project}/db"));
     }
 
     // describe node <kind>

@@ -15,7 +15,6 @@ pub mod pipeline_runtime;
 pub mod platform;
 pub mod project;
 pub mod project_config;
-pub mod simple_table;
 pub mod user;
 pub mod zeb_lock;
 
@@ -34,6 +33,5 @@ pub use pipeline_runtime::{PipelineRuntimeService, WsTriggerSpec};
 pub use platform::PlatformService;
 pub use project::ProjectService;
 pub use project_config::ZebflowJsonService;
-pub use simple_table::SimpleTableService;
 pub use user::UserService;
 pub use zeb_lock::ZebLockService;

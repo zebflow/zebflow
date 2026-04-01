@@ -12,7 +12,6 @@ serde_json = "1"
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 pulldown-cmark = "0.12"
-sekejap = "0.5.3"
 swc_common = "19.0.0"
 swc_ecma_ast = "21.0.0"
 swc_ecma_parser = "35.0.0"
@@ -46,6 +45,7 @@ sysinfo = { version = "0.32", default-features = false, features = ["system", "d
 dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
+rusqlite = { version = "0.32", features = ["bundled"] }
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
