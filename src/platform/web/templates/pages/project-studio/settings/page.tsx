@@ -424,6 +424,69 @@ function LibrariesPanel({ items, api }) {
   );
 }
 
+// ─── Re-index Panel ─────────────────────────────────────────────────────────
+
+function ReIndexPanel({ api }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function handleReindex() {
+    setBusy(true);
+    setResult(null);
+    setError(null);
+    try {
+      const data = await requestJson(api, { method: "POST" });
+      setResult(data);
+    } catch (err) {
+      setError((err as any)?.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
+        <div>
+          <h3 className="project-card-title">Re-index from Files</h3>
+          <p className="project-card-copy">
+            Scan <code>repo/pipelines/</code> on disk and register all found files into the catalog.
+            Use this after a DB wipe, crash recovery, or restoring from a git backup.
+          </p>
+        </div>
+        <span className="project-inline-chip">Recovery</span>
+      </header>
+      <div className="flex flex-col gap-[0.55rem]">
+        <div className="flex items-center gap-[0.7rem]">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            label={busy ? "Indexing..." : "Run Re-index"}
+            onClick={handleReindex}
+          />
+          {error ? (
+            <span className="text-[0.72rem] text-red-300">{error}</span>
+          ) : null}
+        </div>
+        {result ? (
+          <div className="flex items-center gap-[0.55rem] flex-wrap">
+            <span className="project-inline-chip">{result.pipelines} pipeline{result.pipelines !== 1 ? "s" : ""}</span>
+            <span className="project-inline-chip">{result.templates} template{result.templates !== 1 ? "s" : ""}</span>
+            <span className="project-inline-chip">{result.assets} asset{result.assets !== 1 ? "s" : ""}</span>
+            {Array.isArray(result.errors) && result.errors.length > 0 ? (
+              <span className="text-[0.72rem] text-red-300">{result.errors.length} error{result.errors.length !== 1 ? "s" : ""}</span>
+            ) : (
+              <span className="text-[0.72rem] text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]">Done.</span>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
 // ─── Git Identity Panel ──────────────────────────────────────────────────────
 
 function GitPanel({ api, initialConfig }) {
@@ -1104,6 +1167,7 @@ export default function Page(input) {
                       api={input?.assets?.settings_api ?? ""}
                       initialConfig={input?.assets?.config ?? {}}
                     />
+                    <ReIndexPanel api={input?.reindex_api ?? ""} />
                     <GitPanel
                       api={input?.git?.api ?? ""}
                       initialConfig={input?.git?.config ?? {}}

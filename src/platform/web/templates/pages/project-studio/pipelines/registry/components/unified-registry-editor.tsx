@@ -109,6 +109,8 @@ function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string
   }
 
   const totalSize = files.reduce((sum, f) => sum + (f.size_bytes ?? 0), 0);
+  const totalSizeStr = formatAssetBytes(totalSize);
+  const fileCountLabel = files.length !== 1 ? "s" : "";
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-auto">
@@ -116,7 +118,7 @@ function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string
         <div className="pipeline-editor-toolbar-main">
           <p className="pipeline-editor-title">assets/</p>
           <p className="pipeline-editor-subtitle">
-            {loading ? "Loading…" : `${files.length} file${files.length !== 1 ? "s" : ""} · ${formatAssetBytes(totalSize)}`}
+            {loading ? "Loading…" : `${files.length} file${fileCountLabel} · ${totalSizeStr}`}
           </p>
         </div>
         <div className="pipeline-editor-toolbar-actions">
@@ -152,10 +154,12 @@ function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string
               </tr>
             </thead>
             <tbody>
-              {files.map((file) => (
+              {files.map((file) => {
+                const fileSizeStr = formatAssetBytes(file.size_bytes);
+                return (
                 <tr key={file.name} className="border-b border-border-soft hover:bg-surface-2 transition-colors">
                   <td className="py-[0.45rem] font-mono text-[0.74rem] text-body truncate max-w-[22rem]">{file.name}</td>
-                  <td className="py-[0.45rem] text-right text-body-soft tabular-nums">{formatAssetBytes(file.size_bytes)}</td>
+                  <td className="py-[0.45rem] text-right text-body-soft tabular-nums">{fileSizeStr}</td>
                   <td className="py-[0.45rem] text-right">
                     <div className="flex items-center justify-end gap-1">
                       <Button variant="ghost" size="xs" onClick={() => handleCopyUrl(file.url)}>
@@ -167,7 +171,8 @@ function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
