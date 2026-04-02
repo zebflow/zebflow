@@ -1799,15 +1799,35 @@ fn template_glob_matches(pattern: &str, path: &str) -> bool {
 }
 
 fn glob_star_match(pattern: &str, path: &str) -> bool {
-    // Split pattern and path by '/', match each segment (single * = any non-slash chars)
+    // Split pattern and path by '/', match each segment (single * = any non-slash chars, *.ext supported)
     let pat_parts: Vec<&str> = pattern.split('/').collect();
     let path_parts: Vec<&str> = path.split('/').collect();
     if pat_parts.len() != path_parts.len() {
         return false;
     }
-    pat_parts.iter().zip(path_parts.iter()).all(|(p, s)| {
-        if *p == "*" { true } else { p == s }
-    })
+    pat_parts.iter().zip(path_parts.iter()).all(|(p, s)| glob_segment_matches(p, s))
+}
+
+fn glob_segment_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+    // Handle patterns like "*.tsx", "foo*", "foo*.tsx"
+    let mut remaining = value;
+    let mut parts = pattern.splitn(2, '*');
+    let prefix = parts.next().unwrap_or("");
+    let suffix = parts.next().unwrap_or("");
+    if !remaining.starts_with(prefix) {
+        return false;
+    }
+    remaining = &remaining[prefix.len()..];
+    if !suffix.is_empty() && !remaining.ends_with(suffix) {
+        return false;
+    }
+    true
 }
 
 fn glob_star_match_prefix(pattern: &str, path: &str) -> bool {

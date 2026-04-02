@@ -551,8 +551,10 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
     };
 
     let source_path = Path::new("module.tsx");
-    let transform_ret = Transformer::new(&alloc, source_path, &options)
-        .build_with_scoping(scoping, &mut program);
+    let transform_ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Transformer::new(&alloc, source_path, &options).build_with_scoping(scoping, &mut program)
+    }))
+    .map_err(|_| EngineError::new("RWE_TRANSFORM", "oxc transformer panicked"))?;
 
     if !transform_ret.errors.is_empty() {
         let msg = transform_ret
@@ -561,7 +563,7 @@ pub fn transpile_tsx(source: &str) -> Result<String, EngineError> {
             .map(|e| format!("{e:?}"))
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(EngineError::new("RWE_TRANSFORM", format!("transform errors: {msg}")));
+        eprintln!("[RWE] transform diagnostics (non-fatal): {msg}");
     }
 
     Ok(Codegen::new().build(&program).code)
