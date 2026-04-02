@@ -82,6 +82,7 @@ function RwePanel({ api, initialConfig, owner, project }) {
   const [statusMsg, setStatusMsg] = useState("Ready.");
   const [statusTone, setStatusTone] = useState("info");
   const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [commitOpen, setCommitOpen] = useState(false);
   const [pendingData, setPendingData] = useState(null);
 
@@ -122,6 +123,22 @@ function RwePanel({ api, initialConfig, owner, project }) {
     } finally {
       setSaving(false);
       setPendingData(null);
+    }
+  }
+
+  async function handleClearCache() {
+    setClearing(true);
+    try {
+      const res = await fetch(`/api/projects/${owner}/${project}/rwe/cache/clear`, { method: "POST" });
+      if (res.ok) {
+        setStatusMsg("Template cache cleared.");
+        setStatusTone("ok");
+      } else {
+        setStatusMsg("Failed to clear cache.");
+        setStatusTone("error");
+      }
+    } finally {
+      setClearing(false);
     }
   }
 
@@ -196,6 +213,14 @@ function RwePanel({ api, initialConfig, owner, project }) {
             size="sm"
             disabled={saving}
             label={saving ? "Saving..." : "Save RWE Config"}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={clearing}
+            onClick={handleClearCache}
+            label={clearing ? "Clearing…" : "Clear Template Cache"}
           />
           <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>

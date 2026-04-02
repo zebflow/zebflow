@@ -12,8 +12,9 @@ import DropdownMenu from "@/components/ui/dropdown-menu";
 import DropdownMenuItem from "@/components/ui/dropdown-menu-item";
 
 import {
-  PipelineIcon, FolderIcon, FileKindIcon, StatusDot, TrashIcon, PlusIcon, DownloadIcon, DocIcon,
+  PipelineIcon, FolderIcon, FileKindIcon, StatusDot, TrashIcon, PlusIcon, DownloadIcon, DocIcon, SearchIcon,
 } from "@/pages/project-studio/pipelines/registry/components/editor-icons";
+import { useFileSearchOptional } from "@/pages/project-studio/components/file-search-context";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import {
   pipelineNavLastSegment, expandFolderPaths, getDirectChildFolders, peSanitizeSegment, peNormalizeVirtualPath, peEmptyPipelineGraph,
@@ -187,6 +188,32 @@ function AssetManager({ api, subfolder = "" }: { api: string; subfolder?: string
       variant="destructive"
     />
     </div>
+  );
+}
+
+// Sub-component: safe to call useFileSearch() here because it renders inside FileSearchProvider
+// (as part of ProjectStudioShell's children tree, after the provider is established).
+function SidebarSearchButton({ editorBase, nav }) {
+  const fileSearch = useFileSearchOptional();
+  if (!fileSearch) return null;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      title="Find file (⌘K)"
+      onClick={() =>
+        fileSearch.openFileSearch({
+          onSelect: (relPath) => {
+            const parts = relPath.split("/");
+            const dir = parts.slice(0, -1).join("/");
+            nav(`${editorBase}?type=template&path=${encodeURIComponent(dir)}&file=${encodeURIComponent(relPath)}`);
+          },
+        })
+      }
+      className="flex items-center gap-1.5"
+    >
+      <SearchIcon />
+    </Button>
   );
 }
 
@@ -774,6 +801,7 @@ export default function UnifiedRegistryEditor(input) {
             <div className="pipeline-editor-sidebar-head">
               <p className="pipeline-editor-title">Editor</p>
               <div className="flex items-center gap-1">
+                <SidebarSearchButton editorBase={editorBase} nav={nav} />
                 <DropdownMenu
                   trigger={<Button size="sm" variant="outline" className="flex items-center gap-1.5"><PlusIcon />New</Button>}
                   align="right"

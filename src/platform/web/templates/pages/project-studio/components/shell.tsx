@@ -15,6 +15,7 @@ import { SessionPanel } from "@/pages/project-studio/components/session-panel";
 import { ConsoleOutput } from "@/pages/project-studio/components/console-output";
 import { AutoOverlay } from "@/pages/project-studio/components/auto-overlay";
 import { StudioChromeProvider, useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
+import { FileSearchProvider } from "@/pages/project-studio/components/file-search-context";
 
 function ConsoleSlot({ owner, project, children }) {
   const { consoleOpen } = useStudioChrome();
@@ -44,6 +45,7 @@ export default function ProjectStudioShell(props) {
         isLight ? "bg-gray-50" : "bg-dark-background",
       )}
     >
+      <FileSearchProvider owner={owner} project={project}>
       <StudioChromeProvider>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <PlatformSidebar nav={nav} theme={theme} />
@@ -130,6 +132,7 @@ export default function ProjectStudioShell(props) {
 
         <AutoOverlay />
       </StudioChromeProvider>
+      </FileSearchProvider>
     </div>
   );
 }

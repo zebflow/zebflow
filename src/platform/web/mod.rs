@@ -345,6 +345,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_template_workspace),
         )
         .route(
+            "/api/projects/{owner}/{project}/templates/search",
+            get(api_template_search),
+        )
+        .route(
             "/api/projects/{owner}/{project}/templates/pages",
             get(api_template_pages),
         )
@@ -411,6 +415,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/rwe/libraries/disable",
             delete(api_disable_rwe_library),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/rwe/cache/clear",
+            post(api_rwe_cache_clear),
         )
         .route(
             "/api/projects/{owner}/{project}/assistant/chat",
@@ -6946,6 +6954,54 @@ async fn api_template_workspace(
     }
 }
 
+/// `GET /api/projects/{owner}/{project}/templates/search?q=TEXT&scope=all|pages`
+/// Searches template file contents line-by-line. Returns up to 50 matches.
+async fn api_template_search(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplateSearchQuery>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return r;
+    }
+    let q = query.q.as_deref().unwrap_or("").trim().to_string();
+    if q.is_empty() {
+        return Json(json!({ "matches": [] })).into_response();
+    }
+    let scope = query.scope.as_deref().unwrap_or("all");
+    let glob = if scope == "pages" { Some("pages/*.tsx") } else { None };
+    match state
+        .platform
+        .projects
+        .search_template_files(&owner, &project, &q, glob, 0)
+    {
+        Ok(raw) => {
+            let matches: Vec<_> = raw
+                .into_iter()
+                .take(50)
+                .map(|(rel_path, line, snippet)| {
+                    json!({ "rel_path": rel_path, "line": line, "snippet": snippet.trim() })
+                })
+                .collect();
+            Json(json!({ "matches": matches })).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateSearchQuery {
+    q: Option<String>,
+    scope: Option<String>,
+}
+
 async fn api_template_pages(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -7837,6 +7893,27 @@ async fn api_disable_rwe_library(
         &format!("chore(rwe): disable library {}", params.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
+}
+
+/// `POST /api/projects/{owner}/{project}/rwe/cache/clear` — flush the shared
+/// template compile cache for the running process. Useful after editing an
+/// imported component whose hash is not part of the entry-page hash key.
+async fn api_rwe_cache_clear(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state, &headers, &owner, &project, ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    state
+        .template_cache
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    Json(json!({"ok": true, "cleared": true})).into_response()
 }
 
 /// Stages `zebflow.json` and `zeb.lock`, then commits with the given message.

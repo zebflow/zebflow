@@ -1,5 +1,6 @@
 import NodeField from "@/pages/project-studio/pipelines/registry/components/nodes/node-field";
 import NodeLayout from "@/pages/project-studio/pipelines/registry/components/nodes/node-layout";
+import { useFileSearchOptional } from "@/pages/project-studio/components/file-search-context";
 import type {
   NodeFieldDef,
   SelectOptionDef,
@@ -176,6 +177,7 @@ interface Props {
 export default function NodeForm({ fields, layout, config, dataState, onChange }: Props) {
   if (!fields || fields.length === 0) return null;
 
+  const fileSearch = useFileSearchOptional();
   const enriched = enrichFields(fields, config, dataState);
 
   if (layout && layout.length > 0) {
@@ -190,11 +192,32 @@ export default function NodeForm({ fields, layout, config, dataState, onChange }
           key={f.name}
           style={{ gridColumn: isFullWidth(f) ? "1 / -1" : undefined }}
         >
-          <NodeField
-            field={f}
-            value={f.value}
-            onChange={(val) => onChange(f.name, val)}
-          />
+          {f.data_source === "templates_pages" && fileSearch ? (
+            <div className="flex items-end gap-1">
+              <div className="flex-1 min-w-0">
+                <NodeField field={f} value={f.value} onChange={(val) => onChange(f.name, val)} />
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  fileSearch.openFileSearch({
+                    scope: "pages",
+                    onSelect: (relPath) => onChange(f.name, relPath),
+                  })
+                }
+                title="Browse template files"
+                className="mb-0.5 px-2 py-1.5 text-xs rounded border border-dark-border text-dark-text1/60 hover:text-dark-text1 hover:bg-dark-accent3 shrink-0 transition-colors"
+              >
+                Browse
+              </button>
+            </div>
+          ) : (
+            <NodeField
+              field={f}
+              value={f.value}
+              onChange={(val) => onChange(f.name, val)}
+            />
+          )}
         </div>
       ))}
     </div>
