@@ -171,7 +171,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
 
     println!("✅ Pipeline scheduler started");
 
-    let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone());
+    let template_cache = crate::pipeline::engines::basic::new_template_cache();
+    let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone(), template_cache.clone());
 
     let router = Router::new()
         // Liveness/readiness probes — no auth, always fast.
@@ -537,7 +538,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             platform,
             frontend,
             render_script_cache,
-            template_cache: crate::pipeline::engines::basic::new_template_cache(),
+            template_cache,
             scheduler,
             preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });

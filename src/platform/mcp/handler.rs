@@ -260,14 +260,19 @@ struct MoveParams {
 #[derive(Clone)]
 pub struct ZebflowMcpHandler {
     platform: Arc<PlatformService>,
+    template_cache: crate::pipeline::engines::basic::TemplateCache,
     tool_router: rmcp::handler::server::tool::ToolRouter<Self>,
 }
 
 #[tool_router]
 impl ZebflowMcpHandler {
-    pub fn new(platform: Arc<PlatformService>) -> Self {
+    pub fn new(
+        platform: Arc<PlatformService>,
+        template_cache: crate::pipeline::engines::basic::TemplateCache,
+    ) -> Self {
         Self {
             platform,
+            template_cache,
             tool_router: Self::tool_router(),
         }
     }
@@ -643,6 +648,9 @@ impl ZebflowMcpHandler {
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_write(&params.rel_path, &params.content);
+        if !result.text.starts_with("Error:") {
+            self.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+        }
         // navigate is ignored for MCP
         ok_or_err(result)
     }
@@ -677,7 +685,11 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_edit")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.template_edit(&params.rel_path, &params.old_string, &params.new_string))
+        let result = ops.template_edit(&params.rel_path, &params.old_string, &params.new_string);
+        if !result.text.starts_with("Error:") {
+            self.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        ok_or_err(result)
     }
 
     // ── Project Docs ─────────────────────────────────────────────────────────
@@ -1001,6 +1013,7 @@ fn ok_or_err(result: crate::platform::services::ops::OpsResult) -> Result<CallTo
 /// Build the MCP service with token validation using rmcp's StreamableHttpService.
 pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
     platform: Arc<PlatformService>,
+    template_cache: crate::pipeline::engines::basic::TemplateCache,
 ) -> axum::Router<S> {
     use axum::middleware;
     use rmcp::transport::streamable_http_server::{
@@ -1020,10 +1033,12 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
     };
 
     let platform_for_factory = platform.clone();
+    let cache_for_factory = template_cache.clone();
     let service = StreamableHttpService::new(
         move || {
             let platform = platform_for_factory.clone();
-            let handler = ZebflowMcpHandler::new(platform);
+            let cache = cache_for_factory.clone();
+            let handler = ZebflowMcpHandler::new(platform, cache);
             Ok(handler)
         },
         session_manager,
