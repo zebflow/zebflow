@@ -491,10 +491,15 @@ impl DslExecutor {
 
         // Build raw_flag_key → config_key map for KeyValuePairs flags so that
         // e.g. --claim (raw "claim") correctly writes into "claims" as a JSON object.
-        let kv_config_keys: std::collections::HashMap<String, String> = {
+        // Also build the equivalent map for CommaSeparatedList flags so that
+        // e.g. --roles admin,lecturer is stored as ["admin","lecturer"] not the raw string.
+        let (kv_config_keys, comma_list_config_keys): (
+            std::collections::HashMap<String, String>,
+            std::collections::HashMap<String, String>,
+        ) = {
             let defs = crate::pipeline::nodes::builtin_node_definitions();
-            defs.iter()
-                .find(|d| d.kind == node_kind)
+            let node_def = defs.iter().find(|d| d.kind == node_kind);
+            let kv = node_def
                 .map(|d| d.dsl_flags.iter()
                     .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::KeyValuePairs)
                     .map(|f| (
@@ -503,7 +508,18 @@ impl DslExecutor {
                     ))
                     .collect()
                 )
-                .unwrap_or_default()
+                .unwrap_or_default();
+            let csv = node_def
+                .map(|d| d.dsl_flags.iter()
+                    .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::CommaSeparatedList)
+                    .map(|f| (
+                        f.flag.trim_start_matches("--").replace('-', "_"),
+                        f.config_key.clone(),
+                    ))
+                    .collect()
+                )
+                .unwrap_or_default();
+            (kv, csv)
         };
 
         if let Value::Object(ref mut cfg) = node.config {
@@ -529,6 +545,19 @@ impl DslExecutor {
                             m.insert(pk.to_string(), json!(pv));
                         }
                     }
+                } else if let Some(config_key) = comma_list_config_keys.get(k) {
+                    // CommaSeparatedList: split "a,b,c" → ["a","b","c"].
+                    // parse_flags_for_patch stored it as a raw string via coerce_scalar_value.
+                    let csv = match v {
+                        Value::String(s) => s.as_str(),
+                        _ => {
+                            // Already an array (or unexpected type) — store as-is.
+                            cfg.insert(config_key.clone(), v.clone());
+                            continue;
+                        }
+                    };
+                    let arr: Vec<Value> = csv.split(',').map(|s| json!(s.trim())).collect();
+                    cfg.insert(config_key.clone(), Value::Array(arr));
                 } else {
                     cfg.insert(k.clone(), v.clone());
                 }

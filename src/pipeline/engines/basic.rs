@@ -14,8 +14,8 @@ use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
 };
 use crate::pipeline::nodes::basic::{
-    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request, logic,
-    pg_query, script, sqlite_mutate, sqlite_query,
+    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
+    img_thumbnail, logic, pg_query, script, sqlite_mutate, sqlite_query,
     trigger::{function as trigger_function, manual, schedule, webhook, weberror},
     web_response, ws_emit, ws_sync_state, ws_trigger,
 };
@@ -332,6 +332,17 @@ impl BasicPipelineEngine {
                 };
                 Ok(NodeDispatch::FileSave(file_save::Node::new(config, platform.clone())?))
             }
+            img_thumbnail::NODE_KIND => {
+                let config: img_thumbnail::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "IMG_THUMBNAIL",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(config, platform.clone())?))
+            }
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -620,6 +631,7 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
                 NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
                 NodeDispatch::FileSave(node) => node.execute_async(input).await,
+                NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
             }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -781,6 +793,7 @@ enum NodeDispatch {
     TriggerFunction(trigger_function::Node),
     FunctionCall(function_call::Node),
     FileSave(file_save::Node),
+    ImgThumbnail(img_thumbnail::Node),
 }
 
 enum MergeStrategy {

@@ -129,6 +129,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
         "trigger.function" | "n.trigger.function" => Some("n.trigger.function"),
         "function.call" | "n.function.call" => Some("n.function.call"),
+        "file.save" | "n.file.save" => Some("n.file.save"),
+        "img.thumbnail" | "n.img.thumbnail" => Some("n.img.thumbnail"),
         _ => None,
     }
 }
