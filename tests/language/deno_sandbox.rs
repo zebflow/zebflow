@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
@@ -50,11 +49,6 @@ fn deno_sandbox_clamps_limits_in_strict_mode() {
 
 #[test]
 fn deno_sandbox_runtime_supports_local_fetch_with_root() {
-    if !deno_available() {
-        eprintln!("skipping: deno executable not found");
-        return;
-    }
-
     let dir = make_temp_dir("zebflow_deno_fetch");
     let file_path = dir.join("payload.json");
     fs::write(&file_path, br#"{"value": 42}"#).expect("write payload file");
@@ -82,11 +76,6 @@ return { value: data.value, hasTime: n.time.now() > 0 };
 
 #[test]
 fn deno_sandbox_runtime_denies_external_fetch_without_allow_list() {
-    if !deno_available() {
-        eprintln!("skipping: deno executable not found");
-        return;
-    }
-
     let engine = DenoSandboxEngine::default();
     let source = r#"
 await fetch("https://example.com/");
@@ -106,11 +95,6 @@ return { ok: true };
 
 #[test]
 fn deno_sandbox_runtime_runs_proper_script() {
-    if !deno_available() {
-        eprintln!("skipping: deno executable not found");
-        return;
-    }
-
     let engine = DenoSandboxEngine::default();
     let source = r#"
 let sum = 0;
@@ -135,11 +119,6 @@ return {
 
 #[test]
 fn deno_sandbox_runtime_blocks_indirect_eval_access() {
-    if !deno_available() {
-        eprintln!("skipping: deno executable not found");
-        return;
-    }
-
     let engine = DenoSandboxEngine::default();
     let source = r#"
 const dynEval = globalThis["eval"];
@@ -165,8 +144,22 @@ return dynEval("1 + 1");
     );
 }
 
-fn deno_available() -> bool {
-    Command::new("deno").arg("--version").output().is_ok()
+#[test]
+fn deno_sandbox_runtime_supports_optional_chaining_and_nullish_coalescing() {
+    let engine = DenoSandboxEngine::default();
+    let source = r#"
+const obj = { a: { b: 42 } };
+const x = obj?.a?.b;
+const missing = obj?.missing?.value ?? "default";
+const z = null?.foo ?? "null_default";
+return { x, missing, z };
+"#;
+    let out = engine
+        .run_script(source, &json!({}), None)
+        .expect("?. and ?? must work in sandbox");
+    assert_eq!(out.get("x").and_then(|v| v.as_i64()), Some(42));
+    assert_eq!(out.get("missing").and_then(|v| v.as_str()), Some("default"));
+    assert_eq!(out.get("z").and_then(|v| v.as_str()), Some("null_default"));
 }
 
 fn make_temp_dir(prefix: &str) -> PathBuf {
