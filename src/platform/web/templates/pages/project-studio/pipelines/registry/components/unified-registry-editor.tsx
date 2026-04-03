@@ -206,7 +206,8 @@ function SidebarSearchButton({ editorBase, nav }) {
           onSelect: (relPath) => {
             const parts = relPath.split("/");
             const dir = parts.slice(0, -1).join("/");
-            nav(`${editorBase}?type=template&path=${encodeURIComponent(dir)}&file=${encodeURIComponent(relPath)}`);
+            const type = relPath.endsWith(".zf.json") ? "pipeline" : "template";
+            nav(`${editorBase}?type=${type}&path=${encodeURIComponent(dir)}&file=${encodeURIComponent(relPath)}`);
           },
         })
       }
