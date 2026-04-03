@@ -8,6 +8,7 @@ pub mod browser_run;
 pub mod crypto;
 pub mod file_save;
 pub mod function_call;
+pub mod img_thumbnail;
 pub mod http_request;
 pub mod logic;
 pub mod pg_query;
@@ -29,6 +30,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         browser_run::definition(),
         file_save::definition(),
         function_call::definition(),
+        img_thumbnail::definition(),
         trigger::function::definition(),
         trigger::webhook::definition(),
         trigger::schedule::definition(),

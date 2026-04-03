@@ -153,6 +153,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             crate::rwe::resolve_engine_or_default(None),
             Some(platform.credentials.clone()),
         )
+        .with_platform(platform.clone())
         .with_ws_hub(platform.ws_hub.clone())
         .with_data_root(platform.config.data_root.clone()),
     );
@@ -6755,6 +6756,7 @@ async fn api_execute_pipeline(
         state.frontend.rwe.clone(),
         Some(credentials),
     )
+    .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
     .with_data_root(state.platform.config.data_root.clone());
@@ -9346,6 +9348,7 @@ async fn dispatch_weberror(
         state.frontend.rwe.clone(),
         Some(credentials),
     )
+    .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
     .with_data_root(state.platform.config.data_root.clone());
@@ -9598,6 +9601,7 @@ async fn public_webhook_ingress(
         state.frontend.rwe.clone(),
         Some(credentials),
     )
+    .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
     .with_data_root(state.platform.config.data_root.clone());
@@ -10928,12 +10932,14 @@ async fn ws_dispatch_event(
         let rwe = state.frontend.rwe.clone();
         let ws_hub = state.platform.ws_hub.clone();
         let data_root = state.platform.config.data_root.clone();
+        let platform_clone = state.platform.clone();
         tokio::spawn(async move {
             let engine = crate::pipeline::BasicPipelineEngine::new(
                 std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
                 rwe,
                 Some(credentials),
             )
+            .with_platform(platform_clone)
             .with_ws_hub(ws_hub)
             .with_data_root(data_root);
             let _ = engine.execute_async(&graph, &ctx).await;

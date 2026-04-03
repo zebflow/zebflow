@@ -38,6 +38,7 @@ deno_core = "0.390.0"
 deno_error = "0.7.0"
 base64 = "0.22"
 infer = "0.16"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 multer = "3"
 serde_urlencoded = "0.7"
 sha2 = "0.10"
