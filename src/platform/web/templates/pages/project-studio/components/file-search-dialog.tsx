@@ -183,23 +183,35 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
                 : query.trim() ? "No matches found" : "Type to search file contents"}
             </p>
           )}
-          {results.map((r, i) => (
-            <button
-              key={`result-${i}`}
-              data-idx={i}
-              onClick={() => { onSelect(r.relPath); onClose(); }}
-              className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors ${
-                i === cursor
-                  ? "bg-blue-600/20 text-dark-text1"
-                  : "text-dark-text1/80 hover:bg-dark-accent3 hover:text-dark-text1"
-              }`}
-            >
-              <span className="text-sm font-medium truncate">{r.label}</span>
-              {r.sub && r.sub !== r.label && (
-                <span className="text-xs text-dark-text1/40 truncate">{r.sub}</span>
-              )}
-            </button>
-          ))}
+          {results.map((r, i) => {
+            const isPipeline = r.relPath.endsWith(".zf.json");
+            return (
+              <button
+                key={`result-${i}`}
+                data-idx={i}
+                onClick={() => { onSelect(r.relPath); onClose(); }}
+                className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors ${
+                  i === cursor
+                    ? "bg-blue-600/20 text-dark-text1"
+                    : "text-dark-text1/80 hover:bg-dark-accent3 hover:text-dark-text1"
+                }`}
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-medium truncate flex-1">{r.label}</span>
+                  <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                    isPipeline
+                      ? "bg-violet-500/20 text-violet-400"
+                      : "bg-sky-500/20 text-sky-400"
+                  }`}>
+                    {isPipeline ? "pipeline" : "template"}
+                  </span>
+                </div>
+                {r.sub && r.sub !== r.label && (
+                  <span className="text-xs text-dark-text1/40 truncate">{r.sub}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
         {/* Footer hints */}
         <div className="flex items-center gap-3 px-3 py-1.5 border-t border-dark-border text-[11px] text-dark-text1/30 select-none">

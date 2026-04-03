@@ -25,16 +25,28 @@ export function FileSearchProvider({ children, owner, project }) {
   async function loadItems() {
     if (!owner || !project) return;
     try {
-      const resp = await fetch(`/api/projects/${owner}/${project}/templates/workspace`);
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const allItems = (Array.isArray(data?.items) ? data.items : [])
+      const [tmplResp, plResp] = await Promise.all([
+        fetch(`/api/projects/${owner}/${project}/templates/workspace`),
+        fetch(`/api/projects/${owner}/${project}/pipelines?recursive=true`),
+      ]);
+      const tmplData = tmplResp.ok ? await tmplResp.json() : {};
+      const plData = plResp.ok ? await plResp.json() : {};
+
+      const templateItems: FileItem[] = (Array.isArray(tmplData?.items) ? tmplData.items : [])
+        .filter((item: any) => item?.kind !== "folder" && !!item?.rel_path)
         .map((item: any) => ({
-          rel_path: String(item?.rel_path || ""),
-          name: String(item?.name || ""),
-        }))
-        .filter((item: any) => !!item.rel_path);
-      setItems(allItems);
+          rel_path: String(item.rel_path),
+          name: String(item.name || item.rel_path),
+        }));
+
+      const pipelineItems: FileItem[] = (Array.isArray(plData?.items) ? plData.items : [])
+        .filter((item: any) => !!item?.meta?.file_rel_path)
+        .map((item: any) => ({
+          rel_path: String(item.meta.file_rel_path),
+          name: String(item.meta.name || item.meta.file_rel_path),
+        }));
+
+      setItems([...templateItems, ...pipelineItems]);
     } catch {
       // ignore
     }
