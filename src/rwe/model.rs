@@ -256,6 +256,11 @@ pub struct CompiledTemplate {
     /// use shared fields.
     #[serde(default)]
     pub engine_payload: Option<Value>,
+    /// Absolute filesystem paths of all component files inlined during compilation.
+    /// Used for dependency-aware cache eviction: when any of these files change,
+    /// cache entries that depend on them are evicted so the next request recompiles.
+    #[serde(default)]
+    pub dependency_paths: std::collections::HashSet<String>,
 }
 
 /// Request-level render context.

@@ -631,6 +631,26 @@ impl ProjectService {
         Ok(layout.repo_pipelines_dir)
     }
 
+    /// Resolve the absolute filesystem path for a template file given its `rel_path`.
+    /// Returns `Err` if the path is invalid or escapes the template root.
+    /// Used by cache eviction code to map a relative path → absolute path.
+    pub fn resolve_template_abs_path(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<PathBuf, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (_, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
+        // Canonicalize so the path format matches what the RWE compiler stores in
+        // dependency_paths (the compiler uses fs::canonicalize via canonical_or_current).
+        // Without this, a relative data_root like ".zebflow-platform-data" causes a
+        // path mismatch and eviction never fires.
+        Ok(std::fs::canonicalize(&abs).unwrap_or(abs))
+    }
+
     /// Reads one template workspace file by relative path under `app/templates`.
     pub fn read_template_file(
         &self,

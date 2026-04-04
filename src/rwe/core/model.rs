@@ -46,6 +46,12 @@ pub struct CompiledTemplate {
     /// All `zeb/*` library specifiers found across the page and all inlined components.
     #[serde(default)]
     pub detected_zeb_libs: Vec<String>,
+    /// Absolute filesystem paths of all component files inlined during compilation
+    /// (from `collect_inlined_module` `visited` set).
+    /// Used for dependency-aware cache eviction: when any of these files change,
+    /// cache entries that depend on them are evicted.
+    #[serde(default)]
+    pub dependency_paths: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
