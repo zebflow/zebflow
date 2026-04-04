@@ -132,6 +132,12 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "function.call" | "n.function.call" => Some("n.function.call"),
         "file.save" | "n.file.save" => Some("n.file.save"),
         "img.thumbnail" | "n.img.thumbnail" => Some("n.img.thumbnail"),
+        "mem.set" | "n.mem.set" => Some("n.mem.set"),
+        "mem.get" | "n.mem.get" => Some("n.mem.get"),
+        "mem.del" | "n.mem.del" => Some("n.mem.del"),
+        "mem.incr" | "n.mem.incr" => Some("n.mem.incr"),
+        "mem.publish" | "n.mem.publish" => Some("n.mem.publish"),
+        "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.memsubscribe"),
         _ => None,
     }
 }

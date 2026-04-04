@@ -61,6 +61,14 @@ pub struct WsTriggerSpec {
     pub event: String,
 }
 
+/// One extracted mem-subscribe trigger from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemSubscribeTriggerSpec {
+    pub node_id: String,
+    /// Channel name to subscribe to.
+    pub channel: String,
+}
+
 /// Describes one webhook path conflict found during pipeline registration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookPathConflict {
@@ -84,6 +92,7 @@ pub struct CompiledPipeline {
     pub schedule_triggers: Vec<ScheduleTriggerSpec>,
     pub ws_triggers: Vec<WsTriggerSpec>,
     pub weberror_triggers: Vec<WebErrorTriggerSpec>,
+    pub mem_subscribe_triggers: Vec<MemSubscribeTriggerSpec>,
 }
 
 impl CompiledPipeline {
@@ -135,6 +144,7 @@ impl CompiledPipeline {
         let mut schedule_triggers = Vec::new();
         let mut ws_triggers = Vec::new();
         let mut weberror_triggers = Vec::new();
+        let mut mem_subscribe_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
                 "n.trigger.webhook" => {
@@ -231,6 +241,18 @@ impl CompiledPipeline {
                         event,
                     });
                 }
+                "n.trigger.memsubscribe" => {
+                    let channel = node
+                        .config
+                        .get("channel")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    mem_subscribe_triggers.push(MemSubscribeTriggerSpec {
+                        node_id: node.id.clone(),
+                        channel,
+                    });
+                }
                 _ => {}
             }
         }
@@ -247,6 +269,7 @@ impl CompiledPipeline {
             schedule_triggers,
             ws_triggers,
             weberror_triggers,
+            mem_subscribe_triggers,
         })
     }
 }

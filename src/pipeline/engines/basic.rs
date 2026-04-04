@@ -15,8 +15,9 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
-    img_thumbnail, logic, pg_query, script, sqlite_mutate, sqlite_query,
-    trigger::{function as trigger_function, manual, schedule, webhook, weberror},
+    img_thumbnail, logic, mem_del, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
+    sqlite_mutate, sqlite_query,
+    trigger::{function as trigger_function, manual, memsubscribe, schedule, webhook, weberror},
     web_response, ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::platform::services::PlatformService;
@@ -24,6 +25,7 @@ use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutpu
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::CredentialService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
+use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
 
 /// A single entry in the template compile cache.
@@ -79,6 +81,7 @@ pub struct BasicPipelineEngine {
     credentials: Option<Arc<CredentialService>>,
     template_cache: Option<TemplateCache>,
     ws_hub: Option<Arc<WsHub>>,
+    mem_hub: Option<Arc<MemHub>>,
     platform: Option<Arc<PlatformService>>,
     /// Filesystem root for resolving `@/` alias imports in TSX templates.
     template_root: Option<std::path::PathBuf>,
@@ -95,6 +98,7 @@ impl Default for BasicPipelineEngine {
             credentials: None,
             template_cache: None,
             ws_hub: None,
+            mem_hub: None,
             platform: None,
             template_root: None,
             data_root: None,
@@ -114,6 +118,7 @@ impl BasicPipelineEngine {
             credentials,
             template_cache: None,
             ws_hub: None,
+            mem_hub: None,
             platform: None,
             template_root: None,
             data_root: None,
@@ -136,6 +141,12 @@ impl BasicPipelineEngine {
     /// Attach the WS hub so ws_sync_state and ws_emit nodes can access rooms.
     pub fn with_ws_hub(mut self, hub: Arc<WsHub>) -> Self {
         self.ws_hub = Some(hub);
+        self
+    }
+
+    /// Attach the mem hub so n.mem.* nodes can access the per-project KV store.
+    pub fn with_mem_hub(mut self, hub: Arc<MemHub>) -> Self {
+        self.mem_hub = Some(hub);
         self
     }
 
@@ -366,6 +377,75 @@ impl BasicPipelineEngine {
                 };
                 Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(config, platform.clone())?))
             }
+            mem_set::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemSet(mem_set::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_SET_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            mem_get::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemGet(mem_get::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_GET_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            mem_del::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemDel(mem_del::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_DEL_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            mem_incr::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemIncr(mem_incr::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_INCR_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            mem_publish::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemPublish(mem_publish::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_PUBLISH_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(
+                serde_json::from_value(node.config.clone())
+                    .map_err(|e| PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string()))?,
+            ))),
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -659,6 +739,12 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
                 NodeDispatch::FileSave(node) => node.execute_async(input).await,
                 NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
+                NodeDispatch::MemSet(node) => node.execute_async(input).await,
+                NodeDispatch::MemGet(node) => node.execute_async(input).await,
+                NodeDispatch::MemDel(node) => node.execute_async(input).await,
+                NodeDispatch::MemIncr(node) => node.execute_async(input).await,
+                NodeDispatch::MemPublish(node) => node.execute_async(input).await,
+                NodeDispatch::MemSubscribe(node) => node.execute_async(input).await,
             }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -821,6 +907,12 @@ enum NodeDispatch {
     FunctionCall(function_call::Node),
     FileSave(file_save::Node),
     ImgThumbnail(img_thumbnail::Node),
+    MemSet(mem_set::Node),
+    MemGet(mem_get::Node),
+    MemDel(mem_del::Node),
+    MemIncr(mem_incr::Node),
+    MemPublish(mem_publish::Node),
+    MemSubscribe(memsubscribe::Node),
 }
 
 enum MergeStrategy {

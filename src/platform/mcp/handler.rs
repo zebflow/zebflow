@@ -41,7 +41,8 @@ struct DocsProjectReadParams {
 #[derive(serde::Deserialize, JsonSchema)]
 struct HelpParams {
     /// Help path to load (e.g. "pipeline", "web/hooks", "pipeline/nodes", "tool").
-    /// Omit for the full index.
+    /// Pass empty string or omit for the full index.
+    #[schemars(with = "String")]
     topic: Option<String>,
 }
 
@@ -58,8 +59,10 @@ struct TemplateSearchParams {
     /// Pattern to search for (case-insensitive substring).
     pattern: String,
     /// Optional glob to filter files (e.g. "pages/*.tsx", "**/*.tsx"). Omit to search all files.
+    #[schemars(with = "String")]
     glob: Option<String>,
     /// Number of context lines to include before and after each match. Default 0 (match line only).
+    #[schemars(with = "u32")]
     context: Option<u32>,
 }
 
@@ -68,8 +71,10 @@ struct PipelineSearchParams {
     /// Pattern to search for (case-insensitive substring).
     pattern: String,
     /// Optional glob to filter pipeline files (e.g. "pipelines/api/*.zf.json"). Omit to search all .zf.json files.
+    #[schemars(with = "String")]
     glob: Option<String>,
     /// Number of context lines to include before and after each match. Default 0 (match line only).
+    #[schemars(with = "u32")]
     context: Option<u32>,
 }
 
@@ -90,6 +95,7 @@ struct TemplateCreateParams {
     /// Base name for the file or folder (e.g. "blog-home", "user-card").
     name: String,
     /// Optional parent folder path under templates/ (e.g. "components/ui").
+    #[schemars(with = "String")]
     parent_rel_path: Option<String>,
 }
 
@@ -122,18 +128,23 @@ struct PipelineRegisterParams {
     /// The .zf.json extension is added automatically if omitted.
     /// Preferred over name+path. If omitted, derived from name and path fields.
     #[serde(default)]
+    #[schemars(with = "String")]
     file_rel_path: Option<String>,
     /// Pipeline name slug (e.g. "blog-home", "process-order"). Used when file_rel_path is not set.
     #[serde(default)]
+    #[schemars(with = "String")]
     name: Option<String>,
     /// Virtual path for grouping (e.g. "/pages", "/api", "/jobs"). Defaults to "/". Used when file_rel_path is not set.
     #[serde(default)]
+    #[schemars(with = "String")]
     path: Option<String>,
     /// Optional human-readable display title.
+    #[schemars(with = "String")]
     title: Option<String>,
     /// Optional human-readable description of what this pipeline does.
     /// Stored in the pipeline graph (.zf.json) and indexed in the catalog for search.
     #[serde(default)]
+    #[schemars(with = "String")]
     description: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
     /// Example: "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\""
@@ -163,8 +174,10 @@ struct PipelinePatchParams {
     node_id: String,
     /// Space-separated --flag value pairs to update in the node config.
     /// Example: "--credential new-db --path /updated"
+    #[schemars(with = "String")]
     flags: Option<String>,
     /// Body content for the node (SQL for pg.query, JS source for script nodes).
+    #[schemars(with = "String")]
     body: Option<String>,
 }
 
@@ -178,6 +191,7 @@ struct PipelineActivateParams {
     /// Glob pattern to bulk-activate matching pipelines (e.g. "pipelines/modules/manage/**").
     /// When set, activates all pipelines whose file_rel_path matches. file_rel_path is ignored.
     #[serde(default)]
+    #[schemars(with = "String")]
     glob: Option<String>,
 }
 
@@ -225,8 +239,10 @@ struct GitCommandParams {
     /// Git subcommand: status, log, diff, add, commit
     subcommand: String,
     /// Additional arguments as a space-separated string (e.g. "path/to/file" for add/diff, "--limit 10" for log).
+    #[schemars(with = "String")]
     args: Option<String>,
     /// Commit message — only used when subcommand is "commit".
+    #[schemars(with = "String")]
     message: Option<String>,
 }
 
@@ -235,12 +251,15 @@ struct ConnectionDescribeParams {
     /// Connection slug — get slugs from connection_list (e.g. "main-db", "default").
     slug: String,
     /// Scope to inspect: "tables", "schemas", "functions", or omit for full tree.
+    #[schemars(with = "String")]
     scope: Option<String>,
     /// Filter to a specific schema name (e.g. "public"). Only meaningful with scope="tables".
+    #[schemars(with = "String")]
     schema: Option<String>,
     /// Filter to a specific table for column-level detail.
     /// Format: "schema.table" (e.g. "academic.staff") or just "table" for public schema.
     /// Use scope="tables" first to discover table names, then table=<name> for columns.
+    #[schemars(with = "String")]
     table: Option<String>,
 }
 
@@ -256,6 +275,7 @@ struct InstallUiComponentsParams {
     names: Vec<String>,
     /// If true, overwrite existing files. Default: false.
     #[serde(default)]
+    #[schemars(with = "bool")]
     overwrite: Option<bool>,
 }
 
