@@ -524,37 +524,45 @@ impl DslExecutor {
         let node = &mut graph.nodes[node_idx];
         let node_kind = node.kind.clone();
 
-        // Build raw_flag_key → config_key map for KeyValuePairs flags so that
-        // e.g. --claim (raw "claim") correctly writes into "claims" as a JSON object.
-        // Also build the equivalent map for CommaSeparatedList flags so that
-        // e.g. --roles admin,lecturer is stored as ["admin","lecturer"] not the raw string.
-        let (kv_config_keys, comma_list_config_keys): (
+        // Build raw_flag_key → config_key maps for all DSL flag kinds so that flags like
+        // --credential (raw key "credential") correctly write to config_key "credential_id",
+        // --claim → "claims" (KeyValuePairs), --roles → ["a","b"] (CommaSeparatedList), etc.
+        let (kv_config_keys, comma_list_config_keys, scalar_config_keys): (
+            std::collections::HashMap<String, String>,
             std::collections::HashMap<String, String>,
             std::collections::HashMap<String, String>,
         ) = {
             let defs = crate::pipeline::nodes::builtin_node_definitions();
             let node_def = defs.iter().find(|d| d.kind == node_kind);
+            let flag_key = |f: &crate::pipeline::model::DslFlag| {
+                f.flag.trim_start_matches("--").replace('-', "_")
+            };
             let kv = node_def
                 .map(|d| d.dsl_flags.iter()
                     .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::KeyValuePairs)
-                    .map(|f| (
-                        f.flag.trim_start_matches("--").replace('-', "_"),
-                        f.config_key.clone(),
-                    ))
+                    .map(|f| (flag_key(f), f.config_key.clone()))
                     .collect()
                 )
                 .unwrap_or_default();
             let csv = node_def
                 .map(|d| d.dsl_flags.iter()
                     .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::CommaSeparatedList)
-                    .map(|f| (
-                        f.flag.trim_start_matches("--").replace('-', "_"),
-                        f.config_key.clone(),
-                    ))
+                    .map(|f| (flag_key(f), f.config_key.clone()))
                     .collect()
                 )
                 .unwrap_or_default();
-            (kv, csv)
+            // Scalar and Bool flags: flag name may differ from config key (e.g. --credential → credential_id).
+            let scalar = node_def
+                .map(|d| d.dsl_flags.iter()
+                    .filter(|f| matches!(
+                        f.kind,
+                        crate::pipeline::model::DslFlagKind::Scalar | crate::pipeline::model::DslFlagKind::Bool
+                    ))
+                    .map(|f| (flag_key(f), f.config_key.clone()))
+                    .collect()
+                )
+                .unwrap_or_default();
+            (kv, csv, scalar)
         };
 
         if let Value::Object(ref mut cfg) = node.config {
@@ -594,7 +602,10 @@ impl DslExecutor {
                     let arr: Vec<Value> = csv.split(',').map(|s| json!(s.trim())).collect();
                     cfg.insert(config_key.clone(), Value::Array(arr));
                 } else {
-                    cfg.insert(k.clone(), v.clone());
+                    // Scalar/Bool: map flag key → config_key (e.g. "credential" → "credential_id").
+                    // Fall back to the raw key for unknown/custom config keys.
+                    let config_key = scalar_config_keys.get(k).cloned().unwrap_or_else(|| k.clone());
+                    cfg.insert(config_key, v.clone());
                 }
             }
             if let Some(body_val) = body {
@@ -624,7 +635,7 @@ impl DslExecutor {
             &self.project,
             &meta.file_rel_path,
             &meta.title,
-            "",
+            &meta.description,
             trigger_kind,
             &new_source,
         ) {

@@ -172,8 +172,13 @@ struct PipelinePatchParams {
 struct PipelineActivateParams {
     /// File-relative path of the pipeline to activate (e.g. "pipelines/api/blog-home.zf.json").
     /// Also accepted as "name" for backward compatibility.
-    #[serde(alias = "name")]
+    /// Ignored when glob is set.
+    #[serde(alias = "name", default)]
     file_rel_path: String,
+    /// Glob pattern to bulk-activate matching pipelines (e.g. "pipelines/modules/manage/**").
+    /// When set, activates all pipelines whose file_rel_path matches. file_rel_path is ignored.
+    #[serde(default)]
+    glob: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -494,7 +499,9 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Activate a pipeline — makes it live so it can serve traffic and be executed. \
                        Must be called after pipeline_register or after patching. \
-                       A pipeline must be active before pipeline_execute will run it."
+                       A pipeline must be active before pipeline_execute will run it. \
+                       Set glob (e.g. \"pipelines/modules/manage/**\") to bulk-activate all matching pipelines \
+                       instead of activating one at a time."
     )]
     async fn pipeline_activate(
         &self,
@@ -503,13 +510,21 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_activate")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+
+        // Bulk mode: glob provided → activate all matching pipelines (no lock check per pipeline).
+        if let Some(ref glob) = params.glob {
+            let result = ops.pipeline_activate_glob(glob).await;
+            return Ok(CallToolResult::success(vec![Content::text(result.text)]));
+        }
+
+        // Single mode: check lock and activate exact path.
         if self.pipeline_locked(&session.owner, &session.project, &params.file_rel_path) {
             return Err(McpError::invalid_params(
                 "This pipeline is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
                 None,
             ));
         }
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_activate(&params.file_rel_path).await;
         // navigate is ignored for MCP
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
