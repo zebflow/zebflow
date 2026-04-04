@@ -17,6 +17,7 @@
 //! 2. Is used at BOTH the pipeline node level AND the platform service level
 //!    (e.g. a DB adapter used by `n.pg.query` nodes AND by `platform/services/`).
 
+pub mod mem;
 pub mod transport;
 pub mod storage;
 pub mod scheduler;

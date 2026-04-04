@@ -28,6 +28,7 @@ use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::version::APP_VERSION;
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
+use crate::infra::mem::subscriber::MemSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
@@ -126,6 +127,8 @@ pub struct PlatformAppState {
     template_cache: crate::pipeline::engines::basic::TemplateCache,
     /// Background cron scheduler — kept alive for the lifetime of the process.
     scheduler: Arc<PipelineScheduler>,
+    /// Background mem-subscribe listener service.
+    mem_subscriber: Arc<MemSubscriber>,
     /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
     preview_registry: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
@@ -146,7 +149,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
 
     let render_script_cache = build_render_script_cache(&platform.config.data_root);
 
-    // Build a BasicPipelineEngine for the scheduler.
+    // Build a BasicPipelineEngine for the scheduler + mem subscriber.
     let sched_engine = Arc::new(
         BasicPipelineEngine::new(
             Arc::new(DenoSandboxEngine::default()),
@@ -155,12 +158,13 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .with_platform(platform.clone())
         .with_ws_hub(platform.ws_hub.clone())
+        .with_mem_hub(platform.mem_hub.clone())
         .with_data_root(platform.config.data_root.clone()),
     );
 
     let scheduler = PipelineScheduler::start(
         platform.pipeline_runtime.clone(),
-        sched_engine,
+        sched_engine.clone(),
         platform.pipeline_hits.clone(),
         platform.data.clone(),
         platform.zebflow_cfg.clone(),
@@ -171,6 +175,17 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     });
 
     println!("✅ Pipeline scheduler started");
+
+    let mem_subscriber = Arc::new(MemSubscriber::new(
+        platform.mem_hub.clone(),
+        platform.pipeline_runtime.clone(),
+        sched_engine,
+        platform.pipeline_hits.clone(),
+        platform.data.clone(),
+        platform.zebflow_cfg.clone(),
+    ));
+    mem_subscriber.register_all().await;
+    println!("✅ Mem subscriber started");
 
     let template_cache = crate::pipeline::engines::basic::new_template_cache();
     let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone(), template_cache.clone());
@@ -541,6 +556,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             render_script_cache,
             template_cache,
             scheduler,
+            mem_subscriber,
             preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         });
 
@@ -6531,6 +6547,7 @@ async fn api_activate_pipeline_definition(
                 return internal_error(err);
             }
             state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
+            state.mem_subscriber.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -6561,6 +6578,7 @@ async fn api_deactivate_pipeline_definition(
         Ok(meta) => {
             state.platform.pipeline_runtime.evict(&owner, &project, &req.file_rel_path);
             state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
+            state.mem_subscriber.sync_pipeline(&owner, &project, &req.file_rel_path).await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -6764,6 +6782,8 @@ async fn api_execute_pipeline(
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_ws_hub(state.platform.ws_hub.clone())
+    .with_mem_hub(state.platform.mem_hub.clone())
     .with_data_root(state.platform.config.data_root.clone());
     match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => {
@@ -9351,6 +9371,8 @@ async fn dispatch_weberror(
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
+    .with_ws_hub(state.platform.ws_hub.clone())
+    .with_mem_hub(state.platform.mem_hub.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
     let ctx = PipelineContext {
@@ -9604,6 +9626,8 @@ async fn public_webhook_ingress(
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_ws_hub(state.platform.ws_hub.clone())
+    .with_mem_hub(state.platform.mem_hub.clone())
     .with_data_root(state.platform.config.data_root.clone());
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
@@ -10961,6 +10985,7 @@ async fn ws_dispatch_event(
         let credentials = state.platform.credentials.clone();
         let rwe = state.frontend.rwe.clone();
         let ws_hub = state.platform.ws_hub.clone();
+        let mem_hub = state.platform.mem_hub.clone();
         let data_root = state.platform.config.data_root.clone();
         let platform_clone = state.platform.clone();
         tokio::spawn(async move {
@@ -10971,6 +10996,7 @@ async fn ws_dispatch_event(
             )
             .with_platform(platform_clone)
             .with_ws_hub(ws_hub)
+            .with_mem_hub(mem_hub)
             .with_data_root(data_root);
             let _ = engine.execute_async(&graph, &ctx).await;
         });

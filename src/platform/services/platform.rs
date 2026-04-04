@@ -13,6 +13,7 @@ use crate::platform::services::{
     PipelineRuntimeService, ProjectService, UserService, ZebLockService,
     ZebflowJsonService,
 };
+use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
 
 /// Main platform service graph, created once per process.
@@ -52,6 +53,8 @@ pub struct PlatformService {
     pub mcp_sessions: Arc<McpSessionService>,
     /// WebSocket hub — real-time room management for WS pipelines.
     pub ws_hub: Arc<WsHub>,
+    /// In-memory KV + pub/sub hub for n.mem.* pipeline nodes.
+    pub mem_hub: Arc<MemHub>,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
     /// Read/write service for per-project `repo/zeb.lock`.
@@ -91,6 +94,7 @@ impl PlatformService {
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(data.clone()));
         let ws_hub = Arc::new(WsHub::new());
+        let mem_hub = Arc::new(MemHub::new());
 
         let svc = Self {
             config,
@@ -110,6 +114,7 @@ impl PlatformService {
             pipeline_hits,
             mcp_sessions,
             ws_hub,
+            mem_hub,
             library,
             zeb_lock,
         };
