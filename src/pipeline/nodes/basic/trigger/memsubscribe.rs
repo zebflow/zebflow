@@ -44,9 +44,9 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Mem Subscribe".to_string(),
         description: "Subscribe this pipeline to an in-memory pub/sub channel. \
-            The pipeline fires whenever a message is published to the channel via n.mem.publish. \
-            Payload: { trigger, channel, node_id, message }. \
-            Access the published value via input.message in downstream script nodes."
+            Fires whenever n.mem.publish sends a message on the same channel. \
+            Output payload: { trigger: \"memsubscribe\", channel, node_id, message }. \
+            Access the published data via input.message in downstream nodes."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({

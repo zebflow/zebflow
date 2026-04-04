@@ -84,7 +84,7 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
             NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Storage key. Supports {{ expr }}.".to_string()), ..Default::default() },
             NodeFieldDef { name: "value_path".to_string(), label: "Value Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer into payload (e.g. /data). Empty = whole payload.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "ttl".to_string(), label: "TTL (seconds)".to_string(), field_type: NodeFieldType::Text, help: Some("Auto-expire after N seconds. 0 = forever.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "ttl".to_string(), label: "TTL (seconds)".to_string(), field_type: NodeFieldType::Number, help: Some("Auto-expire after N seconds. 0 = forever.".to_string()), ..Default::default() },
         ],
         layout: vec![],
         ai_tool: Default::default(),

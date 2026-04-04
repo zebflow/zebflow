@@ -84,8 +84,8 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-            NodeFieldDef { name: "amount".to_string(), label: "Amount".to_string(), field_type: NodeFieldType::Text, help: Some("Default 1. Use negative to decrement.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Counter key. Supports {{ expr }}. Created at 0 if missing.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "amount".to_string(), label: "Amount".to_string(), field_type: NodeFieldType::Number, help: Some("Default 1. Use negative to decrement.".to_string()), ..Default::default() },
             NodeFieldDef { name: "out_key".to_string(), label: "Output Key".to_string(), field_type: NodeFieldType::Text, help: Some("Payload key for the new value. Defaults to --key.".to_string()), ..Default::default() },
         ],
         layout: vec![],

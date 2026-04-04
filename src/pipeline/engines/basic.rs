@@ -15,7 +15,7 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
-    img_thumbnail, logic, mem_del, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
+    img_thumbnail, logic, mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
     sqlite_mutate, sqlite_query,
     trigger::{function as trigger_function, manual, memsubscribe, schedule, webhook, weberror},
     web_response, ws_emit, ws_sync_state, ws_trigger,
@@ -442,6 +442,32 @@ impl BasicPipelineEngine {
                     mem_hub.clone(),
                 )))
             }
+            mem_exists::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemExists(mem_exists::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_EXISTS_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
+            mem_expire::NODE_KIND => {
+                let Some(mem_hub) = &self.mem_hub else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MEM_UNAVAILABLE",
+                        "mem hub is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::MemExpire(mem_expire::Node::new(
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_MEM_EXPIRE_CONFIG", e.to_string()))?,
+                    mem_hub.clone(),
+                )))
+            }
             memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(
                 serde_json::from_value(node.config.clone())
                     .map_err(|e| PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string()))?,
@@ -742,6 +768,8 @@ impl PipelineEngine for BasicPipelineEngine {
                 NodeDispatch::MemSet(node) => node.execute_async(input).await,
                 NodeDispatch::MemGet(node) => node.execute_async(input).await,
                 NodeDispatch::MemDel(node) => node.execute_async(input).await,
+                NodeDispatch::MemExists(node) => node.execute_async(input).await,
+                NodeDispatch::MemExpire(node) => node.execute_async(input).await,
                 NodeDispatch::MemIncr(node) => node.execute_async(input).await,
                 NodeDispatch::MemPublish(node) => node.execute_async(input).await,
                 NodeDispatch::MemSubscribe(node) => node.execute_async(input).await,
@@ -910,6 +938,8 @@ enum NodeDispatch {
     MemSet(mem_set::Node),
     MemGet(mem_get::Node),
     MemDel(mem_del::Node),
+    MemExists(mem_exists::Node),
+    MemExpire(mem_expire::Node),
     MemIncr(mem_incr::Node),
     MemPublish(mem_publish::Node),
     MemSubscribe(memsubscribe::Node),

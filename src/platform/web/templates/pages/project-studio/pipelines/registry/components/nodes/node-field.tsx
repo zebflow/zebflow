@@ -11,6 +11,7 @@ import NodeFieldMultiCheckbox from "@/pages/project-studio/pipelines/registry/co
 import NodeFieldKeyValuePairs from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-key-value-pairs";
 import NodeFieldClaimsPairs from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-claims-pairs";
 import NodeFieldParamsBuilder from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-params-builder";
+import NodeFieldNumber from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-number";
 
 interface Props {
   field: any;
@@ -46,6 +47,8 @@ export default function NodeField({ field, value, onChange }: Props) {
       return <NodeFieldClaimsPairs field={field} value={value} onChange={onChange} />;
     case "params_builder":
       return <NodeFieldParamsBuilder field={field} value={value} onChange={onChange} />;
+    case "number":
+      return <NodeFieldNumber field={field} value={value} onChange={onChange} />;
     default:
       return <NodeFieldText field={field} value={value} onChange={onChange} />;
   }

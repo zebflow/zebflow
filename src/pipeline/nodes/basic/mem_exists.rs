@@ -1,21 +1,21 @@
-//! `n.mem.get` — retrieve a value from the per-project in-memory KV store.
+//! `n.mem.exists` — check whether a key exists in the per-project in-memory KV store.
 //!
-//! The retrieved value is merged into the flowing payload at `--out-key`
-//! (defaults to the storage key itself).
+//! Merges a boolean into the payload under `--out-key` (default: "exists").
+//! Useful for cache-check patterns before expensive lookups.
 //!
 //! # Config flags
 //!
 //! | Flag | Type | Default | Description |
 //! |---|---|---|---|
-//! | `--key` | string | required | Storage key to retrieve |
-//! | `--out-key` | string | `""` | Payload key to write into (default = same as `--key`) |
-//! | `--default` | string | `null` | JSON value to inject if key is missing |
+//! | `--key` | string | required | Key to check (supports `{{ expr }}`) |
+//! | `--out-key` | string | `"exists"` | Payload key to write the boolean result into |
 //!
 //! # Example
 //!
 //! ```text
-//! | n.mem.get --key "user:{{ input.user_id }}" --out-key profile
-//! | n.script -- "return { name: input.profile?.name ?? 'Guest' };"
+//! | n.trigger.webhook --path /profile --method GET
+//! | n.mem.exists --key "profile:{{ input.user_id }}" --out-key cached
+//! | n.logic.if --cond "input.cached" --then cached-branch --else fetch-branch
 //! ```
 
 use std::sync::Arc;
@@ -31,20 +31,23 @@ use crate::pipeline::{
 };
 use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 
-pub const NODE_KIND: &str = "n.mem.get";
+pub const NODE_KIND: &str = "n.mem.exists";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Get".to_string(),
-        description: "Read a value from the per-project in-memory KV store and merge it into the payload. \
-            Use --out-key to control the payload key name (defaults to the storage key). \
-            Use --default to supply a fallback JSON value when the key is missing or expired."
+        title: "Mem Exists".to_string(),
+        description: "Check whether a key exists and is not expired in the per-project \
+            in-memory KV store. Merges a boolean into the payload under --out-key (default: \"exists\"). \
+            Useful for cache-hit checks before expensive DB queries or API calls."
             .to_string(),
         input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object", "description": "Payload with the retrieved value merged in." }),
+        output_schema: json!({
+            "type": "object",
+            "description": "Payload with boolean result merged in under out_key."
+        }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
@@ -53,32 +56,30 @@ pub fn definition() -> NodeDefinition {
             "type": "object",
             "required": ["key"],
             "properties": {
-                "key": { "type": "string", "description": "Storage key to retrieve." },
-                "out_key": { "type": "string", "description": "Payload key to write the value into. Defaults to --key value." },
-                "default": { "description": "Value to inject if key is missing. Accepts any JSON." },
+                "key": { "type": "string", "description": "Key to check. Supports {{ expr }}." },
+                "out_key": { "type": "string", "description": "Payload key for the boolean result. Default: \"exists\"." },
             }
         }),
         dsl_flags: vec![
             DslFlag {
                 flag: "--key".to_string(),
                 config_key: "key".to_string(),
-                description: "Storage key to retrieve.".to_string(),
+                description: "Key to check. Supports {{ expr }}.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
             DslFlag {
                 flag: "--out-key".to_string(),
                 config_key: "out_key".to_string(),
-                description: "Payload key to write the value into (default = same as --key).".to_string(),
+                description: "Payload key for the boolean result (default: \"exists\").".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
         fields: vec![
             NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Storage key to retrieve. Supports {{ expr }}.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "out_key".to_string(), label: "Output Key".to_string(), field_type: NodeFieldType::Text, help: Some("Payload key to inject the value under. Defaults to --key.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "default".to_string(), label: "Default".to_string(), field_type: NodeFieldType::Text, help: Some("Fallback value (any JSON) to inject when the key is missing or expired.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Key to check. Supports {{ expr }}.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "out_key".to_string(), label: "Output Key".to_string(), field_type: NodeFieldType::Text, help: Some("Payload key for the boolean result. Default: \"exists\".".to_string()), ..Default::default() },
         ],
         layout: vec![],
         ai_tool: Default::default(),
@@ -91,8 +92,6 @@ pub struct Config {
     pub key: String,
     #[serde(default)]
     pub out_key: String,
-    #[serde(default)]
-    pub default: Option<Value>,
 }
 
 pub struct Node {
@@ -121,17 +120,13 @@ impl NodeHandler for Node {
         let key = self.config.key.trim();
 
         if key.is_empty() {
-            return Err(PipelineError::new("MEM_GET_KEY", "n.mem.get: --key is required"));
+            return Err(PipelineError::new("MEM_EXISTS_KEY", "n.mem.exists: --key is required"));
         }
 
-        let value = self
-            .mem_hub
-            .get(owner, project, key)
-            .or_else(|| self.config.default.clone())
-            .unwrap_or(Value::Null);
+        let exists = self.mem_hub.exists(owner, project, key);
 
         let out_key = if self.config.out_key.trim().is_empty() {
-            key.to_string()
+            "exists".to_string()
         } else {
             self.config.out_key.trim().to_string()
         };
@@ -144,12 +139,12 @@ impl NodeHandler for Node {
                 m
             }
         };
-        payload.insert(out_key.clone(), value);
+        payload.insert(out_key.clone(), Value::Bool(exists));
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: Value::Object(payload),
-            trace: vec![format!("n.mem.get: key={} out_key={}", key, out_key)],
+            trace: vec![format!("n.mem.exists: key={} exists={} out_key={}", key, exists, out_key)],
         })
     }
 }

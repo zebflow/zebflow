@@ -272,6 +272,10 @@ pub enum NodeFieldType {
     /// Each row has: param name | type dropdown | description text | remove button.
     /// Config value stored as JSON object: `{"name": {"type": "string", "description": "..."}}`
     ParamsBuilder,
+    /// Numeric input (`<input type="number">`).
+    /// Config value is stored as a JSON number.
+    /// Supports optional `min`, `max`, `step` extra config.
+    Number,
 }
 
 impl Default for NodeFieldType {

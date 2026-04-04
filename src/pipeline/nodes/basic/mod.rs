@@ -12,6 +12,8 @@ pub mod img_thumbnail;
 pub mod http_request;
 pub mod logic;
 pub mod mem_del;
+pub mod mem_exists;
+pub mod mem_expire;
 pub mod mem_get;
 pub mod mem_incr;
 pub mod mem_publish;
@@ -37,6 +39,8 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         function_call::definition(),
         img_thumbnail::definition(),
         mem_del::definition(),
+        mem_exists::definition(),
+        mem_expire::definition(),
         mem_get::definition(),
         mem_incr::definition(),
         mem_publish::definition(),
