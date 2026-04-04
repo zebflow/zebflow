@@ -268,6 +268,10 @@ pub enum NodeFieldType {
     /// Claims marked public are exposed in the browser via `ctx.auth`;
     /// unmarked claims stay server-only.
     ClaimsPairs,
+    /// Function parameter definition builder for `n.trigger.function`.
+    /// Each row has: param name | type dropdown | description text | remove button.
+    /// Config value stored as JSON object: `{"name": {"type": "string", "description": "..."}}`
+    ParamsBuilder,
 }
 
 impl Default for NodeFieldType {

@@ -81,12 +81,11 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef {
                 name: "params".to_string(),
                 label: "Input Parameters".to_string(),
-                field_type: NodeFieldType::CodeEditor,
-                placeholder: Some(r#"{"user_id": {"type": "string"}}"#.to_string()),
+                field_type: NodeFieldType::ParamsBuilder,
                 help: Some(
-                    "JSON Schema properties object describing this function's inputs.".to_string(),
+                    "Define the inputs this function expects. Callers will see these as labeled fields.".to_string(),
                 ),
-                language: Some("json".to_string()),
+                span: Some("full".to_string()),
                 ..Default::default()
             },
         ],
