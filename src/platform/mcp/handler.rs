@@ -705,7 +705,14 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_write(&params.rel_path, &params.content);
         if !result.text.starts_with("Error:") {
-            self.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+            if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
+                &session.owner, &session.project, &params.rel_path,
+            ) {
+                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                    &self.template_cache,
+                    &abs.to_string_lossy(),
+                );
+            }
         }
         // navigate is ignored for MCP
         ok_or_err(result)
@@ -743,7 +750,14 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_edit(&params.rel_path, &params.old_string, &params.new_string);
         if !result.text.starts_with("Error:") {
-            self.template_cache.write().unwrap_or_else(|e| e.into_inner()).clear();
+            if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
+                &session.owner, &session.project, &params.rel_path,
+            ) {
+                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                    &self.template_cache,
+                    &abs.to_string_lossy(),
+                );
+            }
         }
         ok_or_err(result)
     }

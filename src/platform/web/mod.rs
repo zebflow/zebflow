@@ -7092,15 +7092,17 @@ async fn api_template_save(
                 .file
                 .ensure_project_layout(&owner_slug, &project_slug)
             {
-                // Invalidate the compiled template cache. The cache key is a hash of
-                // the page markup only — it does NOT include imported component content.
-                // Without clearing here, editing a component file would not take effect
-                // until the importing page itself is also edited.
-                state
-                    .template_cache
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clear();
+                // Evict cache entries that depend on this file.
+                // Entry-page saves cause a hash miss automatically; component saves
+                // need explicit eviction so importing pages recompile with the new content.
+                if let Ok(abs) = state.platform.projects.resolve_template_abs_path(
+                    &owner_slug, &project_slug, &req.rel_path,
+                ) {
+                    crate::pipeline::engines::basic::evict_template_cache_by_path(
+                        &state.template_cache,
+                        &abs.to_string_lossy(),
+                    );
+                }
 
                 if let Err(err) = trigger_project_asset_prepare_on_template_save(
                     &state,
@@ -7140,14 +7142,7 @@ async fn api_template_create(
         .projects
         .create_template_entry(&owner, &project, &req)
     {
-        Ok(file) => {
-            state
-                .template_cache
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .clear();
-            Json(file).into_response()
-        }
+        Ok(file) => Json(file).into_response(),
         Err(err) => internal_error(err),
     }
 }

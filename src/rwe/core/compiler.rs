@@ -62,10 +62,12 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let (bundled_server, _) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_server, _, server_deps) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
-    let (bundled_client, detected_zeb_libs) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_client, detected_zeb_libs, client_deps) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
+    let mut dependency_paths = server_deps;
+    dependency_paths.extend(client_deps);
     let hydrate_mode = detect_hydrate_mode(source);
 
     Ok(CompiledTemplate {
@@ -80,6 +82,7 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         hydrate_mode,
         compile_options: options,
         detected_zeb_libs,
+        dependency_paths,
     })
 }
 
@@ -434,7 +437,7 @@ fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
     template_root: Option<&str>,
-) -> Result<(String, Vec<String>), EngineError> {
+) -> Result<(String, Vec<String>, HashSet<String>), EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
     let mut counter: usize = 0;
@@ -467,7 +470,7 @@ fn bundle_for_client(
     result.push_str(&clean_main);
     let mut libs: Vec<String> = zeb_libs.into_iter().collect();
     libs.sort();
-    Ok((result, libs))
+    Ok((result, libs, visited))
 }
 
 fn collect_inlined_module(

@@ -26,21 +26,44 @@ use crate::platform::services::CredentialService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 use crate::infra::transport::ws::WsHub;
 
+/// A single entry in the template compile cache.
+/// Pairs the compiled page artifact with the set of component files it depends on,
+/// enabling dependency-aware eviction when a component is edited.
+pub struct CacheEntry {
+    /// The compiled page artifact.
+    pub page: Arc<web_response::CompiledPage>,
+    /// Absolute filesystem paths of all component files inlined during compilation.
+    /// Populated from `CompiledTemplate.dependency_paths` (the `visited` set of
+    /// `collect_inlined_module`). When any of these paths change on disk,
+    /// this entry is evicted so the next request recompiles with the updated component.
+    pub dependencies: std::collections::HashSet<String>,
+}
+
 /// In-memory compile cache for template nodes.
 ///
-/// Key: hash of the template markup string.
-/// Value: the compiled page artifact, shared via `Arc` for cheap clone on cache hit.
+/// Key: hash of the entry-page markup string.
+/// Value: compiled page + dependency set for targeted eviction.
 ///
-/// When a user saves a template the markup changes → new hash → cache miss → recompile.
-/// Subsequent requests with the same markup → cache hit → skip compile, just re-render.
+/// Entry-page changes → new hash → automatic cache miss.
+/// Component changes → `evict_template_cache_by_path` removes affected entries.
 ///
 /// Uses `RwLock` so concurrent reads (cache hits) never block each other;
 /// only cache-miss writes take an exclusive lock.
-pub type TemplateCache = Arc<RwLock<HashMap<u64, Arc<web_response::CompiledPage>>>>;
+pub type TemplateCache = Arc<RwLock<HashMap<u64, CacheEntry>>>;
 
 /// Create a new empty template compile cache.
 pub fn new_template_cache() -> TemplateCache {
     Arc::new(RwLock::new(HashMap::new()))
+}
+
+/// Evict all cache entries whose dependency set includes `abs_path`.
+/// Called whenever any template or component file is written (UI, MCP, API).
+/// Entry-page saves don't need this — they already cause a hash miss automatically.
+pub fn evict_template_cache_by_path(cache: &TemplateCache, abs_path: &str) {
+    cache
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, entry| !entry.dependencies.contains(abs_path));
 }
 
 fn hash_markup(s: &str) -> u64 {
@@ -556,7 +579,7 @@ impl PipelineEngine for BasicPipelineEngine {
 
                         let key = hash_markup(markup);
                         let cached = self.template_cache.as_ref().and_then(|c| {
-                            c.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned()
+                            c.read().unwrap_or_else(|e| e.into_inner()).get(&key).map(|e| e.page.clone())
                         });
                         let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
                             Ok(hit)
@@ -575,7 +598,11 @@ impl PipelineEngine for BasicPipelineEngine {
                             .map(Arc::new);
                             if let Ok(ref fresh_arc) = fresh {
                                 if let Some(cache) = &self.template_cache {
-                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, fresh_arc.clone());
+                                    let deps = fresh_arc.template.dependency_paths.clone();
+                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, CacheEntry {
+                                        page: fresh_arc.clone(),
+                                        dependencies: deps,
+                                    });
                                 }
                             }
                             fresh

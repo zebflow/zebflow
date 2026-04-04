@@ -117,6 +117,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
             tailwind_variant_patterns: Vec::new(),
             options: options.clone(),
             engine_payload: Some(payload),
+            dependency_paths: compiled.dependency_paths.clone(),
         })
     }
 

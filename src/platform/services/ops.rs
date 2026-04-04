@@ -200,6 +200,48 @@ impl PlatformOps {
              Save discoveries:             `docs_agent_write name=\"MEMORY.md\" content=...`\n"
         ));
 
+        // ── Efficiency Tips ───────────────────────────────────────────────────
+        out.push_str(
+            "\n---\n\n## Tips — Efficient Development\n\
+             \n\
+             **Debug a pipeline immediately after registering:**\n\
+             `pipeline_execute file_rel_path=\"...\" input={...}` — response includes an inline node trace\n\
+             showing ✓/✗ per node with duration and error. No separate tool call needed.\n\
+             \n\
+             **Debug scheduled or webhook pipelines after the fact:**\n\
+             `pipeline_get_invocations file_rel_path=\"...\"` — returns last N runs with full per-node trace,\n\
+             timestamps, status (ok/error), and error messages. Useful when you can't trigger the pipeline yourself.\n\
+             \n\
+             **Testing function pipelines — always pass input:**\n\
+             `pipeline_execute file_rel_path=\"pipelines/fn/foo.zf.json\" input={\"key\":\"value\"}`\n\
+             Without `input`, a function pipeline receives `{}` and likely does nothing useful.\n\
+             \n\
+             **Before patching a node — read it first:**\n\
+             `pipeline_describe file_rel_path=\"...\"` returns every node_id, kind, and config.\n\
+             `pipeline_patch file_rel_path=\"...\" node_id=\"n1\" body=\"new SQL\"` — no need to re-register.\n\
+             After patching, call `pipeline_activate` to make it live again (status becomes stale).\n\
+             \n\
+             **Template changes not showing? (MCP agents only)**\n\
+             The cache key is a hash of the entry page file. Editing a component (e.g. button.tsx)\n\
+             via `template_write` or `template_edit` does NOT clear the cache — the entry page hash\n\
+             is unchanged, so the old compiled bundle is served.\n\
+             Fix: call `POST /api/projects/{owner}/{project}/rwe/cache/clear` or use\n\
+             Settings → Policy → \"Clear Template Cache\" after editing components.\n\
+             (UI saves via the editor always clear the cache automatically — this only affects agent tool calls.)\n\
+             \n\
+             **Searching before creating:**\n\
+             `pipeline_search pattern=\"/my-path\"` — find which pipeline owns a route\n\
+             `template_search pattern=\"ComponentName\"` — find which templates use a component\n\
+             Both support `glob` for narrowing (e.g. `glob=\"pipelines/api/*.zf.json\"`).\n\
+             \n\
+             **Efficient patching workflow:**\n\
+             1. `pipeline_describe` → get node IDs\n\
+             2. `pipeline_patch` → update the one node\n\
+             3. `pipeline_activate` → go live\n\
+             4. `pipeline_execute` → verify node trace\n\
+             Skipping re-register saves the full graph round-trip.\n"
+        );
+
         OpsResult::ok(out)
     }
 }

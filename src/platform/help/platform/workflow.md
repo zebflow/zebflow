@@ -12,27 +12,27 @@ This document shows the exact sequence of thinking and tool calls at every phase
 Every session starts identically:
 
 ```
-list_agent_docs
-read_agent_doc  name=AGENTS.md
-read_agent_doc  name=MEMORY.md
-list_pipelines
-list_templates
-list_tables
+start_here
+docs_agent_read  name=AGENTS.md
+docs_agent_read  name=MEMORY.md
+pipeline_list
+template_list
+connection_list
 ```
 
 **What the agent learns on a fresh project:**
 - AGENTS.md: "Blog for @acme. Tone is casual. DB is PostgreSQL (credential: `main-db`)."
 - MEMORY.md: "(empty — first session)"
-- list_pipelines: "(no pipelines)"
-- list_templates: "(no templates)"
-- list_tables: "(no tables)"
+- pipeline_list: "(no pipelines)"
+- template_list: "(no templates)"
+- connection_list: "main-db (postgres)"
 
 **Agent decision:** Fresh project. Read the domain skills before anything else.
 
 ```
-read_skill  name=pipeline-dsl
-read_skill  name=web-templates
-read_skill  name=project-operations
+help  topic="pipeline"
+help  topic="web"
+help  topic="platform/operations"
 ```
 
 ---
@@ -44,8 +44,8 @@ The agent and owner clarify what "blog" means before touching any code.
 **Agent writes a concept doc first:**
 
 ```
-write_doc
-  path=docs/concept.md
+docs_project_write
+  path=REQUIREMENTS.md
   content="""
   # Blog Concept
 
@@ -75,8 +75,8 @@ write_doc
 Agent designs the schema and writes it as a spec doc before creating anything.
 
 ```
-write_doc
-  path=docs/schema.md
+docs_project_write
+  path=schema.md
   content="""
   # Database Schema
 
@@ -93,17 +93,16 @@ write_doc
   """
 ```
 
-Agent checks what DB connections exist:
+Agent checks DB schema:
 
 ```
-describe pipeline ...   ← no pipelines yet, skip
-list_tables             ← no simple tables
+connection_describe  slug=main-db  scope=tables
 ```
 
-Agent notes: the `posts` table must be created in PostgreSQL by the owner. The agent records this in MEMORY.md as a prerequisite:
+Agent notes: the `posts` table must be created in PostgreSQL by the owner. Records this in MEMORY.md:
 
 ```
-write_agent_doc
+docs_agent_write
   name=MEMORY.md
   content="""
   # Session 1 — Blog Setup
@@ -133,8 +132,8 @@ write_agent_doc
 Before writing any pipeline or template, the agent designs the full architecture:
 
 ```
-write_doc
-  path=docs/architecture.md
+docs_project_write
+  path=architecture.md
   content="""
   # Architecture
 
@@ -180,8 +179,8 @@ Agent builds pipelines one by one. Register first (draft), then scaffold templat
 ### 4.1 Public blog list
 
 ```
-register_pipeline
-  name=blog-list
+pipeline_register
+  file_rel_path=pipelines/pages/blog-list.zf.json
   body="""
   | trigger.webhook --path /blog --method GET
   | pg.query --credential main-db -- "
@@ -191,15 +190,15 @@ register_pipeline
       ORDER BY created_at DESC
       LIMIT 20
     "
-  | web.response --template pages/blog-list.tsx --route /blog
+  | web.response --template pages/blog-list.tsx
   """
 ```
 
 ### 4.2 Blog post detail (slug from query param)
 
 ```
-register_pipeline
-  name=blog-post
+pipeline_register
+  file_rel_path=pipelines/pages/blog-post.zf.json
   body="""
   | trigger.webhook --path /blog/post --method GET
   | pg.query --credential main-db -- "
@@ -209,15 +208,15 @@ register_pipeline
         AND status = 'published'
       LIMIT 1
     "
-  | web.response --template pages/blog-post.tsx --route /blog/post
+  | web.response --template pages/blog-post.tsx
   """
 ```
 
 ### 4.3 Admin posts list
 
 ```
-register_pipeline
-  name=admin-posts
+pipeline_register
+  file_rel_path=pipelines/admin/admin-posts.zf.json
   body="""
   | trigger.webhook --path /admin/posts --method GET
   | script -- "
@@ -233,15 +232,15 @@ register_pipeline
       FROM posts
       ORDER BY created_at DESC
     "
-  | web.response --template pages/admin-posts.tsx --route /admin/posts
+  | web.response --template pages/admin-posts.tsx
   """
 ```
 
 ### 4.4 Admin post editor (GET)
 
 ```
-register_pipeline
-  name=admin-post-get
+pipeline_register
+  file_rel_path=pipelines/admin/admin-post-get.zf.json
   body="""
   | trigger.webhook --path /admin/post --method GET
   | script -- "
@@ -258,15 +257,15 @@ register_pipeline
       WHERE slug = '{{input.query.slug}}'
       LIMIT 1
     "
-  | web.response --template pages/admin-editor.tsx --route /admin/post
+  | web.response --template pages/admin-editor.tsx
   """
 ```
 
 ### 4.5 Admin post save (PUT)
 
 ```
-register_pipeline
-  name=admin-post-put
+pipeline_register
+  file_rel_path=pipelines/admin/admin-post-put.zf.json
   body="""
   | trigger.webhook --path /admin/post --method PUT
   | script -- "
@@ -296,7 +295,7 @@ register_pipeline
 **Verify all pipelines registered:**
 
 ```
-list_pipelines
+pipeline_list
 ```
 
 Output shows 5 pipelines, all `draft`.
@@ -305,19 +304,19 @@ Output shows 5 pipelines, all `draft`.
 
 ## Phase 5: Build Templates
 
-Agent creates each template. Pattern: `create_template` → inspect scaffold → `write_template` with real content.
+Agent creates each template. Pattern: `template_create` → inspect scaffold → `template_write` with real content.
 
 ### 5.1 Blog list page
 
 ```
-create_template  kind=page  name=blog-list
-get_template     rel_path=pages/blog-list.tsx
+template_create  kind=page  name=blog-list
+template_get     rel_path=pages/blog-list.tsx
 ```
 
 Agent sees the scaffold, then writes the real component:
 
 ```
-write_template
+template_write
   rel_path=pages/blog-list.tsx
   content="""
   import Button from "@/components/ui/button";
@@ -352,8 +351,8 @@ write_template
 ### 5.2 Post detail
 
 ```
-create_template  kind=page  name=blog-post
-write_template
+template_create  kind=page  name=blog-post
+template_write
   rel_path=pages/blog-post.tsx
   content="""
   import Markdown from "@/components/ui/markdown";
@@ -384,8 +383,8 @@ write_template
 ### 5.3 Admin posts table
 
 ```
-create_template  kind=page  name=admin-posts
-write_template
+template_create  kind=page  name=admin-posts
+template_write
   rel_path=pages/admin-posts.tsx
   content="""
   import Badge from "@/components/ui/badge";
@@ -438,37 +437,29 @@ write_template
 ### 5.4 Admin editor
 
 ```
-create_template  kind=page  name=admin-editor
-write_template
+template_create  kind=page  name=admin-editor
+template_write
   rel_path=pages/admin-editor.tsx
   content="""
   import Button from "@/components/ui/button";
   import Input from "@/components/ui/input";
   import Field from "@/components/ui/field";
   import Label from "@/components/ui/label";
-  import Toggle from "@/components/ui/toggle";
 
   export default function AdminEditor(input) {
     const post = input.state?.rows?.[0] ?? {};
-    const state = usePageState({
-      slug:    post.slug    ?? '',
-      title:   post.title   ?? '',
-      body:    post.body    ?? '',
-      status:  post.status  ?? 'draft',
-      saving:  false,
-    });
+    const [slug, setSlug]     = useState(post.slug    ?? '');
+    const [title, setTitle]   = useState(post.title   ?? '');
+    const [body, setBody]     = useState(post.body    ?? '');
+    const [status, setStatus] = useState(post.status  ?? 'draft');
+    const [saving, setSaving] = useState(false);
 
     async function save() {
-      state.saving = true;
+      setSaving(true);
       await fetch('/admin/post', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          slug:   state.slug,
-          title:  state.title,
-          body:   state.body,
-          status: state.status,
-        }),
+        body: JSON.stringify({ slug, title, body, status }),
       });
       window.location.href = '/admin/posts';
     }
@@ -484,12 +475,12 @@ write_template
         <div className="space-y-5">
           <Field>
             <Label>Slug</Label>
-            <Input value={state.slug} onInput={e => state.slug = e.target.value}
+            <Input value={slug} onInput={e => setSlug(e.target.value)}
                    placeholder="my-post-slug" disabled={!!post.slug} />
           </Field>
           <Field>
             <Label>Title</Label>
-            <Input value={state.title} onInput={e => state.title = e.target.value}
+            <Input value={title} onInput={e => setTitle(e.target.value)}
                    placeholder="Post title" />
           </Field>
           <Field>
@@ -497,19 +488,21 @@ write_template
             <textarea
               className="w-full min-h-64 rounded-md border border-slate-200 px-3 py-2 text-sm
                          font-mono focus:outline-none focus:ring-2 focus:ring-sky-500"
-              value={state.body}
-              onInput={e => state.body = e.target.value}
+              value={body}
+              onInput={e => setBody(e.target.value)}
               placeholder="Write in markdown..."
             />
           </Field>
           <div className="flex items-center justify-between pt-2">
-            <Toggle
-              checked={state.status === 'published'}
-              onChange={e => state.status = e.target.checked ? 'published' : 'draft'}
-              label="Published"
-            />
-            <Button onClick={save} disabled={state.saving}>
-              {state.saving ? 'Saving…' : 'Save post'}
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox"
+                checked={status === 'published'}
+                onChange={e => setStatus(e.target.checked ? 'published' : 'draft')}
+              />
+              Published
+            </label>
+            <Button onClick={save} disabled={saving}>
+              {saving ? 'Saving…' : 'Save post'}
             </Button>
           </div>
         </div>
@@ -529,17 +522,17 @@ write_template
 Agent activates all pipelines:
 
 ```
-activate_pipeline  name=blog-list
-activate_pipeline  name=blog-post
-activate_pipeline  name=admin-posts
-activate_pipeline  name=admin-post-get
-activate_pipeline  name=admin-post-put
+pipeline_activate  file_rel_path=pipelines/pages/blog-list.zf.json
+pipeline_activate  file_rel_path=pipelines/pages/blog-post.zf.json
+pipeline_activate  file_rel_path=pipelines/admin/admin-posts.zf.json
+pipeline_activate  file_rel_path=pipelines/admin/admin-post-get.zf.json
+pipeline_activate  file_rel_path=pipelines/admin/admin-post-put.zf.json
 ```
 
 Verify everything is active:
 
 ```
-list_pipelines
+pipeline_list
 ```
 
 All 5 show `active`. Routes are now live:
@@ -551,6 +544,23 @@ All 5 show `active`. Routes are now live:
 | `GET /admin/posts` | admin-posts | pages/admin-posts.tsx |
 | `GET /admin/post?slug=...` | admin-post-get | pages/admin-editor.tsx |
 | `PUT /admin/post` | admin-post-put | — (redirects) |
+
+**Agent test-executes a pipeline to verify node-level behaviour:**
+
+```
+pipeline_execute
+  file_rel_path=pipelines/pages/blog-list.zf.json
+  input={"query":{}}
+```
+
+Output includes inline node trace:
+```
+--- node trace (2 nodes, 8ms total) ---
+  ✓  n0  (trigger.webhook)   0ms
+  ✓  n1  (pg.query)          8ms
+```
+
+If a node shows `✗`, inspect that node ID and fix before moving on.
 
 ---
 
@@ -564,7 +574,7 @@ git_command  subcommand=commit   message="feat: complete blog v1 — list, post 
 Agent updates MEMORY.md:
 
 ```
-write_agent_doc
+docs_agent_write
   name=MEMORY.md
   content="""
   # Session 1 — Blog v1 Complete
@@ -572,11 +582,10 @@ write_agent_doc
   ## Delivered
   - 5 pipelines (all active): blog-list, blog-post, admin-posts, admin-post-get, admin-post-put
   - 4 templates: blog-list, blog-post, admin-posts, admin-editor
-  - Docs: concept.md, schema.md, architecture.md
+  - Docs: REQUIREMENTS.md, schema.md, architecture.md
 
   ## Prerequisites (owner must do)
   - Create `posts` table in PostgreSQL (schema in docs/schema.md)
-  - Add `admin_pass` credential in Zebflow UI
 
   ## Known gaps for v2
   - No pagination on blog-list (currently LIMIT 20)
@@ -596,12 +605,14 @@ write_agent_doc
 
 | Pattern | Where shown |
 |---------|-------------|
-| Write spec before code | Phase 1–3: concept.md, schema.md, architecture.md |
+| Write spec before code | Phase 1–3: REQUIREMENTS.md, schema.md, architecture.md |
 | Data flows from pipeline to template via `input.state` | Phase 4 pipelines → Phase 5 `input.state?.rows` |
 | Auth in a script node before query | admin-posts pipeline |
 | `hydration: "static"` for read-only pages | blog-list, blog-post, admin-posts |
 | `hydration: "reactive"` for interactive forms | admin-editor |
-| `usePageState` for form binding | admin-editor component |
+| `useState` hooks for form binding | admin-editor component |
 | Always commit after logical chunk | Phase 6 |
 | Always update MEMORY.md before ending session | Phase 7 |
-| Design system components only — no raw HTML | Button, Input, Field, Label, Toggle, Badge |
+| Design system components only — no raw HTML | Button, Input, Field, Label, Badge |
+| Test with `pipeline_execute` to see node trace | Phase 6 verification |
+| Use `pipeline_get_invocations` to debug scheduled runs | (when scheduler involved) |
