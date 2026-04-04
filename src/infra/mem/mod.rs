@@ -123,6 +123,31 @@ impl MemHub {
         new_val
     }
 
+    /// Check whether a key exists and is not expired. Does not modify the store.
+    pub fn exists(&self, owner: &str, project: &str, key: &str) -> bool {
+        self.get(owner, project, key).is_some()
+    }
+
+    /// Update the TTL of an existing key without changing its value.
+    /// Pass `ttl_secs = Some(0)` or `None` to remove the expiry (persist forever).
+    /// Returns `true` if the key existed (and was updated), `false` if the key was missing or expired.
+    pub fn expire(&self, owner: &str, project: &str, key: &str, ttl_secs: Option<u64>) -> bool {
+        let fk = Self::scoped(owner, project, key);
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = entries.get_mut(&fk) {
+            if entry.is_expired() {
+                entries.remove(&fk);
+                return false;
+            }
+            entry.expires_at = ttl_secs
+                .filter(|&t| t > 0)
+                .map(|t| Instant::now() + Duration::from_secs(t));
+            true
+        } else {
+            false
+        }
+    }
+
     /// Publish `message` to a named channel.
     /// Returns the number of live receivers that received the message.
     /// Silently no-ops if no subscriber has called `subscribe()` yet.

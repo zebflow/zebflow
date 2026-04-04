@@ -135,6 +135,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "mem.set" | "n.mem.set" => Some("n.mem.set"),
         "mem.get" | "n.mem.get" => Some("n.mem.get"),
         "mem.del" | "n.mem.del" => Some("n.mem.del"),
+        "mem.exists" | "n.mem.exists" => Some("n.mem.exists"),
+        "mem.expire" | "n.mem.expire" => Some("n.mem.expire"),
         "mem.incr" | "n.mem.incr" => Some("n.mem.incr"),
         "mem.publish" | "n.mem.publish" => Some("n.mem.publish"),
         "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.memsubscribe"),

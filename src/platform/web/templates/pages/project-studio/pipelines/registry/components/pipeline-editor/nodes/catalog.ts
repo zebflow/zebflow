@@ -6,10 +6,22 @@ export const nodeCategories: Record<string, string[]> = {
     "n.trigger.schedule",
     "n.trigger.manual",
     "n.trigger.ws",
+    "n.trigger.memsubscribe",
     "n.trigger.weberror",
     "n.trigger.function",
   ],
-  data: ["n.sekejap.query", "n.sekejap.mutate", "n.pg.query"],
+  data: [
+    "n.sekejap.query",
+    "n.sekejap.mutate",
+    "n.pg.query",
+    "n.mem.set",
+    "n.mem.get",
+    "n.mem.exists",
+    "n.mem.del",
+    "n.mem.expire",
+    "n.mem.incr",
+    "n.mem.publish",
+  ],
   logic: [
     "n.script",
     "n.logic.if",
@@ -51,6 +63,14 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.web.response": "#9d174d",
   "n.file.save": "#0c4a6e",
   "n.img.thumbnail": "#4a1d96",
+  "n.mem.set": "#b45309",
+  "n.mem.get": "#b45309",
+  "n.mem.exists": "#b45309",
+  "n.mem.del": "#b45309",
+  "n.mem.expire": "#b45309",
+  "n.mem.incr": "#b45309",
+  "n.mem.publish": "#b45309",
+  "n.trigger.memsubscribe": "#b45309",
 };
 
 export function nodeColor(kind: string): string {
