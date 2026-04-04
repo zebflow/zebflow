@@ -196,13 +196,15 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_execute".to_string(),
                 description: "Execute a registered active pipeline. Records execution hits. \
-                    Pipeline must be activated first.".to_string(),
+                    Pipeline must be activated first. \
+                    For function pipelines (n.trigger.function) pass `input` to test with real data; \
+                    without it the pipeline receives an empty payload.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["file_rel_path"],
                     "properties": {
                         "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline to execute." },
-                        "input": { "type": "string", "description": "Optional JSON input payload string (e.g. '{\"order_id\": 42}')." }
+                        "input": { "description": "Optional JSON input payload (object or JSON string). For function pipelines this becomes the `input` parameter inside the pipeline." }
                     }
                 }),
             },
@@ -218,6 +220,20 @@ impl AssistantPlatformTools {
                     "properties": {
                         "body": { "type": "string", "description": "Pipe-chained node body starting with |." },
                         "input": { "description": "Optional JSON input payload (object or JSON string)." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "pipeline_get_invocations".to_string(),
+                description: "Get recent execution history for a pipeline. Returns stored invocations \
+                    with timestamp, duration, status (ok/error), trigger source, error message, \
+                    and per-node trace. Use this to inspect past runs, debug failures on scheduled \
+                    pipelines, or verify that a pipeline is executing correctly.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["file_rel_path"],
+                    "properties": {
+                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'pipelines/api/blog-home.zf.json')." }
                     }
                 }),
             },
@@ -503,9 +519,16 @@ impl AssistantPlatformTools {
                 ops.pipeline_deactivate(args["file_rel_path"].as_str().unwrap_or("")).await
             }
             "pipeline_execute" => {
+                // Accept input as either a JSON string or a JSON object/array.
+                // Normalize to a JSON string so ops.pipeline_execute can embed it in the DSL.
+                let input_str = args.get("input").and_then(|v| match v {
+                    Value::String(s) if !s.is_empty() => Some(s.clone()),
+                    Value::Null => None,
+                    other => serde_json::to_string(other).ok(),
+                });
                 ops.pipeline_execute(
                     args["file_rel_path"].as_str().unwrap_or(""),
-                    args.get("input").and_then(|v| v.as_str()),
+                    input_str.as_deref(),
                 ).await
             }
             "pipeline_run" => {
@@ -515,6 +538,9 @@ impl AssistantPlatformTools {
                     _ => None,
                 });
                 ops.pipeline_run(args["body"].as_str().unwrap_or(""), input).await
+            }
+            "pipeline_get_invocations" => {
+                ops.pipeline_get_invocations(args["file_rel_path"].as_str().unwrap_or(""))
             }
 
             // ── Templates ──────────────────────────────────────────────────────

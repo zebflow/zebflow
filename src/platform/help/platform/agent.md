@@ -55,8 +55,9 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines |
 | `pipeline_activate` | Promote draft to active — goes live immediately. Set `glob="pipelines/modules/**"` to bulk-activate all matching pipelines in one call. |
 | `pipeline_deactivate` | Remove from active registry — stops serving traffic |
-| `pipeline_execute` | Run the active version of a saved pipeline |
-| `pipeline_run` | Run a pipeline body once — not saved, not logged |
+| `pipeline_execute` | Run the active version of a saved pipeline. Always pass `input` when testing function pipelines (`n.trigger.function`) — without it the pipeline receives `{}`. Accepts `input` as a JSON object or string. |
+| `pipeline_run` | Run a pipeline body once — not saved, not logged. Pass `input` to provide an initial payload. |
+| `pipeline_get_invocations` | Get recent execution history for a pipeline. Returns stored invocations with timestamp, duration, status, trigger, error, and per-node trace. Use this to inspect past runs or debug failing scheduled pipelines. |
 | `git_command` | Run git: status, log, diff, add, commit. Commit author uses the user's configured `git_name` / `git_email` from their profile |
 
 ### Templates
