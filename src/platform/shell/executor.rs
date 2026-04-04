@@ -771,8 +771,22 @@ impl DslExecutor {
                 for line in result_str.lines().take(20) {
                     out.push(DslLine::info(line.to_string()));
                 }
-                if output.trace.len() > 0 {
-                    out.push(DslLine::muted(format!("trace: {} steps", output.trace.len())));
+                if !output.node_trace.is_empty() {
+                    let total_ms: u64 = output.node_trace.iter().map(|e| e.duration_ms).sum();
+                    out.push(DslLine::muted(format!(
+                        "--- node trace ({} nodes, {}ms total) ---",
+                        output.node_trace.len(), total_ms
+                    )));
+                    for entry in &output.node_trace {
+                        let marker = if entry.error.is_none() { "✓" } else { "✗" };
+                        let err_part = entry.error.as_deref()
+                            .map(|e| format!("  → {}", e))
+                            .unwrap_or_default();
+                        out.push(DslLine::info(format!(
+                            "  {}  {}  ({})  {}ms{}",
+                            marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
+                        )));
+                    }
                 }
                 out
             }
@@ -855,6 +869,23 @@ impl DslExecutor {
                             .unwrap_or_else(|_| output.value.to_string());
                         for line in result_str.lines().take(20) {
                             out.push(DslLine::info(line.to_string()));
+                        }
+                        if !output.node_trace.is_empty() {
+                            let total_ms: u64 = output.node_trace.iter().map(|e| e.duration_ms).sum();
+                            out.push(DslLine::muted(format!(
+                                "--- node trace ({} nodes, {}ms total) ---",
+                                output.node_trace.len(), total_ms
+                            )));
+                            for entry in &output.node_trace {
+                                let marker = if entry.error.is_none() { "✓" } else { "✗" };
+                                let err_part = entry.error.as_deref()
+                                    .map(|e| format!("  → {}", e))
+                                    .unwrap_or_default();
+                                out.push(DslLine::info(format!(
+                                    "  {}  {}  ({})  {}ms{}",
+                                    marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
+                                )));
+                            }
                         }
                         out
                     }

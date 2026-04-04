@@ -1557,6 +1557,7 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "pipeline_deactivate" => Some(ProjectCapability::PipelinesWrite),
         "pipeline_execute" => Some(ProjectCapability::PipelinesExecute),
         "pipeline_run" => Some(ProjectCapability::PipelinesExecute),
+        "pipeline_get_invocations" => Some(ProjectCapability::PipelinesRead),
         "template_list" => Some(ProjectCapability::TemplatesRead),
         "template_get" => Some(ProjectCapability::TemplatesRead),
         "template_create" => Some(ProjectCapability::TemplatesCreate),

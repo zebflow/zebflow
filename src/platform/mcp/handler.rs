@@ -196,7 +196,8 @@ struct PipelineExecuteParams {
     #[serde(alias = "name")]
     file_rel_path: String,
     /// Optional JSON input payload string (e.g. "{\"order_id\": 42}").
-    input: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -211,6 +212,12 @@ struct PipelineRunParams {
     /// Example: {"message": "hello"} or "{\"message\": \"hello\"}"
     #[serde(default)]
     input: Option<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct PipelineGetInvocationsParams {
+    /// File-relative path of the pipeline (e.g. "pipelines/api/blog-home.zf.json").
+    file_rel_path: String,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -555,7 +562,9 @@ impl ZebflowMcpHandler {
     #[tool(
         description = "Execute a registered active pipeline by name. Records execution hits. \
                        Pipeline must be activated first — use pipeline_activate if status is draft or stale. \
-                       Use pipeline_list to see pipeline names and activation status."
+                       Use pipeline_list to see pipeline names and activation status. \
+                       For function pipelines (n.trigger.function) always pass `input` to test with real data; \
+                       without it the pipeline receives an empty payload {}."
     )]
     async fn pipeline_execute(
         &self,
@@ -565,7 +574,13 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_execute")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_execute(&params.file_rel_path, params.input.as_deref()).await;
+        // Normalize input: accept JSON object/array or string, serialize to JSON string for DSL.
+        let input_str = params.input.as_ref().and_then(|v| match v {
+            serde_json::Value::String(s) if !s.is_empty() => Some(s.clone()),
+            serde_json::Value::Null => None,
+            other => serde_json::to_string(other).ok(),
+        });
+        let result = ops.pipeline_execute(&params.file_rel_path, input_str.as_deref()).await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
@@ -590,6 +605,21 @@ impl ZebflowMcpHandler {
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.pipeline_run(&params.body, initial_input).await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
+    }
+
+    #[tool(description = "Get recent execution history for a pipeline. Returns stored invocations \
+                           with timestamp, duration, status (ok/error), trigger source, error message, \
+                           and per-node trace. Use this to inspect past runs, debug failures on scheduled \
+                           pipelines, or verify that a pipeline is executing correctly.")]
+    async fn pipeline_get_invocations(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PipelineGetInvocationsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "pipeline_get_invocations")?;
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.pipeline_get_invocations(&params.file_rel_path))
     }
 
     // ── Templates ────────────────────────────────────────────────────────────

@@ -516,7 +516,10 @@ impl PlatformOps {
     pub async fn pipeline_execute(&self, file_rel_path: &str, input: Option<&str>) -> OpsResult {
         let mut dsl = format!("execute pipeline {file_rel_path}");
         if let Some(i) = input {
-            dsl.push_str(&format!(" --input {i}"));
+            // Wrap in single quotes so the DSL tokenizer treats JSON objects (which may
+            // contain spaces) as a single token. JSON does not use single quotes so this
+            // is safe. The tokenizer strips the outer single quotes before parsing.
+            dsl.push_str(&format!(" --input '{i}'"));
         }
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(), &self.owner, &self.project,
@@ -531,6 +534,42 @@ impl PlatformOps {
         );
         let output = executor.execute_run_with_input(body, input).await;
         OpsResult::ok(output.lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("\n"))
+    }
+
+    pub fn pipeline_get_invocations(&self, file_rel_path: &str) -> OpsResult {
+        match self.platform.data.get_pipeline_invocations(&self.owner, &self.project, file_rel_path) {
+            Ok(entries) if entries.is_empty() => OpsResult::ok(format!(
+                "No invocations recorded for '{}'.\n\nNote: invocations are stored per pipeline run. Try running or executing the pipeline first.",
+                file_rel_path
+            )),
+            Ok(entries) => {
+                let mut out = format!("{} — {} invocation(s)\n", file_rel_path, entries.len());
+                for (i, inv) in entries.iter().enumerate() {
+                    let ts = chrono::DateTime::from_timestamp(inv.at, 0)
+                        .map(|dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                        .unwrap_or_else(|| inv.at.to_string());
+                    out.push_str(&format!(
+                        "\n[{}] {} | {} | {} | {}ms\n",
+                        i + 1, ts, inv.status, inv.trigger, inv.duration_ms
+                    ));
+                    if let Some(ref err) = inv.error {
+                        out.push_str(&format!("    ERROR: {}\n", err));
+                    }
+                    for entry in &inv.trace {
+                        let marker = if entry.error.is_none() { "✓" } else { "✗" };
+                        let err_part = entry.error.as_deref()
+                            .map(|e| format!("  → {}", e))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "    {}  {}  ({})  {}ms{}\n",
+                            marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
+                        ));
+                    }
+                }
+                OpsResult::ok(out)
+            }
+            Err(e) => OpsResult::err(format!("Error: {}", e.message)),
+        }
     }
 }
 
