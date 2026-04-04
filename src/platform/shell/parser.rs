@@ -35,10 +35,11 @@ pub enum DslVerb {
     Deactivate { file_rel_path: String },
     /// `execute pipeline <file_rel_path> [--input <json>]`
     Execute { file_rel_path: String, input: Value },
-    /// `register <file_rel_path> [--title <t>] [--as-json] [| ...]`
+    /// `register <file_rel_path> [--title <t>] [--description <d>] [--as-json] [| ...]`
     Register {
         file_rel_path: String,
         title: String,
+        description: String,
         as_json: bool,
         body: String,
     },
@@ -331,10 +332,11 @@ fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value
     (flags, body)
 }
 
-/// Parse `register <file_rel_path> [--title t] [--as-json] <body>`
+/// Parse `register <file_rel_path> [--title t] [--description d] [--as-json] <body>`
 fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
     let mut title = String::new();
+    let mut description = String::new();
     let mut as_json = false;
     let mut i = 2;
 
@@ -342,6 +344,10 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
         match tokens[i].as_str() {
             "--title" => {
                 title = tokens.get(i + 1).cloned().unwrap_or_default();
+                i += 2;
+            }
+            "--description" => {
+                description = tokens.get(i + 1).cloned().unwrap_or_default();
                 i += 2;
             }
             "--as-json" => {
@@ -359,7 +365,7 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
         None => cmd.find('[').map(|pos| cmd[pos..].to_string()).unwrap_or_default(),
     };
 
-    DslVerb::Register { file_rel_path, title, as_json, body }
+    DslVerb::Register { file_rel_path, title, description, as_json, body }
 }
 
 /// Parse `patch pipeline <file_rel_path> node <id> [flags] [-- body]`
@@ -557,6 +563,7 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         kind: "zebflow.pipeline".to_string(),
         version: "0.1".to_string(),
         id: id.to_string(),
+        description: None,
         entry_nodes,
         nodes,
         edges,
@@ -976,6 +983,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         kind: "zebflow.pipeline".to_string(),
         version: "0.1".to_string(),
         id: id.to_string(),
+        description: None,
         entry_nodes,
         nodes,
         edges,

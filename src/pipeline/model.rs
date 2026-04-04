@@ -422,6 +422,10 @@ pub struct PipelineGraph {
     pub version: String,
     /// Unique pipeline id — matches the filename stem of the `.zf.json` file.
     pub id: String,
+    /// Optional human-readable description of what this pipeline does.
+    /// Stored in `.zf.json` and indexed in the catalog for search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Explicit entry node ids.  If empty the engine uses nodes with no incoming edges.
     #[serde(default)]
     pub entry_nodes: Vec<String>,

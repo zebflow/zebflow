@@ -476,6 +476,7 @@ impl AssistantPlatformTools {
                     args.get("name").and_then(|v| v.as_str()),
                     args.get("path").and_then(|v| v.as_str()),
                     args.get("title").and_then(|v| v.as_str()),
+                    args.get("description").and_then(|v| v.as_str()),
                 ).await
             }
             "pipeline_describe" => {

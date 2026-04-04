@@ -131,6 +131,10 @@ struct PipelineRegisterParams {
     path: Option<String>,
     /// Optional human-readable display title.
     title: Option<String>,
+    /// Optional human-readable description of what this pipeline does.
+    /// Stored in the pipeline graph (.zf.json) and indexed in the catalog for search.
+    #[serde(default)]
+    description: Option<String>,
     /// Pipeline body: pipe-chained nodes starting with |.
     /// Example: "| trigger.webhook --path /blog --method GET | pg.query --credential main-db -- \"SELECT * FROM posts\""
     /// Use help("pipeline/dsl") for the full node catalog and syntax.
@@ -424,6 +428,7 @@ impl ZebflowMcpHandler {
             params.name.as_deref(),
             params.path.as_deref(),
             params.title.as_deref(),
+            params.description.as_deref(),
         ).await;
         // navigate is ignored for MCP
         Ok(CallToolResult::success(vec![Content::text(result.text)]))

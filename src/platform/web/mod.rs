@@ -11044,9 +11044,14 @@ async fn api_reindex_project(
                     match std::fs::read_to_string(&path) {
                         Ok(source) => {
                             let file_rel_path = format!("pipelines/{rel}");
+                            // Preserve description stored inside the graph JSON
+                            let graph_description = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
+                                .ok()
+                                .and_then(|g| g.description)
+                                .unwrap_or_default();
                             match state.platform.projects.upsert_pipeline_definition(
                                 &owner_slug, &project_slug, &file_rel_path,
-                                "", "", "", &source,
+                                "", &graph_description, "", &source,
                             ) {
                                 Ok(_) => pipelines_indexed += 1,
                                 Err(e) => errors.push(format!("{rel}: {e}")),
