@@ -333,18 +333,40 @@ impl PlatformOps {
     }
 
     pub fn pipeline_get(&self, file_rel_path: &str) -> OpsResult {
-        match self.platform.projects.get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path) {
-            Err(e) => OpsResult::err(e.to_string()),
-            Ok(None) => OpsResult::err(format!("Pipeline '{file_rel_path}' not found")),
-            Ok(Some(meta)) => {
-                match self.platform.projects.read_pipeline_source(&self.owner, &self.project, &meta.file_rel_path) {
-                    Ok(source) => OpsResult::ok(
-                        serde_json::to_string_pretty(&json!({ "meta": meta, "source": source }))
-                            .unwrap_or_default()
-                    ),
-                    Err(e) => OpsResult::err(e.to_string()),
-                }
-            }
+        let meta_opt = self.platform.projects
+            .get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path)
+            .ok()
+            .flatten();
+
+        // Exact match found — use it.
+        if let Some(meta) = meta_opt {
+            return match self.platform.projects.read_pipeline_source(&self.owner, &self.project, &meta.file_rel_path) {
+                Ok(source) => OpsResult::ok(
+                    serde_json::to_string_pretty(&json!({ "meta": meta, "source": source }))
+                        .unwrap_or_default()
+                ),
+                Err(e) => OpsResult::err(e.to_string()),
+            };
+        }
+
+        // Fuzzy fallback: substring match on file_rel_path across all catalog entries.
+        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
+            Ok(r) => r,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+        let needle = file_rel_path.to_lowercase();
+        let candidates: Vec<String> = rows.iter()
+            .filter(|m| m.file_rel_path.to_lowercase().contains(&needle))
+            .map(|m| m.file_rel_path.clone())
+            .collect();
+        match candidates.len() {
+            0 => OpsResult::err(format!("Pipeline '{file_rel_path}' not found")),
+            1 => self.pipeline_get(&candidates[0]),
+            _ => OpsResult::err(format!(
+                "Ambiguous: '{}' matches {} pipelines — use exact path:\n{}",
+                file_rel_path, candidates.len(),
+                candidates.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+            )),
         }
     }
 
@@ -389,8 +411,11 @@ impl PlatformOps {
         OpsResult::ok_nav(text, nav)
     }
 
-    pub async fn pipeline_describe(&self, file_rel_path: &str) -> OpsResult {
-        let dsl = format!("describe pipeline {file_rel_path}");
+    pub async fn pipeline_describe(&self, file_rel_path: &str, compact: bool) -> OpsResult {
+        let mut dsl = format!("describe pipeline {file_rel_path}");
+        if compact {
+            dsl.push_str(" --compact");
+        }
         let executor = crate::platform::shell::executor::DslExecutor::new(
             self.platform.clone(), &self.owner, &self.project,
         );
@@ -472,9 +497,32 @@ impl PlatformOps {
     }
 
     pub fn template_get(&self, rel_path: &str) -> OpsResult {
+        // Try exact match first.
         match self.platform.projects.read_template_file(&self.owner, &self.project, rel_path) {
-            Ok(content) => OpsResult::ok(content),
-            Err(e) => OpsResult::err(e.to_string()),
+            Ok(content) => return OpsResult::ok(content),
+            Err(_) => {}
+        }
+        // Fuzzy fallback: find all templates whose path contains rel_path as a substring.
+        let listing = match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
+            Ok(l) => l,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+        let needle = rel_path.to_lowercase();
+        let candidates: Vec<String> = listing.items.iter()
+            .filter(|item| item.kind != "folder" && item.rel_path.to_lowercase().contains(&needle))
+            .map(|item| item.rel_path.clone())
+            .collect();
+        match candidates.len() {
+            0 => OpsResult::err(format!("Template '{rel_path}' not found")),
+            1 => match self.platform.projects.read_template_file(&self.owner, &self.project, &candidates[0]) {
+                Ok(content) => OpsResult::ok(format!("// resolved: {}\n{content}", candidates[0])),
+                Err(e) => OpsResult::err(e.to_string()),
+            },
+            _ => OpsResult::err(format!(
+                "Ambiguous: '{}' matches {} templates — use exact path:\n{}",
+                rel_path, candidates.len(),
+                candidates.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+            )),
         }
     }
 

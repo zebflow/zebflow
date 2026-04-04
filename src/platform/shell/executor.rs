@@ -57,8 +57,8 @@ impl DslExecutor {
             DslVerb::Get { resource, path, filter, status } => {
                 self.cmd_get(&resource, path.as_deref(), filter.as_deref(), status.as_deref()).await
             }
-            DslVerb::Describe { kind, name } => self.cmd_describe(&kind, &name).await,
-            DslVerb::Read { kind, name } => self.cmd_describe(&kind, &name).await,
+            DslVerb::Describe { kind, name, compact } => self.cmd_describe(&kind, &name, compact).await,
+            DslVerb::Read { kind, name } => self.cmd_describe(&kind, &name, false).await,
             DslVerb::Activate { file_rel_path } => self.cmd_activate(&file_rel_path).await,
             DslVerb::Deactivate { file_rel_path } => self.cmd_deactivate(&file_rel_path).await,
             DslVerb::Execute { file_rel_path, input } => self.cmd_execute(&file_rel_path, input).await,
@@ -223,9 +223,9 @@ impl DslExecutor {
         }
     }
 
-    async fn cmd_describe(&self, kind: &str, name: &str) -> DslOutput {
+    async fn cmd_describe(&self, kind: &str, name: &str, compact: bool) -> DslOutput {
         match kind {
-            "pipeline" | "pipelines" => self.describe_pipeline(name).await,
+            "pipeline" | "pipelines" => self.describe_pipeline(name, compact).await,
             "connection" | "connections" => self.describe_connection(name).await,
             "node" | "nodes" => self.describe_node(name),
             other => DslOutput::err(format!(
@@ -235,7 +235,7 @@ impl DslExecutor {
         }
     }
 
-    async fn describe_pipeline(&self, file_rel_path: &str) -> DslOutput {
+    async fn describe_pipeline(&self, file_rel_path: &str, compact: bool) -> DslOutput {
         let Some(meta) = (match self.platform.projects.get_pipeline_meta_by_file_id(
             &self.owner, &self.project, file_rel_path
         ) {
@@ -246,7 +246,11 @@ impl DslExecutor {
         };
 
         let mut out = DslOutput::new_ok();
-        let status = if meta.active_hash.is_some() { "active" } else { "draft" };
+        let status = if meta.active_hash.as_deref().map(|h| !h.is_empty() && h == meta.hash).unwrap_or(false) {
+            "active"
+        } else {
+            "draft"
+        };
         let hash_short = meta.hash.chars().take(8).collect::<String>();
 
         let hits = self.platform.pipeline_hits.get(
@@ -255,11 +259,19 @@ impl DslExecutor {
             &meta.file_rel_path,
         );
 
-        out.push(DslLine::info(format!("pipeline: {}", meta.file_rel_path)));
-        out.push(DslLine::info(format!(
-            "status: {}  hash: {}  hits: {} ok / {} failed",
-            status, hash_short, hits.success_count, hits.failed_count
-        )));
+        if compact {
+            // Compact header: single line
+            out.push(DslLine::info(format!(
+                "{}  [{}]  hash:{}  hits:{}/{}",
+                meta.file_rel_path, status, hash_short, hits.success_count, hits.failed_count
+            )));
+        } else {
+            out.push(DslLine::info(format!("pipeline: {}", meta.file_rel_path)));
+            out.push(DslLine::info(format!(
+                "status: {}  hash: {}  hits: {} ok / {} failed",
+                status, hash_short, hits.success_count, hits.failed_count
+            )));
+        }
 
         // Reconstruct DSL from the stored graph
         if let Ok(source) = self.platform.projects.read_pipeline_source(
@@ -268,22 +280,33 @@ impl DslExecutor {
             &meta.file_rel_path,
         ) {
             if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
-                let dsl = crate::platform::shell::parser::graph_to_dsl(&graph);
-                out.push(DslLine::blank());
-                for line in dsl.lines() {
-                    out.push(DslLine::info(line.to_string()));
-                }
-
-                // Node id reference for pipeline_patch
-                if !graph.nodes.is_empty() {
-                    let ids = graph
-                        .nodes
-                        .iter()
-                        .map(|n| format!("{}({})", n.id, n.kind.strip_prefix("n.").unwrap_or(&n.kind)))
-                        .collect::<Vec<_>>()
-                        .join("  ");
+                if compact {
+                    // Compact: one line per node, no body content
+                    for node in &graph.nodes {
+                        let seg = crate::platform::shell::parser::node_to_segment_no_body(node);
+                        out.push(DslLine::info(format!(
+                            "  {:6}  {}",
+                            node.id, seg
+                        )));
+                    }
+                } else {
+                    let dsl = crate::platform::shell::parser::graph_to_dsl(&graph);
                     out.push(DslLine::blank());
-                    out.push(DslLine::muted(format!("node ids (for patch): {}", ids)));
+                    for line in dsl.lines() {
+                        out.push(DslLine::info(line.to_string()));
+                    }
+
+                    // Node id reference for pipeline_patch
+                    if !graph.nodes.is_empty() {
+                        let ids = graph
+                            .nodes
+                            .iter()
+                            .map(|n| format!("{}({})", n.id, n.kind.strip_prefix("n.").unwrap_or(&n.kind)))
+                            .collect::<Vec<_>>()
+                            .join("  ");
+                        out.push(DslLine::blank());
+                        out.push(DslLine::muted(format!("node ids (for patch): {}", ids)));
+                    }
                 }
             }
         }

@@ -48,8 +48,8 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | Tool | What it does |
 |------|-------------|
 | `pipeline_list` | List all pipelines with status (draft / active) |
-| `pipeline_get` | Get pipeline graph JSON |
-| `pipeline_describe` | Describe nodes, edges, trigger config in detail |
+| `pipeline_get` | Get pipeline graph JSON. Accepts partial path — resolves to unique match automatically. |
+| `pipeline_describe` | Describe nodes, edges, trigger config in detail. Set `compact=true` for one-line-per-node summary without body content — use when pipelines have long SQL or scripts. |
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
 | `pipeline_patch` | Update a node's config inside an existing pipeline. `node_id` accepts opaque ID, kind (`trigger.webhook`), or kind+index (`pg.query[1]`) — no describe needed |
 | `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines |
@@ -64,7 +64,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | Tool | What it does |
 |------|-------------|
 | `template_list` | List all template files in the project |
-| `template_get` | Read a template file's full content |
+| `template_get` | Read a template file's full content. Accepts partial path — resolves to unique match automatically (e.g. `"game/page"` → `pages/game/page.tsx`). |
 | `template_create` | Scaffold a new template file with boilerplate |
 | `template_write` | Write (overwrite) a template file's content |
 | `template_search` | Grep across all template files with optional glob filter and context lines (e.g. `context=3` for 3 lines before/after each match) |

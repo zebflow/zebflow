@@ -719,6 +719,10 @@ impl ProjectService {
         collect_all_files(root, root, &mut all_files);
 
         for (rel, abs) in &all_files {
+            // Template search must never include pipeline graph files.
+            if rel.ends_with(".zf.json") {
+                continue;
+            }
             if let Some(g) = glob {
                 if !template_glob_matches(g, rel) {
                     continue;
