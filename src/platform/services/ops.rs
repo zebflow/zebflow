@@ -456,6 +456,54 @@ impl PlatformOps {
         OpsResult::ok_nav(text, nav)
     }
 
+    /// Activate all pipelines whose `file_rel_path` matches the given glob pattern.
+    /// Reports per-pipeline success/fail and a summary count.
+    pub async fn pipeline_activate_glob(&self, glob: &str) -> OpsResult {
+        if glob.trim().is_empty() {
+            return OpsResult::err("glob must not be empty");
+        }
+        let rows = match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
+            Ok(r) => r,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+
+        // Reuse the same glob matcher used by template_search / pipeline_search.
+        let matching: Vec<String> = rows.iter()
+            .filter(|m| crate::platform::services::project::pipeline_glob_matches(glob, &m.file_rel_path))
+            .map(|m| m.file_rel_path.clone())
+            .collect();
+
+        if matching.is_empty() {
+            return OpsResult::err(format!("No pipelines match glob '{glob}'"));
+        }
+
+        let mut ok_count = 0usize;
+        let mut fail_count = 0usize;
+        let mut lines = Vec::new();
+
+        for frp in &matching {
+            match self.platform.projects.activate_pipeline_definition(&self.owner, &self.project, frp) {
+                Ok(_) => {
+                    let _ = self.platform.pipeline_runtime.refresh_pipeline(&self.owner, &self.project, frp);
+                    ok_count += 1;
+                    lines.push(format!("  ✓ {frp}"));
+                }
+                Err(e) => {
+                    fail_count += 1;
+                    lines.push(format!("  ✗ {frp}  — {}", e.message));
+                }
+            }
+        }
+
+        let summary = format!(
+            "Activated {ok_count}/{} pipeline(s) matching '{glob}'{fail}.",
+            matching.len(),
+            fail = if fail_count > 0 { format!(" ({fail_count} failed)") } else { String::new() }
+        );
+        let nav = format!("/projects/{}/{}/pipelines/registry?path=/", self.owner, self.project);
+        OpsResult::ok_nav(format!("{summary}\n{}", lines.join("\n")), nav)
+    }
+
     pub async fn pipeline_deactivate(&self, file_rel_path: &str) -> OpsResult {
         let dsl = format!("deactivate pipeline {file_rel_path}");
         let executor = crate::platform::shell::executor::DslExecutor::new(

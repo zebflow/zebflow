@@ -170,13 +170,14 @@ impl AssistantPlatformTools {
             },
             ToolDef {
                 name: "pipeline_activate".to_string(),
-                description: "Activate a pipeline — makes it live so it can serve traffic and be executed. \
-                    Must be called after pipeline_register or after patching.".to_string(),
+                description: "Activate a pipeline or bulk-activate many pipelines. \
+                    Must be called after pipeline_register or after patching. \
+                    Use glob to activate all matching pipelines at once (e.g. 'pipelines/modules/**').".to_string(),
                 parameters: json!({
                     "type": "object",
-                    "required": ["file_rel_path"],
                     "properties": {
-                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline to activate." }
+                        "file_rel_path": { "type": "string", "description": "File-relative path of a single pipeline to activate. Ignored when glob is set." },
+                        "glob": { "type": "string", "description": "Glob pattern to bulk-activate matching pipelines (e.g. 'pipelines/modules/manage/**')." }
                     }
                 }),
             },
@@ -492,7 +493,11 @@ impl AssistantPlatformTools {
                 ).await
             }
             "pipeline_activate" => {
-                ops.pipeline_activate(args["file_rel_path"].as_str().unwrap_or("")).await
+                if let Some(glob) = args.get("glob").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    ops.pipeline_activate_glob(glob).await
+                } else {
+                    ops.pipeline_activate(args["file_rel_path"].as_str().unwrap_or("")).await
+                }
             }
             "pipeline_deactivate" => {
                 ops.pipeline_deactivate(args["file_rel_path"].as_str().unwrap_or("")).await

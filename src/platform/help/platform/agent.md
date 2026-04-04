@@ -53,7 +53,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
 | `pipeline_patch` | Update a node's config inside an existing pipeline. `node_id` accepts opaque ID, kind (`trigger.webhook`), or kind+index (`pg.query[1]`) — no describe needed |
 | `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines |
-| `pipeline_activate` | Promote draft to active — goes live immediately |
+| `pipeline_activate` | Promote draft to active — goes live immediately. Set `glob="pipelines/modules/**"` to bulk-activate all matching pipelines in one call. |
 | `pipeline_deactivate` | Remove from active registry — stops serving traffic |
 | `pipeline_execute` | Run the active version of a saved pipeline |
 | `pipeline_run` | Run a pipeline body once — not saved, not logged |

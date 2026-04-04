@@ -1767,6 +1767,11 @@ fn collect_all_files(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::
 }
 
 /// Simple glob match: `*` matches non-slash chars, `**` matches anything.
+/// Glob match for pipeline paths. Exposed publicly for use in bulk operations.
+pub fn pipeline_glob_matches(pattern: &str, path: &str) -> bool {
+    template_glob_matches(pattern, path)
+}
+
 fn template_glob_matches(pattern: &str, path: &str) -> bool {
     if pattern.is_empty() {
         return true;
