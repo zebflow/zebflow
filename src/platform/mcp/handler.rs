@@ -147,6 +147,10 @@ struct PipelineDescribeParams {
     /// Also accepted as "name" for backward compatibility.
     #[serde(alias = "name")]
     file_rel_path: String,
+    /// When true, shows one compact line per node (id | kind | key flags) without body content.
+    /// Use for orientation when pipelines have long SQL or script bodies.
+    #[serde(default)]
+    compact: bool,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -436,7 +440,9 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Inspect a pipeline — returns its nodes, edges, status, and hit stats. \
-                       Node IDs from this output are required for pipeline_patch."
+                       Node IDs from this output are required for pipeline_patch. \
+                       Set compact=true to show one line per node (id | kind | key flags) \
+                       without body content — useful for pipelines with long SQL or scripts."
     )]
     async fn pipeline_describe(
         &self,
@@ -452,7 +458,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_describe(&params.file_rel_path).await;
+        let result = ops.pipeline_describe(&params.file_rel_path, params.compact).await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 

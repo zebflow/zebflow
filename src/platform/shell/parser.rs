@@ -21,8 +21,8 @@ pub enum DslVerb {
         filter: Option<String>,
         status: Option<String>,
     },
-    /// `describe <kind> <name>`
-    Describe { kind: String, name: String },
+    /// `describe <kind> <name> [--compact]`
+    Describe { kind: String, name: String, compact: bool },
     /// `read <kind> <name>`
     Read { kind: String, name: String },
     /// `write <kind> <name> [body after --]`
@@ -406,7 +406,8 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
         "describe" => {
             let kind = tokens.get(1).cloned().unwrap_or_default().to_lowercase();
             let name = tokens.get(2).cloned().unwrap_or_default();
-            DslVerb::Describe { kind, name }
+            let compact = tokens.iter().any(|t| t == "--compact");
+            DslVerb::Describe { kind, name, compact }
         }
         "read" => {
             let kind = tokens.get(1).cloned().unwrap_or_default().to_lowercase();
@@ -796,6 +797,80 @@ fn node_to_segment(node: &PipelineNode) -> String {
                 .join(" ");
             parts.push("--".to_string());
             parts.push(inline);
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Like `node_to_segment` but omits the `-- body` portion.
+/// Used by compact describe to show flags without long SQL/script bodies.
+pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
+    let all_defs = builtin_node_definitions();
+    let dsl_flags = all_defs
+        .iter()
+        .find(|d| d.kind == node.kind)
+        .map(|d| d.dsl_flags.as_slice())
+        .unwrap_or(&[]);
+
+    let kind = node.kind.strip_prefix("n.").unwrap_or(&node.kind);
+    let mut parts = vec![kind.to_string()];
+
+    for flag in dsl_flags {
+        // Skip body-typed flags (their config_key matches the body key for this node kind)
+        let body_key = match node.kind.as_str() {
+            "n.pg.query" => "query",
+            "n.script" => "source",
+            "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
+            _ => "body",
+        };
+        if flag.config_key == body_key {
+            continue;
+        }
+        let Some(val) = node.config.get(&flag.config_key) else {
+            continue;
+        };
+        match &flag.kind {
+            DslFlagKind::Bool => {
+                if val.as_bool().unwrap_or(false) {
+                    parts.push(flag.flag.clone());
+                }
+            }
+            DslFlagKind::CommaSeparatedList => {
+                if let Some(arr) = val.as_array() {
+                    let csv = arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(",");
+                    if !csv.is_empty() {
+                        parts.push(flag.flag.clone());
+                        parts.push(csv);
+                    }
+                }
+            }
+            DslFlagKind::Scalar => {
+                let s = match val {
+                    Value::String(s) if !s.is_empty() => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => continue,
+                };
+                parts.push(flag.flag.clone());
+                if s.contains(' ') {
+                    parts.push(format!("\"{}\"", s.replace('"', "\\\"")));
+                } else {
+                    parts.push(s);
+                }
+            }
+            DslFlagKind::KeyValuePairs => {
+                if let Some(map) = val.as_object() {
+                    for (k, v) in map {
+                        let v_str = match v {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        parts.push(flag.flag.clone());
+                        parts.push(format!("{}={}", k, v_str));
+                    }
+                }
+            }
         }
     }
 

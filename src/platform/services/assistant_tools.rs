@@ -480,7 +480,8 @@ impl AssistantPlatformTools {
                 ).await
             }
             "pipeline_describe" => {
-                ops.pipeline_describe(args["file_rel_path"].as_str().unwrap_or("")).await
+                let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+                ops.pipeline_describe(args["file_rel_path"].as_str().unwrap_or(""), compact).await
             }
             "pipeline_patch" => {
                 ops.pipeline_patch(
