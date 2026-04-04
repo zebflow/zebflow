@@ -355,6 +355,7 @@ impl PlatformOps {
         name: Option<&str>,
         path: Option<&str>,
         title: Option<&str>,
+        description: Option<&str>,
     ) -> OpsResult {
         let frp = match file_rel_path {
             Some(frp) => frp.to_string(),
@@ -372,6 +373,9 @@ impl PlatformOps {
         let mut dsl = format!("register {frp}");
         if let Some(t) = title {
             dsl.push_str(&format!(" --title \"{t}\""));
+        }
+        if let Some(d) = description.filter(|d| !d.trim().is_empty()) {
+            dsl.push_str(&format!(" --description \"{d}\""));
         }
         dsl.push(' ');
         dsl.push_str(body);

@@ -21,6 +21,7 @@ export const nodeCategories: Record<string, string[]> = {
   ],
   web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.ws.sync_state", "n.ws.emit"],
   security: ["n.auth.token.create", "n.crypto"],
+  files: ["n.file.save", "n.img.thumbnail"],
 };
 
 const NODE_KIND_COLORS: Record<string, string> = {
@@ -48,6 +49,8 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.sekejap.mutate": "#0f766e",
   "n.function.call": "#1e40af",
   "n.web.response": "#9d174d",
+  "n.file.save": "#0c4a6e",
+  "n.img.thumbnail": "#4a1d96",
 };
 
 export function nodeColor(kind: string): string {

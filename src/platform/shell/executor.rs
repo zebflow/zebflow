@@ -62,8 +62,8 @@ impl DslExecutor {
             DslVerb::Activate { file_rel_path } => self.cmd_activate(&file_rel_path).await,
             DslVerb::Deactivate { file_rel_path } => self.cmd_deactivate(&file_rel_path).await,
             DslVerb::Execute { file_rel_path, input } => self.cmd_execute(&file_rel_path, input).await,
-            DslVerb::Register { file_rel_path, title, as_json, body } => {
-                self.cmd_register(&file_rel_path, &title, as_json, &body).await
+            DslVerb::Register { file_rel_path, title, description, as_json, body } => {
+                self.cmd_register(&file_rel_path, &title, &description, as_json, &body).await
             }
             DslVerb::Patch { file_rel_path, node_id, flags, body } => {
                 self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref()).await
@@ -332,6 +332,7 @@ impl DslExecutor {
         &self,
         file_rel_path: &str,
         title: &str,
+        description: &str,
         as_json: bool,
         body: &str,
     ) -> DslOutput {
@@ -350,10 +351,15 @@ impl DslExecutor {
             body.to_string()
         } else {
             match build_pipeline_graph(&name, body) {
-                Ok(graph) => match serde_json::to_string_pretty(&graph) {
-                    Ok(s) => s,
-                    Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
-                },
+                Ok(mut graph) => {
+                    if !description.trim().is_empty() {
+                        graph.description = Some(description.trim().to_string());
+                    }
+                    match serde_json::to_string_pretty(&graph) {
+                        Ok(s) => s,
+                        Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
+                    }
+                }
                 Err(e) => return DslOutput::err(format!("Parse error: {e}")),
             }
         };
@@ -398,13 +404,19 @@ impl DslExecutor {
             .unwrap_or("manual");
 
         let display_title = if title.is_empty() { &name } else { title };
+        // --description flag takes precedence; fall back to description embedded in graph JSON
+        let effective_description = if !description.trim().is_empty() {
+            description.trim().to_string()
+        } else {
+            graph.description.as_deref().unwrap_or("").to_string()
+        };
 
         match self.platform.projects.upsert_pipeline_definition(
             &self.owner,
             &self.project,
             file_rel_path,
             display_title,
-            "",
+            &effective_description,
             trigger_kind,
             &graph_source,
         ) {

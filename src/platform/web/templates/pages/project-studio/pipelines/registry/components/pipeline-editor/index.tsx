@@ -79,6 +79,12 @@ const CAT_ICONS: Record<string, any> = {
       <path d="M12 2l7 4v6c0 4.42-3.13 8.56-7 9.93C8.13 20.56 5 16.42 5 12V6l7-4z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
     </svg>
   ),
+  files: (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+      <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+    </svg>
+  ),
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
