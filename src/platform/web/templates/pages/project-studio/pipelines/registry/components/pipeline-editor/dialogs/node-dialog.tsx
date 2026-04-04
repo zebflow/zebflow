@@ -52,12 +52,73 @@ export default function NodeDialog({
 
   const [formState, setFormState] = useState<Record<string, unknown>>({});
 
+  // Dynamic function params (for n.function.call)
+  const [functionParams, setFunctionParams] = useState<Record<string, any> | null>(null);
+  const [functionParamsLoading, setFunctionParamsLoading] = useState(false);
+
   // Reset form state when nodeData changes
   useEffect(() => {
     if (nodeData) {
       setFormState(initFormState());
+      setFunctionParams(null);
     }
   }, [nodeData?.graphNodeId, nodeData?.zfKind]);
+
+  // Load function params when the selected function changes (n.function.call only)
+  useEffect(() => {
+    if (kind !== "n.function.call") return;
+    const slug = String(formState.function || "").trim();
+    if (!slug) { setFunctionParams(null); return; }
+
+    const owner = String(dataState.owner || "");
+    const project = String(dataState.project || "");
+    if (!owner || !project) return;
+
+    // Find the matching function pipeline to get its file_rel_path
+    const match = (Array.isArray(dataState.functionPipelines) ? dataState.functionPipelines : [])
+      .find((fp: any) => (fp?.meta?.name || fp?.name || "") === slug);
+    const fileRelPath = match?.meta?.file_rel_path;
+    if (!fileRelPath) { setFunctionParams(null); return; }
+
+    setFunctionParamsLoading(true);
+    fetch(`/api/projects/${encodeURIComponent(owner)}/${encodeURIComponent(project)}/pipelines/by-id?id=${encodeURIComponent(fileRelPath)}&include_source=true`, {
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data) { setFunctionParams(null); return; }
+        let graph: any;
+        try { graph = JSON.parse(data.source || "{}"); } catch { graph = {}; }
+        const triggerNode = (graph?.nodes || []).find((n: any) => n.kind === "n.trigger.function");
+        let params: Record<string, any> | null = null;
+        if (triggerNode?.config?.params) {
+          const raw = triggerNode.config.params;
+          // params may be a string (code editor) or already parsed object
+          if (typeof raw === "string") {
+            try { params = JSON.parse(raw); } catch { params = null; }
+          } else if (typeof raw === "object" && raw !== null) {
+            params = raw;
+          }
+        }
+        setFunctionParams(params && Object.keys(params).length > 0 ? params : null);
+
+        // Auto-populate input with defaults if currently empty
+        if (params && Object.keys(params).length > 0) {
+          setFormState((prev) => {
+            const existing = String(prev.input || "").trim();
+            if (existing) return prev;
+            const template: Record<string, any> = {};
+            for (const [key, def] of Object.entries(params)) {
+              const dflt = (def as any)?.default;
+              template[key] = dflt !== undefined ? dflt : "";
+            }
+            return { ...prev, input: JSON.stringify(template, null, 2) };
+          });
+        }
+      })
+      .catch(() => setFunctionParams(null))
+      .finally(() => setFunctionParamsLoading(false));
+  }, [kind, formState.function]);
 
   // Sync webhook URL field when path changes
   useEffect(() => {
@@ -99,6 +160,31 @@ export default function NodeDialog({
     onClose();
   }
 
+  // Derive per-param display values from formState.input JSON
+  const parsedParamInput: Record<string, string> = (() => {
+    if (!functionParams) return {};
+    const raw = String(formState.input || "").trim();
+    if (!raw) return {};
+    try {
+      const obj = JSON.parse(raw);
+      const result: Record<string, string> = {};
+      for (const key of Object.keys(functionParams)) {
+        const val = obj[key];
+        result[key] = val !== undefined && val !== null
+          ? (typeof val === "object" ? JSON.stringify(val) : String(val))
+          : "";
+      }
+      return result;
+    } catch { return {}; }
+  })();
+
+  function handleParamInputChange(key: string, val: string) {
+    const raw = String(formState.input || "").trim();
+    let current: Record<string, any> = {};
+    if (raw) { try { current = JSON.parse(raw); } catch { current = {}; } }
+    handleChange("input", JSON.stringify({ ...current, [key]: val }, null, 2));
+  }
+
   const title = `Edit Node | ${kind || "node"}`;
   const subtitle = catalogEntry?.description || "Configure node fields based on node contract.";
 
@@ -126,10 +212,15 @@ export default function NodeDialog({
             </small>
           </Field>
 
-          {/* Server-driven fields via NodeForm */}
+          {/* Server-driven fields via NodeForm.
+              For n.function.call with params loaded: hide input_path (replaced by param inputs below). */}
           {serverFields.length > 0 ? (
             <NodeForm
-              fields={serverFields}
+              fields={
+                kind === "n.function.call" && functionParams !== null
+                  ? serverFields.filter((f) => f.name !== "input_path" && f.name !== "input")
+                  : serverFields
+              }
               layout={catalogEntry?.layout}
               config={formState}
               dataState={dataState}
@@ -153,6 +244,50 @@ export default function NodeDialog({
                 }}
               />
             </Field>
+          )}
+
+          {/* Dynamic function input panel (n.function.call only) */}
+          {kind === "n.function.call" && formState.function && (
+            <div className="mt-1 rounded border border-dark-border overflow-hidden">
+              <div className="flex items-center gap-2 px-3 py-2 bg-dark-accent3/40 border-b border-dark-border">
+                <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-body-soft">
+                  Function Input
+                </span>
+                {functionParamsLoading && (
+                  <span className="text-[0.7rem] text-body-muted">Loading…</span>
+                )}
+                {!functionParamsLoading && !functionParams && (
+                  <span className="text-[0.7rem] text-body-muted">
+                    No params defined — passes full payload through.
+                  </span>
+                )}
+              </div>
+              {functionParams && Object.keys(functionParams).length > 0 && (
+                <div className="px-3 py-3 flex flex-col gap-3">
+                  {Object.entries(functionParams).map(([name, def]: [string, any]) => (
+                    <Field key={name}>
+                      <Label>
+                        {name}
+                        {def?.type && (
+                          <span className="ml-1.5 text-[0.68rem] font-normal text-body-muted">
+                            {def.type}
+                          </span>
+                        )}
+                      </Label>
+                      <Input
+                        type="text"
+                        placeholder={def?.description || `Enter ${name}…`}
+                        value={parsedParamInput[name] ?? ""}
+                        onInput={(e) => handleParamInputChange(name, e.currentTarget.value)}
+                      />
+                      {def?.description && (
+                        <small className="text-xs text-body-muted">{def.description}</small>
+                      )}
+                    </Field>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
 

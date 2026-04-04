@@ -5962,13 +5962,18 @@ async fn api_upsert_pipeline_definition(
         }
     }
 
+    // Derive trigger_kind from the actual graph entry nodes so that it stays correct
+    // even when the user changes the trigger node in the visual editor after creation.
+    let trigger_kind = derive_trigger_kind_from_source(&req.source)
+        .unwrap_or_else(|| req.trigger_kind.clone());
+
     match state.platform.projects.upsert_pipeline_definition(
         &owner,
         &project,
         &req.file_rel_path,
         &req.title,
         &req.description,
-        &req.trigger_kind,
+        &trigger_kind,
         &req.source,
     ) {
         Ok(meta) => Json(json!({"ok": true, "meta": meta})).into_response(),
@@ -10268,6 +10273,36 @@ fn require_project_api_capability(
     }
 }
 
+/// Derives the trigger kind from the graph source by inspecting entry nodes.
+/// Returns e.g. "function", "webhook", "schedule", "manual", "ws".
+/// Falls back to None when the graph can't be parsed or has no trigger node.
+fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
+    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
+    // Prefer explicit entry nodes; fall back to nodes with no incoming edges.
+    let entry_ids: std::collections::HashSet<&str> = if !graph.entry_nodes.is_empty() {
+        graph.entry_nodes.iter().map(|s| s.as_str()).collect()
+    } else {
+        let targets: std::collections::HashSet<&str> =
+            graph.edges.iter().map(|e| e.to_node.as_str()).collect();
+        graph
+            .nodes
+            .iter()
+            .filter(|n| !targets.contains(n.id.as_str()))
+            .map(|n| n.id.as_str())
+            .collect()
+    };
+    graph
+        .nodes
+        .iter()
+        .filter(|n| entry_ids.contains(n.id.as_str()))
+        .find_map(|n| {
+            let canonical = canonical_pipeline_node_kind(&n.kind);
+            canonical
+                .strip_prefix("n.trigger.")
+                .map(|suffix| suffix.to_string())
+        })
+}
+
 fn webhook_trigger_from_pipeline_source(source: &str) -> Option<(String, String)> {
     let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
     let node = graph
@@ -11044,9 +11079,11 @@ async fn api_reindex_project(
                                 .ok()
                                 .and_then(|g| g.description)
                                 .unwrap_or_default();
+                            let reindex_trigger_kind = derive_trigger_kind_from_source(&source)
+                                .unwrap_or_default();
                             match state.platform.projects.upsert_pipeline_definition(
                                 &owner_slug, &project_slug, &file_rel_path,
-                                "", &graph_description, "", &source,
+                                "", &graph_description, &reindex_trigger_kind, &source,
                             ) {
                                 Ok(_) => pipelines_indexed += 1,
                                 Err(e) => errors.push(format!("{rel}: {e}")),

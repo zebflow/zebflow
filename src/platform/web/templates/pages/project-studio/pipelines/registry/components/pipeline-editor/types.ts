@@ -6,7 +6,7 @@ export interface SelectOptionDef {
   label: string;
 }
 
-export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs";
+export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder";
 
 export type NodeFieldDataSource = "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "ai_tools" | "function_pipelines";
 

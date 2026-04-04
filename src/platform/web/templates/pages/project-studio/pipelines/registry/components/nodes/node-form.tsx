@@ -91,6 +91,7 @@ const FULL_WIDTH_TYPES: NodeFieldType[] = [
   "multi_checkbox",
   "key_value_pairs",
   "claims_pairs",
+  "params_builder",
 ];
 
 function isFullWidth(field: NodeFieldDef): boolean {
