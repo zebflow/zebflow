@@ -59,7 +59,7 @@ impl Default for ReactiveWebOptions {
     fn default() -> Self {
         Self {
             minify_html: false,
-            strict_mode: true,
+            strict_mode: false,
             style_engine: StyleEngineMode::TailwindLike,
             runtime_mode: RuntimeMode::Prod,
             reactive_mode: ReactiveMode::Bindings,
