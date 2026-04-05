@@ -191,7 +191,9 @@ impl PlatformService {
             crate::rwe::resolve_engine_or_default(None),
             Some(self.credentials.clone()),
         )
-        .with_platform(std::sync::Arc::new(self.clone()));
+        .with_platform(std::sync::Arc::new(self.clone()))
+        .with_ws_hub(self.ws_hub.clone())
+        .with_mem_hub(self.mem_hub.clone());
 
         let output = engine.execute_async(&compiled.graph, &ctx).await?;
 
