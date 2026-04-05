@@ -268,6 +268,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         ),
     },
     EmbeddedAsset {
+        path: "zeb/pdf/manifest.json",
+        bytes: include_bytes!("../../../libraries/zeb/pdf/manifest.json"),
+    },
+    EmbeddedAsset {
         path: "zeb/pdf/0.1/library.json",
         bytes: include_bytes!("../../../libraries/zeb/pdf/0.1/library.json"),
     },
