@@ -434,15 +434,15 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             DslVerb::Delete { kind, name }
         }
         "activate" => {
-            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
             DslVerb::Activate { file_rel_path }
         }
         "deactivate" => {
-            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
             DslVerb::Deactivate { file_rel_path }
         }
         "execute" | "exec" => {
-            let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
+            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
             let input_str = extract_flag(&tokens, "--input").unwrap_or_default();
             let input = serde_json::from_str(&input_str).unwrap_or(json!({}));
             DslVerb::Execute { file_rel_path, input }
