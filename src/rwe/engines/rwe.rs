@@ -53,7 +53,7 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                     "Function".to_string(),
                     "globalThis.Function".to_string(),
                 ],
-                allow_dynamic_import: false,
+                allow_dynamic_import: !options.strict_mode,
                 allow_raw_html: false,
             },
             deno_timeout_ms: 3_000,
