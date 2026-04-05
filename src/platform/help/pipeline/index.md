@@ -122,9 +122,9 @@ Label each node with `[id]`, then declare edges with `->`. Use for conditional r
 
 A **node** is one step in the pipeline. Each node has a **kind** (trigger, query, render, logic, …). The previous node’s JSON output becomes the next node’s **`input`**.
 
-- **Triggers** start a run (`trigger.webhook`, `trigger.schedule`, …).
-- **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `logic.if`, …).
-- **Last nodes** produce the HTTP response (`web.response` for HTML pages, JSON, redirects, or cookies — see `help(topic="pipeline/web")`).
+- **Triggers** start a run (`trigger.webhook`, `trigger.schedule`, `trigger.ws`, `trigger.memsubscribe`, …).
+- **Middle nodes** read or transform data (`pg.query`, `sekejap.query`, `script`, `http.request`, `mem.get`, `mem.set`, `mem.incr`, `logic.if`, …).
+- **Last nodes** produce the HTTP response (`web.response` for HTML pages, JSON, redirects, or cookies — see `help(topic="pipeline/web")`), or push real-time updates (`ws.emit`, `ws.sync_state`, `mem.publish`).
 
 ### How to open the full node reference
 
@@ -174,6 +174,8 @@ pipeline_register
 ```
 pipeline_activate  file_rel_path="pipelines/pages/blog-home.zf.json"
 ```
+
+Or via DSL shell: `activate pipelines/pages/blog-home.zf.json`
 
 After activate, the pipeline handles live traffic.
 

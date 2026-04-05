@@ -283,9 +283,9 @@ Quick cheat:
 
 ```
 register <name> --path <folder>  [DSL body]   ← save pipeline (draft)
-activate pipeline <name>                       ← go live
-deactivate pipeline <name>                     ← stop serving
-execute pipeline <name>                        ← run saved active version
+activate <file_rel_path>                       ← go live
+deactivate <file_rel_path>                     ← stop serving
+execute <file_rel_path>                        ← run saved active version
 run [DSL body]                                 ← ephemeral, not saved
 describe pipeline <name>                       ← inspect nodes + config
 patch <name> --node <id> [flags]               ← update node config

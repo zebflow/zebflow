@@ -234,15 +234,20 @@ After patching, the pipeline is `stale` until re-activated.
 ### activate / deactivate
 
 ```zf
-activate pipeline blog-home
-deactivate pipeline blog-home
+activate blog-home
+activate pipelines/api/blog-home.zf.json
+deactivate blog-home
 ```
+
+The `file_rel_path` is the only argument — no `pipeline` keyword between verb and path.
+`pipelines/` prefix and `.zf.json` extension are added automatically when omitted.
 
 ### execute — trigger a registered pipeline
 
 ```zf
-execute pipeline blog-home
-execute pipeline process-order -- {"order_id": 42, "action": "resend"}
+execute blog-home
+execute process-order -- {"order_id": 42, "action": "resend"}
+execute pipelines/api/process-order.zf.json -- {"order_id": 42}
 ```
 
 Triggers with the declared trigger kind. Use `-- {json}` to pass input payload (manual trigger pipelines).
@@ -362,8 +367,16 @@ n.logic.switch --help           # same
 | `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; output adds `{ thumbnail: { path, url, width, height, format, size } }` to payload. Use `--delete-source` to delete the original after thumbnailing. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
-| `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> --room <id>` |
+| `trigger.memsubscribe` | `n.trigger.memsubscribe` | `--channel <name>` — subscribes to an in-memory pub/sub channel; fires whenever `mem.publish` sends to that channel |
+| `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
 | `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
+| `mem.set` | `n.mem.set` | `--key <k> --value-path <ptr> [--ttl <secs>]` — write value from payload path into per-project in-memory KV; optional TTL in seconds |
+| `mem.get` | `n.mem.get` | `--key <k> [--out-key <k>] [--default <json>]` — read key from KV store, inject into payload; `--default` used when key is missing/expired |
+| `mem.exists` | `n.mem.exists` | `--key <k> [--out-key <k>]` — injects boolean `true/false` under `out-key` (default `exists`); does not consume the value |
+| `mem.del` | `n.mem.del` | `--key <k>` — delete key from KV store; payload passes through unchanged |
+| `mem.expire` | `n.mem.expire` | `--key <k> [--ttl <secs>]` — update TTL on an existing key without changing its value; `--ttl 0` removes expiry (persist forever) |
+| `mem.incr` | `n.mem.incr` | `--key <k> [--amount <n>] [--out-key <k>]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing |
+| `mem.publish` | `n.mem.publish` | `--channel <name> [--message-path <ptr>]` — publish a message to an in-memory pub/sub channel; triggers all active `n.trigger.memsubscribe` pipelines on that channel |
 
 ### `sekejap.query` and `sekejap.mutate` — SQL examples
 
@@ -490,6 +503,81 @@ register make-thumb -- \
 - Re-encoding strips all EXIF metadata and any embedded executable payloads — treat all uploads as untrusted.
 - Use `--delete-source` to replace the original with the sanitized thumbnail.
 - Source SVG, HEIC, and HEIF formats are rejected (use a dedicated pipeline for conversion).
+
+### `n.mem.*` — in-memory key/value store and pub/sub
+
+Per-project in-memory store. Not persisted across server restarts. Scoped to `owner/project`.
+
+**Use cases**: rate limiting, session TTL refresh, counters, pub/sub triggers, cache-aside pattern.
+
+All `--key` and `--channel` flags support `{{ expr }}` template expressions.
+
+#### Key/value operations
+
+```zf
+# Write a value from payload into the store
+| mem.set --key "session:{{ $trigger.auth.sub }}" --value-path /session_data --ttl 3600
+
+# Read a value back (inject under "cached" in payload)
+| mem.get --key "cache:{{ $trigger.params.slug }}" --out-key cached --default null
+
+# Check if key exists without consuming it
+| mem.exists --key "lock:{{ $input.task_id }}" --out-key is_locked
+
+# Delete a key
+| mem.del --key "session:{{ $trigger.auth.sub }}"
+
+# Refresh TTL without changing value (extend session on activity)
+| mem.expire --key "session:{{ $trigger.auth.sub }}" --ttl 3600
+
+# Remove TTL — make key permanent
+| mem.expire --key "session:{{ $trigger.auth.sub }}" --ttl 0
+
+# Atomic counter (starts at 0 if missing)
+| mem.incr --key "clicks:{{ $trigger.params.button }}" --out-key total
+
+# Decrement
+| mem.incr --key "slots:{{ $input.event_id }}" --amount -1 --out-key remaining
+```
+
+#### Pub/sub
+
+```zf
+# Publisher pipeline (triggered by webhook, schedule, etc.)
+| trigger.webhook --path /api/events --method POST
+| mem.publish --channel "events:{{ $input.type }}" --message-path /
+
+# Subscriber pipeline (triggered by publisher)
+| trigger.memsubscribe --channel "events:order.created"
+| script -- "return { event: input.message, received_at: Date.now() }"
+| sekejap.mutate -- "INSERT INTO processed_events ..."
+```
+
+Output payload of `n.trigger.memsubscribe`:
+```json
+{
+  "trigger": "memsubscribe",
+  "channel": "events:order.created",
+  "node_id": "n0",
+  "message": { /* original published payload */ }
+}
+```
+
+#### `n.ws.emit` from non-WS triggers
+
+`n.ws.emit` works after **any** trigger type when `--room` is specified:
+
+```zf
+# Push update to a WS room from a webhook
+| trigger.webhook --path /api/board/:room_id --method POST
+| sekejap.mutate -- "UPDATE boards SET ... WHERE id = '{{ $trigger.params.room_id }}'"
+| ws.emit --event board.updated --to all --room "{{ $trigger.params.room_id }}" --payload-path /
+```
+
+Without `--room`, `ws.emit` reads `room_id` from the payload (set by `trigger.ws`).
+With `--room`, it is fully self-contained and works from webhook, schedule, or any trigger.
+
+---
 
 ### `n.trigger.webhook` — request payload shape
 
@@ -712,7 +800,7 @@ register get-posts --path /api \
   | pg.query --credential main-db -- "SELECT id, title, created_at FROM posts ORDER BY created_at DESC"
 
 # 5. Activate and verify
-activate pipeline get-posts
+activate get-posts
 describe pipeline get-posts
 
 # 6. Commit changes
@@ -754,7 +842,7 @@ No `condition` on edges. Routing is entirely expressed via named output pins on 
 ```zf
 get pipelines && get connections
 
-describe pipeline blog-home && activate pipeline blog-home
+describe pipeline blog-home && activate blog-home
 ```
 
 ---
