@@ -110,6 +110,11 @@ pub struct Config {
     /// Maximum file size in MB (default: 10).
     #[serde(default = "default_max_size_mb")]
     pub max_size_mb: f64,
+
+    /// Optional custom filename (without extension). If set, used instead of UUID.
+    /// Useful for deterministic file paths (e.g. profile avatars).
+    #[serde(default)]
+    pub filename: Option<String>,
 }
 
 impl Default for Config {
@@ -120,6 +125,7 @@ impl Default for Config {
             folder: String::new(),
             allowed_kinds: default_allowed_kinds(),
             max_size_mb: default_max_size_mb(),
+            filename: None,
         }
     }
 }
@@ -196,6 +202,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--filename".to_string(),
+                config_key: "filename".to_string(),
+                description: "Custom filename without extension (default: random UUID). Overwrites if same name exists.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: vec![
             NodeFieldDef {
@@ -248,6 +261,14 @@ pub fn definition() -> NodeDefinition {
                 default_value: Some(json!("10")),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "filename".to_string(),
+                label: "Filename".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Custom filename without extension (default: random UUID). File with same name will be overwritten.".to_string()),
+                default_value: None,
+                ..Default::default()
+            },
         ],
         layout: vec![
             LayoutItem::Field("field".to_string()),
@@ -255,6 +276,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("folder".to_string()),
             LayoutItem::Field("allowed_kinds".to_string()),
             LayoutItem::Field("max_size_mb".to_string()),
+            LayoutItem::Field("filename".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: false,
@@ -417,10 +439,16 @@ impl NodeHandler for Node {
         });
 
         let ext = safe_extension(original_name, effective_mime);
-        let storage_name = if ext.is_empty() {
-            Uuid::new_v4().to_string()
-        } else {
-            format!("{}.{}", Uuid::new_v4(), ext)
+        let storage_name = {
+            let custom = self.config.filename.as_deref()
+                .map(|f| sanitize_filename(f.trim()))
+                .filter(|s| !s.is_empty());
+            match (custom, ext.is_empty()) {
+                (Some(name), true)  => name,
+                (Some(name), false) => format!("{name}.{ext}"),
+                (None, true)        => Uuid::new_v4().to_string(),
+                (None, false)       => format!("{}.{}", Uuid::new_v4(), ext),
+            }
         };
 
         // rel_path is relative to files_dir: e.g. "private/uploads/abc.jpg"
@@ -513,4 +541,19 @@ fn sanitize_dest_path(dest: &str) -> String {
         .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Sanitize a user-provided filename: keep alphanumeric, dash, underscore only.
+/// Strips any extension (the caller adds extension from content type).
+/// Returns empty string if nothing remains (caller falls back to UUID).
+fn sanitize_filename(name: &str) -> String {
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let sanitized: String = stem.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    trimmed.chars().take(200).collect()
 }

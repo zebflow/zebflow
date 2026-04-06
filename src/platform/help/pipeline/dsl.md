@@ -363,8 +363,8 @@ n.logic.switch --help           # same
 | `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
-| `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }` |
-| `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; output adds `{ thumbnail: { path, url, width, height, format, size } }` to payload. Use `--delete-source` to delete the original after thumbnailing. |
+| `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
+| `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; output adds `{ thumbnail: { path, url, width, height, format, size } }` to payload. `--filename` overrides the default UUID. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.memsubscribe` | `n.trigger.memsubscribe` | `--channel <name>` — subscribes to an in-memory pub/sub channel; fires whenever `mem.publish` sends to that channel |
@@ -418,6 +418,7 @@ The saved file is immediately accessible at the URL returned in `saved.url`.
 | `--dest` | `uploads` | Subdirectory under project `files/` |
 | `--allowed-types` | _(all)_ | Comma-separated MIME allowlist, supports wildcards (`image/*`, `application/pdf`) |
 | `--max-size` | `10` | Maximum file size in MB |
+| `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing file with same name. Sanitized to alphanumeric, dash, underscore only. |
 
 **Output:** `{ saved: { path, url, original_name, content_type, size } }`
 
@@ -449,10 +450,16 @@ register upload-document --path /api \
   | file.save --field document --dest documents --allowed-types "application/pdf" --max-size 20 \
   | sekejap.mutate -- "INSERT INTO documents (id, url, name) VALUES ('{{ $input.saved.path }}', '{{ $input.saved.url }}', '{{ $input.saved.original_name }}')" \
   | web.response
+
+# Deterministic filename — always saves as avatars/profile-photo.jpg (overwrites on re-upload)
+register upload-avatar-fixed --path /api \
+  | trigger.webhook --path /avatar --method POST --auth-type jwt --auth-credential my-jwt \
+  | file.save --field avatar --folder avatars --filename profile-photo --allowed-types "image/*" \
+  | web.response
 ```
 
 **Security notes:**
-- Files are stored using a UUID filename — the original filename is never used for storage (path traversal safe).
+- By default, files are stored using a UUID filename (path traversal safe). Use `--filename` for deterministic names — the value is sanitized to safe characters only.
 - Files live outside the git-synced `repo/` folder — they are not committed with your codebase.
 - Always use `--auth-type jwt` on the webhook trigger for authenticated uploads.
 - Use `--allowed-types` to restrict what users can upload; leave empty only for trusted internal endpoints.
@@ -476,6 +483,7 @@ is built in — images over 16000×16000 or 128 MB decoded are rejected.
 | `--access` | `public` | Storage bucket: `public` or `private` |
 | `--source-key` | `saved.path` | Dot-notation path into payload for the source file relative path |
 | `--delete-source` | _(off)_ | Delete the original source file after successful thumbnail write |
+| `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing thumbnail with same name. Sanitized to alphanumeric, dash, underscore only. |
 
 **Output:** adds `{ thumbnail: { path, url, width, height, format, size } }` to the existing payload.
 
