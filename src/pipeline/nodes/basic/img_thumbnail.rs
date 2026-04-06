@@ -92,6 +92,11 @@ pub struct Config {
     /// The delete is best-effort and non-fatal — pipeline continues even if it fails.
     #[serde(default = "default_delete_source")]
     pub delete_source: bool,
+
+    /// Optional custom filename (without extension). If set, used instead of UUID.
+    /// Useful for deterministic thumbnail paths (e.g. user avatars).
+    #[serde(default)]
+    pub filename: Option<String>,
 }
 
 impl Default for Config {
@@ -106,6 +111,7 @@ impl Default for Config {
             access:        default_access(),
             source_key:    default_source_key(),
             delete_source: default_delete_source(),
+            filename:      None,
         }
     }
 }
@@ -211,6 +217,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Bool,
                 required: false,
             },
+            DslFlag {
+                flag: "--filename".to_string(),
+                config_key: "filename".to_string(),
+                description: "Custom filename without extension (default: random UUID). Overwrites if same name exists.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: vec![
             NodeFieldDef {
@@ -299,6 +312,14 @@ pub fn definition() -> NodeDefinition {
                 default_value: Some(json!(false)),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "filename".to_string(),
+                label: "Filename".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Custom filename without extension (default: random UUID). Thumbnail with same name will be overwritten.".to_string()),
+                default_value: None,
+                ..Default::default()
+            },
         ],
         layout: vec![
             LayoutItem::Field("width".to_string()),
@@ -310,6 +331,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("access".to_string()),
             LayoutItem::Field("source_key".to_string()),
             LayoutItem::Field("delete_source".to_string()),
+            LayoutItem::Field("filename".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: false,
@@ -416,7 +438,15 @@ impl NodeHandler for Node {
             self.config.folder.trim()
         });
 
-        let storage_name = format!("{}.{}", Uuid::new_v4(), ext_out);
+        let storage_name = {
+            let custom = self.config.filename.as_deref()
+                .map(|f| sanitize_filename(f.trim()))
+                .filter(|s| !s.is_empty());
+            match custom {
+                Some(name) => format!("{name}.{ext_out}"),
+                None       => format!("{}.{ext_out}", Uuid::new_v4()),
+            }
+        };
         let thumb_rel = format!("{access}/{folder}/{storage_name}");
         let abs_dest = layout.files_dir.join(&thumb_rel);
 
@@ -580,4 +610,19 @@ fn sanitize_folder(folder: &str) -> String {
         .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Sanitize a user-provided filename: keep alphanumeric, dash, underscore only.
+/// Strips any extension (the caller adds extension from output format).
+/// Returns empty string if nothing remains (caller falls back to UUID).
+fn sanitize_filename(name: &str) -> String {
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let sanitized: String = stem.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let trimmed = sanitized.trim_matches('_');
+    trimmed.chars().take(200).collect()
 }
