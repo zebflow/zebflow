@@ -1,4 +1,4 @@
-import { useState, cx, Link } from "zeb";
+import { useState, useEffect, cx, Link } from "zeb";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import Checkbox from "@/components/ui/checkbox";

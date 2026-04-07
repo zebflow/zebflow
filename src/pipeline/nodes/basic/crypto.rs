@@ -45,7 +45,7 @@
 //!
 //! # Output pins
 //!
-//! Hash / encode / decode operations write `result` into the payload and
+//! Hash / encode / decode operations replace the payload with `{ result }` and
 //! emit to the `out` pin.
 //!
 //! Verify operations (`bcrypt_verify`, `argon2_verify`) route to the `true`
@@ -109,10 +109,11 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Crypto".to_string(),
         description: "Cryptographic primitives: hash, verify, HMAC, base64, random. \
-            Use --op to select the operation. Hash/encode ops write { result } to the \
-            payload and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
-            route to 'true' or 'false' without an extra n.logic.if. \
-            Input defaults to payload.input; override with --input-path."
+            Use --op to select the operation. Hash/encode ops replace the payload with \
+            { result } and emit to the 'out' pin. Verify ops (bcrypt_verify, argon2_verify) \
+            route to 'true' or 'false' pin, forwarding the payload unchanged. \
+            Input defaults to payload.input; override with --input-path. \
+            Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -291,13 +292,9 @@ fn extract_str<'a>(payload: &'a Value, path: &str, fallback_key: &str) -> &'a st
     payload.get(fallback_key).and_then(Value::as_str).unwrap_or_default()
 }
 
-/// Clone `payload`, insert `"result"` field, and return the modified object.
-fn with_result(payload: Value, result: impl Into<Value>) -> Value {
-    let mut out = payload;
-    if let Value::Object(ref mut map) = out {
-        map.insert("result".to_string(), result.into());
-    }
-    out
+/// Build a fresh output payload with only the `result` field (replace, not merge).
+fn with_result(result: impl Into<Value>) -> Value {
+    json!({ "result": result.into() })
 }
 
 // ── NodeHandler impl ───────────────────────────────────────────────────────
@@ -330,7 +327,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(h.finalize());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: sha256".to_string()],
                 })
             }
@@ -344,7 +341,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(h.finalize());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: sha512".to_string()],
                 })
             }
@@ -362,7 +359,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BCRYPT_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec![format!("n.crypto: bcrypt_hash cost={cost}")],
                 })
             }
@@ -406,7 +403,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_ARGON2_HASH", e))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: argon2_hash".to_string()],
                 })
             }
@@ -449,7 +446,7 @@ impl NodeHandler for Node {
                 let result = hex::encode(mac.finalize().into_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: hmac_sha256".to_string()],
                 })
             }
@@ -461,7 +458,7 @@ impl NodeHandler for Node {
                 let result = general_purpose::STANDARD.encode(input_val.as_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: base64_encode".to_string()],
                 })
             }
@@ -478,7 +475,7 @@ impl NodeHandler for Node {
                 })?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec!["n.crypto: base64_decode".to_string()],
                 })
             }
@@ -496,7 +493,7 @@ impl NodeHandler for Node {
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-                    payload: with_result(payload, result),
+                    payload: with_result(result),
                     trace: vec![format!("n.crypto: random_hex length={length}")],
                 })
             }

@@ -2,6 +2,7 @@
 //!
 //! The counter starts at 0 if the key doesn't exist.
 //! Non-integer values are reset to 0 before applying the increment.
+//! Replaces the payload with `{ [out_key]: new_value }`.
 //!
 //! # Config flags
 //!
@@ -42,7 +43,8 @@ pub fn definition() -> NodeDefinition {
         title: "Mem Incr".to_string(),
         description: "Atomically increment (or decrement with a negative amount) an integer counter \
             in the per-project in-memory store. Counter starts at 0 if the key is missing. \
-            The new value is injected into the payload under --out-key (defaults to --key)."
+            Replaces the payload with { [out_key]: new_value }. \
+            Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
@@ -146,23 +148,14 @@ impl NodeHandler for Node {
             self.config.out_key.trim().to_string()
         };
 
-        let mut payload = match input.payload {
-            Value::Object(map) => map,
-            other => {
-                let mut m = serde_json::Map::new();
-                m.insert("value".to_string(), other);
-                m
-            }
-        };
-        payload.insert(out_key.clone(), Value::Number(new_val.into()));
-
+        let trace = format!(
+            "n.mem.incr: key={} amount={} new_val={} out_key={}",
+            key, amount, new_val, out_key
+        );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(payload),
-            trace: vec![format!(
-                "n.mem.incr: key={} amount={} new_val={} out_key={}",
-                key, amount, new_val, out_key
-            )],
+            payload: json!({ out_key: new_val }),
+            trace: vec![trace],
         })
     }
 }

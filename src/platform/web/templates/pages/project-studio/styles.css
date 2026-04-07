@@ -68,81 +68,9 @@
 
 /* ── Toggle switch ───────────────────────────────────────────────────────── */
 
-/* Console output lines — `cls` from project-shell.tsx pushLine() */
-.cli-line {
-  color: #94a3b8;
-  white-space: pre;
-  word-break: break-all;
-}
-.cli-line.cli-echo {
-  color: #94a3b8;
-}
-.cli-line.cli-info {
-  color: #64748b;
-  font-style: italic;
-}
-.cli-line.cli-error {
-  color: #f87171;
-}
-.cli-line.cli-success {
-  color: #4ade80;
-}
-.cli-line.cli-muted {
-  color: #64748b;
-}
-.cli-line.cli-blank {
-  display: block;
-  height: 0.6em;
-}
-.cli-line.cli-ai {
-  color: #7dd3fc;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.cli-line.cli-tool {
-  color: #818cf8;
-  font-style: italic;
-}
-.cli-line.cli-thinking {
-  color: #475569;
-  font-style: italic;
-}
-.cli-line.cli-nav a {
-  color: #38bdf8;
-  text-decoration: none;
-}
-.cli-line.cli-nav a:hover {
-  text-decoration: underline;
-  color: #7dd3fc;
-}
+/* Console output lines — migrated to Tailwind in console-output.tsx */
 
-/* ── Bottom-docked console panel ─────────────────────────────────────────── */
-/* Output area — scrollable, fills remaining height */
-/* Line list inside the output area */
-.cli-output-list {
-  padding: 0.4rem 1rem 0.5rem;
-  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
-  font-size: 0.78rem;
-  line-height: 1.65;
-}
-
-/* Console raw text input */
-
-/* Autocomplete suggestion panel */
-[data-cli-autocomplete] {
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  background: #090d14;
-  overflow: hidden;
-}
-.cli-ac-hl {
-  color: #7dd3fc;
-}
-.cli-ac-hist {
-  color: #1e3a52;
-  font-size: 0.68rem;
-  margin-left: auto;
-  shrink: 0;
-}
+/* Autocomplete — migrated to inline styles in studio-shell-behavior.tsx + console-panel.tsx */
 
 /* Optional styling for inline <code> in console HTML (no current emitter) */
 

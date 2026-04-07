@@ -110,6 +110,9 @@ export default function ProjectStudioShell(props) {
                         : "bg-dark-accent3 !text-dark-menus",
                       "flex items-center justify-center h-9 w-9 rounded-none",
                     )}
+                    data-console-trigger
+                    data-owner={owner}
+                    data-project={project}
                   >
                     <TerminalIcon />
                   </button>

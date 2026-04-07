@@ -364,18 +364,18 @@ n.logic.switch --help           # same
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
-| `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; output adds `{ thumbnail: { path, url, width, height, format, size } }` to payload. `--filename` overrides the default UUID. |
+| `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.memsubscribe` | `n.trigger.memsubscribe` | `--channel <name>` — subscribes to an in-memory pub/sub channel; fires whenever `mem.publish` sends to that channel |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
 | `ws.sync_state` | `n.ws.sync_state` | `--op <set\|merge\|delete> --path <ptr> --value-path <ptr> --room <id>` |
 | `mem.set` | `n.mem.set` | `--key <k> --value-path <ptr> [--ttl <secs>]` — write value from payload path into per-project in-memory KV; optional TTL in seconds |
-| `mem.get` | `n.mem.get` | `--key <k> [--out-key <k>] [--default <json>]` — read key from KV store, inject into payload; `--default` used when key is missing/expired |
-| `mem.exists` | `n.mem.exists` | `--key <k> [--out-key <k>]` — injects boolean `true/false` under `out-key` (default `exists`); does not consume the value |
+| `mem.get` | `n.mem.get` | `--key <k> [--out-key <k>] [--default <json>]` — read key from KV store; replaces the payload with `{ [out_key]: value }`; `--default` used when key is missing/expired |
+| `mem.exists` | `n.mem.exists` | `--key <k> [--out-key <k>]` — replaces the payload with `{ [out_key]: boolean }` (default key `exists`); does not consume the value |
 | `mem.del` | `n.mem.del` | `--key <k>` — delete key from KV store; payload passes through unchanged |
 | `mem.expire` | `n.mem.expire` | `--key <k> [--ttl <secs>]` — update TTL on an existing key without changing its value; `--ttl 0` removes expiry (persist forever) |
-| `mem.incr` | `n.mem.incr` | `--key <k> [--amount <n>] [--out-key <k>]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing |
+| `mem.incr` | `n.mem.incr` | `--key <k> [--amount <n>] [--out-key <k>]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing; replaces the payload with `{ [out_key]: new_value }` |
 | `mem.publish` | `n.mem.publish` | `--channel <name> [--message-path <ptr>]` — publish a message to an in-memory pub/sub channel; triggers all active `n.trigger.memsubscribe` pipelines on that channel |
 
 ### `sekejap.query` and `sekejap.mutate` — SQL examples
@@ -485,7 +485,7 @@ is built in — images over 16000×16000 or 128 MB decoded are rejected.
 | `--delete-source` | _(off)_ | Delete the original source file after successful thumbnail write |
 | `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing thumbnail with same name. Sanitized to alphanumeric, dash, underscore only. |
 
-**Output:** adds `{ thumbnail: { path, url, width, height, format, size } }` to the existing payload.
+**Output:** replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`.
 
 **Examples:**
 
@@ -526,7 +526,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 # Write a value from payload into the store
 | mem.set --key "session:{{ $trigger.auth.sub }}" --value-path /session_data --ttl 3600
 
-# Read a value back (inject under "cached" in payload)
+# Read a value back (replaces payload with { cached: <value> })
 | mem.get --key "cache:{{ $trigger.params.slug }}" --out-key cached --default null
 
 # Check if key exists without consuming it

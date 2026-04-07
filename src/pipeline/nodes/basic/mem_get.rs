@@ -1,7 +1,7 @@
 //! `n.mem.get` — retrieve a value from the per-project in-memory KV store.
 //!
-//! The retrieved value is merged into the flowing payload at `--out-key`
-//! (defaults to the storage key itself).
+//! Replaces the payload with `{ [out_key]: value }`.
+//! Use `$trigger` or `$nodes` references for upstream data.
 //!
 //! # Config flags
 //!
@@ -39,12 +39,14 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Mem Get".to_string(),
-        description: "Read a value from the per-project in-memory KV store and merge it into the payload. \
-            Use --out-key to control the payload key name (defaults to the storage key). \
-            Use --default to supply a fallback JSON value when the key is missing or expired."
+        description: "Read a value from the per-project in-memory KV store. \
+            Replaces the payload with { [out_key]: value }. \
+            Use --out-key to control the output key name (defaults to the storage key). \
+            Use --default to supply a fallback JSON value when the key is missing or expired. \
+            Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({ "type": "object" }),
-        output_schema: json!({ "type": "object", "description": "Payload with the retrieved value merged in." }),
+        output_schema: json!({ "type": "object", "description": "Fresh object with the retrieved value under out_key. Replaces entire payload." }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
         script_available: false,
@@ -136,20 +138,11 @@ impl NodeHandler for Node {
             self.config.out_key.trim().to_string()
         };
 
-        let mut payload = match input.payload {
-            Value::Object(map) => map,
-            other => {
-                let mut m = serde_json::Map::new();
-                m.insert("value".to_string(), other);
-                m
-            }
-        };
-        payload.insert(out_key.clone(), value);
-
+        let trace = format!("n.mem.get: key={} out_key={}", key, out_key);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(payload),
-            trace: vec![format!("n.mem.get: key={} out_key={}", key, out_key)],
+            payload: json!({ out_key: value }),
+            trace: vec![trace],
         })
     }
 }

@@ -1,6 +1,6 @@
 //! `n.mem.exists` — check whether a key exists in the per-project in-memory KV store.
 //!
-//! Merges a boolean into the payload under `--out-key` (default: "exists").
+//! Replaces the payload with `{ [out_key]: boolean }` (default out_key: "exists").
 //! Useful for cache-check patterns before expensive lookups.
 //!
 //! # Config flags
@@ -40,13 +40,14 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Mem Exists".to_string(),
         description: "Check whether a key exists and is not expired in the per-project \
-            in-memory KV store. Merges a boolean into the payload under --out-key (default: \"exists\"). \
-            Useful for cache-hit checks before expensive DB queries or API calls."
+            in-memory KV store. Replaces the payload with { [out_key]: boolean } (default out_key: \"exists\"). \
+            Useful for cache-hit checks before expensive DB queries or API calls. \
+            Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
-            "description": "Payload with boolean result merged in under out_key."
+            "description": "Fresh object with boolean result under out_key. Replaces entire payload."
         }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
         output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -131,20 +132,11 @@ impl NodeHandler for Node {
             self.config.out_key.trim().to_string()
         };
 
-        let mut payload = match input.payload {
-            Value::Object(map) => map,
-            other => {
-                let mut m = serde_json::Map::new();
-                m.insert("value".to_string(), other);
-                m
-            }
-        };
-        payload.insert(out_key.clone(), Value::Bool(exists));
-
+        let trace = format!("n.mem.exists: key={} exists={} out_key={}", key, exists, out_key);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: Value::Object(payload),
-            trace: vec![format!("n.mem.exists: key={} exists={} out_key={}", key, exists, out_key)],
+            payload: json!({ out_key: exists }),
+            trace: vec![trace],
         })
     }
 }

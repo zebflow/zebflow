@@ -7,7 +7,7 @@
 //! | Field | Type | Required | Description |
 //! |---|---|---|---|
 //! | `credential_id` | string | ✓ | ID of a `browser_*` credential (kind prefix `browser_`) |
-//! | `code` | string | ✓ | `async ({ page }) => { ... }` function body sent to the browser endpoint |
+//! | `code` | string | ✓ | `export default async ({ page }) => { ... }` ESM function sent to the browser endpoint |
 //!
 //! # How it works
 //! 1. Resolves the credential by `credential_id`.
@@ -66,8 +66,8 @@ pub fn definition() -> NodeDefinition {
                 field_type: NodeFieldType::CodeEditor,
                 language: Some("javascript".to_string()),
                 span: Some("full".to_string()),
-                help: Some("async ({ page }) => { ... } — Playwright/Puppeteer page function. Return value becomes the node output.".to_string()),
-                default_value: Some(json!("async ({ page }) => {\n  await page.goto('https://example.com');\n  return { title: await page.title() };\n}")),
+                help: Some("export default async ({ page }) => { ... } — Browserless /function script. Return value becomes the node output.".to_string()),
+                default_value: Some(json!("export default async ({ page }) => {\n  await page.goto('https://example.com');\n  return {\n    data: { title: await page.title() },\n    type: 'application/json'\n  };\n};")),
                 sidebar: vec![
                     SidebarSection {
                         title: "API".to_string(),

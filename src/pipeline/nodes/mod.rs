@@ -6,6 +6,63 @@
 //!
 //! ---
 //!
+//! # Payload Contract — Replace, Not Merge
+//!
+//! **Every node replaces the payload.** This is the universal rule.
+//!
+//! When a node produces output, it returns a **fresh JSON object** containing only
+//! its own result. The upstream payload is discarded. This makes data flow explicit
+//! and predictable — you always know exactly what each node outputs.
+//!
+//! ## Node categories
+//!
+//! | Category | Behavior | Examples |
+//! |----------|----------|---------|
+//! | **Trigger** | Constructs the initial payload from the incoming request | `trigger.webhook`, `trigger.schedule`, `trigger.manual` |
+//! | **Transform** | Replaces payload with its result | `pg.query` → `{ rows }`, `script` → return value, `crypto` → `{ result }` |
+//! | **Side-effect** | Performs action, passes payload through unchanged | `mem.set`, `mem.del`, `ws.emit`, `mem.publish` |
+//! | **Routing** | Directs to output pins, passes payload through unchanged | `logic.if`, `logic.branch`, `logic.switch` |
+//! | **Terminal** | Produces response envelope | `web.response` → `{ __zf_response }` |
+//!
+//! ## Accessing upstream data
+//!
+//! Since every node replaces the payload, use these references in `{{ expr }}`
+//! config values to reach upstream data:
+//!
+//! | Reference | Description |
+//! |-----------|-------------|
+//! | `$input` | Current node's input (previous node's output) |
+//! | `$trigger.auth` | JWT claims from the original request (immutable) |
+//! | `$trigger.params` | URL path params (immutable) |
+//! | `$trigger.query` | Query string params (immutable) |
+//! | `$nodes.<id>.<field>` | Output of any completed upstream node by graph ID |
+//!
+//! `$trigger` is the **safe, immutable** reference — it never changes regardless of
+//! what transformations happen in the pipeline. `$nodes.<id>` lets you reach across
+//! the graph to any earlier node's output.
+//!
+//! ## Output key conventions
+//!
+//! | Node kind | Output shape |
+//! |-----------|-------------|
+//! | `pg.query` (SELECT) | `{ rows: [...] }` |
+//! | `pg.query` (INSERT/UPDATE/DELETE) | `{ affected_rows: N }` |
+//! | `sekejap.query` | `{ rows: [...] }` |
+//! | `file.save` | `{ saved: { path, url, ... } }` |
+//! | `img.thumbnail` | `{ thumbnail: { path, url, ... } }` |
+//! | `crypto` (hash/encode) | `{ result: "..." }` |
+//! | `mem.get` | `{ [out_key]: value }` |
+//! | `mem.incr` | `{ [out_key]: number }` |
+//! | `mem.exists` | `{ [out_key]: boolean }` |
+//! | `http.request` | `{ request: {...}, response: {...} }` |
+//! | `script` | Whatever the user returns |
+//! | `auth.token.create` | `{ access_token, token_type, expires_in, ... }` |
+//!
+//! Nodes that process **multiple records** always use `rows` as the key:
+//! `{ rows: [...] }`. This applies to `pg.query`, `sqlite.query`, `sekejap.query`.
+//!
+//! ---
+//!
 //! # Node Anatomy
 //!
 //! A complete node module exposes exactly four things:
@@ -287,7 +344,7 @@
 //! # Complete example
 //!
 //! ```rust,ignore
-//! //! `n.example.echo` — passes the upstream payload through unchanged with a tag.
+//! //! `n.example.echo` — replaces the payload with `{ echo_tag }` from config.
 //! //!
 //! //! # Pipeline position
 //! //! Middleware node. Always between a trigger and a terminal.
@@ -295,7 +352,7 @@
 //! //! # User-facing config
 //! //! | Field | Type | Required | Description |
 //! //! |---|---|---|---|
-//! //! | `tag` | string | ✓ | Label injected into the payload as `echo_tag` |
+//! //! | `tag` | string | ✓ | Label output as `echo_tag` |
 //! //!
 //! //! # DSL
 //! //! ```text
@@ -316,12 +373,12 @@
 //!     NodeDefinition {
 //!         kind: NODE_KIND.to_string(),
 //!         title: "Echo".to_string(),
-//!         description: "Passes payload through, injecting echo_tag from config.".to_string(),
+//!         description: "Replaces the payload with { echo_tag } from config.".to_string(),
 //!         config_schema: json!({
 //!             "type": "object",
 //!             "required": ["tag"],
 //!             "properties": {
-//!                 "tag": { "type": "string", "description": "Label to inject as echo_tag." }
+//!                 "tag": { "type": "string", "description": "Value to output as echo_tag." }
 //!             }
 //!         }),
 //!         input_schema:  json!({ "type": "object" }),
@@ -332,7 +389,7 @@
 //!             DslFlag {
 //!                 flag: "--tag".to_string(),
 //!                 config_key: "tag".to_string(),
-//!                 description: "Label injected into the output payload as echo_tag.".to_string(),
+//!                 description: "Value to output as echo_tag.".to_string(),
 //!                 kind: DslFlagKind::Scalar,
 //!                 required: true,
 //!             },
@@ -355,11 +412,10 @@
 //!     fn input_pins(&self)  -> &'static [&'static str] { &["in"] }
 //!     fn output_pins(&self) -> &'static [&'static str] { &["out"] }
 //!     async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
-//!         let mut payload = input.payload;
-//!         payload["echo_tag"] = json!(self.config.tag.clone());
+//!         // Replace payload — never merge into input.payload
 //!         Ok(NodeExecutionOutput {
 //!             output_pins: vec!["out".to_string()],
-//!             payload,
+//!             payload: json!({ "echo_tag": self.config.tag }),
 //!             trace: vec![format!("n.example.echo: tag={}", self.config.tag)],
 //!         })
 //!     }
