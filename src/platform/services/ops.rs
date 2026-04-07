@@ -374,7 +374,7 @@ impl PlatformOps {
         }
     }
 
-    pub fn pipeline_get(&self, file_rel_path: &str) -> OpsResult {
+    pub fn pipeline_get(&self, file_rel_path: &str, node_id: Option<&str>) -> OpsResult {
         let meta_opt = self.platform.projects
             .get_pipeline_meta_by_file_id(&self.owner, &self.project, file_rel_path)
             .ok()
@@ -383,10 +383,16 @@ impl PlatformOps {
         // Exact match found — use it.
         if let Some(meta) = meta_opt {
             return match self.platform.projects.read_pipeline_source(&self.owner, &self.project, &meta.file_rel_path) {
-                Ok(source) => OpsResult::ok(
-                    serde_json::to_string_pretty(&json!({ "meta": meta, "source": source }))
-                        .unwrap_or_default()
-                ),
+                Ok(source) => {
+                    // If node_id filter is set, extract just that node.
+                    if let Some(nid) = node_id.filter(|s| !s.is_empty()) {
+                        return extract_pipeline_node(&source, nid, &meta.file_rel_path);
+                    }
+                    OpsResult::ok(
+                        serde_json::to_string_pretty(&json!({ "meta": meta, "source": source }))
+                            .unwrap_or_default()
+                    )
+                },
                 Err(e) => OpsResult::err(e.to_string()),
             };
         }
@@ -403,7 +409,7 @@ impl PlatformOps {
             .collect();
         match candidates.len() {
             0 => OpsResult::err(format!("Pipeline '{file_rel_path}' not found")),
-            1 => self.pipeline_get(&candidates[0]),
+            1 => self.pipeline_get(&candidates[0], node_id),
             _ => OpsResult::err(format!(
                 "Ambiguous: '{}' matches {} pipelines — use exact path:\n{}",
                 file_rel_path, candidates.len(),
@@ -618,41 +624,179 @@ impl PlatformOps {
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 impl PlatformOps {
-    pub fn template_list(&self) -> OpsResult {
+    pub fn template_list(&self, glob: Option<&str>) -> OpsResult {
         match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
-            Ok(workspace) => OpsResult::ok(serde_json::to_string_pretty(&workspace).unwrap_or_default()),
+            Ok(workspace) => {
+                if let Some(g) = glob.filter(|s| !s.is_empty()) {
+                    // Filter items by glob and prune empty folders.
+                    let filtered_items: Vec<_> = workspace.items.iter()
+                        .filter(|item| {
+                            if item.kind == "folder" { return false; }
+                            crate::platform::services::project::template_glob_matches(g, &item.rel_path)
+                        })
+                        .cloned()
+                        .collect();
+                    let result = json!({
+                        "items": filtered_items,
+                        "count": filtered_items.len(),
+                        "glob": g,
+                    });
+                    OpsResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default())
+                } else {
+                    OpsResult::ok(serde_json::to_string_pretty(&workspace).unwrap_or_default())
+                }
+            }
             Err(e) => OpsResult::err(e.to_string()),
         }
     }
 
-    pub fn template_get(&self, rel_path: &str) -> OpsResult {
-        // Try exact match first.
-        match self.platform.projects.read_template_file(&self.owner, &self.project, rel_path) {
-            Ok(content) => return OpsResult::ok(content),
-            Err(_) => {}
+    pub fn template_get(&self, rel_path: &str, offset: Option<u32>, limit: Option<u32>) -> OpsResult {
+        // Resolve content — try exact match first, then fuzzy fallback.
+        let (resolved_path, content) = match self.platform.projects.read_template_file(&self.owner, &self.project, rel_path) {
+            Ok(content) => (rel_path.to_string(), content),
+            Err(_) => {
+                // Fuzzy fallback
+                let listing = match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
+                    Ok(l) => l,
+                    Err(e) => return OpsResult::err(e.to_string()),
+                };
+                let needle = rel_path.to_lowercase();
+                let candidates: Vec<String> = listing.items.iter()
+                    .filter(|item| item.kind != "folder" && item.rel_path.to_lowercase().contains(&needle))
+                    .map(|item| item.rel_path.clone())
+                    .collect();
+                match candidates.len() {
+                    0 => return OpsResult::err(format!("Template '{rel_path}' not found")),
+                    1 => match self.platform.projects.read_template_file(&self.owner, &self.project, &candidates[0]) {
+                        Ok(content) => (candidates[0].clone(), content),
+                        Err(e) => return OpsResult::err(e.to_string()),
+                    },
+                    _ => return OpsResult::err(format!(
+                        "Ambiguous: '{}' matches {} templates — use exact path:\n{}",
+                        rel_path, candidates.len(),
+                        candidates.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
+                    )),
+                }
+            }
+        };
+
+        // If offset/limit provided, return a line-numbered slice.
+        if offset.is_some() || limit.is_some() {
+            let lines: Vec<&str> = content.lines().collect();
+            let total = lines.len();
+            let start = offset.unwrap_or(1).max(1) as usize; // 1-based
+            let count = limit.unwrap_or(total as u32) as usize;
+            let start_idx = (start - 1).min(total);
+            let end_idx = (start_idx + count).min(total);
+            let slice = &lines[start_idx..end_idx];
+
+            let mut out = format!("# {} (lines {}-{} of {})\n", resolved_path, start_idx + 1, end_idx, total);
+            for (i, line) in slice.iter().enumerate() {
+                out.push_str(&format!("{}| {}\n", start_idx + i + 1, line));
+            }
+            return OpsResult::ok(out);
         }
-        // Fuzzy fallback: find all templates whose path contains rel_path as a substring.
-        let listing = match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
-            Ok(l) => l,
+
+        // Full content (existing behavior).
+        if resolved_path != rel_path {
+            OpsResult::ok(format!("// resolved: {}\n{content}", resolved_path))
+        } else {
+            OpsResult::ok(content)
+        }
+    }
+
+    pub fn template_outline(&self, rel_path: &str) -> OpsResult {
+        let content = match self.platform.projects.read_template_file(&self.owner, &self.project, rel_path) {
+            Ok(c) => c,
             Err(e) => return OpsResult::err(e.to_string()),
         };
-        let needle = rel_path.to_lowercase();
-        let candidates: Vec<String> = listing.items.iter()
-            .filter(|item| item.kind != "folder" && item.rel_path.to_lowercase().contains(&needle))
-            .map(|item| item.rel_path.clone())
-            .collect();
-        match candidates.len() {
-            0 => OpsResult::err(format!("Template '{rel_path}' not found")),
-            1 => match self.platform.projects.read_template_file(&self.owner, &self.project, &candidates[0]) {
-                Ok(content) => OpsResult::ok(format!("// resolved: {}\n{content}", candidates[0])),
-                Err(e) => OpsResult::err(e.to_string()),
-            },
-            _ => OpsResult::err(format!(
-                "Ambiguous: '{}' matches {} templates — use exact path:\n{}",
-                rel_path, candidates.len(),
-                candidates.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n")
-            )),
+        let result = crate::platform::services::tsx_outline::extract_outline(&content, Some(rel_path));
+        OpsResult::ok(crate::platform::services::tsx_outline::format_outline(rel_path, &result))
+    }
+
+    pub fn template_deps(&self, rel_path: &str) -> OpsResult {
+        let content = match self.platform.projects.read_template_file(&self.owner, &self.project, rel_path) {
+            Ok(c) => c,
+            Err(e) => return OpsResult::err(e.to_string()),
+        };
+
+        // Forward deps: what this file imports
+        let import_sources = crate::platform::services::tsx_outline::extract_import_sources(&content);
+
+        let mut out = format!("# {} — dependency graph\n\n## Imports ({})\n", rel_path, import_sources.len());
+        for src in &import_sources {
+            out.push_str(&format!("  {}\n", src));
         }
+
+        // Reverse deps: which files import this one
+        // Build patterns that would reference this file
+        let base = rel_path.trim_end_matches(".tsx").trim_end_matches(".ts");
+        let patterns: Vec<String> = vec![
+            format!("@/{}", rel_path),
+            format!("@/{}", base),
+            format!("\"{}\"", rel_path),
+            format!("\"{}\"", base),
+        ];
+
+        let workspace = match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
+            Ok(w) => w,
+            Err(_) => return OpsResult::ok(out),
+        };
+
+        let mut importers: Vec<String> = Vec::new();
+        for item in &workspace.items {
+            if item.kind == "folder" || item.rel_path == rel_path {
+                continue;
+            }
+            let file_content = match self.platform.projects.read_template_file(&self.owner, &self.project, &item.rel_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let lower = file_content.to_lowercase();
+            for pat in &patterns {
+                if lower.contains(&pat.to_lowercase()) {
+                    importers.push(item.rel_path.clone());
+                    break;
+                }
+            }
+        }
+
+        out.push_str(&format!("\n## Imported by ({} file{})\n", importers.len(), if importers.len() == 1 { "" } else { "s" }));
+        if importers.is_empty() {
+            out.push_str("  (none found)\n");
+        } else {
+            for imp in &importers {
+                out.push_str(&format!("  {}\n", imp));
+            }
+        }
+
+        OpsResult::ok(out)
+    }
+
+    pub fn template_batch_edit(&self, edits: &[(String, String, String)]) -> OpsResult {
+        if edits.is_empty() {
+            return OpsResult::err("edits list must not be empty");
+        }
+        let mut results: Vec<String> = Vec::new();
+        for (i, (rel_path, old_string, new_string)) in edits.iter().enumerate() {
+            if old_string.is_empty() {
+                results.push(format!("[{}] {} — SKIP: old_string empty", i + 1, rel_path));
+                continue;
+            }
+            match self.platform.projects.edit_template_file(
+                &self.owner, &self.project, rel_path, old_string, new_string,
+            ) {
+                Ok(line_no) => {
+                    results.push(format!("[{}] {} line {} — ok", i + 1, rel_path, line_no));
+                }
+                Err(e) => {
+                    results.push(format!("[{}] {} — ERROR: {}", i + 1, rel_path, e));
+                    // Fail fast: stop on first error.
+                    break;
+                }
+            }
+        }
+        OpsResult::ok(results.join("\n"))
     }
 
     pub fn template_create(&self, kind: &str, name: &str, parent_rel_path: Option<&str>) -> OpsResult {
@@ -693,7 +837,14 @@ impl PlatformOps {
         }
     }
 
-    pub fn template_search(&self, pattern: &str, glob: Option<&str>, context: usize) -> OpsResult {
+    pub fn template_search(
+        &self,
+        pattern: &str,
+        glob: Option<&str>,
+        context: usize,
+        head_limit: Option<u32>,
+        output_mode: Option<&str>,
+    ) -> OpsResult {
         if pattern.trim().is_empty() {
             return OpsResult::err("pattern must not be empty");
         }
@@ -704,21 +855,18 @@ impl PlatformOps {
                 pattern,
                 glob.map(|g| format!(" (glob: {g})")).unwrap_or_default()
             )),
-            Ok(matches) => {
-                let mut out = format!("{} match(es) for '{}':\n\n", matches.len(), pattern);
-                for (rel, line_no, block) in &matches {
-                    if context == 0 {
-                        out.push_str(&format!("{}:{}: {}\n", rel, line_no, block.trim()));
-                    } else {
-                        out.push_str(&format!("{}:{}:\n```\n{}\n```\n\n", rel, line_no, block));
-                    }
-                }
-                OpsResult::ok(out)
-            }
+            Ok(matches) => format_search_results(&matches, pattern, head_limit, output_mode),
         }
     }
 
-    pub fn pipeline_search(&self, pattern: &str, glob: Option<&str>, context: usize) -> OpsResult {
+    pub fn pipeline_search(
+        &self,
+        pattern: &str,
+        glob: Option<&str>,
+        context: usize,
+        head_limit: Option<u32>,
+        output_mode: Option<&str>,
+    ) -> OpsResult {
         if pattern.trim().is_empty() {
             return OpsResult::err("pattern must not be empty");
         }
@@ -729,17 +877,7 @@ impl PlatformOps {
                 pattern,
                 glob.map(|g| format!(" (glob: {g})")).unwrap_or_default()
             )),
-            Ok(matches) => {
-                let mut out = format!("{} match(es) for '{}':\n\n", matches.len(), pattern);
-                for (rel, line_no, block) in &matches {
-                    if context == 0 {
-                        out.push_str(&format!("{}:{}: {}\n", rel, line_no, block.trim()));
-                    } else {
-                        out.push_str(&format!("{}:{}:\n```\n{}\n```\n\n", rel, line_no, block));
-                    }
-                }
-                OpsResult::ok(out)
-            }
+            Ok(matches) => format_search_results(&matches, pattern, head_limit, output_mode),
         }
     }
 
@@ -1102,6 +1240,136 @@ impl PlatformOps {
             }
             Err(e) => OpsResult::err(e.to_string()),
         }
+    }
+}
+
+// ── Search result formatter ────────────────────────────────────────────────────
+
+/// Format search matches with optional head_limit and output_mode.
+fn format_search_results(
+    matches: &[(String, usize, String)],
+    pattern: &str,
+    head_limit: Option<u32>,
+    output_mode: Option<&str>,
+) -> OpsResult {
+    let mode = output_mode.unwrap_or("content");
+    let limit = head_limit.map(|n| n as usize).unwrap_or(usize::MAX);
+
+    match mode {
+        "files_with_matches" => {
+            // Deduplicate by file path.
+            let mut seen = std::collections::HashSet::new();
+            let mut files: Vec<&str> = Vec::new();
+            for (rel, _, _) in matches {
+                if seen.insert(rel.as_str()) {
+                    files.push(rel);
+                }
+            }
+            let total = files.len();
+            let shown: Vec<&&str> = files.iter().take(limit).collect();
+            let mut out = format!("{} file(s) match '{}':\n", total, pattern);
+            for f in &shown {
+                out.push_str(&format!("  {}\n", f));
+            }
+            if shown.len() < total {
+                out.push_str(&format!("  ... ({} more)\n", total - shown.len()));
+            }
+            OpsResult::ok(out)
+        }
+        _ => {
+            // "content" mode — existing behavior with optional limit.
+            let total = matches.len();
+            let capped: Vec<&(String, usize, String)> = matches.iter().take(limit).collect();
+            let mut out = format!("{} match(es) for '{}'", total, pattern);
+            if capped.len() < total {
+                out.push_str(&format!(" (showing first {})", capped.len()));
+            }
+            out.push_str(":\n\n");
+            for (rel, line_no, block) in &capped {
+                if block.contains('\n') {
+                    out.push_str(&format!("{}:{}:\n```\n{}\n```\n\n", rel, line_no, block));
+                } else {
+                    out.push_str(&format!("{}:{}: {}\n", rel, line_no, block.trim()));
+                }
+            }
+            if capped.len() < total {
+                out.push_str(&format!("... {} more match(es) not shown.\n", total - capped.len()));
+            }
+            OpsResult::ok(out)
+        }
+    }
+}
+
+// ── Pipeline node extractor ───────────────────────────────────────────────────
+
+/// Extract a single node from a pipeline JSON source by ID, kind, or kind[index].
+fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> OpsResult {
+    let graph: Value = match serde_json::from_str(source) {
+        Ok(v) => v,
+        Err(e) => return OpsResult::err(format!("Invalid pipeline JSON: {e}")),
+    };
+
+    let nodes = match graph.get("nodes").and_then(|n| n.as_array()) {
+        Some(n) => n,
+        None => return OpsResult::err("Pipeline has no 'nodes' array"),
+    };
+
+    // Parse node_id: could be "n0", "trigger.webhook", "pg.query[1]"
+    let (kind_filter, index_filter) = if node_id.contains('[') {
+        // kind[index] form
+        let parts: Vec<&str> = node_id.splitn(2, '[').collect();
+        let kind = parts[0];
+        let idx: usize = parts.get(1)
+            .and_then(|s| s.trim_end_matches(']').parse().ok())
+            .unwrap_or(0);
+        (Some(kind.to_string()), Some(idx))
+    } else if node_id.contains('.') || node_id.contains(':') {
+        // Looks like a kind (e.g. "trigger.webhook", "pg.query")
+        (Some(node_id.to_string()), None)
+    } else {
+        // Opaque ID
+        (None, None)
+    };
+
+    let mut found: Option<&Value> = None;
+
+    if let Some(ref kind) = kind_filter {
+        let mut kind_matches: Vec<&Value> = Vec::new();
+        for node in nodes {
+            let nk = node.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if nk == kind {
+                kind_matches.push(node);
+            }
+        }
+        if let Some(idx) = index_filter {
+            found = kind_matches.get(idx).copied();
+        } else if kind_matches.len() == 1 {
+            found = Some(kind_matches[0]);
+        } else if kind_matches.len() > 1 {
+            return OpsResult::err(format!(
+                "Multiple nodes match kind '{}' — use {}[0], {}[1], etc.\n{} matches found.",
+                kind, kind, kind, kind_matches.len()
+            ));
+        }
+    } else {
+        // Opaque ID match
+        for node in nodes {
+            let nid = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if nid == node_id {
+                found = Some(node);
+                break;
+            }
+        }
+    }
+
+    match found {
+        Some(node) => OpsResult::ok(
+            serde_json::to_string_pretty(node).unwrap_or_default()
+        ),
+        None => OpsResult::err(format!(
+            "Node '{}' not found in {}",
+            node_id, file_rel_path
+        )),
     }
 }
 

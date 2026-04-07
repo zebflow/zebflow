@@ -48,11 +48,11 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 | Tool | What it does |
 |------|-------------|
 | `pipeline_list` | List all pipelines with status (draft / active) |
-| `pipeline_get` | Get pipeline graph JSON. Accepts partial path — resolves to unique match automatically. |
+| `pipeline_get` | Get pipeline graph JSON. Accepts partial path — resolves to unique match automatically. Use `node_id` to return just one node instead of the full graph (accepts opaque ID, kind, or kind[index]). |
 | `pipeline_describe` | Describe nodes, edges, trigger config in detail. Set `compact=true` for one-line-per-node summary without body content — use when pipelines have long SQL or scripts. |
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
 | `pipeline_patch` | Update a node's config inside an existing pipeline. `node_id` accepts opaque ID, kind (`trigger.webhook`), or kind+index (`pg.query[1]`) — no describe needed |
-| `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines |
+| `pipeline_search` | Grep across all `.zf.json` pipeline files with optional glob filter and context lines. Use `output_mode="files_with_matches"` for file paths only. Use `head_limit` to cap results. |
 | `pipeline_activate` | Promote draft to active — goes live immediately. Set `glob="pipelines/modules/**"` to bulk-activate all matching pipelines in one call. |
 | `pipeline_deactivate` | Remove from active registry — stops serving traffic |
 | `pipeline_execute` | Run the active version of a saved pipeline. Always pass `input` when testing function pipelines (`n.trigger.function`) — without it the pipeline receives `{}`. Accepts `input` as a JSON object or string. |
@@ -64,12 +64,15 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 | Tool | What it does |
 |------|-------------|
-| `template_list` | List all template files in the project |
-| `template_get` | Read a template file's full content. Accepts partial path — resolves to unique match automatically (e.g. `"game/page"` → `pages/game/page.tsx`). |
+| `template_list` | List template files. Use `glob` to filter (e.g. `glob="pages/*.tsx"`) |
+| `template_get` | Read a template file. Accepts partial path. Use `offset`/`limit` to read a range of lines (1-based) instead of the full file. |
+| `template_outline` | **Code-aware**: Parse a template and return its structural outline — imports, exports, functions, classes, types, interfaces with line numbers. Much cheaper than `template_get` for understanding file structure. |
+| `template_deps` | **Code-aware**: Show a template's dependency graph — what it imports (forward deps) and which other templates import it (reverse deps). Use before refactoring. |
 | `template_create` | Scaffold a new template file with boilerplate |
 | `template_write` | Write (overwrite) a template file's content |
-| `template_search` | Grep across all template files with optional glob filter and context lines (e.g. `context=3` for 3 lines before/after each match) |
+| `template_search` | Grep across all template files with optional glob filter and context lines. Use `output_mode="files_with_matches"` for file paths only. Use `head_limit` to cap results. |
 | `template_edit` | Exact string replacement inside a template file — `old_string` → `new_string`. Fails if `old_string` is not unique in the file |
+| `template_batch_edit` | Apply multiple edits across one or more files in a single call. Each edit is `{ rel_path, old_string, new_string }`. Fails fast on first error. |
 | `move_resource` | Rename or reorganize a pipeline or template file. Domain auto-detected from extension (`.zf.json` = pipeline, else template). Pipeline lifecycle (deactivate → move → re-activate) handled automatically. Parent folders created. No cross-domain moves |
 
 ### Docs
