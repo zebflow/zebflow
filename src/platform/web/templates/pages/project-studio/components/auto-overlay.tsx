@@ -1,11 +1,11 @@
 import { useState, useEffect, cx } from "zeb";
-import { subscribeOverlay, autoOverlayState } from "@/pages/project-studio/components/studio-shell-behavior";
+import { subscribeOverlay, getOverlayState } from "@/pages/project-studio/components/studio-shell-behavior";
 
 export function AutoOverlay() {
-  const [s, setS] = useState(autoOverlayState);
+  const [s, setS] = useState(getOverlayState);
 
   useEffect(() => {
-    subscribeOverlay(() => setS({ ...autoOverlayState }));
+    subscribeOverlay(() => setS({ ...getOverlayState() }));
   }, []);
 
   if (!s.active) return null;

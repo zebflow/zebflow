@@ -126,7 +126,8 @@ pub fn definition() -> NodeDefinition {
             "Resize and compress an uploaded image to a small thumbnail. \
              Reads the source path from `input.saved.path` (n.file.save output) by default. \
              Supports cover/contain/fill fit modes and jpg/png/webp output. \
-             Injects `thumbnail: { path, url, width, height, format, size }` into the payload."
+             Replaces the payload with { thumbnail: { path, url, width, height, format, size } }. \
+             Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({
             "type": "object",
@@ -473,18 +474,17 @@ impl NodeHandler for Node {
         let url = format!("/files/{owner}/{project}/{thumb_rel}");
         let thumb_size = encoded.len();
 
-        // ── Merge thumbnail into existing payload ─────────────────────────
-        let mut out_payload = input.payload.clone();
-        if let Some(obj) = out_payload.as_object_mut() {
-            obj.insert("thumbnail".to_string(), json!({
+        // ── Replace payload with thumbnail result ──────────────────────────
+        let out_payload = json!({
+            "thumbnail": {
                 "path":   thumb_rel,
                 "url":    url,
                 "width":  actual_w,
                 "height": actual_h,
                 "format": format_label,
                 "size":   thumb_size,
-            }));
-        }
+            }
+        });
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

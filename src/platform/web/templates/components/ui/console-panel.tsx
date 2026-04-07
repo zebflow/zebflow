@@ -55,7 +55,7 @@ export default function ConsolePanel({ owner, project, isOpen, children }) {
       <div data-cli-output className="flex-1 min-h-0 overflow-y-auto">{children}</div>
 
       {/* Autocomplete suggestions — shown above the input row when typing */}
-      <div data-cli-autocomplete hidden />
+      <div data-cli-autocomplete hidden className="border-t border-white/[0.04] bg-[#090d14] overflow-hidden" />
 
       {/* Input row */}
       <form

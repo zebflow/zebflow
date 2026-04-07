@@ -64,9 +64,9 @@ function toggleConsole() {
 }
 
 // ── Console lines store ───────────────────────────────────────────────────────
-// Module-level state so async functions (runDsl, runAssistant) can push lines
-// without needing a React dispatch reference passed everywhere.
-// ConsoleOutput (pages/project-studio/components/shell.tsx) subscribes via subscribeConsole().
+// State lives on window so it survives module re-evaluation on SPA navigation.
+// ConsoleOutput subscribes via subscribeConsole(); pushLine/dropLine/clearConsole
+// are called from async functions (runDsl, runAssistant).
 
 export type ConsoleLine = {
   id: number;
@@ -75,34 +75,52 @@ export type ConsoleLine = {
   isLink?: string;
 };
 
-let lineCounter = 0;
-export let consoleLines: ConsoleLine[] = [];
-let notifyConsole: (() => void) | null = null;
+type ConsoleStore = {
+  lines: ConsoleLine[];
+  counter: number;
+  notify: (() => void) | null;
+};
+
+function getStore(): ConsoleStore {
+  const w = window as any;
+  if (!w.__zf_cli_store) {
+    w.__zf_cli_store = { lines: [], counter: 0, notify: null } satisfies ConsoleStore;
+  }
+  return w.__zf_cli_store;
+}
+
+/** Read-only access to current console lines (for initial render). */
+export function getConsoleLines(): ConsoleLine[] {
+  return getStore().lines;
+}
 
 export function subscribeConsole(fn: () => void) {
-  notifyConsole = fn;
+  getStore().notify = fn;
 }
 
 export function pushLine(line: Omit<ConsoleLine, "id">): number {
-  const id = lineCounter++;
-  consoleLines = [...consoleLines, { ...line, id }];
-  notifyConsole?.();
+  const store = getStore();
+  const id = store.counter++;
+  store.lines = [...store.lines, { ...line, id }];
+  store.notify?.();
   return id;
 }
 
 export function dropLine(id: number) {
-  consoleLines = consoleLines.filter((l) => l.id !== id);
-  notifyConsole?.();
+  const store = getStore();
+  store.lines = store.lines.filter((l) => l.id !== id);
+  store.notify?.();
 }
 
 export function clearConsole() {
-  consoleLines = [];
-  notifyConsole?.();
+  const store = getStore();
+  store.lines = [];
+  store.notify?.();
 }
 
 // ── Automation overlay store ──────────────────────────────────────────────────
-// AutoOverlay lives in pages/project-studio/components/shell.tsx.
-// InteractionRunner drives it via patchOverlay(); overlay subscribes via subscribeOverlay().
+// State lives on window so it survives module re-evaluation on SPA navigation.
+// AutoOverlay subscribes via subscribeOverlay(); InteractionRunner drives via patchOverlay().
 
 export type AutoOverlayState = {
   active: boolean;
@@ -112,22 +130,34 @@ export type AutoOverlayState = {
   clicking: boolean;
 };
 
-export let autoOverlayState: AutoOverlayState = {
-  active: false,
-  label: "",
-  cursorX: 0,
-  cursorY: 0,
-  clicking: false,
+type OverlayStore = {
+  state: AutoOverlayState;
+  notify: (() => void) | null;
 };
-let notifyOverlay: (() => void) | null = null;
+
+function getOverlayStore(): OverlayStore {
+  const w = window as any;
+  if (!w.__zf_overlay_store) {
+    w.__zf_overlay_store = {
+      state: { active: false, label: "", cursorX: 0, cursorY: 0, clicking: false },
+      notify: null,
+    } satisfies OverlayStore;
+  }
+  return w.__zf_overlay_store;
+}
+
+export function getOverlayState(): AutoOverlayState {
+  return getOverlayStore().state;
+}
 
 export function subscribeOverlay(fn: () => void) {
-  notifyOverlay = fn;
+  getOverlayStore().notify = fn;
 }
 
 export function patchOverlay(patch: Partial<AutoOverlayState>) {
-  autoOverlayState = { ...autoOverlayState, ...patch };
-  notifyOverlay?.();
+  const store = getOverlayStore();
+  store.state = { ...store.state, ...patch };
+  store.notify?.();
 }
 
 // ── Navigate helper ───────────────────────────────────────────────────────────
@@ -312,8 +342,8 @@ function initConsoleBehavior(owner: string, project: string) {
       const rest = escHtml(item.slice(matchLen));
       const base = "flex items-center gap-1 px-4 py-[0.22rem] font-mono text-[0.78rem] text-gray-400 cursor-pointer";
       const active = i === acIndex ? " bg-white/[0.06] text-gray-200" : "";
-      const histBadge = isHistory ? `<span class="cli-ac-hist">hist</span>` : "";
-      return `<div class="${base}${active}" data-ac-index="${i}"><span class="cli-ac-hl">${hl}</span>${rest}${histBadge}</div>`;
+      const histBadge = isHistory ? `<span style="color:#1e3a52;font-size:0.68rem;margin-left:auto;flex-shrink:0">hist</span>` : "";
+      return `<div class="${base}${active}" data-ac-index="${i}"><span style="color:#7dd3fc">${hl}</span>${rest}${histBadge}</div>`;
     }).join("");
     autocompleteEl.hidden = false;
   }
