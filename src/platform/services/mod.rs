@@ -16,6 +16,7 @@ pub mod platform;
 pub mod project;
 pub mod project_config;
 pub mod user;
+pub mod tsx_outline;
 pub mod zeb_lock;
 
 pub use assistant_config::AssistantConfigService;

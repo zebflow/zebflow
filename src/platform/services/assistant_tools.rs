@@ -100,25 +100,29 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "pipeline_search".to_string(),
                 description: "Search pipeline .zf.json files for a pattern. Returns file:line matches. \
-                    Optional glob filters files. Use to find which pipelines use a credential, path, or node kind.".to_string(),
+                    Optional glob filters files. Use output_mode='files_with_matches' for file paths only.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["pattern"],
                     "properties": {
                         "pattern": { "type": "string", "description": "Case-insensitive substring to search for." },
                         "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'pipelines/api/*.zf.json')." },
-                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." }
+                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." },
+                        "head_limit": { "type": "integer", "description": "Limit output to first N entries." },
+                        "output_mode": { "type": "string", "description": "'content' (default) or 'files_with_matches' for file paths only." }
                     }
                 }),
             },
             ToolDef {
                 name: "pipeline_get".to_string(),
-                description: "Get a specific pipeline definition by file-relative path.".to_string(),
+                description: "Get a specific pipeline by file-relative path. \
+                    Use node_id to return just one node instead of the full graph.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["file_rel_path"],
                     "properties": {
-                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'pipelines/api/blog-home.zf.json')." }
+                        "file_rel_path": { "type": "string", "description": "File-relative path of the pipeline (e.g. 'pipelines/api/blog-home.zf.json')." },
+                        "node_id": { "type": "string", "description": "Optional node ID to return just that node. Accepts opaque ID, kind, or kind[index]." }
                     }
                 }),
             },
@@ -240,17 +244,24 @@ impl AssistantPlatformTools {
             // ── Templates ──────────────────────────────────────────────────────
             ToolDef {
                 name: "template_list".to_string(),
-                description: "List all template files in the project workspace.".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
+                description: "List template files in the project workspace. Use glob to filter.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "glob": { "type": "string", "description": "Optional glob to filter (e.g. 'pages/*.tsx'). Omit for all files." }
+                    }
+                }),
             },
             ToolDef {
                 name: "template_get".to_string(),
-                description: "Read a specific template file's full content.".to_string(),
+                description: "Read a template file. Use offset/limit to read a range of lines.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["rel_path"],
                     "properties": {
-                        "rel_path": { "type": "string", "description": "Relative path to the template file (e.g. 'pages/home.tsx')." }
+                        "rel_path": { "type": "string", "description": "Relative path to the template file (e.g. 'pages/home.tsx')." },
+                        "offset": { "type": "integer", "description": "1-based starting line number (optional)." },
+                        "limit": { "type": "integer", "description": "Number of lines to return (optional)." }
                     }
                 }),
             },
@@ -287,15 +298,16 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "template_search".to_string(),
                 description: "Search template files for a pattern. Returns file:line matches. \
-                    Optional glob filters which files to search (e.g. 'pages/*.tsx', '**/*.tsx'). \
-                    Use to find which templates use an import, component, or variable.".to_string(),
+                    Optional glob filters files. Use output_mode='files_with_matches' for file paths only.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["pattern"],
                     "properties": {
                         "pattern": { "type": "string", "description": "Case-insensitive substring to search for." },
                         "glob": { "type": "string", "description": "Optional glob to filter files (e.g. 'pages/*.tsx')." },
-                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." }
+                        "context": { "type": "integer", "description": "Lines of context before/after each match (default 0)." },
+                        "head_limit": { "type": "integer", "description": "Limit output to first N entries." },
+                        "output_mode": { "type": "string", "description": "'content' (default) or 'files_with_matches' for file paths only." }
                     }
                 }),
             },
@@ -311,6 +323,55 @@ impl AssistantPlatformTools {
                         "rel_path": { "type": "string", "description": "Relative path to the template file." },
                         "old_string": { "type": "string", "description": "Exact string to replace. Must match exactly once." },
                         "new_string": { "type": "string", "description": "Replacement string." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "template_outline".to_string(),
+                description: "Parse a template file and return its structural outline: imports, exports, \
+                    functions, classes, types, interfaces — with line numbers. \
+                    Much cheaper than template_get for understanding file structure.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["rel_path"],
+                    "properties": {
+                        "rel_path": { "type": "string", "description": "Relative path to the template file." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "template_deps".to_string(),
+                description: "Show a template's dependency graph: what it imports and \
+                    which other templates import it. Use to understand component relationships.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["rel_path"],
+                    "properties": {
+                        "rel_path": { "type": "string", "description": "Relative path to the template file." }
+                    }
+                }),
+            },
+            ToolDef {
+                name: "template_batch_edit".to_string(),
+                description: "Apply multiple edits across one or more template files in a single call. \
+                    Each edit has rel_path, old_string, new_string. Fails fast on first error.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "required": ["edits"],
+                    "properties": {
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "required": ["rel_path", "old_string", "new_string"],
+                                "properties": {
+                                    "rel_path": { "type": "string" },
+                                    "old_string": { "type": "string" },
+                                    "new_string": { "type": "string" }
+                                }
+                            },
+                            "description": "Array of edits to apply."
+                        }
                     }
                 }),
             },
@@ -485,7 +546,10 @@ impl AssistantPlatformTools {
 
             // ── Pipelines ──────────────────────────────────────────────────────
             "pipeline_list" => ops.pipeline_list(),
-            "pipeline_get" => ops.pipeline_get(args["file_rel_path"].as_str().unwrap_or("")),
+            "pipeline_get" => ops.pipeline_get(
+                args["file_rel_path"].as_str().unwrap_or(""),
+                args.get("node_id").and_then(|v| v.as_str()),
+            ),
             "pipeline_register" => {
                 ops.pipeline_register(
                     args["body"].as_str().unwrap_or(""),
@@ -544,8 +608,14 @@ impl AssistantPlatformTools {
             }
 
             // ── Templates ──────────────────────────────────────────────────────
-            "template_list" => ops.template_list(),
-            "template_get" => ops.template_get(args["rel_path"].as_str().unwrap_or("")),
+            "template_list" => ops.template_list(
+                args.get("glob").and_then(|v| v.as_str()),
+            ),
+            "template_get" => ops.template_get(
+                args["rel_path"].as_str().unwrap_or(""),
+                args.get("offset").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+            ),
             "template_create" => ops.template_create(
                 args["kind"].as_str().unwrap_or(""),
                 args["name"].as_str().unwrap_or(""),
@@ -559,12 +629,35 @@ impl AssistantPlatformTools {
                 args["pattern"].as_str().unwrap_or(""),
                 args.get("glob").and_then(|v| v.as_str()),
                 args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                args.get("head_limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("output_mode").and_then(|v| v.as_str()),
             ),
             "pipeline_search" => ops.pipeline_search(
                 args["pattern"].as_str().unwrap_or(""),
                 args.get("glob").and_then(|v| v.as_str()),
                 args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                args.get("head_limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("output_mode").and_then(|v| v.as_str()),
             ),
+            "template_outline" => ops.template_outline(
+                args["rel_path"].as_str().unwrap_or(""),
+            ),
+            "template_deps" => ops.template_deps(
+                args["rel_path"].as_str().unwrap_or(""),
+            ),
+            "template_batch_edit" => {
+                let edits: Vec<(String, String, String)> = args.get("edits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|e| {
+                        Some((
+                            e.get("rel_path")?.as_str()?.to_string(),
+                            e.get("old_string")?.as_str()?.to_string(),
+                            e.get("new_string")?.as_str()?.to_string(),
+                        ))
+                    }).collect())
+                    .unwrap_or_default();
+                ops.template_batch_edit(&edits)
+            }
             "template_edit" => ops.template_edit(
                 args["rel_path"].as_str().unwrap_or(""),
                 args["old_string"].as_str().unwrap_or(""),

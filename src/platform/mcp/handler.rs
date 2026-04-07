@@ -24,12 +24,62 @@ use crate::platform::services::{PlatformOps, PlatformService};
 struct PipelineGetParams {
     /// File-relative path of the pipeline (e.g. "pipelines/my-pipeline.zf.json").
     file_rel_path: String,
+    /// Optional node ID to return just one node instead of the full graph.
+    /// Accepts opaque ID (e.g. "n0"), kind (e.g. "trigger.webhook"), or kind+index (e.g. "pg.query[1]").
+    #[serde(default)]
+    #[schemars(with = "String")]
+    node_id: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct TemplateGetParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
+    /// 1-based starting line number. When set with limit, returns a line-numbered slice instead of the full file.
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    offset: Option<u32>,
+    /// Number of lines to return. Used with offset to read a range of lines.
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    limit: Option<u32>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateOutlineParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateDepsParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateBatchEditParams {
+    /// Array of edits to apply. Each edit has rel_path, old_string, new_string.
+    edits: Vec<BatchEditItem>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct BatchEditItem {
+    /// Relative path to the template file.
+    rel_path: String,
+    /// Exact string to find. Must match exactly once.
+    old_string: String,
+    /// Replacement string.
+    new_string: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateListParams {
+    /// Optional glob pattern to filter files (e.g. "pages/*.tsx", "components/**/*.tsx").
+    /// When set, only files matching the glob are returned. Folders are excluded.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    glob: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -64,6 +114,14 @@ struct TemplateSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
+    /// Limit output to first N entries. Useful for large result sets.
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    head_limit: Option<u32>,
+    /// Output mode: "content" shows matching lines (default), "files_with_matches" shows only file paths.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -76,6 +134,14 @@ struct PipelineSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
+    /// Limit output to first N entries. Useful for large result sets.
+    #[serde(default)]
+    #[schemars(with = "u32")]
+    head_limit: Option<u32>,
+    /// Output mode: "content" shows matching lines (default), "files_with_matches" shows only file paths.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -412,10 +478,18 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "pipeline_search")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.pipeline_search(&params.pattern, params.glob.as_deref(), params.context.unwrap_or(0) as usize))
+        ok_or_err(ops.pipeline_search(
+            &params.pattern,
+            params.glob.as_deref(),
+            params.context.unwrap_or(0) as usize,
+            params.head_limit,
+            params.output_mode.as_deref(),
+        ))
     }
 
-    #[tool(description = "Get a specific pipeline by file-relative path")]
+    #[tool(description = "Get a specific pipeline by file-relative path. \
+        Use node_id to return just one node instead of the full graph \
+        (accepts opaque ID, kind, or kind[index]).")]
     async fn pipeline_get(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -430,7 +504,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_get(&params.file_rel_path);
+        let result = ops.pipeline_get(&params.file_rel_path, params.node_id.as_deref());
         ok_or_err(result)
     }
 
@@ -644,19 +718,22 @@ impl ZebflowMcpHandler {
 
     // ── Templates ────────────────────────────────────────────────────────────
 
-    #[tool(description = "List all templates in the project workspace")]
+    #[tool(description = "List all templates in the project workspace. \
+        Use glob to filter (e.g. glob=\"pages/*.tsx\").")]
     async fn template_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateListParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_list")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_list();
+        let result = ops.template_list(params.glob.as_deref());
         ok_or_err(result)
     }
 
-    #[tool(description = "Get a specific template by relative path")]
+    #[tool(description = "Get a specific template by relative path. \
+        Use offset and limit to read a range of lines (1-based) instead of the full file.")]
     async fn template_get(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -671,7 +748,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_get(&params.rel_path);
+        let result = ops.template_get(&params.rel_path, params.offset, params.limit);
         ok_or_err(result)
     }
 
@@ -751,7 +828,13 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_search")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.template_search(&params.pattern, params.glob.as_deref(), params.context.unwrap_or(0) as usize))
+        ok_or_err(ops.template_search(
+            &params.pattern,
+            params.glob.as_deref(),
+            params.context.unwrap_or(0) as usize,
+            params.head_limit,
+            params.output_mode.as_deref(),
+        ))
     }
 
     #[tool(
@@ -779,6 +862,104 @@ impl ZebflowMcpHandler {
                 );
             }
         }
+        ok_or_err(result)
+    }
+
+    // ── Template Intelligence ─────────────────────────────────────────────────
+
+    #[tool(
+        description = "Parse a template file and return its structural outline: imports, exports, \
+                       functions, classes, types, interfaces — with line numbers. \
+                       Much cheaper than template_get for understanding file structure."
+    )]
+    async fn template_outline(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateOutlineParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_outline")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.template_outline(&params.rel_path))
+    }
+
+    #[tool(
+        description = "Show a template's dependency graph: what it imports (forward deps) and \
+                       which other templates import it (reverse deps). \
+                       Use to understand component relationships before refactoring."
+    )]
+    async fn template_deps(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateDepsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_deps")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        ok_or_err(ops.template_deps(&params.rel_path))
+    }
+
+    #[tool(
+        description = "Apply multiple edits across one or more template files in a single call. \
+                       Each edit is { rel_path, old_string, new_string }. \
+                       Fails fast on first error and reports which edits succeeded."
+    )]
+    async fn template_batch_edit(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateBatchEditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_batch_edit")?;
+
+        // Check locks for all unique paths.
+        for edit in &params.edits {
+            if self.template_locked(&session.owner, &session.project, &edit.rel_path) {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "Template '{}' is locked by the project owner and cannot be accessed by agents.",
+                        edit.rel_path
+                    ),
+                    None,
+                ));
+            }
+        }
+
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let edits: Vec<(String, String, String)> = params.edits.iter()
+            .map(|e| (e.rel_path.clone(), e.old_string.clone(), e.new_string.clone()))
+            .collect();
+        let result = ops.template_batch_edit(&edits);
+
+        // Evict cache for all touched files.
+        if !result.text.starts_with("Error:") {
+            let mut evicted = std::collections::HashSet::new();
+            for edit in &params.edits {
+                if evicted.insert(&edit.rel_path) {
+                    if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
+                        &session.owner, &session.project, &edit.rel_path,
+                    ) {
+                        crate::pipeline::engines::basic::evict_template_cache_by_path(
+                            &self.template_cache,
+                            &abs.to_string_lossy(),
+                        );
+                    }
+                }
+            }
+        }
+
         ok_or_err(result)
     }
 

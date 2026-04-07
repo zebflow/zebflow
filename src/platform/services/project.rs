@@ -1792,7 +1792,7 @@ pub fn pipeline_glob_matches(pattern: &str, path: &str) -> bool {
     template_glob_matches(pattern, path)
 }
 
-fn template_glob_matches(pattern: &str, path: &str) -> bool {
+pub fn template_glob_matches(pattern: &str, path: &str) -> bool {
     if pattern.is_empty() {
         return true;
     }
