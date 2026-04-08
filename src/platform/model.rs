@@ -127,6 +127,28 @@ pub struct ProjectCredential {
     pub updated_at: i64,
 }
 
+/// Non-secret variable slot declared by a `secure_request` credential.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct SecureRequestVariableDefinition {
+    /// Stable variable name used by request templates (e.g. `USER_ID`).
+    pub name: String,
+    /// Human-readable label shown in editors.
+    #[serde(default)]
+    pub label: String,
+    /// Optional type hint (e.g. `string`, `number`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub value_type: String,
+    /// Whether the variable must be bound before execution.
+    #[serde(default)]
+    pub required: bool,
+    /// Optional default JS expression suggested in node editors.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub default_expr: String,
+    /// Optional helper text for the variable.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
 /// One project credential summary row safe to return in list responses.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectCredentialListItem {
@@ -143,6 +165,9 @@ pub struct ProjectCredentialListItem {
     /// Roles registered in this credential (JWT only). Non-sensitive — safe to expose in list responses.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auth_roles: Vec<String>,
+    /// Variable schema declared by a `secure_request` credential. Safe to expose — no secrets included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secure_request_vars: Vec<SecureRequestVariableDefinition>,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.

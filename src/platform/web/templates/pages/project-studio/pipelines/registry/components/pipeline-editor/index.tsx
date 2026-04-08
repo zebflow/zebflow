@@ -147,6 +147,7 @@ export default function PipelineEditor({
     jwtCredentials: [],
     browserCredentials: [],
     openaiCredentials: [],
+    secureRequestCredentials: [],
     aiTools: [],
     pageTemplates: [],
     functionPipelines: [],
@@ -219,6 +220,7 @@ export default function PipelineEditor({
             jwtCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "jwt_signing_key"),
             browserCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase().startsWith("browser_")),
             openaiCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "openai"),
+            secureRequestCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "secure_request"),
           }));
         } catch {}
       }

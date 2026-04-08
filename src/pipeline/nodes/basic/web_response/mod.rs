@@ -323,8 +323,21 @@ impl NodeHandler for Node {
         let cookie = self.config.set_cookie.as_deref()
             .and_then(|spec| parse_cookie_spec(spec, &input.payload));
 
-        let body = self.config.body_path.as_deref()
-            .and_then(|p| resolve_json_path(&input.payload, p));
+        let body = self
+            .config
+            .body_path
+            .as_deref()
+            .and_then(|p| resolve_json_path(&input.payload, p))
+            .or_else(|| {
+                if self.config.template.is_none()
+                    && location.is_none()
+                    && self.config.message.is_none()
+                {
+                    Some(input.payload.clone())
+                } else {
+                    None
+                }
+            });
 
         let envelope = json!({
             "status": status,
@@ -581,4 +594,35 @@ pub fn render_compiled_page(
         }),
         trace,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
+
+    use super::{Config, INPUT_PIN_IN, Node};
+
+    #[tokio::test]
+    async fn default_json_response_uses_upstream_payload_as_body() {
+        let node = Node::new(Config::default());
+        let input_payload = json!({
+            "ok": true,
+            "rows": [{ "id": 1, "name": "Alpha" }]
+        });
+
+        let output = node
+            .execute_async(NodeExecutionInput {
+                node_id: "n0".to_string(),
+                input_pin: INPUT_PIN_IN.to_string(),
+                payload: input_payload.clone(),
+                metadata: json!({}),
+                step_tx: None,
+            })
+            .await
+            .expect("execute web.response");
+
+        assert_eq!(output.payload["__zf_response"]["body"], input_payload);
+    }
 }

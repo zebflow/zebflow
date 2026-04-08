@@ -196,6 +196,36 @@ return <div ref={canvasRef} className="w-full h-96" />;
 
 ---
 
+## zeb/deckgl — Geospatial Map Visualization
+
+WebGL-accelerated maps and data layers. Deck.gl 9.x bundled offline — ScatterplotLayer,
+PathLayer, HeatmapLayer, GeoJsonLayer, TileLayer, ColumnLayer, and 20+ more layer types.
+
+```tsx
+import DeckMap from "zeb/deckgl";
+
+<DeckMap
+  height="500px"
+  initialViewState={{ longitude: 101.7, latitude: 3.1, zoom: 12 }}
+  layers={[{
+    type: "ScatterplotLayer",
+    data: input.locations,
+    getPosition: "[longitude, latitude]",
+    getFillColor: [0, 180, 255],
+    getRadius: 50,
+    pickable: true,
+  }]}
+  tooltip={true}
+/>
+```
+
+Includes utility functions: `haversine`, `bearing`, `colorRamp`, `interpolateAlongPath`, `createAnimationLoop`.
+
+See `help("web/deckgl")` for full documentation — all layer types, patterns (API-first,
+WebSocket real-time, animation/playback, heatmaps, GeoJSON, tile basemaps), and pipeline examples.
+
+---
+
 ## zeb/pdf — Client-side PDF Generation
 
 Zero-dependency PDF 1.7 generator. Runs entirely in the browser — no server round-trip.

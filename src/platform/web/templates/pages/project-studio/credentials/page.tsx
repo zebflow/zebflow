@@ -12,7 +12,6 @@ import Input from "@/components/ui/input";
 import Field from "@/components/ui/field";
 import { Select, SelectOption } from "@/components/ui/select";
 import Badge from "@/components/ui/badge";
-import HelpTooltip from "@/components/ui/help-tooltip";
 
 export const page = {
   head: { title: ctx?.seo?.title ?? "", description: ctx?.seo?.description ?? "" },
@@ -52,8 +51,10 @@ const ALGORITHMS = [
 
 const CREDENTIAL_KINDS = [
   "postgres", "mysql", "openai", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "custom",
+  "jwt_signing_key", "browser_browserless", "secure_request", "custom",
 ];
+
+const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 function generateHex(bytes: number): string {
   const arr = new Uint8Array(bytes);
@@ -99,6 +100,146 @@ function TagsInput({ value, onChange, placeholder }: { value: string[]; onChange
           onKeyDown={(e: any) => { if (e.key === "Enter") { e.preventDefault(); addTag(); } }}
         />
         <Button type="button" variant="outline" size="sm" onClick={addTag}>+ Add</Button>
+      </div>
+    </div>
+  );
+}
+
+function KeyValueEditor({
+  value,
+  onChange,
+  addLabel = "+ Add",
+  keyPlaceholder = "key",
+  valuePlaceholder = "value",
+  secretValue = false,
+}: {
+  value: Record<string, any>;
+  onChange: (next: Record<string, string>) => void;
+  addLabel?: string;
+  keyPlaceholder?: string;
+  valuePlaceholder?: string;
+  secretValue?: boolean;
+}) {
+  const entries = Object.entries(value && typeof value === "object" ? value : {}).map(([key, item]) => [key, String(item ?? "")] as [string, string]);
+
+  function commit(nextEntries: [string, string][]) {
+    const out: Record<string, string> = {};
+    for (const [key, item] of nextEntries) {
+      const cleanKey = String(key || "").trim();
+      if (!cleanKey) continue;
+      out[cleanKey] = item;
+    }
+    onChange(out);
+  }
+
+  function updateAt(index: number, nextKey: string, nextValue: string) {
+    const next = [...entries];
+    next[index] = [nextKey, nextValue];
+    commit(next);
+  }
+
+  function removeAt(index: number) {
+    commit(entries.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function addRow() {
+    const existing = new Set(entries.map(([key]) => key));
+    let candidate = "";
+    let index = 0;
+    while (!candidate || existing.has(candidate)) {
+      index += 1;
+      candidate = `KEY_${index}`;
+    }
+    commit([...entries, [candidate, ""]]);
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {entries.map(([key, item], index) => (
+        <div key={`${key}-${index}`} className="flex items-center gap-1.5">
+          <Input value={key} placeholder={keyPlaceholder} onInput={(e: any) => updateAt(index, e.target.value, item)} />
+          <Input type={secretValue ? "password" : "text"} value={item} placeholder={valuePlaceholder} onInput={(e: any) => updateAt(index, key, e.target.value)} />
+          <Button type="button" variant="ghost" size="xs" onClick={() => removeAt(index)}>×</Button>
+        </div>
+      ))}
+      <div>
+        <Button type="button" variant="outline" size="xs" onClick={addRow}>{addLabel}</Button>
+      </div>
+    </div>
+  );
+}
+
+function SecureRequestVariablesEditor({
+  value,
+  onChange,
+}: {
+  value: any[];
+  onChange: (next: any[]) => void;
+}) {
+  const items = Array.isArray(value) ? value : [];
+
+  function updateAt(index: number, patch: Record<string, any>) {
+    const next = items.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item));
+    onChange(next);
+  }
+
+  function removeAt(index: number) {
+    onChange(items.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function addVariable() {
+    const existing = new Set(items.map((item) => String(item?.name || "").trim()));
+    let counter = items.length + 1;
+    let name = `VAR_${counter}`;
+    while (existing.has(name)) {
+      counter += 1;
+      name = `VAR_${counter}`;
+    }
+    onChange([
+      ...items,
+      { name, label: "", value_type: "string", required: true, default_expr: "", description: "" },
+    ]);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {items.length === 0 ? (
+        <p className="text-xs text-body-soft italic">No runtime variables declared yet.</p>
+      ) : null}
+      {items.map((item, index) => (
+        <div key={`${item?.name || "variable"}-${index}`} className="rounded-md border border-ui-border bg-ui-bg px-3 py-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Variable Name">
+              <Input value={String(item?.name || "")} onInput={(e: any) => updateAt(index, { name: e.target.value })} placeholder="USER_ID" />
+            </Field>
+            <Field label="Label">
+              <Input value={String(item?.label || "")} onInput={(e: any) => updateAt(index, { label: e.target.value })} placeholder="User ID" />
+            </Field>
+            <Field label="Type">
+              <Input value={String(item?.value_type || "")} onInput={(e: any) => updateAt(index, { value_type: e.target.value })} placeholder="string" />
+            </Field>
+            <Field label="Default Expr">
+              <Input value={String(item?.default_expr || "")} onInput={(e: any) => updateAt(index, { default_expr: e.target.value })} placeholder="ctx.nodes.n3.unit.code" />
+            </Field>
+            <Field label="Description" className="col-span-2">
+              <Input value={String(item?.description || "")} onInput={(e: any) => updateAt(index, { description: e.target.value })} placeholder="Shown in the HTTP request node binding editor" />
+            </Field>
+            <label className="col-span-2 inline-flex items-center gap-2 text-sm text-body">
+              <input
+                type="checkbox"
+                checked={item?.required !== false}
+                onChange={(e: any) => updateAt(index, { required: !!e.target.checked })}
+              />
+              Required binding
+            </label>
+          </div>
+          <div className="mt-3 flex justify-end">
+            <Button type="button" variant="ghost" size="xs" onClick={() => removeAt(index)}>Remove Variable</Button>
+          </div>
+        </div>
+      ))}
+      <div>
+        <Button type="button" variant="outline" size="xs" onClick={addVariable}>+ Add Variable</Button>
       </div>
     </div>
   );
@@ -208,6 +349,85 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
       <Field label="Token" description="Optional API token."><Input type="password" value={s("token")} onChange={(e) => onChange("token", e.target.value)} onInput={(e:any)=>onChange("token",e.target.value)} /></Field>
     </div>
   );
+
+  if (kind === "secure_request") {
+    const request = secret.request && typeof secret.request === "object" ? secret.request : {};
+    const variables = Array.isArray(secret.variables) ? secret.variables : [];
+    const secrets = secret.secrets && typeof secret.secrets === "object" ? secret.secrets : {};
+    const requestMethod = String(request.method || "GET");
+    const requestUrl = String(request.url || "");
+    const requestBody = String(request.body || "");
+    const requestHeaders = request.headers && typeof request.headers === "object" ? request.headers : {};
+    const updateRequest = (patch: Record<string, any>) => onChange("__json__", {
+      ...secret,
+      request: {
+        ...request,
+        ...patch,
+      },
+    });
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-body">Secure Request Profile</p>
+          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+            Define an HTTP request template with placeholders like <code>&lt;USER_ID&gt;</code> and
+            <code>&lt;PROGRAMME_CODE&gt;</code>. The HTTP request node will ask for those bindings and
+            resolve any secret placeholders from this credential.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Request Method">
+            <Select value={requestMethod} onChange={(e) => updateRequest({ method: e.target.value })}>
+              {REQUEST_METHODS.map((method) => <SelectOption key={method} value={method} label={method} />)}
+            </Select>
+          </Field>
+          <Field label="URL Template" className="col-span-2" description="Use placeholders such as <USER_ID> or <SHARED_SECRET>.">
+            <Input value={requestUrl} onInput={(e: any) => updateRequest({ url: e.target.value })} placeholder="https://partner.example.com/login?id=<USER_ID>&secret=<SHARED_SECRET>" />
+          </Field>
+        </div>
+
+        <Field label="Header Templates" description="Header values can also use placeholders.">
+          <KeyValueEditor
+            value={requestHeaders}
+            onChange={(headers) => updateRequest({ headers })}
+            addLabel="+ Add Header"
+            keyPlaceholder="Header-Name"
+            valuePlaceholder="<PLACEHOLDER> or static value"
+          />
+        </Field>
+
+        <Field label="Body Template" description="Optional raw request body template. Leave blank for no body.">
+          <textarea
+            value={requestBody}
+            onChange={(e) => updateRequest({ body: e.target.value })}
+            onInput={(e: any) => updateRequest({ body: e.target.value })}
+            rows={5}
+            placeholder='{"user_id":"<USER_ID>","programme":"<PROGRAMME_CODE>"}'
+            className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+          />
+        </Field>
+
+        <Field label="Secret Placeholders" description="These values stay in the credential and can be referenced as placeholders in the request template.">
+          <KeyValueEditor
+            value={secrets}
+            onChange={(nextSecrets) => onChange("__json__", { ...secret, secrets: nextSecrets })}
+            addLabel="+ Add Secret"
+            keyPlaceholder="SHARED_SECRET"
+            valuePlaceholder="Stored secret value"
+            secretValue
+          />
+        </Field>
+
+        <Field label="Runtime Variables" description="These become bindable fields inside the HTTP request node.">
+          <SecureRequestVariablesEditor
+            value={variables}
+            onChange={(nextVariables) => onChange("__json__", { ...secret, variables: nextVariables })}
+          />
+        </Field>
+      </div>
+    );
+  }
 
   // custom
   return (

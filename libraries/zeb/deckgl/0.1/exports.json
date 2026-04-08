@@ -3,7 +3,14 @@
     { "name": "deckgl", "kind": "namespace" },
     { "name": "ensureDeck", "kind": "function" },
     { "name": "createDeckMapRuntime", "kind": "function" },
-    { "name": "mountDeckMap", "kind": "function" }
+    { "name": "mountDeckMap", "kind": "function" },
+    { "name": "buildLayer", "kind": "function" },
+    { "name": "buildLayers", "kind": "function" },
+    { "name": "haversine", "kind": "function" },
+    { "name": "bearing", "kind": "function" },
+    { "name": "colorRamp", "kind": "function" },
+    { "name": "interpolateAlongPath", "kind": "function" },
+    { "name": "createAnimationLoop", "kind": "function" }
   ],
   "wrappers": [
     { "name": "DeckMap", "kind": "tsx-component", "path": "wrappers/DeckMap.tsx" }

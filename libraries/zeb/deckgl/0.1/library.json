@@ -3,7 +3,7 @@
   "version": "0.1",
   "kind": "web-library",
   "trust": "official",
-  "description": "Deck.gl 9.x for geospatial and large-scale data visualisation in RWE templates. @deck.gl/core + @deck.gl/layers bundled offline. DeckMap component, reactive stateKey/layerKey bridge, JSON declarative layers, imperative instance registry.",
+  "description": "Deck.gl 9.x for geospatial and large-scale data visualisation. 25+ layer types (basic, aggregation, geo, mesh), extensions, tooltip, utilities (haversine, bearing, colorRamp, interpolateAlongPath, createAnimationLoop). All bundled offline.",
   "source": {
     "provider": "zebflow",
     "package": "deck.gl",
@@ -24,7 +24,12 @@
       "mountDeckMap",
       "buildLayer",
       "buildLayers",
-      "deckgl"
+      "deckgl",
+      "haversine",
+      "bearing",
+      "colorRamp",
+      "interpolateAlongPath",
+      "createAnimationLoop"
     ],
     "wrappers": [
       "DeckMap"
