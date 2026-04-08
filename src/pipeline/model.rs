@@ -276,6 +276,10 @@ pub enum NodeFieldType {
     /// Config value is stored as a JSON number.
     /// Supports optional `min`, `max`, `step` extra config.
     Number,
+    /// Binding editor for `secure_request` HTTP credential profiles.
+    /// Shows the required variable slots declared by the selected credential and stores
+    /// a JSON object mapping variable name → JS expression string.
+    SecureRequestBindings,
 }
 
 impl Default for NodeFieldType {
@@ -298,6 +302,8 @@ pub enum NodeFieldDataSource {
     CredentialsBrowser,
     /// Live project OpenAI-compatible credentials (kind = "openai").
     CredentialsOpenAi,
+    /// Live `secure_request` credentials that declare request variable slots.
+    CredentialsSecureRequest,
     /// All node kinds registered as AI tools (`ai_tool.registered = true` in NodeDefinition).
     /// Returns `{ tool_name, tool_description }` pairs for checklist rendering.
     AiTools,

@@ -17,6 +17,7 @@
  *       getRadius: 80,
  *       pickable: true,
  *     }]}
+ *     tooltip={true}
  *   />
  *
  * ─── Reactive layers from page state ─────────────────────────────────────
@@ -28,6 +29,21 @@
  *     initialViewState={{ longitude: 103.8, latitude: 1.35, zoom: 11 }}
  *     layerKey="mapPoints"    ← data array from page state → ScatterplotLayer auto-built
  *     stateKey="mapView"      ← view state synced two-ways
+ *     tooltip={true}
+ *   />
+ *
+ * ─── Heatmap overlay ─────────────────────────────────────────────────────
+ *   <DeckMap
+ *     height="500px"
+ *     initialViewState={{ longitude: 101.7, latitude: 3.1, zoom: 11 }}
+ *     layers={[{
+ *       type: "HeatmapLayer",
+ *       data: incidents,
+ *       getPosition: "location",
+ *       getWeight: "severity",
+ *       radiusPixels: 60,
+ *       intensity: 2,
+ *     }]}
  *   />
  *
  * ─── Imperative access ────────────────────────────────────────────────────
@@ -51,6 +67,7 @@ export default function DeckMap(props) {
     layers:           props.layers || [],
     stateKey:         props.stateKey || null,
     layerKey:         props.layerKey || null,
+    tooltip:          props.tooltip || false,
     background:       props.background || "transparent",
   });
 

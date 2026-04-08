@@ -77,6 +77,8 @@ function defaultFor(type: NodeFieldType): unknown {
 
 interface EnrichedFieldDef extends NodeFieldDef {
   value: unknown;
+  secureRequestCredential?: any;
+  secureRequestVariables?: any[];
 }
 
 // ── Grid span logic ────────────────────────────────────────────────────────────
@@ -92,6 +94,7 @@ const FULL_WIDTH_TYPES: NodeFieldType[] = [
   "key_value_pairs",
   "claims_pairs",
   "params_builder",
+  "secure_request_bindings",
 ];
 
 function isFullWidth(field: NodeFieldDef): boolean {
@@ -134,6 +137,11 @@ function enrichFields(
       if (options.length === 1 && (options[0] as SelectOptionDef).value === "") {
         (options[0] as SelectOptionDef).label = "No OpenAI credential available";
       }
+    } else if (f.data_source === "credentials_secure_request") {
+      options = buildCredentialOptions(dataState.secureRequestCredentials, value as string);
+      if (options.length === 1 && options[0].value === "") {
+        options[0].label = "No secure request profile available";
+      }
     } else if (f.data_source === "ai_tools") {
       options = (Array.isArray(dataState.aiTools) ? dataState.aiTools : []).map((t: any) => ({
         value: t.tool_name,
@@ -161,7 +169,30 @@ function enrichFields(
       value = webhookPublicUrlFor(dataState, String(config.path ?? "/"));
     }
 
-    return { ...f, value, options };
+    const enriched: EnrichedFieldDef = { ...f, value, options };
+    if (f.type === "secure_request_bindings") {
+      const selectedCredId = String(config.credential_id ?? "");
+      const cred = (dataState.secureRequestCredentials as any[]).find(
+        (item: any) => String(item?.credential_id || "") === selectedCredId
+      );
+      const variables = Array.isArray(cred?.secure_request_vars) ? cred.secure_request_vars : [];
+      const raw =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : {};
+      const seeded: Record<string, unknown> = { ...raw };
+      for (const item of variables) {
+        const key = String(item?.name || "").trim();
+        if (!key || seeded[key] !== undefined) continue;
+        const fallback = String(item?.default_expr || "").trim();
+        if (fallback) seeded[key] = fallback;
+      }
+      enriched.value = seeded;
+      enriched.secureRequestCredential = cred ?? null;
+      enriched.secureRequestVariables = variables;
+    }
+
+    return enriched;
   });
 }
 

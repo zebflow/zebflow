@@ -6,9 +6,9 @@ export interface SelectOptionDef {
   label: string;
 }
 
-export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder";
+export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings";
 
-export type NodeFieldDataSource = "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "ai_tools" | "function_pipelines";
+export type NodeFieldDataSource = "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
 
 export interface SidebarItem {
   label: string;
@@ -62,6 +62,7 @@ export interface EditorDataState {
   jwtCredentials: any[];
   browserCredentials: any[];
   openaiCredentials: any[];
+  secureRequestCredentials: any[];
   aiTools: any[];
   pageTemplates: any[];
   functionPipelines: any[];

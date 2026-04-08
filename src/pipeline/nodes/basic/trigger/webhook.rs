@@ -19,6 +19,7 @@ use crate::pipeline::{
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const NODE_KIND: &str = "n.trigger.webhook";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -177,6 +178,39 @@ impl Node {
     }
 }
 
+fn collect_trace_private_tokens(payload: &Value) -> Vec<String> {
+    const SENSITIVE_KEYS: &[&str] = &[
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "apikey",
+        "authorization",
+    ];
+    let Some(map) = payload.as_object() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, value) in map {
+        if !SENSITIVE_KEYS.iter().any(|candidate| key.eq_ignore_ascii_case(candidate)) {
+            continue;
+        }
+        let Some(text) = value.as_str() else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() || out.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
 #[async_trait]
 impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
@@ -193,14 +227,47 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
+        let mut payload = input.payload;
+        let trace_private_tokens = collect_trace_private_tokens(&payload);
+        if !trace_private_tokens.is_empty() {
+            if let Value::Object(map) = &mut payload {
+                map.insert(
+                    "__zf_private_trace_redact".to_string(),
+                    Value::Array(
+                        trace_private_tokens
+                            .into_iter()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+        }
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
-            payload: input.payload,
+            payload,
             trace: vec![
                 format!("node_kind={NODE_KIND}"),
                 format!("method={}", self.config.method),
                 format!("path={}", self.config.path),
             ],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::collect_trace_private_tokens;
+
+    #[test]
+    fn collects_common_sensitive_form_fields_for_trace_redaction() {
+        let tokens = collect_trace_private_tokens(&json!({
+            "username": "wawan dot wan",
+            "password": "toryoto",
+            "api_key": "abc123"
+        }));
+
+        assert_eq!(tokens, vec!["toryoto", "abc123"]);
     }
 }

@@ -1,6 +1,6 @@
 {
   "name": "zeb/deckgl",
-  "description": "Deck.gl 9.x runtime for geospatial and large-scale data visualisation in RWE templates. Fully offline — @deck.gl/core + @deck.gl/layers bundled inline.",
+  "description": "Deck.gl 9.x runtime for geospatial and large-scale data visualisation. Fully offline — @deck.gl/core + layers + aggregation + geo + mesh + extensions bundled inline. 25+ layer types, tooltip, utilities (haversine, bearing, colorRamp, animation).",
   "exports": [
     "ensureDeck",
     "createDeckMapRuntime",
@@ -8,6 +8,11 @@
     "buildLayer",
     "buildLayers",
     "deckgl",
+    "haversine",
+    "bearing",
+    "colorRamp",
+    "interpolateAlongPath",
+    "createAnimationLoop",
     "DeckMap"
   ],
   "versions": {
@@ -15,9 +20,9 @@
       "entry": "0.1/runtime/deckgl.bundle.mjs",
       "source": "offline",
       "package_version": "9.x",
-      "size_bytes": 869974,
+      "size_bytes": 0,
       "integrity": "",
-      "note": "Bundles @deck.gl/core + @deck.gl/layers via esbuild. Build: cd /tmp/zeb-deckgl-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=deckgl.bundle.mjs"
+      "note": "Bundles @deck.gl/core + layers + aggregation-layers + geo-layers + mesh-layers + extensions via esbuild. Build: cd /tmp/zeb-deckgl-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=deckgl.bundle.mjs"
     }
   }
 }

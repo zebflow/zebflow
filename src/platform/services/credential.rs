@@ -5,9 +5,10 @@ use std::sync::Arc;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ProjectCredential, ProjectCredentialListItem, UpsertProjectCredentialRequest, now_ts,
-    slug_segment,
+    ProjectCredential, ProjectCredentialListItem, SecureRequestVariableDefinition,
+    UpsertProjectCredentialRequest, now_ts, slug_segment,
 };
+use serde_json::Value;
 
 /// Project-scoped credentials stored in the metadata catalog.
 pub struct CredentialService {
@@ -44,6 +45,11 @@ impl CredentialService {
                             .collect()
                     })
                     .unwrap_or_default();
+                let secure_request_vars = if credential.kind == "secure_request" {
+                    extract_secure_request_vars(&credential.secret)
+                } else {
+                    Vec::new()
+                };
                 ProjectCredentialListItem {
                     credential_id: credential.credential_id,
                     title: credential.title,
@@ -51,6 +57,7 @@ impl CredentialService {
                     has_secret: !credential.secret.is_null(),
                     notes: credential.notes,
                     auth_roles,
+                    secure_request_vars,
                     created_at: credential.created_at,
                     updated_at: credential.updated_at,
                 }
@@ -161,4 +168,56 @@ impl CredentialService {
             format!("project '{owner}/{project}' not found"),
         ))
     }
+}
+
+fn extract_secure_request_vars(secret: &Value) -> Vec<SecureRequestVariableDefinition> {
+    let Some(items) = secret.get("variables").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(SecureRequestVariableDefinition {
+                name: name.clone(),
+                label: item
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&name)
+                    .trim()
+                    .to_string(),
+                value_type: item
+                    .get("value_type")
+                    .or_else(|| item.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                required: item
+                    .get("required")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                default_expr: item
+                    .get("default_expr")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+                description: item
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string(),
+            })
+        })
+        .collect()
 }

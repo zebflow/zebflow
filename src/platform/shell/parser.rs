@@ -434,15 +434,24 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             DslVerb::Delete { kind, name }
         }
         "activate" => {
-            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
+            // Accept both "activate <path>" and "activate pipeline <path>"
+            let mut idx = 1;
+            if tokens.get(1).map(|s| s.as_str()) == Some("pipeline") { idx = 2; }
+            let file_rel_path = tokens.get(idx).cloned().unwrap_or_default();
             DslVerb::Activate { file_rel_path }
         }
         "deactivate" => {
-            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
+            // Accept both "deactivate <path>" and "deactivate pipeline <path>"
+            let mut idx = 1;
+            if tokens.get(1).map(|s| s.as_str()) == Some("pipeline") { idx = 2; }
+            let file_rel_path = tokens.get(idx).cloned().unwrap_or_default();
             DslVerb::Deactivate { file_rel_path }
         }
         "execute" | "exec" => {
-            let file_rel_path = tokens.get(1).cloned().unwrap_or_default();
+            // Accept both "execute <path>" and "execute pipeline <path>"
+            let mut idx = 1;
+            if tokens.get(1).map(|s| s.as_str()) == Some("pipeline") { idx = 2; }
+            let file_rel_path = tokens.get(idx).cloned().unwrap_or_default();
             let input_str = extract_flag(&tokens, "--input").unwrap_or_default();
             let input = serde_json::from_str(&input_str).unwrap_or(json!({}));
             DslVerb::Execute { file_rel_path, input }

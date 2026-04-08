@@ -74,6 +74,136 @@ fn hash_markup(s: &str) -> u64 {
     h.finish()
 }
 
+fn take_private_tokens(payload: &mut Value, key: &str) -> Vec<String> {
+    let Some(map) = payload.as_object_mut() else {
+        return Vec::new();
+    };
+    let Some(Value::Array(items)) = map.remove(key) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(text) = item.as_str() else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() || out.iter().any(|existing| existing == trimmed) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+fn take_private_paths(payload: &mut Value, key: &str) -> Vec<Vec<String>> {
+    let Some(map) = payload.as_object_mut() else {
+        return Vec::new();
+    };
+    let Some(Value::Array(items)) = map.remove(key) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let parts = match item {
+            Value::String(path) => path
+                .split('.')
+                .map(str::trim)
+                .filter(|segment| !segment.is_empty())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            Value::Array(segments) => segments
+                .into_iter()
+                .filter_map(|segment| segment.as_str().map(str::trim).map(ToString::to_string))
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        if parts.is_empty() || out.iter().any(|existing| existing == &parts) {
+            continue;
+        }
+        out.push(parts);
+    }
+    out
+}
+
+fn take_private_redact_tokens(payload: &mut Value) -> Vec<String> {
+    take_private_tokens(payload, "__zf_private_redact")
+}
+
+fn take_private_trace_redact_tokens(payload: &mut Value) -> Vec<String> {
+    take_private_tokens(payload, "__zf_private_trace_redact")
+}
+
+fn take_private_redact_except_paths(payload: &mut Value) -> Vec<Vec<String>> {
+    take_private_paths(payload, "__zf_private_redact_except_paths")
+}
+
+fn take_private_trace_redact_except_paths(payload: &mut Value) -> Vec<Vec<String>> {
+    take_private_paths(payload, "__zf_private_trace_redact_except_paths")
+}
+
+fn extend_unique_strings(target: &mut Vec<String>, extra: Vec<String>) {
+    for item in extra {
+        if target.iter().any(|existing| existing == &item) {
+            continue;
+        }
+        target.push(item);
+    }
+}
+
+fn extend_unique_paths(target: &mut Vec<Vec<String>>, extra: Vec<Vec<String>>) {
+    for item in extra {
+        if target.iter().any(|existing| existing == &item) {
+            continue;
+        }
+        target.push(item);
+    }
+}
+
+fn redact_string(value: &str, tokens: &[String]) -> String {
+    let mut out = value.to_string();
+    for token in tokens {
+        if token.is_empty() {
+            continue;
+        }
+        out = out.replace(token, "••••••");
+    }
+    out
+}
+
+fn redact_json_value(
+    value: &Value,
+    tokens: &[String],
+    except_paths: &[Vec<String>],
+    current_path: &[String],
+) -> Value {
+    if except_paths.iter().any(|path| path == current_path) {
+        return value.clone();
+    }
+    match value {
+        Value::String(text) => Value::String(redact_string(text, tokens)),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| redact_json_value(item, tokens, except_paths, current_path))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| {
+                    let mut next_path = current_path.to_vec();
+                    next_path.push(key.clone());
+                    (
+                        key.clone(),
+                        redact_json_value(item, tokens, except_paths, &next_path),
+                    )
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Main framework engine used for real pipeline execution.
 pub struct BasicPipelineEngine {
     language: Arc<dyn LanguageEngine>,
@@ -189,6 +319,7 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_HTTP_REQUEST_CONFIG", err.to_string())
                 })?,
                 self.language.clone(),
+                self.credentials.clone(),
             )?)),
             sqlite_query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
@@ -788,17 +919,62 @@ impl PipelineEngine for BasicPipelineEngine {
                 )));
 
             let output = match exec_result {
-                Ok(out) => {
+                Ok(mut out) => {
+                    let mut output_payload = out.payload.clone();
+                    let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
+                    let payload_redact_except_paths =
+                        take_private_redact_except_paths(&mut output_payload);
+                    let mut trace_redact_tokens = payload_redact_tokens.clone();
+                    extend_unique_strings(
+                        &mut trace_redact_tokens,
+                        take_private_trace_redact_tokens(&mut output_payload),
+                    );
+                    let mut trace_redact_except_paths = payload_redact_except_paths.clone();
+                    extend_unique_paths(
+                        &mut trace_redact_except_paths,
+                        take_private_trace_redact_except_paths(&mut output_payload),
+                    );
+                    let payload_output = if payload_redact_tokens.is_empty() {
+                        output_payload
+                    } else {
+                        redact_json_value(
+                            &output_payload,
+                            &payload_redact_tokens,
+                            &payload_redact_except_paths,
+                            &[],
+                        )
+                    };
+                    let redacted_input = if trace_redact_tokens.is_empty() {
+                        input_snapshot
+                    } else {
+                        redact_json_value(
+                            &input_snapshot,
+                            &trace_redact_tokens,
+                            &trace_redact_except_paths,
+                            &[],
+                        )
+                    };
+                    let redacted_output = if trace_redact_tokens.is_empty() {
+                        payload_output.clone()
+                    } else {
+                        redact_json_value(
+                            &payload_output,
+                            &trace_redact_tokens,
+                            &trace_redact_except_paths,
+                            &[],
+                        )
+                    };
                     // Record this node's output so downstream nodes can access it via $nodes.
-                    nodes_output.insert(trace_node_id.clone(), out.payload.clone());
+                    nodes_output.insert(trace_node_id.clone(), payload_output.clone());
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id,
                         node_kind: trace_node_kind,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: input_snapshot,
-                        output: out.payload.clone(),
+                        input: redacted_input,
+                        output: redacted_output.clone(),
                         error: None,
                     });
+                    out.payload = payload_output;
                     out
                 }
                 Err(mut e) => {
@@ -902,6 +1078,81 @@ impl PipelineEngine for BasicPipelineEngine {
             trace,
             node_trace,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{
+        redact_json_value, take_private_redact_except_paths, take_private_redact_tokens,
+        take_private_trace_redact_tokens,
+    };
+
+    #[test]
+    fn private_redact_tokens_are_removed_and_applied_recursively() {
+        let mut payload = json!({
+            "__zf_private_redact": ["abc123", "secret-value"],
+            "password": "abc123",
+            "nested": {
+                "preview": "token=secret-value",
+                "array": ["abc123", "ok"]
+            }
+        });
+
+        let tokens = take_private_redact_tokens(&mut payload);
+        assert_eq!(tokens, vec!["abc123", "secret-value"]);
+        assert!(payload.get("__zf_private_redact").is_none());
+
+        let redacted = redact_json_value(&payload, &tokens, &[], &[]);
+        assert_eq!(redacted["password"], "••••••");
+        assert_eq!(redacted["nested"]["preview"], "token=••••••");
+        assert_eq!(redacted["nested"]["array"][0], "••••••");
+        assert_eq!(redacted["nested"]["array"][1], "ok");
+    }
+
+    #[test]
+    fn private_redact_can_preserve_response_body_subtree() {
+        let mut payload = json!({
+            "__zf_private_redact": ["https://secret.example/api/login", "token-123"],
+            "__zf_private_redact_except_paths": ["response.body"],
+            "request": {
+                "url": "https://secret.example/api/login",
+                "summary": "token-123"
+            },
+            "response": {
+                "body": {
+                    "echoed_url": "https://secret.example/api/login",
+                    "echoed_token": "token-123"
+                }
+            }
+        });
+
+        let tokens = take_private_redact_tokens(&mut payload);
+        let except_paths = take_private_redact_except_paths(&mut payload);
+        let redacted = redact_json_value(&payload, &tokens, &except_paths, &[]);
+
+        assert_eq!(redacted["request"]["url"], "••••••");
+        assert_eq!(redacted["request"]["summary"], "••••••");
+        assert_eq!(
+            redacted["response"]["body"]["echoed_url"],
+            "https://secret.example/api/login"
+        );
+        assert_eq!(redacted["response"]["body"]["echoed_token"], "token-123");
+    }
+
+    #[test]
+    fn private_trace_redact_tokens_are_removed_without_touching_payload_redact_keys() {
+        let mut payload = json!({
+            "__zf_private_trace_redact": ["abc123"],
+            "token": "abc123"
+        });
+
+        let tokens = take_private_trace_redact_tokens(&mut payload);
+        assert_eq!(tokens, vec!["abc123"]);
+        assert!(payload.get("__zf_private_trace_redact").is_none());
+        assert_eq!(payload["token"], "abc123");
     }
 }
 
