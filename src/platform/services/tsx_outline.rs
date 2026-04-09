@@ -10,7 +10,7 @@ use oxc_parser::Parser;
 use oxc_span::SourceType;
 
 /// Kind of top-level symbol found in the outline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum SymbolKind {
     Import,
     Function,
@@ -34,7 +34,7 @@ impl SymbolKind {
 }
 
 /// A single symbol in the outline.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct OutlineSymbol {
     pub kind: SymbolKind,
     pub name: String,
@@ -49,7 +49,7 @@ pub struct OutlineSymbol {
 }
 
 /// Result of outline extraction.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct OutlineResult {
     pub symbols: Vec<OutlineSymbol>,
     pub line_count: u32,
@@ -508,5 +508,45 @@ fn binding_ident_name(pattern: &oxc_ast::ast::BindingPattern) -> Option<String> 
         Some(id.name.as_str().to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SymbolKind, extract_outline};
+
+    #[test]
+    fn extract_outline_tracks_exported_symbols_and_default_line() {
+        let source = r#"
+import { colorRamp } from "@/pages/demo/deck-utils";
+
+export function namedThing() {
+  return colorRamp(0.5, "green-red");
+}
+
+export default function DemoPage() {
+  return null;
+}
+"#;
+
+        let outline = extract_outline(source, Some("pages/demo/test.tsx"));
+
+        let named = outline
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "namedThing")
+            .expect("named export present");
+        assert_eq!(named.kind, SymbolKind::Function);
+        assert!(named.is_exported);
+        assert_eq!(named.line, 4);
+
+        let default_export = outline
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "DemoPage")
+            .expect("default export present");
+        assert!(default_export.is_exported);
+        assert!(default_export.is_default);
+        assert_eq!(default_export.line, 8);
     }
 }

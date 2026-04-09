@@ -396,6 +396,29 @@ export default function PipelineEditor({
     nav(redirectUrl);
   }
 
+  useEffect(() => {
+    function handleGlobalSaveShortcut(event: KeyboardEvent) {
+      const isSaveKey = (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "s";
+      if (!isSaveKey) return;
+      const active = document.activeElement as Element | null;
+      if (active?.closest?.(".cm-editor, dialog[open]")) {
+        return;
+      }
+      const activeTag = active?.tagName || "";
+      if (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT" || active?.hasAttribute?.("contenteditable")) {
+        return;
+      }
+      if (!currentMeta || currentLocked) {
+        return;
+      }
+      event.preventDefault();
+      void handleSave();
+    }
+
+    window.addEventListener("keydown", handleGlobalSaveShortcut);
+    return () => window.removeEventListener("keydown", handleGlobalSaveShortcut);
+  }, [currentMeta, currentLocked, selectedId]);
+
   // ── Activate ──────────────────────────────────────────────────────────────
   async function handleActivate() {
     if (!currentMeta || currentLocked) return;
@@ -777,7 +800,12 @@ export default function PipelineEditor({
           rel_path: String(t.rel_path || ""),
           name: String(t.name || ""),
         }))}
-        api={{ templateFile: api.templateFile, templateSave: api.templateSave }}
+        api={{
+          templateFile: api.templateFile,
+          templateSave: api.templateSave,
+          templateOutline: api.templateOutline,
+          templatesWorkspace: api.templatesWorkspace,
+        }}
         allGraphNodes={currentGraph?.nodes || []}
         onApply={handleNodeApply}
         onClose={() => setWebRenderNode(null)}

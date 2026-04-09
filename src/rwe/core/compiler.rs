@@ -905,6 +905,33 @@ fn strip_local_imports(source: &str) -> String {
     result
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_detects_codemirror_library_imports() {
+        let source = r#"
+import { presets } from "zeb/codemirror";
+
+export default function DemoPage() {
+  return <Page><div data-kind={typeof presets}>ok</div></Page>;
+}
+"#;
+
+        let compiled = compile(source, CompileOptions::default()).expect("compile should succeed");
+
+        assert!(
+            compiled
+                .detected_zeb_libs
+                .iter()
+                .any(|lib| lib == "zeb/codemirror"),
+            "expected zeb/codemirror to be detected, got {:?}",
+            compiled.detected_zeb_libs
+        );
+    }
+}
+
 /// Convert exported declarations to local ones for inlined modules.
 /// Uses OXC AST — handles all valid TypeScript syntax regardless of formatting or comments.
 ///
@@ -1004,4 +1031,3 @@ fn localize_exports(source: &str) -> String {
     }
     result
 }
-

@@ -13,7 +13,7 @@ export async function loadEditorRuntime() {
   _promise = (async () => {
     const base = window.location.origin;
     const cmUrl = new URL(
-      "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+      "/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs",
       base
     );
     const cm = await import(cmUrl.href);

@@ -1,11 +1,10 @@
 let editorViewCtor: (new (...args: any[]) => any) | null = null;
-let basicSetupExt = null;
-let oneDarkExt = null;
+let codeMirrorRuntime = null;
 let codeMirrorRuntimePromise = null;
 
 async function ensureCodeMirrorRuntime() {
-  if (editorViewCtor && basicSetupExt && oneDarkExt) {
-    return;
+  if (editorViewCtor && codeMirrorRuntime) {
+    return codeMirrorRuntime;
   }
   if (codeMirrorRuntimePromise) {
     return codeMirrorRuntimePromise;
@@ -15,13 +14,13 @@ async function ensureCodeMirrorRuntime() {
       throw new Error("codemirror runtime requires browser window");
     }
     const runtimeUrl = new URL(
-      "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+      "/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs",
       window.location.origin
     );
     const runtime = await import(runtimeUrl.href);
+    codeMirrorRuntime = runtime;
     editorViewCtor = runtime.EditorView;
-    basicSetupExt = runtime.basicSetup;
-    oneDarkExt = runtime.oneDark;
+    return runtime;
   })();
   return codeMirrorRuntimePromise;
 }
@@ -611,13 +610,13 @@ async function initQueryEditor(state) {
   if (!state.queryEditorHost) {
     return;
   }
-  await ensureCodeMirrorRuntime();
+  const runtime = await ensureCodeMirrorRuntime();
   const initial = (state.queryEditorHost.textContent || "").trim() || `collection "sjtable__your_table"\ntake 200`;
   state.queryEditorHost.textContent = "";
   if (!editorViewCtor) return;
   state.queryEditor = new editorViewCtor({
     doc: initial,
-    extensions: [basicSetupExt, oneDarkExt],
+    extensions: runtime.presets.zebflow({ kind: "text" }),
     parent: state.queryEditorHost,
   });
   setQueryStatus(state, "Ready", "neutral");

@@ -73,9 +73,9 @@ import { useRef, useEffect } from "zeb";
 const containerRef = useRef<HTMLDivElement>(null);
 
 useEffect(() => {
-  import('/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs')
-    .then(({ EditorView, basicSetup }) => {
-      new EditorView({ extensions: [basicSetup], parent: containerRef.current });
+  import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs')
+    .then(({ EditorView, presets }) => {
+      new EditorView({ extensions: presets.zebflow({ kind: "text" }), parent: containerRef.current });
     });
 }, []);
 

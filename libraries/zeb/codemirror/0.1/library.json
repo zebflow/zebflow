@@ -10,7 +10,7 @@
     "package_version": "6.0.1",
     "packed_version": "full-0.1",
     "packed_kind": "full",
-    "entry": "runtime/codemirror.bundle.mjs"
+    "entry": "runtime/entry.mjs"
   },
   "registry": {
     "kind": "github-releases",
@@ -19,7 +19,9 @@
   },
   "exports": {
     "raw": [
-      "codemirror"
+      "codemirror",
+      "presets",
+      "createZebflowEditorExtensions"
     ],
     "wrappers": [
       "CodeEditor"
@@ -27,7 +29,7 @@
   },
   "runtime": {
     "format": "esm",
-    "entry": "runtime/codemirror.bundle.mjs"
+    "entry": "runtime/entry.mjs"
   },
   "editor": {
     "keywords": "keywords.json",

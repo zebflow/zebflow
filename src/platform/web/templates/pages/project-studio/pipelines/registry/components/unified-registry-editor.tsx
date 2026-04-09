@@ -222,6 +222,7 @@ function SidebarSearchButton({ editorBase, nav }) {
 export default function UnifiedRegistryEditor(input) {
   const editorBase = String(input?.editor_base ?? "");
   const editorType = String(input?.editor_type ?? "folder");
+  const selectedLine = Number(input?.selected_line ?? 0);
   const isPipeline = editorType === "pipeline";
   const isTemplate = editorType === "template";
   const isDoc = editorType === "doc";
@@ -284,6 +285,7 @@ export default function UnifiedRegistryEditor(input) {
 
   // ── Template editor state ─────────────────────────────────────────────────
   const template = input?.template ?? {};
+  const templateOutlineUrl = String(template?.api?.outline ?? editorApi?.template_outline ?? "");
   const [templateSaveState, setTemplateSaveState] = useState("Saved");
   const templateEditorHostRef = useRef(null);
   const templateEditorViewRef = useRef(null);
@@ -403,35 +405,68 @@ export default function UnifiedRegistryEditor(input) {
     return payload;
   }
 
-  function mountTemplateEditor(content, fileKind, rt) {
+  function openTemplateEditorPathAtLine(relPath: string, line?: number | null) {
+    const normalized = String(relPath || "").replace(/^\/+/, "");
+    if (!normalized) return;
+    const parts = normalized.split("/");
+    const dir = parts.slice(0, -1).join("/");
+    const suffix = line && line > 0 ? `&line=${encodeURIComponent(String(line))}` : "";
+    nav(`${editorBase}?type=template&path=${encodeURIComponent(dir)}&file=${encodeURIComponent(normalized)}${suffix}`);
+  }
+
+  function revealEditorLine(view: any, lineNumber?: number | null) {
+    const line = Number(lineNumber || 0);
+    if (!view || !line || line < 1) return;
+    const runReveal = () => {
+      const targetLine = Math.min(line, view.state.doc.lines);
+      const lineInfo = view.state.doc.line(targetLine);
+      const block = typeof view.lineBlockAt === "function" ? view.lineBlockAt(lineInfo.from) : null;
+      const scroller = view.scrollDOM || view.dom?.querySelector?.(".cm-scroller");
+      view.dispatch({
+        selection: { anchor: lineInfo.from },
+      });
+      if (scroller && block) {
+        scroller.scrollTop = Math.max(0, block.top - Math.max(scroller.clientHeight * 0.28, 48));
+      }
+      view.focus();
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        runReveal();
+        requestAnimationFrame(runReveal);
+      });
+      return;
+    }
+    setTimeout(runReveal, 0);
+  }
+
+  function mountTemplateEditor(content, fileKind, rt, editorOptions: any = {}) {
     if (templateEditorViewRef.current) {
       templateEditorViewRef.current.destroy();
       templateEditorViewRef.current = null;
     }
     if (!templateEditorHostRef.current) return;
-    const { EditorView, basicSetup, javascript, css, autocompletion, linter, lintGutter, oneDark } = rt.cm;
-    const extensions = [
-      basicSetup,
-      oneDark,
-      EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" } }),
-      autocompletion(),
-      linter(() => []),
-      lintGutter(),
-      EditorView.updateListener.of((update) => {
+    const { EditorView, presets } = rt.cm;
+    const extensions = presets.zebflow({
+      kind: fileKind === "style" ? "css" : "template",
+      height: "100%",
+      autocomplete: true,
+      diagnostics: true,
+      projectFiles: editorOptions.projectFiles || [],
+      templateOutlineUrl: editorOptions.templateOutlineUrl || "",
+      onOpenImport: editorOptions.onOpenImport,
+      onSave: () => { void handleSaveTemplate(); },
+      onDocumentChange: (update) => {
         if (!update.docChanged) return;
         setTemplateSaveState("Unsaved");
-      }),
-    ];
-    if (fileKind === "style") {
-      extensions.push(css());
-    } else {
-      extensions.push(javascript({ jsx: true, typescript: true }));
-    }
+      },
+    });
     templateEditorViewRef.current = new EditorView({
       doc: content,
       extensions,
       parent: templateEditorHostRef.current,
     });
+    revealEditorLine(templateEditorViewRef.current, editorOptions.initialLine);
   }
 
   useEffect(() => {
@@ -446,7 +481,22 @@ export default function UnifiedRegistryEditor(input) {
           rt = await loadEditorRuntime();
           templateRuntimeRef.current = rt;
         }
-        mountTemplateEditor(content, fileKind, rt);
+        const workspace = await requestJson(`${projectApiBase}/templates/workspace`).catch(() => null);
+        const projectFiles = Array.isArray(workspace?.items)
+          ? workspace.items
+              .filter((item: any) => item?.kind !== "folder" && typeof item?.rel_path === "string")
+              .map((item: any) => String(item.rel_path))
+          : [];
+        mountTemplateEditor(content, fileKind, rt, {
+          projectFiles,
+          templateOutlineUrl,
+          initialLine: selectedLine,
+          onOpenImport: (target: any) => {
+            if (target?.kind === "project" && target?.relPath) {
+              openTemplateEditorPathAtLine(target.relPath, target?.line);
+            }
+          },
+        });
         setTemplateSaveState("Saved");
       } catch (err) {
         setTemplateSaveState("Error");
@@ -487,24 +537,24 @@ export default function UnifiedRegistryEditor(input) {
           docEditorViewRef.current = null;
         }
         if (!docEditorHostRef.current) return;
-        const { EditorView, basicSetup, javascript, autocompletion, linter, lintGutter, oneDark } = rt.cm;
+        const { EditorView, presets } = rt.cm;
         docEditorViewRef.current = new EditorView({
           doc: content,
-          extensions: [
-            basicSetup,
-            oneDark,
-            EditorView.theme({ "&": { height: "100%" }, ".cm-scroller": { overflow: "auto" } }),
-            autocompletion(),
-            linter(() => []),
-            lintGutter(),
-            EditorView.updateListener.of((update) => {
+          extensions: presets.zebflow({
+            kind: "javascript",
+            height: "100%",
+            autocomplete: true,
+            diagnostics: true,
+            projectFiles: [],
+            onSave: () => { void handleSaveDoc(); },
+            onDocumentChange: (update) => {
               if (!update.docChanged) return;
               setDocSaveState("Unsaved");
-            }),
-            javascript({ jsx: false, typescript: false }),
-          ],
+            },
+          }),
           parent: docEditorHostRef.current,
         });
+        revealEditorLine(docEditorViewRef.current, selectedLine);
         setDocSaveState("Saved");
       } catch (err) {
         setDocSaveState("Error");
@@ -1198,6 +1248,7 @@ export default function UnifiedRegistryEditor(input) {
                   templatesWorkspace: editorApi?.templates_workspace ?? "",
                   templateFile: editorApi?.template_file ?? "",
                   templateSave: editorApi?.template_save ?? "",
+                  templateOutline: editorApi?.template_outline ?? "",
                 }}
                 selectedId={pipeline?.selected_id ?? ""}
                 owner={owner}

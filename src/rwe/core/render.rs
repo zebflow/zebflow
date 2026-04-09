@@ -272,7 +272,7 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
         "zeb/threejs-vrm" => Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs"),
         "zeb/d3"          => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
         "zeb/deckgl"      => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
-        "zeb/codemirror"  => Some("/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs"),
+        "zeb/codemirror"  => Some("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
         "zeb/graphui"     => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
         "zeb/markdown"    => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
         "zeb/prosemirror" => Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs"),
@@ -814,4 +814,23 @@ fn escape_json_script(input: &str) -> String {
         .replace("<", "\\u003c")
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zeb_preamble_uses_codemirror_entry_module() {
+        let preamble = build_zeb_preamble(&["zeb/codemirror".to_string()], &[]);
+
+        assert!(
+            preamble.contains("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
+            "expected codemirror preamble to load entry.mjs, got {preamble}"
+        );
+        assert!(
+            preamble.contains("Object.assign(globalThis"),
+            "expected zeb preamble to expose library exports on globalThis, got {preamble}"
+        );
+    }
 }
