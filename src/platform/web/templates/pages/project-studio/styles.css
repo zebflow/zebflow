@@ -598,6 +598,8 @@ button.pipeline-editor-item:hover {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  padding-bottom: 0.5rem;
+  box-sizing: border-box;
 }
 
 .pipeline-editor-template-host .cm-editor {
@@ -608,6 +610,10 @@ button.pipeline-editor-item:hover {
 
 .pipeline-editor-template-host .cm-scroller {
   overflow: auto;
+}
+
+.pipeline-editor-template-host .cm-content {
+  padding-bottom: 2.75rem;
 }
 
 /* ── GraphUI: chrome appended by PipelineGraph (graphui.bundle.mjs: .zf-node-edit, .zf-node-slug) ──
@@ -1048,6 +1054,8 @@ button.pipeline-editor-item:hover {
 .pipeline-render-editor-host {
   min-height: 0;
   overflow: hidden;
+  padding-bottom: 0.5rem;
+  box-sizing: border-box;
 }
 
 .pipeline-render-editor-host .cm-editor {
@@ -1056,6 +1064,10 @@ button.pipeline-editor-item:hover {
 
 .pipeline-render-editor-host .cm-scroller {
   overflow: auto;
+}
+
+.pipeline-render-editor-host .cm-content {
+  padding-bottom: 2.75rem;
 }
 
 /* .project-table: marker still used on `<StudioTable variant="dbGrid">` for db-suite.css + cell selection behaviors */

@@ -66,6 +66,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         ),
     },
     EmbeddedAsset {
+        path: "zeb/codemirror/0.1/runtime/entry.mjs",
+        bytes: include_bytes!("../../../libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
+    },
+    EmbeddedAsset {
         path: "zeb/codemirror/0.1/wrappers/CodeEditor.tsx",
         bytes: include_bytes!("../../../libraries/zeb/codemirror/0.1/wrappers/CodeEditor.tsx"),
     },

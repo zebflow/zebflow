@@ -376,6 +376,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
                 .delete(api_template_delete),
         )
         .route(
+            "/api/projects/{owner}/{project}/templates/outline",
+            get(api_template_outline),
+        )
+        .route(
             "/api/projects/{owner}/{project}/templates/create",
             post(api_template_create),
         )
@@ -1128,6 +1132,7 @@ struct PipelineRegistryQuery {
     editor_type: Option<String>,
     path: Option<String>,
     file: Option<String>,
+    line: Option<u32>,
     scope: Option<String>,
     id: Option<String>,
 }
@@ -1157,6 +1162,7 @@ struct UnifiedEditorQuery {
     editor_type: Option<String>,
     path: Option<String>,
     file: Option<String>,
+    line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2030,6 +2036,7 @@ async fn project_root_page(
         None,
         query.editor_type.as_deref(),
         query.file.as_deref(),
+        query.line,
     )
     .await
 }
@@ -2050,6 +2057,7 @@ async fn project_pipelines_page(
         query.id.as_deref(),
         query.editor_type.as_deref(),
         query.file.as_deref(),
+        query.line,
     )
     .await
 }
@@ -2064,6 +2072,7 @@ async fn render_project_pipelines_with_tab(
     editor_id: Option<&str>,
     registry_type: Option<&str>,
     registry_file: Option<&str>,
+    registry_line: Option<u32>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
         &state,
@@ -2084,6 +2093,7 @@ async fn render_project_pipelines_with_tab(
             editor_type: registry_type.map(str::to_string),
             path: registry_path.map(str::to_string),
             file: registry_file.map(str::to_string),
+            line: registry_line,
         };
         return render_project_editor(state, headers, owner, project, query, "registry").await;
     }
@@ -2542,6 +2552,7 @@ async fn render_project_pipelines_with_tab(
                         "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
                         "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
                         "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
+                        "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
                     },
                     "graphui": {
                         "runtime_src": "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs",
@@ -2975,6 +2986,7 @@ async fn render_project_editor(
                 "templates_workspace": format!("/api/projects/{owner}/{project}/templates/workspace"),
                 "template_file": format!("/api/projects/{owner}/{project}/templates/file"),
                 "template_save": format!("/api/projects/{owner}/{project}/templates/file"),
+                "template_outline": format!("/api/projects/{owner}/{project}/templates/outline"),
             },
             "graphui": {
                 "runtime_src": "/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs",
@@ -3013,6 +3025,7 @@ async fn render_project_editor(
             "api": {
                 "file": format!("/api/projects/{owner}/{project}/templates/file"),
                 "save": format!("/api/projects/{owner}/{project}/templates/file"),
+                "outline": format!("/api/projects/{owner}/{project}/templates/outline"),
             }
         })
     } else {
@@ -3036,6 +3049,7 @@ async fn render_project_editor(
             "api": {
                 "file": format!("/api/projects/{owner}/{project}/docs/file"),
                 "save": format!("/api/projects/{owner}/{project}/docs/file"),
+                "outline": format!("/api/projects/{owner}/{project}/templates/outline"),
             }
         })
     } else {
@@ -3079,6 +3093,7 @@ async fn render_project_editor(
         "editor_base": editor_base,
         "editor_type": effective_type,
         "selected_file": file_param,
+        "selected_line": query.line,
         "sidebar": sidebar,
         "pipeline": pipeline_payload,
         "template": template_payload,
@@ -7085,6 +7100,46 @@ async fn api_template_file(
         .read_template_payload(&owner, &project, path)
     {
         Ok(file) => Json(file).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_template_outline(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<TemplatePathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    let Some(path) = query.path.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"missing path"})),
+        )
+            .into_response();
+    };
+    match state
+        .platform
+        .projects
+        .read_template_file(&owner, &project, path)
+    {
+        Ok(content) => {
+            let outline = crate::platform::services::tsx_outline::extract_outline(&content, Some(path));
+            Json(json!({
+                "ok": true,
+                "rel_path": path,
+                "outline": outline,
+            }))
+            .into_response()
+        }
         Err(err) => internal_error(err),
     }
 }

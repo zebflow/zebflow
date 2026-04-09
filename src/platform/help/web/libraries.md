@@ -102,10 +102,10 @@ Full CodeMirror 6 editor. Always load in `useEffect` (browser only).
 const editorRef = useRef(null);
 
 useEffect(() => {
-  import('/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs')
-    .then(({ EditorView, basicSetup, EditorState }) => {
+  import('/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs')
+    .then(({ EditorView, presets }) => {
       const view = new EditorView({
-        extensions: [basicSetup],
+        extensions: presets.zebflow({ kind: "typescript" }),
         parent: editorRef.current,
         doc: state.code ?? "",
       });

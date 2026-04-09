@@ -118,10 +118,17 @@ Tool.stat.lerp(0, 100, 0.5)          // 50
 Geographic utilities.
 
 ```js
-Tool.geo.distance(lat1, lon1, lat2, lon2)   // → distance in km (haversine)
-Tool.geo.bbox(points)                        // → { minLat, maxLat, minLon, maxLon }
-Tool.geo.center(points)                      // → { lat, lon }
+Tool.geo.distance([lon1, lat1], [lon2, lat2])              // → distance in km (haversine)
+Tool.geo.distance(lat1, lon1, lat2, lon2)                  // → legacy form, also km
+Tool.geo.bbox(pointsOrFeatures)                            // → [minLon, minLat, maxLon, maxLat]
+Tool.geo.center(pointsOrFeatures)                          // → [lon, lat]
+Tool.geo.pointInPolygon([lon, lat], polygonOrMultiPolygon) // → boolean
+Tool.geo.centroid(polygonOrMultiPolygon)                   // → [lon, lat]
+Tool.geo.nearestPoint([lon, lat], points)                  // → { index, distance }
 ```
+
+`pointInPolygon` and `centroid` accept GeoJSON `Polygon` / `MultiPolygon`.
+Simple polygon ring arrays like `[[lon, lat], ...]` are also accepted for backward compatibility.
 
 ---
 

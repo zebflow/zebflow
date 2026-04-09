@@ -368,36 +368,273 @@
   // ──────────────────────────────────────────────────────────────────────────
   // Tool.geo
   // ──────────────────────────────────────────────────────────────────────────
+  function geoIsPoint(value) {
+    return Array.isArray(value) &&
+      value.length >= 2 &&
+      typeof value[0] === "number" && isFinite(value[0]) &&
+      typeof value[1] === "number" && isFinite(value[1]);
+  }
+
+  function geoNormalizePoint(value) {
+    return [Number(value[0]), Number(value[1])];
+  }
+
+  function geoNormalizeRing(ring) {
+    return (Array.isArray(ring) ? ring : [])
+      .filter(geoIsPoint)
+      .map(geoNormalizePoint);
+  }
+
+  function geoNormalizePolygon(polygon) {
+    return (Array.isArray(polygon) ? polygon : [])
+      .map(geoNormalizeRing)
+      .filter(function(ring) { return ring.length >= 3; });
+  }
+
+  function geoToPolygons(geometry) {
+    if (!geometry) return [];
+
+    if (geometry.type === "Feature" && geometry.geometry) {
+      geometry = geometry.geometry;
+    }
+
+    if (geometry.type === "Polygon") {
+      return [geoNormalizePolygon(geometry.coordinates)];
+    }
+
+    if (geometry.type === "MultiPolygon") {
+      return (Array.isArray(geometry.coordinates) ? geometry.coordinates : [])
+        .map(geoNormalizePolygon)
+        .filter(function(polygon) { return polygon.length > 0; });
+    }
+
+    if (!Array.isArray(geometry) || !geometry.length) {
+      return [];
+    }
+
+    if (geoIsPoint(geometry[0])) {
+      return [[geoNormalizeRing(geometry)]];
+    }
+
+    if (Array.isArray(geometry[0]) && geometry[0].length && geoIsPoint(geometry[0][0])) {
+      return [geoNormalizePolygon(geometry)];
+    }
+
+    if (
+      Array.isArray(geometry[0]) &&
+      geometry[0].length &&
+      Array.isArray(geometry[0][0]) &&
+      geometry[0][0].length &&
+      geoIsPoint(geometry[0][0][0])
+    ) {
+      return geometry
+        .map(geoNormalizePolygon)
+        .filter(function(polygon) { return polygon.length > 0; });
+    }
+
+    return [];
+  }
+
+  function geoAllPointsFromPolygons(polygons) {
+    var points = [];
+    (polygons || []).forEach(function(polygon) {
+      (polygon || []).forEach(function(ring) {
+        (ring || []).forEach(function(point) {
+          points.push(point);
+        });
+      });
+    });
+    return points;
+  }
+
+  function geoAveragePoint(points) {
+    if (!points || !points.length) return [0, 0];
+    var x = 0, y = 0;
+    for (var i = 0; i < points.length; i++) {
+      x += points[i][0];
+      y += points[i][1];
+    }
+    return [x / points.length, y / points.length];
+  }
+
+  function geoRingMetrics(ring) {
+    var points = geoNormalizeRing(ring);
+    if (points.length < 3) {
+      return { area: 0, centroid: geoAveragePoint(points) };
+    }
+
+    var twiceArea = 0;
+    var cx = 0;
+    var cy = 0;
+
+    for (var i = 0; i < points.length; i++) {
+      var a = points[i];
+      var b = points[(i + 1) % points.length];
+      var cross = a[0] * b[1] - b[0] * a[1];
+      twiceArea += cross;
+      cx += (a[0] + b[0]) * cross;
+      cy += (a[1] + b[1]) * cross;
+    }
+
+    if (!twiceArea) {
+      return { area: 0, centroid: geoAveragePoint(points) };
+    }
+
+    return {
+      area: twiceArea / 2,
+      centroid: [cx / (3 * twiceArea), cy / (3 * twiceArea)],
+    };
+  }
+
+  function geoPolygonMetrics(polygon) {
+    var rings = geoNormalizePolygon(polygon);
+    if (!rings.length) {
+      return { area: 0, centroid: [0, 0] };
+    }
+
+    var totalArea = 0;
+    var sumX = 0;
+    var sumY = 0;
+
+    for (var i = 0; i < rings.length; i++) {
+      var metrics = geoRingMetrics(rings[i]);
+      var weight = Math.abs(metrics.area);
+      if (!weight) continue;
+      if (i > 0) weight = -weight;
+      totalArea += weight;
+      sumX += metrics.centroid[0] * weight;
+      sumY += metrics.centroid[1] * weight;
+    }
+
+    if (!totalArea) {
+      return {
+        area: 0,
+        centroid: geoAveragePoint(geoAllPointsFromPolygons([rings])),
+      };
+    }
+
+    return {
+      area: Math.abs(totalArea),
+      centroid: [sumX / totalArea, sumY / totalArea],
+    };
+  }
+
+  function geoPointOnSegment(point, a, b) {
+    var dx = b[0] - a[0];
+    var dy = b[1] - a[1];
+    var lenSq = dx * dx + dy * dy;
+    if (!lenSq) {
+      return Math.abs(point[0] - a[0]) <= 1e-12 && Math.abs(point[1] - a[1]) <= 1e-12;
+    }
+    var cross = (point[1] - a[1]) * (b[0] - a[0]) - (point[0] - a[0]) * (b[1] - a[1]);
+    if (Math.abs(cross) > 1e-12) return false;
+    var dot = (point[0] - a[0]) * (b[0] - a[0]) + (point[1] - a[1]) * (b[1] - a[1]);
+    if (dot < 0) return false;
+    return dot <= lenSq;
+  }
+
+  function geoPointInRing(point, ring) {
+    var points = geoNormalizeRing(ring);
+    if (points.length < 3) return false;
+
+    var x = point[0];
+    var y = point[1];
+    var inside = false;
+
+    for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
+      var a = points[i];
+      var b = points[j];
+
+      if (geoPointOnSegment(point, a, b)) {
+        return true;
+      }
+
+      var intersects = ((a[1] > y) !== (b[1] > y)) &&
+        (x < ((b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])) + a[0]);
+
+      if (intersects) {
+        inside = !inside;
+      }
+    }
+
+    return inside;
+  }
+
+  function geoResolveDistancePoints(a, b, c, d) {
+    if (geoIsPoint(a) && geoIsPoint(b)) {
+      return [geoNormalizePoint(a), geoNormalizePoint(b)];
+    }
+
+    if (
+      typeof a === "number" && isFinite(a) &&
+      typeof b === "number" && isFinite(b) &&
+      typeof c === "number" && isFinite(c) &&
+      typeof d === "number" && isFinite(d)
+    ) {
+      return [[b, a], [d, c]];
+    }
+
+    return null;
+  }
+
   var geo = {
 
-    centroid: function(polygon) {
-      if (!polygon || !polygon.length) return [0, 0];
-      var x = 0, y = 0, n = polygon.length;
-      for (var i = 0; i < n; i++) { x += polygon[i][0]; y += polygon[i][1]; }
-      return [x / n, y / n];
+    centroid: function(geometry) {
+      var polygons = geoToPolygons(geometry);
+      if (!polygons.length) return [0, 0];
+
+      var totalArea = 0;
+      var sumX = 0;
+      var sumY = 0;
+
+      for (var i = 0; i < polygons.length; i++) {
+        var metrics = geoPolygonMetrics(polygons[i]);
+        if (!metrics.area) continue;
+        totalArea += metrics.area;
+        sumX += metrics.centroid[0] * metrics.area;
+        sumY += metrics.centroid[1] * metrics.area;
+      }
+
+      if (!totalArea) {
+        return geoAveragePoint(geoAllPointsFromPolygons(polygons));
+      }
+
+      return [sumX / totalArea, sumY / totalArea];
     },
 
-    distance: function(a, b) {
-      // Haversine — returns metres
-      var R = 6371000;
-      var lat1 = a[1] * Math.PI / 180, lat2 = b[1] * Math.PI / 180;
-      var dLat = (b[1] - a[1]) * Math.PI / 180;
-      var dLng = (b[0] - a[0]) * Math.PI / 180;
+    distance: function(a, b, c, d) {
+      var points = geoResolveDistancePoints(a, b, c, d);
+      if (!points) return 0;
+      var from = points[0];
+      var to = points[1];
+      var R = 6371;
+      var lat1 = from[1] * Math.PI / 180, lat2 = to[1] * Math.PI / 180;
+      var dLat = (to[1] - from[1]) * Math.PI / 180;
+      var dLng = (to[0] - from[0]) * Math.PI / 180;
       var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
               Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
       return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
     },
 
-    pointInPolygon: function(point, polygon) {
-      var x = point[0], y = point[1], inside = false;
-      for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        var xi = polygon[i][0], yi = polygon[i][1];
-        var xj = polygon[j][0], yj = polygon[j][1];
-        if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
-          inside = !inside;
+    pointInPolygon: function(point, geometry) {
+      if (!geoIsPoint(point)) return false;
+      var polygons = geoToPolygons(geometry);
+      for (var i = 0; i < polygons.length; i++) {
+        var polygon = polygons[i];
+        if (!polygon.length) continue;
+        if (!geoPointInRing(point, polygon[0])) continue;
+        var inHole = false;
+        for (var j = 1; j < polygon.length; j++) {
+          if (geoPointInRing(point, polygon[j])) {
+            inHole = true;
+            break;
+          }
+        }
+        if (!inHole) {
+          return true;
         }
       }
-      return inside;
+      return false;
     },
 
     bbox: function(features) {
@@ -416,6 +653,38 @@
         }
       });
       return [minLng, minLat, maxLng, maxLat];
+    },
+
+    center: function(points) {
+      var box = geo.bbox(points);
+      if (!box || !isFinite(box[0]) || !isFinite(box[1]) || !isFinite(box[2]) || !isFinite(box[3])) {
+        return [0, 0];
+      }
+      return [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
+    },
+
+    nearestPoint: function(origin, points) {
+      if (!geoIsPoint(origin) || !Array.isArray(points) || !points.length) {
+        return { index: -1, distance: null };
+      }
+
+      var bestIndex = -1;
+      var bestDistance = Infinity;
+
+      for (var i = 0; i < points.length; i++) {
+        if (!geoIsPoint(points[i])) continue;
+        var distance = geo.distance(origin, points[i]);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = i;
+        }
+      }
+
+      if (bestIndex === -1) {
+        return { index: -1, distance: null };
+      }
+
+      return { index: bestIndex, distance: bestDistance };
     },
   };
 

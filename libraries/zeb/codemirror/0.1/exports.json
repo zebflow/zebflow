@@ -3,8 +3,16 @@
   "version": "0.1",
   "raw": {
     "codemirror": {
-      "entry": "runtime/codemirror.bundle.mjs",
-      "description": "Bundled CodeMirror 6 module surface for platform/editor integration."
+      "entry": "runtime/entry.mjs",
+      "description": "Bundled CodeMirror 6 module surface plus Zebflow editor presets."
+    },
+    "presets": {
+      "entry": "runtime/entry.mjs",
+      "description": "Shared Zebflow editor preset helpers for CodeMirror-based editors."
+    },
+    "createZebflowEditorExtensions": {
+      "entry": "runtime/entry.mjs",
+      "description": "Low-level builder for the shared Zebflow CodeMirror extension stack."
     }
   },
   "wrappers": {

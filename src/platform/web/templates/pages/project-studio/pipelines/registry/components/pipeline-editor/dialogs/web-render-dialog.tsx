@@ -8,7 +8,7 @@ import { ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/comp
 interface WebRenderDialogProps {
   nodeData: PipelineNodeData | null;  // null = closed
   templates: { rel_path: string; name?: string }[];
-  api: { templateFile: string; templateSave: string };
+  api: { templateFile: string; templateSave: string; templateOutline?: string; templatesWorkspace?: string };
   allGraphNodes: any[];
   onApply: (nodeData: PipelineNodeData, slug: string, config: Record<string, unknown>) => void;
   onClose: () => void;
@@ -37,6 +37,32 @@ export default function WebRenderDialog({
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Idle");
 
+  function revealEditorLine(view: any, lineNumber?: number | null) {
+    const line = Number(lineNumber || 0);
+    if (!view || !line || line < 1) return;
+    const runReveal = () => {
+      const targetLine = Math.min(line, view.state.doc.lines);
+      const lineInfo = view.state.doc.line(targetLine);
+      const block = typeof view.lineBlockAt === "function" ? view.lineBlockAt(lineInfo.from) : null;
+      const scroller = view.scrollDOM || view.dom?.querySelector?.(".cm-scroller");
+      view.dispatch({
+        selection: { anchor: lineInfo.from },
+      });
+      if (scroller && block) {
+        scroller.scrollTop = Math.max(0, block.top - Math.max(scroller.clientHeight * 0.28, 48));
+      }
+      view.focus();
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => {
+        runReveal();
+        requestAnimationFrame(runReveal);
+      });
+      return;
+    }
+    setTimeout(runReveal, 0);
+  }
+
   // Reset state when nodeData changes
   useEffect(() => {
     if (!nodeData) return;
@@ -63,25 +89,51 @@ export default function WebRenderDialog({
           runtimeRef.current = rt;
         }
         if (cancelled) return;
+        let resolvedProjectFiles = Array.isArray(templates)
+          ? templates
+              .map((item) => String(item?.rel_path || ""))
+              .filter(Boolean)
+          : [];
+        if (api.templatesWorkspace) {
+          try {
+            const res = await fetch(api.templatesWorkspace, {
+              headers: { Accept: "application/json" },
+            });
+            const payload = await res.json().catch(() => ({}));
+            if (res.ok && !cancelled) {
+              resolvedProjectFiles = Array.isArray(payload?.items)
+                ? payload.items
+                    .filter((item: any) => item?.kind !== "folder" && typeof item?.rel_path === "string")
+                    .map((item: any) => String(item.rel_path))
+                : resolvedProjectFiles;
+            }
+          } catch (_) {}
+        }
         const {
           EditorView,
-          basicSetup,
-          javascript,
-          oneDark,
+          presets,
         } = rt.cm;
         const view = new EditorView({
           doc: "",
           parent: editorHostRef.current,
-          extensions: [
-            basicSetup,
-            oneDark,
-            javascript({ jsx: true, typescript: true }),
-            EditorView.updateListener.of((update) => {
+          extensions: presets.zebflow({
+            kind: "template",
+            autocomplete: true,
+            projectFiles: resolvedProjectFiles,
+            templateOutlineUrl: api.templateOutline || "",
+            onOpenImport: (target: any) => {
+              if (target?.kind !== "project" || !target?.relPath) return;
+              void doLoadTemplate(target.relPath, view, target?.line);
+            },
+            onSave: () => {
+              void doSaveTemplate();
+            },
+            onDocumentChange: (update) => {
               if (!update.docChanged) return;
               setIsDirty(true);
               setStatus("Unsaved");
-            }),
-          ],
+            },
+          }),
         });
         editorViewRef.current = view;
         setStatus("Choose template");
@@ -115,7 +167,7 @@ export default function WebRenderDialog({
     if (!nodeData && el.open) el.close();
   }, [nodeData]);
 
-  async function doLoadTemplate(relPath: string, view?: any) {
+  async function doLoadTemplate(relPath: string, view?: any, jumpLine?: number | null) {
     const path = String(relPath || "").trim();
     const edView = view || editorViewRef.current;
     if (!path) {
@@ -141,6 +193,7 @@ export default function WebRenderDialog({
       setIsDirty(false);
       if (edView) {
         edView.dispatch({ changes: { from: 0, to: edView.state.doc.length, insert: content } });
+        revealEditorLine(edView, jumpLine);
       }
       setStatus("Loaded");
     } catch (err: any) {

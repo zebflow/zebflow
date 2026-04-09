@@ -1,11 +1,10 @@
 let editorViewCtor = null;
-let basicSetupExt = null;
-let oneDarkExt = null;
+let codeMirrorRuntime = null;
 let codeMirrorRuntimePromise = null;
 
 async function ensureCodeMirrorRuntime() {
-  if (editorViewCtor && basicSetupExt && oneDarkExt) {
-    return;
+  if (editorViewCtor && codeMirrorRuntime) {
+    return codeMirrorRuntime;
   }
   if (codeMirrorRuntimePromise) {
     return codeMirrorRuntimePromise;
@@ -15,13 +14,13 @@ async function ensureCodeMirrorRuntime() {
       throw new Error("codemirror runtime requires browser window");
     }
     const runtimeUrl = new URL(
-      "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+      "/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs",
       window.location.origin
     );
     const runtime = await import(runtimeUrl.href);
+    codeMirrorRuntime = runtime;
     editorViewCtor = runtime.EditorView;
-    basicSetupExt = runtime.basicSetup;
-    oneDarkExt = runtime.oneDark;
+    return runtime;
   })();
   return codeMirrorRuntimePromise;
 }
@@ -453,12 +452,12 @@ async function initQueryEditor(state) {
   if (!state.queryEditorHost) {
     return;
   }
-  await ensureCodeMirrorRuntime();
+  const runtime = await ensureCodeMirrorRuntime();
   const initial = (state.queryEditorHost.textContent || "").trim() || "-- Write SQL and click Run Query.";
   state.queryEditorHost.textContent = "";
   state.queryEditor = new editorViewCtor({
     doc: initial,
-    extensions: [basicSetupExt, oneDarkExt],
+    extensions: runtime.presets.zebflow({ kind: "sql" }),
     parent: state.queryEditorHost,
   });
   // Expose the CodeMirror EditorView on the host element so the automation

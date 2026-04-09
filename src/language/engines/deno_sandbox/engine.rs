@@ -270,3 +270,118 @@ fn extract_run_patch(metadata: &Value) -> Result<Option<DenoSandboxConfigPatch>,
     })?;
     Ok(Some(patch))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run_tool_script(source: &str) -> Value {
+        DenoSandboxEngine::default()
+            .run_script(source, &json!({}), None)
+            .expect("tool script should succeed")
+    }
+
+    fn approx_eq(actual: f64, expected: f64, tolerance: f64) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "expected {actual} to be within {tolerance} of {expected}"
+        );
+    }
+
+    #[test]
+    fn tool_geo_distance_returns_km_and_supports_legacy_args() {
+        let out = run_tool_script(
+            r#"
+return {
+  array_distance: Tool.geo.distance([0, 0], [0, 1]),
+  legacy_distance: Tool.geo.distance(0, 0, 1, 0),
+};
+"#,
+        );
+
+        let array_distance = out["array_distance"].as_f64().unwrap();
+        let legacy_distance = out["legacy_distance"].as_f64().unwrap();
+
+        approx_eq(array_distance, 111.195, 0.5);
+        approx_eq(legacy_distance, 111.195, 0.5);
+    }
+
+    #[test]
+    fn tool_geo_point_in_polygon_supports_geojson_holes() {
+        let out = run_tool_script(
+            r#"
+const polygon = {
+  type: "Polygon",
+  coordinates: [
+    [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],
+    [[1, 1], [3, 1], [3, 3], [1, 3], [1, 1]]
+  ]
+};
+
+return {
+  inside_outer: Tool.geo.pointInPolygon([0.5, 0.5], polygon),
+  inside_hole: Tool.geo.pointInPolygon([2, 2], polygon),
+  outside: Tool.geo.pointInPolygon([6, 6], polygon),
+};
+"#,
+        );
+
+        assert_eq!(out["inside_outer"].as_bool(), Some(true));
+        assert_eq!(out["inside_hole"].as_bool(), Some(false));
+        assert_eq!(out["outside"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn tool_geo_centroid_supports_polygon_and_multipolygon() {
+        let out = run_tool_script(
+            r#"
+const polygon = {
+  type: "Polygon",
+  coordinates: [
+    [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]
+  ]
+};
+
+const multiPolygon = {
+  type: "MultiPolygon",
+  coordinates: [
+    [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+    [[[3, 0], [4, 0], [4, 1], [3, 1], [3, 0]]]
+  ]
+};
+
+return {
+  polygon: Tool.geo.centroid(polygon),
+  multi_polygon: Tool.geo.centroid(multiPolygon),
+};
+"#,
+        );
+
+        let polygon = out["polygon"].as_array().unwrap();
+        let multi_polygon = out["multi_polygon"].as_array().unwrap();
+
+        approx_eq(polygon[0].as_f64().unwrap(), 2.0, 1e-6);
+        approx_eq(polygon[1].as_f64().unwrap(), 2.0, 1e-6);
+        approx_eq(multi_polygon[0].as_f64().unwrap(), 2.0, 1e-6);
+        approx_eq(multi_polygon[1].as_f64().unwrap(), 0.5, 1e-6);
+    }
+
+    #[test]
+    fn tool_geo_nearest_point_returns_index_and_distance() {
+        let out = run_tool_script(
+            r#"
+return Tool.geo.nearestPoint(
+  [0, 0],
+  [
+    [0, 2],
+    [0, 0.5],
+    [3, 3]
+  ]
+);
+"#,
+        );
+
+        assert_eq!(out["index"].as_i64(), Some(1));
+        approx_eq(out["distance"].as_f64().unwrap(), 55.597, 0.5);
+    }
+}

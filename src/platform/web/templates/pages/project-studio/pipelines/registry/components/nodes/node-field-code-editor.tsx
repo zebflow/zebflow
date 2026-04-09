@@ -15,7 +15,7 @@ async function loadCm() {
   _cmPromise = (async () => {
     if (typeof window === "undefined") return null;
     const url = new URL(
-      "/assets/libraries/zeb/codemirror/0.1/runtime/codemirror.bundle.mjs",
+      "/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs",
       window.location.origin
     );
     const cm = await import(url.href);
@@ -94,22 +94,18 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
 
       const view = new cm.EditorView({
         doc: initDoc,
-        extensions: [
-          cm.basicSetup,
-          cm.oneDark,
-          cm.EditorView.theme({
-            "&": { minHeight: "160px", maxHeight: "320px" },
-            ".cm-scroller": { overflow: "auto", maxHeight: "320px" },
-          }),
-          cm.EditorView.updateListener.of((update: any) => {
-            if (update.docChanged) {
-              const newVal = update.state.doc.toString();
-              externalValueRef.current = newVal;
-              onChange(newVal);
-            }
-          }),
-          ...(field.readonly ? [cm.EditorView.editable.of(false)] : []),
-        ],
+        extensions: cm.presets.zebflow({
+          kind: field.language || "text",
+          autocomplete: true,
+          readonly: !!field.readonly,
+          minHeight: "160px",
+          maxHeight: "320px",
+          onDocumentChange: (update: any) => {
+            const newVal = update.state.doc.toString();
+            externalValueRef.current = newVal;
+            onChange(newVal);
+          },
+        }),
         parent: containerRef.current,
       });
 

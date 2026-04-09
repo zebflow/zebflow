@@ -82,6 +82,7 @@ export interface EditorApi {
   templatesWorkspace: string;
   templateFile: string;
   templateSave: string;
+  templateOutline: string;
 }
 
 /** Callback shape received by PipelineEditor when user clicks "E" on a node */
