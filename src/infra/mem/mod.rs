@@ -28,12 +28,23 @@
 pub mod subscriber;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 const BROADCAST_CAPACITY: usize = 64;
+
+/// Lightweight operational stats for the in-process mem hub.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemHubStats {
+    /// Number of currently live KV entries.
+    pub entry_count: usize,
+    /// Number of known pub/sub channels.
+    pub channel_count: usize,
+    /// Total live subscribers across all channels.
+    pub subscriber_count: usize,
+}
 
 struct MemEntry {
     value: Value,
@@ -52,15 +63,15 @@ impl MemEntry {
 /// Cheap to clone (all state behind `Arc`).
 #[derive(Clone)]
 pub struct MemHub {
-    entries: Arc<Mutex<HashMap<String, MemEntry>>>,
-    channels: Arc<Mutex<HashMap<String, tokio::sync::broadcast::Sender<Value>>>>,
+    entries: Arc<RwLock<HashMap<String, MemEntry>>>,
+    channels: Arc<RwLock<HashMap<String, tokio::sync::broadcast::Sender<Value>>>>,
 }
 
 impl MemHub {
     pub fn new() -> Self {
         Self {
-            entries: Arc::new(Mutex::new(HashMap::new())),
-            channels: Arc::new(Mutex::new(HashMap::new())),
+            entries: Arc::new(RwLock::new(HashMap::new())),
+            channels: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -71,13 +82,18 @@ impl MemHub {
     /// Get a stored value. Returns `None` if missing or expired (lazy eviction).
     pub fn get(&self, owner: &str, project: &str, key: &str) -> Option<Value> {
         let fk = Self::scoped(owner, project, key);
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = entries.get(&fk)?;
-        if entry.is_expired() {
-            entries.remove(&fk);
-            return None;
+        {
+            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
+            let entry = entries.get(&fk)?;
+            if !entry.is_expired() {
+                return Some(entry.value.clone());
+            }
         }
-        Some(entry.value.clone())
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        if entries.get(&fk).map(|entry| entry.is_expired()).unwrap_or(false) {
+            entries.remove(&fk);
+        }
+        None
     }
 
     /// Set a key to `value` with an optional TTL in seconds.
@@ -87,7 +103,7 @@ impl MemHub {
         let expires_at = ttl_secs
             .filter(|&t| t > 0)
             .map(|t| Instant::now() + Duration::from_secs(t));
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
         entries.insert(fk, MemEntry { value, expires_at });
     }
 
@@ -95,7 +111,7 @@ impl MemHub {
     pub fn del(&self, owner: &str, project: &str, key: &str) -> bool {
         let fk = Self::scoped(owner, project, key);
         self.entries
-            .lock()
+            .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&fk)
             .is_some()
@@ -106,7 +122,7 @@ impl MemHub {
     /// Returns the new value. TTL is NOT preserved after an incr.
     pub fn incr(&self, owner: &str, project: &str, key: &str, amount: i64) -> i64 {
         let fk = Self::scoped(owner, project, key);
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
         let current = entries
             .get(&fk)
             .filter(|e| !e.is_expired())
@@ -133,7 +149,7 @@ impl MemHub {
     /// Returns `true` if the key existed (and was updated), `false` if the key was missing or expired.
     pub fn expire(&self, owner: &str, project: &str, key: &str, ttl_secs: Option<u64>) -> bool {
         let fk = Self::scoped(owner, project, key);
-        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = entries.get_mut(&fk) {
             if entry.is_expired() {
                 entries.remove(&fk);
@@ -153,8 +169,11 @@ impl MemHub {
     /// Silently no-ops if no subscriber has called `subscribe()` yet.
     pub fn publish(&self, owner: &str, project: &str, channel: &str, message: Value) -> usize {
         let full_ch = Self::scoped(owner, project, channel);
-        let channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = channels.get(&full_ch) {
+        let tx = {
+            let channels = self.channels.read().unwrap_or_else(|e| e.into_inner());
+            channels.get(&full_ch).cloned()
+        };
+        if let Some(tx) = tx {
             tx.send(message).unwrap_or(0)
         } else {
             0
@@ -170,12 +189,47 @@ impl MemHub {
         channel: &str,
     ) -> tokio::sync::broadcast::Receiver<Value> {
         let full_ch = Self::scoped(owner, project, channel);
-        let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(tx) = self
+            .channels
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&full_ch)
+            .cloned()
+        {
+            return tx.subscribe();
+        }
+        let mut channels = self.channels.write().unwrap_or_else(|e| e.into_inner());
         let tx = channels.entry(full_ch).or_insert_with(|| {
             let (tx, _) = tokio::sync::broadcast::channel(BROADCAST_CAPACITY);
             tx
         });
         tx.subscribe()
+    }
+
+    /// Return lightweight runtime stats and opportunistically purge expired entries.
+    pub fn stats(&self) -> MemHubStats {
+        self.purge_expired();
+        let entry_count = self
+            .entries
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        let channels = self.channels.read().unwrap_or_else(|e| e.into_inner());
+        let channel_count = channels.len();
+        let subscriber_count = channels.values().map(tokio::sync::broadcast::Sender::receiver_count).sum();
+        MemHubStats {
+            entry_count,
+            channel_count,
+            subscriber_count,
+        }
+    }
+
+    /// Remove expired entries from the in-memory store.
+    pub fn purge_expired(&self) -> usize {
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        let before = entries.len();
+        entries.retain(|_, entry| !entry.is_expired());
+        before.saturating_sub(entries.len())
     }
 }
 

@@ -753,7 +753,7 @@ impl DslExecutor {
         )
         .with_platform(self.platform.clone())
         .with_ws_hub(self.platform.ws_hub.clone())
-        .with_mem_hub(self.platform.mem_hub.clone())
+        .with_state_bus(self.platform.state_bus.clone())
         .with_template_root(
             self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
         );
@@ -856,7 +856,7 @@ impl DslExecutor {
                 )
                 .with_platform(self.platform.clone())
                 .with_ws_hub(self.platform.ws_hub.clone())
-                .with_mem_hub(self.platform.mem_hub.clone())
+                .with_state_bus(self.platform.state_bus.clone())
                 .with_template_root(
                     self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
                 );

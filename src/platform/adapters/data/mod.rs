@@ -10,9 +10,11 @@ use std::sync::Arc;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject,
-    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding,
-    StoredUser,
+    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMember,
+    ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
+use crate::infra::cluster::registry::WorkerRegistryRecord;
+use crate::infra::execution::placement::ProjectRuntimePlacement;
 
 /// Metadata adapter contract used by platform services.
 pub trait DataAdapter: Send + Sync {
@@ -130,6 +132,80 @@ pub trait DataAdapter: Send + Sync {
         owner: &str,
         project: &str,
         subject_id: &str,
+    ) -> Result<(), PlatformError>;
+    /// Get one explicit project member row.
+    fn get_project_member(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<Option<ProjectMember>, PlatformError>;
+    /// Upsert one project member row.
+    fn put_project_member(&self, member: &ProjectMember) -> Result<(), PlatformError>;
+    /// List explicit project member rows.
+    fn list_project_members(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError>;
+    /// Delete one explicit project member row.
+    fn delete_project_member(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<(), PlatformError>;
+    /// Get one stored project invite.
+    fn get_project_invite(
+        &self,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<Option<ProjectInvite>, PlatformError>;
+    /// Upsert one project invite.
+    fn put_project_invite(&self, invite: &ProjectInvite) -> Result<(), PlatformError>;
+    /// List project invites.
+    fn list_project_invites(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError>;
+    /// Delete one project invite.
+    fn delete_project_invite(
+        &self,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<(), PlatformError>;
+    /// Get one registered worker record.
+    fn get_worker_registry_record(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<WorkerRegistryRecord>, PlatformError>;
+    /// Upsert one registered worker record.
+    fn put_worker_registry_record(&self, record: &WorkerRegistryRecord) -> Result<(), PlatformError>;
+    /// List registered worker records.
+    fn list_worker_registry_records(&self) -> Result<Vec<WorkerRegistryRecord>, PlatformError>;
+    /// Delete one registered worker record.
+    fn delete_worker_registry_record(&self, node_id: &str) -> Result<(), PlatformError>;
+    /// Get one environment-owned project placement record.
+    fn get_project_runtime_placement(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<ProjectRuntimePlacement>, PlatformError>;
+    /// Upsert one environment-owned project placement record.
+    fn put_project_runtime_placement(
+        &self,
+        placement: &ProjectRuntimePlacement,
+    ) -> Result<(), PlatformError>;
+    /// List all environment-owned project placement records.
+    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError>;
+    /// Delete one environment-owned project placement record.
+    fn delete_project_runtime_placement(
+        &self,
+        owner: &str,
+        project: &str,
     ) -> Result<(), PlatformError>;
     /// List all persisted MCP sessions.
     fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError>;

@@ -20,13 +20,11 @@
 //! | n.script -- "return { total: input.total };"
 //! ```
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -107,12 +105,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -140,7 +138,10 @@ impl NodeHandler for Node {
             _ => 1,
         };
 
-        let new_val = self.mem_hub.incr(owner, project, key, amount);
+        let new_val = self
+            .state_bus
+            .incr(owner, project, key, amount)
+            .map_err(|err| PipelineError::new("MEM_INCR_STATE_BUS", err.to_string()))?;
 
         let out_key = if self.config.out_key.trim().is_empty() {
             key.to_string()

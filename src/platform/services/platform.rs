@@ -2,16 +2,18 @@
 
 use std::sync::Arc;
 
+use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::platform::adapters::data::{DataAdapter, build_data_adapter};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
 use crate::platform::services::{
-    AssistantConfigService, AuthService, AuthorizationService, CredentialService,
-    DbConnectionService, DbRuntimeService, LibraryService, McpSessionService, PipelineHitsService,
-    PipelineRuntimeService, ProjectService, UserService, ZebLockService,
-    ZebflowJsonService,
+    AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
+    ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService,
+    CredentialService, DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService,
+    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectInviteService,
+    ProjectMembershipService, ProjectService, UserService, ZebLockService, ZebflowJsonService,
 };
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
@@ -31,8 +33,22 @@ pub struct PlatformService {
     pub users: Arc<UserService>,
     /// Auth domain service.
     pub auth: Arc<AuthService>,
+    /// User-bound git author identity resolution.
+    pub git_identity: Arc<GitIdentityService>,
     /// Project-level authorization service shared by REST/MCP/assistant.
     pub authz: Arc<AuthorizationService>,
+    /// Project-sharing membership service.
+    pub project_members: Arc<ProjectMembershipService>,
+    /// Project-sharing invite service.
+    pub project_invites: Arc<ProjectInviteService>,
+    /// Cluster role/bootstrap service.
+    pub cluster_bootstrap: Arc<ClusterBootstrapService>,
+    /// Worker registry service.
+    pub cluster_registry: Arc<ClusterRegistryService>,
+    /// Project placement service.
+    pub cluster_placement: Arc<ClusterPlacementService>,
+    /// Project runtime bundle sync service.
+    pub cluster_runtime_sync: Arc<ClusterRuntimeSyncService>,
     /// Project credential management service.
     pub credentials: Arc<CredentialService>,
     /// Project assistant config service.
@@ -55,6 +71,8 @@ pub struct PlatformService {
     pub ws_hub: Arc<WsHub>,
     /// In-memory KV + pub/sub hub for n.mem.* pipeline nodes.
     pub mem_hub: Arc<MemHub>,
+    /// Shared state-bus seam currently backed by the same in-process mem hub.
+    pub state_bus: DynStateBus,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
     /// Read/write service for per-project `repo/zeb.lock`.
@@ -82,7 +100,10 @@ impl PlatformService {
             zeb_lock.clone(),
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
+        let git_identity = Arc::new(GitIdentityService::new(users.clone()));
         let authz = Arc::new(AuthorizationService::new(data.clone()));
+        let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
+        let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone()));
         let assistant_configs = Arc::new(AssistantConfigService::new(data.clone(), zebflow_cfg.clone()));
         let db_connections = Arc::new(DbConnectionService::new(data.clone()));
@@ -95,6 +116,17 @@ impl PlatformService {
         let mcp_sessions = Arc::new(McpSessionService::new(data.clone()));
         let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
+        let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub((*mem_hub).clone()));
+        let cluster_bootstrap = Arc::new(ClusterBootstrapService::new(config.cluster.clone()));
+        let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
+        let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));
+        let cluster_runtime_sync = Arc::new(ClusterRuntimeSyncService::new(
+            data.clone(),
+            file.clone(),
+            projects.clone(),
+            zebflow_cfg.clone(),
+            pipeline_runtime.clone(),
+        ));
 
         let svc = Self {
             config,
@@ -103,7 +135,14 @@ impl PlatformService {
             project_data,
             users,
             auth,
+            git_identity,
             authz,
+            project_members,
+            project_invites,
+            cluster_bootstrap,
+            cluster_registry,
+            cluster_placement,
+            cluster_runtime_sync,
             credentials,
             assistant_configs,
             zebflow_cfg,
@@ -115,10 +154,13 @@ impl PlatformService {
             mcp_sessions,
             ws_hub,
             mem_hub,
+            state_bus,
             library,
             zeb_lock,
         };
-        svc.bootstrap_defaults()?;
+        if !svc.cluster_bootstrap.is_worker() {
+            svc.bootstrap_defaults()?;
+        }
         // Reload active pipelines for every project across all users.
         if let Ok(users) = svc.data.list_users() {
             for user in &users {
@@ -193,7 +235,7 @@ impl PlatformService {
         )
         .with_platform(std::sync::Arc::new(self.clone()))
         .with_ws_hub(self.ws_hub.clone())
-        .with_mem_hub(self.mem_hub.clone());
+        .with_state_bus(self.state_bus.clone());
 
         let output = engine.execute_async(&compiled.graph, &ctx).await?;
 
@@ -223,6 +265,7 @@ impl PlatformService {
                 project: self.config.default_project.clone(),
                 title: Some("Default".to_string()),
                 local_branch: None,
+                runtime: Default::default(),
             },
         )?;
         Ok(())

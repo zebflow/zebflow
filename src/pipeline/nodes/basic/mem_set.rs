@@ -15,13 +15,11 @@
 //! | n.mem.set --key "user:{{ input.user_id }}" --value-path /data --ttl 3600
 //! ```
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -103,12 +101,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -142,7 +140,9 @@ impl NodeHandler for Node {
         };
 
         let ttl = self.config.ttl.filter(|&t| t > 0);
-        self.mem_hub.set(owner, project, key, value, ttl);
+        self.state_bus
+            .set(owner, project, key, value, ttl)
+            .map_err(|err| PipelineError::new("MEM_SET_STATE_BUS", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

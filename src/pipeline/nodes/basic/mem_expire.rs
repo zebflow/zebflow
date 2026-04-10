@@ -17,13 +17,11 @@
 //! | n.mem.expire --key "session:{{ input.token }}" --ttl 1800
 //! ```
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -93,12 +91,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -120,7 +118,10 @@ impl NodeHandler for Node {
             return Err(PipelineError::new("MEM_EXPIRE_KEY", "n.mem.expire: --key is required"));
         }
 
-        let updated = self.mem_hub.expire(owner, project, key, self.config.ttl);
+        let updated = self
+            .state_bus
+            .expire(owner, project, key, self.config.ttl)
+            .map_err(|err| PipelineError::new("MEM_EXPIRE_STATE_BUS", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

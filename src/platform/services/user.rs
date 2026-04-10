@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
-use crate::platform::model::{CreateUserRequest, PlatformUser, StoredUser, now_ts, slug_segment};
+use crate::platform::model::{
+    CreateUserRequest, PlatformUser, StoredUser, UpdateUserSettingsRequest, now_ts, slug_segment,
+};
 
 /// User service backed by a swappable data adapter.
 pub struct UserService {
@@ -67,6 +69,40 @@ impl UserService {
             password: req.password.clone(),
         };
         self.data.put_user(&stored)?;
+        Ok(profile)
+    }
+
+    /// Updates self-service user settings while preserving password and role.
+    pub fn update_user_settings(
+        &self,
+        owner: &str,
+        req: &UpdateUserSettingsRequest,
+    ) -> Result<PlatformUser, PlatformError> {
+        let owner = slug_segment(owner);
+        if owner.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_INVALID",
+                "owner must not be empty",
+            ));
+        }
+        let Some(existing) = self.data.get_user_auth(&owner)? else {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_NOT_FOUND",
+                format!("user '{owner}' not found"),
+            ));
+        };
+        let profile = PlatformUser {
+            owner: existing.profile.owner.clone(),
+            role: existing.profile.role.clone(),
+            git_name: req.git_name.trim().to_string(),
+            git_email: req.git_email.trim().to_string(),
+            created_at: existing.profile.created_at,
+            updated_at: now_ts(),
+        };
+        self.data.put_user(&StoredUser {
+            profile: profile.clone(),
+            password: existing.password,
+        })?;
         Ok(profile)
     }
 

@@ -2,9 +2,11 @@
 
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
+use crate::infra::cluster::registry::WorkerRegistryRecord;
+use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::model::{
     PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    ProjectInvite, ProjectMember, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Stub adapter for future Firebase support.
@@ -242,6 +244,160 @@ impl DataAdapter for FirebaseDataAdapter {
         _owner: &str,
         _project: &str,
         _subject_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn get_project_member(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _user_id: &str,
+    ) -> Result<Option<ProjectMember>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn put_project_member(&self, _member: &ProjectMember) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn list_project_members(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn delete_project_member(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _user_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn get_project_invite(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _invite_id: &str,
+    ) -> Result<Option<ProjectInvite>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn put_project_invite(&self, _invite: &ProjectInvite) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn list_project_invites(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn delete_project_invite(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _invite_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn get_worker_registry_record(
+        &self,
+        _node_id: &str,
+    ) -> Result<Option<WorkerRegistryRecord>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn put_worker_registry_record(&self, _record: &WorkerRegistryRecord) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn list_worker_registry_records(&self) -> Result<Vec<WorkerRegistryRecord>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn delete_worker_registry_record(&self, _node_id: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn get_project_runtime_placement(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<Option<ProjectRuntimePlacement>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn put_project_runtime_placement(
+        &self,
+        _placement: &ProjectRuntimePlacement,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_FIREBASE_UNIMPLEMENTED",
+            "firebase adapter not implemented",
+        ))
+    }
+
+    fn delete_project_runtime_placement(
+        &self,
+        _owner: &str,
+        _project: &str,
     ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_FIREBASE_UNIMPLEMENTED",
