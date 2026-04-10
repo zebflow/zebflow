@@ -11,9 +11,14 @@ use serde_json::Value;
 
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
+use crate::infra::cluster::registry::WorkerRegistryRecord;
+use crate::infra::execution::placement::{
+    ProjectRuntimeMode, ProjectRuntimePlacement, ProjectRuntimePlacementTarget,
+};
 use crate::platform::model::{
     McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject, PlatformUser,
-    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectPolicy, ProjectPolicyBinding,
+    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
+    ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectPolicy, ProjectPolicyBinding,
     ProjectSubjectKind, StoredUser,
 };
 
@@ -95,6 +100,53 @@ CREATE TABLE IF NOT EXISTS project_policy_bindings (
     created_at   INTEGER NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, subject_id, policy_id)
+);
+CREATE TABLE IF NOT EXISTS project_members (
+    owner                  TEXT NOT NULL,
+    project                TEXT NOT NULL,
+    user_id                TEXT NOT NULL,
+    role_preset            TEXT NOT NULL DEFAULT 'reporter',
+    custom_policy_ids_json TEXT NOT NULL DEFAULT '[]',
+    mcp_capabilities_json  TEXT NOT NULL DEFAULT '[]',
+    created_by             TEXT NOT NULL DEFAULT '',
+    created_at             INTEGER NOT NULL DEFAULT 0,
+    updated_at             INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, user_id)
+);
+CREATE TABLE IF NOT EXISTS project_invites (
+    owner                  TEXT NOT NULL,
+    project                TEXT NOT NULL,
+    invite_id              TEXT NOT NULL,
+    target_user            TEXT NOT NULL DEFAULT '',
+    role_preset            TEXT NOT NULL DEFAULT 'reporter',
+    custom_policy_ids_json TEXT NOT NULL DEFAULT '[]',
+    mcp_capabilities_json  TEXT NOT NULL DEFAULT '[]',
+    note                   TEXT NOT NULL DEFAULT '',
+    invited_by             TEXT NOT NULL DEFAULT '',
+    status                 TEXT NOT NULL DEFAULT 'pending',
+    expires_at             INTEGER,
+    created_at             INTEGER NOT NULL DEFAULT 0,
+    updated_at             INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, invite_id)
+);
+CREATE TABLE IF NOT EXISTS worker_registry (
+    node_id             TEXT PRIMARY KEY,
+    label               TEXT NOT NULL DEFAULT '',
+    base_url            TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT '',
+    capabilities_json   TEXT NOT NULL DEFAULT '{}',
+    registered_at       INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS project_runtime_placements (
+    owner               TEXT NOT NULL,
+    project             TEXT NOT NULL,
+    mode                TEXT NOT NULL DEFAULT 'shared',
+    target              TEXT NOT NULL DEFAULT 'local',
+    worker_id           TEXT,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project)
 );
 CREATE TABLE IF NOT EXISTS mcp_sessions (
     token              TEXT PRIMARY KEY,
@@ -859,6 +911,513 @@ impl DataAdapter for SqliteDataAdapter {
             "DELETE FROM project_policy_bindings
              WHERE owner = ?1 AND project = ?2 AND subject_id = ?3",
             params![owner, project, subject_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn get_project_member(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<Option<ProjectMember>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at
+             FROM project_members WHERE owner = ?1 AND project = ?2 AND user_id = ?3",
+            params![owner, project, user_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            },
+        );
+        match result {
+            Ok((owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)) => {
+                let role_preset: ProjectAccessRolePreset =
+                    serde_json::from_value(Value::String(role_preset)).unwrap_or_default();
+                let custom_policy_ids: Vec<String> =
+                    serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
+                let mcp_capability_ceiling: Vec<ProjectCapability> =
+                    serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
+                Ok(Some(ProjectMember {
+                    owner,
+                    project,
+                    user_id,
+                    role_preset,
+                    custom_policy_ids,
+                    mcp_capability_ceiling,
+                    created_by,
+                    created_at,
+                    updated_at,
+                }))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn put_project_member(&self, member: &ProjectMember) -> Result<(), PlatformError> {
+        let custom_policy_ids_json = serde_json::to_string(&member.custom_policy_ids)?;
+        let mcp_capabilities_json = serde_json::to_string(&member.mcp_capability_ceiling)?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO project_members
+             (owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                &member.owner,
+                &member.project,
+                &member.user_id,
+                member.role_preset.key(),
+                custom_policy_ids_json,
+                mcp_capabilities_json,
+                &member.created_by,
+                member.created_at,
+                member.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_project_members(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at
+                 FROM project_members WHERE owner = ?1 AND project = ?2 ORDER BY user_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .filter_map(
+                |(owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)| {
+                    let role_preset: ProjectAccessRolePreset =
+                        serde_json::from_value(Value::String(role_preset)).ok()?;
+                    let custom_policy_ids: Vec<String> =
+                        serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
+                    let mcp_capability_ceiling: Vec<ProjectCapability> =
+                        serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
+                    Some(ProjectMember {
+                        owner,
+                        project,
+                        user_id,
+                        role_preset,
+                        custom_policy_ids,
+                        mcp_capability_ceiling,
+                        created_by,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_project_member(
+        &self,
+        owner: &str,
+        project: &str,
+        user_id: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM project_members WHERE owner = ?1 AND project = ?2 AND user_id = ?3",
+            params![owner, project, user_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn get_project_invite(
+        &self,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<Option<ProjectInvite>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at
+             FROM project_invites WHERE owner = ?1 AND project = ?2 AND invite_id = ?3",
+            params![owner, project, invite_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                ))
+            },
+        );
+        match result {
+            Ok((owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at)) => {
+                let role_preset: ProjectAccessRolePreset =
+                    serde_json::from_value(Value::String(role_preset)).unwrap_or_default();
+                let status: ProjectInviteStatus =
+                    serde_json::from_str(&status).unwrap_or_default();
+                let custom_policy_ids: Vec<String> =
+                    serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
+                let mcp_capability_ceiling: Vec<ProjectCapability> =
+                    serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
+                Ok(Some(ProjectInvite {
+                    owner,
+                    project,
+                    invite_id,
+                    target_user,
+                    role_preset,
+                    custom_policy_ids,
+                    mcp_capability_ceiling,
+                    note,
+                    invited_by,
+                    status,
+                    expires_at,
+                    created_at,
+                    updated_at,
+                }))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn put_project_invite(&self, invite: &ProjectInvite) -> Result<(), PlatformError> {
+        let custom_policy_ids_json = serde_json::to_string(&invite.custom_policy_ids)?;
+        let mcp_capabilities_json = serde_json::to_string(&invite.mcp_capability_ceiling)?;
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO project_invites
+             (owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                &invite.owner,
+                &invite.project,
+                &invite.invite_id,
+                &invite.target_user,
+                invite.role_preset.key(),
+                custom_policy_ids_json,
+                mcp_capabilities_json,
+                &invite.note,
+                &invite.invited_by,
+                serde_json::to_string(&invite.status)?,
+                invite.expires_at,
+                invite.created_at,
+                invite.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_project_invites(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at
+                 FROM project_invites WHERE owner = ?1 AND project = ?2 ORDER BY created_at DESC, invite_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, i64>(12)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .filter_map(
+                |(owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at)| {
+                    let role_preset: ProjectAccessRolePreset =
+                        serde_json::from_value(Value::String(role_preset)).ok()?;
+                    let status: ProjectInviteStatus =
+                        serde_json::from_str(&status).ok()?;
+                    let custom_policy_ids: Vec<String> =
+                        serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
+                    let mcp_capability_ceiling: Vec<ProjectCapability> =
+                        serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
+                    Some(ProjectInvite {
+                        owner,
+                        project,
+                        invite_id,
+                        target_user,
+                        role_preset,
+                        custom_policy_ids,
+                        mcp_capability_ceiling,
+                        note,
+                        invited_by,
+                        status,
+                        expires_at,
+                        created_at,
+                        updated_at,
+                    })
+                },
+            )
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_project_invite(
+        &self,
+        owner: &str,
+        project: &str,
+        invite_id: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM project_invites WHERE owner = ?1 AND project = ?2 AND invite_id = ?3",
+            params![owner, project, invite_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn get_worker_registry_record(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<WorkerRegistryRecord>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+             FROM worker_registry
+             WHERE node_id = ?1",
+            params![node_id],
+            |row| {
+                let capabilities_json: String = row.get(4)?;
+                let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+                Ok(WorkerRegistryRecord {
+                    node_id: row.get(0)?,
+                    label: row.get(1)?,
+                    base_url: row.get(2)?,
+                    status: row.get(3)?,
+                    capabilities,
+                    registered_at: row.get(5)?,
+                    last_heartbeat_at: row.get(6)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_worker_registry_record(&self, record: &WorkerRegistryRecord) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let capabilities_json =
+            serde_json::to_string(&record.capabilities).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "INSERT OR REPLACE INTO worker_registry
+             (node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                &record.node_id,
+                &record.label,
+                &record.base_url,
+                &record.status,
+                capabilities_json,
+                record.registered_at,
+                record.last_heartbeat_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_worker_registry_records(&self) -> Result<Vec<WorkerRegistryRecord>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+                 FROM worker_registry
+                 ORDER BY node_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                let capabilities_json: String = row.get(4)?;
+                let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
+                Ok(WorkerRegistryRecord {
+                    node_id: row.get(0)?,
+                    label: row.get(1)?,
+                    base_url: row.get(2)?,
+                    status: row.get(3)?,
+                    capabilities,
+                    registered_at: row.get(5)?,
+                    last_heartbeat_at: row.get(6)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_worker_registry_record(&self, node_id: &str) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM worker_registry WHERE node_id = ?1", params![node_id])
+            .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn get_project_runtime_placement(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<ProjectRuntimePlacement>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT owner, project, mode, target, worker_id, created_at, updated_at
+             FROM project_runtime_placements
+             WHERE owner = ?1 AND project = ?2",
+            params![owner, project],
+            |row| {
+                let mode: String = row.get(2)?;
+                let target: String = row.get(3)?;
+                Ok(ProjectRuntimePlacement {
+                    owner: row.get(0)?,
+                    project: row.get(1)?,
+                    mode: serde_json::from_value(Value::String(mode))
+                        .unwrap_or(ProjectRuntimeMode::Shared),
+                    target: serde_json::from_value(Value::String(target))
+                        .unwrap_or(ProjectRuntimePlacementTarget::Local),
+                    worker_id: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_project_runtime_placement(
+        &self,
+        placement: &ProjectRuntimePlacement,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mode = serde_json::to_value(placement.mode)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "shared".to_string());
+        let target = serde_json::to_value(placement.target)
+            .ok()
+            .and_then(|value| value.as_str().map(ToString::to_string))
+            .unwrap_or_else(|| "local".to_string());
+        conn.execute(
+            "INSERT OR REPLACE INTO project_runtime_placements
+             (owner, project, mode, target, worker_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                &placement.owner,
+                &placement.project,
+                mode,
+                target,
+                &placement.worker_id,
+                placement.created_at,
+                placement.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, mode, target, worker_id, created_at, updated_at
+                 FROM project_runtime_placements
+                 ORDER BY owner ASC, project ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                let mode: String = row.get(2)?;
+                let target: String = row.get(3)?;
+                Ok(ProjectRuntimePlacement {
+                    owner: row.get(0)?,
+                    project: row.get(1)?,
+                    mode: serde_json::from_value(Value::String(mode))
+                        .unwrap_or(ProjectRuntimeMode::Shared),
+                    target: serde_json::from_value(Value::String(target))
+                        .unwrap_or(ProjectRuntimePlacementTarget::Local),
+                    worker_id: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_project_runtime_placement(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM project_runtime_placements WHERE owner = ?1 AND project = ?2",
+            params![owner, project],
         )
         .map_err(Self::qe)?;
         Ok(())

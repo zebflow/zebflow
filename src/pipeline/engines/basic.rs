@@ -25,6 +25,7 @@ use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutpu
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::platform::services::CredentialService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
+use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
 
@@ -211,7 +212,7 @@ pub struct BasicPipelineEngine {
     credentials: Option<Arc<CredentialService>>,
     template_cache: Option<TemplateCache>,
     ws_hub: Option<Arc<WsHub>>,
-    mem_hub: Option<Arc<MemHub>>,
+    state_bus: Option<DynStateBus>,
     platform: Option<Arc<PlatformService>>,
     /// Filesystem root for resolving `@/` alias imports in TSX templates.
     template_root: Option<std::path::PathBuf>,
@@ -228,7 +229,7 @@ impl Default for BasicPipelineEngine {
             credentials: None,
             template_cache: None,
             ws_hub: None,
-            mem_hub: None,
+            state_bus: None,
             platform: None,
             template_root: None,
             data_root: None,
@@ -248,7 +249,7 @@ impl BasicPipelineEngine {
             credentials,
             template_cache: None,
             ws_hub: None,
-            mem_hub: None,
+            state_bus: None,
             platform: None,
             template_root: None,
             data_root: None,
@@ -274,9 +275,18 @@ impl BasicPipelineEngine {
         self
     }
 
-    /// Attach the mem hub so n.mem.* nodes can access the per-project KV store.
+    /// Attach the state bus so `n.mem.*` nodes can access the shared project-scoped KV/pubsub layer.
+    pub fn with_state_bus(mut self, bus: DynStateBus) -> Self {
+        self.state_bus = Some(bus);
+        self
+    }
+
+    /// Attach the legacy mem hub convenience wrapper.
+    ///
+    /// This keeps current call sites simple while routing the live mem node surface through the
+    /// stronger `StateBus` abstraction.
     pub fn with_mem_hub(mut self, hub: Arc<MemHub>) -> Self {
-        self.mem_hub = Some(hub);
+        self.state_bus = Some(Arc::new(MemStateBus::from_hub((*hub).clone())));
         self
     }
 
@@ -509,94 +519,94 @@ impl BasicPipelineEngine {
                 Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(config, platform.clone())?))
             }
             mem_set::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemSet(mem_set::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_SET_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_get::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemGet(mem_get::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_GET_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_del::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemDel(mem_del::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_DEL_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_incr::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemIncr(mem_incr::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_INCR_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_publish::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemPublish(mem_publish::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_PUBLISH_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_exists::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemExists(mem_exists::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_EXISTS_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             mem_expire::NODE_KIND => {
-                let Some(mem_hub) = &self.mem_hub else {
+                let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
-                        "mem hub is not configured on this pipeline engine",
+                        "state bus is not configured on this pipeline engine",
                     ));
                 };
                 Ok(NodeDispatch::MemExpire(mem_expire::Node::new(
                     serde_json::from_value(node.config.clone())
                         .map_err(|e| PipelineError::new("FW_NODE_MEM_EXPIRE_CONFIG", e.to_string()))?,
-                    mem_hub.clone(),
+                    state_bus.clone(),
                 )))
             }
             memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(

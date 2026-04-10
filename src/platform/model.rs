@@ -5,6 +5,12 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::infra::cluster::config::ClusterSettings;
+use crate::infra::cluster::registry::{WorkerHeartbeat, WorkerRegistryRecord};
+use crate::infra::execution::placement::ProjectRuntimeProfile;
+use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacement};
+use crate::infra::execution::sync::{ProjectBootstrapPlan, ProjectRuntimeBundle};
+
 /// Data adapter selection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -46,6 +52,9 @@ pub struct PlatformConfig {
     pub default_password: String,
     /// Default project slug created on first bootstrap.
     pub default_project: String,
+    /// Cluster role/bootstrap settings for this process.
+    #[serde(default)]
+    pub cluster: ClusterSettings,
 }
 
 impl Default for PlatformConfig {
@@ -57,6 +66,7 @@ impl Default for PlatformConfig {
             default_owner: "superadmin".to_string(),
             default_password: String::new(),
             default_project: "default".to_string(),
+            cluster: ClusterSettings::default(),
         }
     }
 }
@@ -78,6 +88,36 @@ pub struct PlatformUser {
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
+}
+
+/// User-owned profile settings that should follow the user across projects.
+///
+/// This is the long-term home for per-user Git identity and other personal
+/// defaults. Project-level settings may still override these values when
+/// needed, but the baseline resolution order for commit authorship should be:
+///
+/// 1. current user profile
+/// 2. project git settings in `zebflow.json`
+/// 3. generated fallback identity
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UserProfileSettings {
+    /// Display name for git commits (e.g. "Alice Smith").
+    #[serde(default)]
+    pub git_name: String,
+    /// Email for git commits (e.g. "alice@example.com").
+    #[serde(default)]
+    pub git_email: String,
+}
+
+/// Self-service update request for user-owned profile settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UpdateUserSettingsRequest {
+    /// Display name for git commits.
+    #[serde(default)]
+    pub git_name: String,
+    /// Email for git commits.
+    #[serde(default)]
+    pub git_email: String,
 }
 
 /// User record with auth secret, used internally by auth service.
@@ -246,6 +286,8 @@ pub struct ProjectAssistantConfig {
 #[serde(rename_all = "snake_case")]
 pub enum ProjectCapability {
     ProjectRead,
+    MembersRead,
+    MembersWrite,
     CredentialsRead,
     CredentialsWrite,
     TemplatesRead,
@@ -279,6 +321,8 @@ impl ProjectCapability {
     pub fn key(self) -> &'static str {
         match self {
             Self::ProjectRead => "project.read",
+            Self::MembersRead => "members.read",
+            Self::MembersWrite => "members.write",
             Self::CredentialsRead => "credentials.read",
             Self::CredentialsWrite => "credentials.write",
             Self::TemplatesRead => "templates.read",
@@ -312,6 +356,8 @@ impl ProjectCapability {
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
             "project.read" => Some(Self::ProjectRead),
+            "members.read" => Some(Self::MembersRead),
+            "members.write" => Some(Self::MembersWrite),
             "credentials.read" => Some(Self::CredentialsRead),
             "credentials.write" => Some(Self::CredentialsWrite),
             "templates.read" => Some(Self::TemplatesRead),
@@ -346,6 +392,8 @@ impl ProjectCapability {
     pub fn all() -> Vec<Self> {
         vec![
             Self::ProjectRead,
+            Self::MembersRead,
+            Self::MembersWrite,
             Self::CredentialsRead,
             Self::CredentialsWrite,
             Self::TemplatesRead,
@@ -462,6 +510,207 @@ impl ProjectAccessSubject {
             id: token.to_string(),
         }
     }
+}
+
+/// GitLab-style project access preset used for project membership UX.
+///
+/// The existing authorization core remains capability-based. This enum is the
+/// user-facing preset vocabulary that membership and invite flows should use,
+/// while the platform maps each preset into project policies underneath.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectAccessRolePreset {
+    Guest,
+    Reporter,
+    Developer,
+    Maintainer,
+    Owner,
+}
+
+impl ProjectAccessRolePreset {
+    /// Stable string id used in storage and API payloads.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Guest => "guest",
+            Self::Reporter => "reporter",
+            Self::Developer => "developer",
+            Self::Maintainer => "maintainer",
+            Self::Owner => "owner",
+        }
+    }
+
+    /// Human-readable title for UI.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Guest => "Guest",
+            Self::Reporter => "Reporter",
+            Self::Developer => "Developer",
+            Self::Maintainer => "Maintainer",
+            Self::Owner => "Owner",
+        }
+    }
+
+    /// Canonical managed policy id backing this preset.
+    pub fn policy_id(self) -> &'static str {
+        self.key()
+    }
+}
+
+impl Default for ProjectAccessRolePreset {
+    fn default() -> Self {
+        Self::Reporter
+    }
+}
+
+/// Project membership row.
+///
+/// Membership is the product-facing sharing model. It sits above the lower
+/// level policy/binding mechanism and gives the platform one stable place to
+/// store:
+///
+/// - who is a member of a project
+/// - which access preset they were given
+/// - any extra policy bindings beyond the base preset
+/// - the maximum MCP capability set the project owner is willing to grant them
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectMember {
+    /// Project owner.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// User id of the member.
+    pub user_id: String,
+    /// GitLab-style access preset.
+    #[serde(default)]
+    pub role_preset: ProjectAccessRolePreset,
+    /// Additional project policy ids attached to this member beyond the base preset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_policy_ids: Vec<String>,
+    /// Maximum MCP capabilities this member may grant into user-bound MCP sessions.
+    ///
+    /// Empty means "derive from the member's effective project capabilities".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_capability_ceiling: Vec<ProjectCapability>,
+    /// User id of the actor that created or last updated this membership.
+    #[serde(default)]
+    pub created_by: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Upsert payload for one project member.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UpsertProjectMemberRequest {
+    /// User id that should gain access to this project.
+    pub user_id: String,
+    /// GitLab-style access preset.
+    #[serde(default)]
+    pub role_preset: ProjectAccessRolePreset,
+    /// Additional project policy ids beyond the preset.
+    #[serde(default)]
+    pub custom_policy_ids: Vec<String>,
+    /// Optional MCP capability ceiling for this member.
+    #[serde(default)]
+    pub mcp_capability_ceiling: Vec<ProjectCapability>,
+}
+
+/// Invite lifecycle status for project sharing.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectInviteStatus {
+    Pending,
+    Accepted,
+    Revoked,
+    Expired,
+}
+
+impl Default for ProjectInviteStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+/// Pending or historical project invite row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectInvite {
+    /// Project owner.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Stable invite id.
+    pub invite_id: String,
+    /// Target user id for the invite.
+    ///
+    /// In `0.2.0` the baseline is platform-local user ids. Email/external
+    /// identity targets can be added later without breaking the invite shape.
+    pub target_user: String,
+    /// GitLab-style access preset that should be granted on acceptance.
+    #[serde(default)]
+    pub role_preset: ProjectAccessRolePreset,
+    /// Extra project policies that should also bind on acceptance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom_policy_ids: Vec<String>,
+    /// Optional MCP capability ceiling planned for the invited user.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_capability_ceiling: Vec<ProjectCapability>,
+    /// Optional operator note shown in invite UI.
+    #[serde(default)]
+    pub note: String,
+    /// User id of the inviter.
+    #[serde(default)]
+    pub invited_by: String,
+    /// Current invite status.
+    #[serde(default)]
+    pub status: ProjectInviteStatus,
+    /// Optional unix timestamp seconds when the invite expires.
+    pub expires_at: Option<i64>,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Create payload for one project invite.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct CreateProjectInviteRequest {
+    /// Target local user id.
+    pub target_user: String,
+    /// Requested role preset.
+    #[serde(default)]
+    pub role_preset: ProjectAccessRolePreset,
+    /// Optional extra policies to apply on acceptance.
+    #[serde(default)]
+    pub custom_policy_ids: Vec<String>,
+    /// Optional MCP capability ceiling that should be enforced after acceptance.
+    #[serde(default)]
+    pub mcp_capability_ceiling: Vec<ProjectCapability>,
+    /// Optional invite note.
+    #[serde(default)]
+    pub note: String,
+    /// Optional expiration timestamp.
+    pub expires_at: Option<i64>,
+}
+
+/// Source used to resolve the author identity for a git commit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitIdentitySource {
+    UserProfile,
+    ProjectSettings,
+    Fallback,
+}
+
+/// Final git author identity selected for a concrete action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedGitIdentity {
+    /// Author name used for git.
+    pub name: String,
+    /// Author email used for git.
+    pub email: String,
+    /// Which layer supplied the identity.
+    pub source: GitIdentitySource,
 }
 
 /// Pipeline metadata catalog entry stored in platform-level metadata DB.
@@ -1158,6 +1407,10 @@ pub struct ZebflowJson {
     #[serde(default)]
     pub project: ZebflowJsonProject,
     #[serde(default)]
+    pub runtime: ProjectRuntimeProfile,
+    #[serde(default)]
+    pub bootstrap: ProjectBootstrapPlan,
+    #[serde(default)]
     pub assistant: ZebflowJsonAssistant,
     #[serde(default)]
     pub ui: ZebflowJsonUi,
@@ -1387,6 +1640,17 @@ pub struct ZebflowJsonUi {
     pub theme: String,
 }
 
+/// Runtime placement options accepted when creating or cloning a project.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProjectRuntimeSelectionRequest {
+    /// Optional runtime mode override for the new project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<ProjectRuntimeMode>,
+    /// Optional worker id to pin the project to after creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_worker_id: Option<String>,
+}
+
 /// Request payload for project creation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProjectRequest {
@@ -1397,6 +1661,89 @@ pub struct CreateProjectRequest {
     /// Optional initial local branch name. Defaults to "main" when None or empty.
     #[serde(default)]
     pub local_branch: Option<String>,
+    /// Optional runtime placement options for the newly created project.
+    #[serde(flatten, default)]
+    pub runtime: ProjectRuntimeSelectionRequest,
+}
+
+/// Worker registration request accepted by the control plane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterWorkerRegisterRequest {
+    /// Stable worker/node identifier.
+    pub node_id: String,
+    /// Human-friendly label for the worker.
+    #[serde(default)]
+    pub label: String,
+    /// Base URL the master should use for future runtime/control calls.
+    pub base_url: String,
+    /// Declared runner capabilities.
+    #[serde(default)]
+    pub capabilities: crate::infra::execution::runner::RunnerCapabilities,
+}
+
+/// Worker heartbeat request accepted by the control plane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterWorkerHeartbeatRequest {
+    /// Stable worker/node identifier.
+    pub node_id: String,
+    /// Human-readable status summary.
+    #[serde(default)]
+    pub status: String,
+    /// Current base URL if it changed.
+    #[serde(default)]
+    pub base_url: String,
+    /// Capability refresh when needed.
+    #[serde(default)]
+    pub capabilities: crate::infra::execution::runner::RunnerCapabilities,
+}
+
+/// Minimal runtime target metadata surfaced to create/clone forms.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterRuntimeTargetOption {
+    /// Stable worker id or `local`.
+    pub value: String,
+    /// Human-readable label.
+    pub label: String,
+    /// Optional helper text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+/// Snapshot returned by cluster-oriented APIs and Infrastructure UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterRuntimeSnapshot {
+    /// Known workers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workers: Vec<WorkerRegistryRecord>,
+    /// Current placement for the requested project, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<ProjectRuntimePlacement>,
+}
+
+/// Control-plane response after receiving a worker heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterWorkerHeartbeatResponse {
+    /// Whether the heartbeat was accepted.
+    pub ok: bool,
+    /// Server-side normalized heartbeat view.
+    pub heartbeat: WorkerHeartbeat,
+}
+
+/// Cluster-internal payload used to materialize a project on a worker.
+///
+/// This is intentionally richer than the portable `ProjectRuntimeBundle`. The portable bundle is
+/// appropriate for migration planning and export/import. This payload is for trusted in-cluster
+/// sync where the worker must be able to execute the project immediately.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectRuntimeMaterializationRequest {
+    /// Portable repo-owned project bundle.
+    pub bundle: ProjectRuntimeBundle,
+    /// Project credentials needed by runtime nodes on the destination worker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<ProjectCredential>,
+    /// Project DB connections needed by runtime nodes on the destination worker.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub db_connections: Vec<ProjectDbConnection>,
 }
 
 /// Request payload for platform login page/form.

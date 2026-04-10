@@ -9,6 +9,9 @@ use crate::platform::model::{
     ProjectAccessSubject, ProjectCapability, ProjectPolicy, ProjectPolicyBinding,
     ProjectSubjectKind, now_ts, slug_segment,
 };
+use crate::platform::services::access::roles::{
+    managed_role_alias_policies, managed_role_policies,
+};
 
 /// Resolves project-scoped policies and capabilities.
 pub struct AuthorizationService {
@@ -142,96 +145,9 @@ impl AuthorizationService {
 }
 
 fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<ProjectPolicy> {
-    vec![
-        policy(
-            owner,
-            project,
-            "owner",
-            "Owner",
-            all_project_capabilities(),
-            now,
-        ),
-        policy(
-            owner,
-            project,
-            "viewer",
-            "Viewer",
-            vec![
-                ProjectCapability::ProjectRead,
-                ProjectCapability::CredentialsRead,
-                ProjectCapability::TemplatesRead,
-                ProjectCapability::PipelinesRead,
-                ProjectCapability::FilesRead,
-                ProjectCapability::TablesRead,
-                ProjectCapability::LibrariesRead,
-                ProjectCapability::SettingsRead,
-            ],
-            now,
-        ),
-        policy(
-            owner,
-            project,
-            "editor",
-            "Editor",
-            vec![
-                ProjectCapability::ProjectRead,
-                ProjectCapability::CredentialsRead,
-                ProjectCapability::CredentialsWrite,
-                ProjectCapability::TemplatesRead,
-                ProjectCapability::TemplatesWrite,
-                ProjectCapability::TemplatesCreate,
-                ProjectCapability::TemplatesDelete,
-                ProjectCapability::TemplatesMove,
-                ProjectCapability::TemplatesDiagnostics,
-                ProjectCapability::PipelinesRead,
-                ProjectCapability::PipelinesWrite,
-                ProjectCapability::PipelinesCreate,
-                ProjectCapability::PipelinesDelete,
-                ProjectCapability::PipelinesMove,
-                ProjectCapability::FilesRead,
-                ProjectCapability::FilesWrite,
-                ProjectCapability::TablesRead,
-                ProjectCapability::LibrariesRead,
-                ProjectCapability::SettingsRead,
-            ],
-            now,
-        ),
-        policy(
-            owner,
-            project,
-            "maintainer",
-            "Maintainer",
-            vec![
-                ProjectCapability::ProjectRead,
-                ProjectCapability::CredentialsRead,
-                ProjectCapability::CredentialsWrite,
-                ProjectCapability::TemplatesRead,
-                ProjectCapability::TemplatesWrite,
-                ProjectCapability::TemplatesCreate,
-                ProjectCapability::TemplatesDelete,
-                ProjectCapability::TemplatesMove,
-                ProjectCapability::TemplatesDiagnostics,
-                ProjectCapability::PipelinesRead,
-                ProjectCapability::PipelinesWrite,
-                ProjectCapability::PipelinesCreate,
-                ProjectCapability::PipelinesDelete,
-                ProjectCapability::PipelinesMove,
-                ProjectCapability::PipelinesExecute,
-                ProjectCapability::FilesRead,
-                ProjectCapability::FilesWrite,
-                ProjectCapability::FilesDelete,
-                ProjectCapability::TablesRead,
-                ProjectCapability::TablesWrite,
-                ProjectCapability::LibrariesRead,
-                ProjectCapability::LibrariesInstall,
-                ProjectCapability::LibrariesRemove,
-                ProjectCapability::SettingsRead,
-                ProjectCapability::SettingsWrite,
-                ProjectCapability::McpSessionCreate,
-                ProjectCapability::McpSessionRevoke,
-            ],
-            now,
-        ),
+    let mut out = managed_role_policies(owner, project, now);
+    out.extend(managed_role_alias_policies(owner, project, now));
+    out.extend([
         policy(
             owner,
             project,
@@ -279,7 +195,8 @@ fn managed_project_policies(owner: &str, project: &str, now: i64) -> Vec<Project
             ],
             now,
         ),
-    ]
+    ]);
+    out
 }
 
 fn policy(
@@ -303,33 +220,5 @@ fn policy(
 }
 
 fn all_project_capabilities() -> Vec<ProjectCapability> {
-    vec![
-        ProjectCapability::ProjectRead,
-        ProjectCapability::CredentialsRead,
-        ProjectCapability::CredentialsWrite,
-        ProjectCapability::TemplatesRead,
-        ProjectCapability::TemplatesWrite,
-        ProjectCapability::TemplatesCreate,
-        ProjectCapability::TemplatesDelete,
-        ProjectCapability::TemplatesMove,
-        ProjectCapability::TemplatesDiagnostics,
-        ProjectCapability::PipelinesRead,
-        ProjectCapability::PipelinesWrite,
-        ProjectCapability::PipelinesCreate,
-        ProjectCapability::PipelinesDelete,
-        ProjectCapability::PipelinesMove,
-        ProjectCapability::PipelinesExecute,
-        ProjectCapability::FilesRead,
-        ProjectCapability::FilesWrite,
-        ProjectCapability::FilesDelete,
-        ProjectCapability::TablesRead,
-        ProjectCapability::TablesWrite,
-        ProjectCapability::LibrariesRead,
-        ProjectCapability::LibrariesInstall,
-        ProjectCapability::LibrariesRemove,
-        ProjectCapability::SettingsRead,
-        ProjectCapability::SettingsWrite,
-        ProjectCapability::McpSessionCreate,
-        ProjectCapability::McpSessionRevoke,
-    ]
+    ProjectCapability::all()
 }

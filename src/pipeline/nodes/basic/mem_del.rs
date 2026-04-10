@@ -1,12 +1,10 @@
 //! `n.mem.del` — delete a key from the per-project in-memory KV store.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -61,12 +59,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -88,7 +86,10 @@ impl NodeHandler for Node {
             return Err(PipelineError::new("MEM_DEL_KEY", "n.mem.del: --key is required"));
         }
 
-        let existed = self.mem_hub.del(owner, project, key);
+        let existed = self
+            .state_bus
+            .del(owner, project, key)
+            .map_err(|err| PipelineError::new("MEM_DEL_STATE_BUS", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

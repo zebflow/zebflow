@@ -11,7 +11,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::engines::BasicPipelineEngine;
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::PipelineContext;
@@ -24,7 +24,7 @@ use crate::platform::services::project_config::ZebflowJsonService;
 /// Background task registry for mem-subscribe triggered pipelines.
 pub struct MemSubscriber {
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
     runtime: Arc<PipelineRuntimeService>,
     engine: Arc<BasicPipelineEngine>,
     hits: Arc<PipelineHitsService>,
@@ -34,7 +34,7 @@ pub struct MemSubscriber {
 
 impl MemSubscriber {
     pub fn new(
-        mem_hub: Arc<MemHub>,
+        state_bus: DynStateBus,
         runtime: Arc<PipelineRuntimeService>,
         engine: Arc<BasicPipelineEngine>,
         hits: Arc<PipelineHitsService>,
@@ -43,7 +43,7 @@ impl MemSubscriber {
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),
-            mem_hub,
+            state_bus,
             runtime,
             engine,
             hits,
@@ -115,7 +115,13 @@ impl MemSubscriber {
     ) {
         let task_key = format!("{}/{}/{}:{}", owner, project, file_rel_path, node_id);
 
-        let mut rx = self.mem_hub.subscribe(owner, project, channel);
+        let Ok(mut rx) = self.state_bus.subscribe(owner, project, channel) else {
+            eprintln!(
+                "MemSubscriber: failed subscribing to channel '{}' for {}/{}/{}",
+                channel, owner, project, file_rel_path
+            );
+            return;
+        };
 
         let runtime = self.runtime.clone();
         let engine = self.engine.clone();

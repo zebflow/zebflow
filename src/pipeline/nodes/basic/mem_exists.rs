@@ -18,13 +18,11 @@
 //! | n.logic.if --cond "input.cached" --then cached-branch --else fetch-branch
 //! ```
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -97,12 +95,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -124,7 +122,10 @@ impl NodeHandler for Node {
             return Err(PipelineError::new("MEM_EXISTS_KEY", "n.mem.exists: --key is required"));
         }
 
-        let exists = self.mem_hub.exists(owner, project, key);
+        let exists = self
+            .state_bus
+            .exists(owner, project, key)
+            .map_err(|err| PipelineError::new("MEM_EXISTS_STATE_BUS", err.to_string()))?;
 
         let out_key = if self.config.out_key.trim().is_empty() {
             "exists".to_string()

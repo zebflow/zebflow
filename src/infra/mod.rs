@@ -1,23 +1,47 @@
-//! Infrastructure layer — shared runtime services used by both pipeline nodes and platform.
+//! Infrastructure layer — shared runtime services and distributed-system seams.
 //!
-//! # Categories
+//! This module is where Zebflow's reusable runtime plumbing lives. The rule is:
+//! business features belong in `pipeline/`, `rwe/`, `language/`, or `platform/`;
+//! reusable mechanics belong in `infra/`.
+//!
+//! # High-level map
 //!
 //! | Module | Responsibility |
 //! |---|---|
-//! | [`transport`] | Real-time connection management (WebSocket rooms, future: MQTT, SSE) |
-//! | [`storage`] | Persistent data adapters (PostgreSQL, SQLite) — stubs, WIP |
-//! | [`scheduler`] | Background job scheduling (cron) — stubs, WIP |
+//! | [`io`] | Swappable stores, buses, and cache contracts |
+//! | [`execution`] | Whole-pipeline execution backends, placement, and runner metadata |
+//! | [`cluster`] | Future master/worker topology, secure control transport, and K8s hooks |
+//! | [`mem`] | Current in-process KV/pubsub implementation used as the first `StateBus` backend |
+//! | [`transport`] | Real-time transport primitives, currently WebSocket rooms |
+//! | [`scheduler`] | Background cron scheduling for active pipelines |
+//! | [`storage`] | Older storage placeholder area; retained until the new `io/` split fully absorbs it |
 //!
-//! # Infra vs. Pipeline nodes
+//! # Design principles
 //!
-//! A node file that only wraps an external API (S3, GCP, Apify) lives directly in
-//! `pipeline/nodes/`. Something belongs in `infra/` when it either:
+//! 1. **Standalone remains first-class**
+//!    The same binary must still run as a tiny local install or on a Raspberry Pi.
+//! 2. **Topology is separate from business logic**
+//!    `cluster/` decides where work runs, not what a pipeline does.
+//! 3. **Execution is separate from integration**
+//!    Talking to Spark/HDFS/Kafka is a node concern. Routing an entire pipeline run to
+//!    a resident worker, Kubernetes job, or future Spark submit backend is an execution concern.
+//! 4. **Swappable backends live behind explicit interfaces**
+//!    The goal is to make `mem` → Redis, local FS → object storage, and local execution →
+//!    remote execution a wiring change rather than a product rewrite.
 //!
-//! 1. Needs to change platform structure (e.g. WS requires Axum routes, shared hub state).
-//! 2. Is used at BOTH the pipeline node level AND the platform service level
-//!    (e.g. a DB adapter used by `n.pg.query` nodes AND by `platform/services/`).
+//! # What belongs in `infra/`
+//!
+//! A thing belongs in `infra/` when it:
+//!
+//! - changes the runtime shape of the whole application
+//! - is shared by both pipeline execution and platform services
+//! - exists to route, store, transport, cache, or coordinate work
+//! - needs to remain replaceable independently of product features
 
+pub mod cluster;
+pub mod execution;
+pub mod io;
 pub mod mem;
-pub mod transport;
-pub mod storage;
 pub mod scheduler;
+pub mod storage;
+pub mod transport;

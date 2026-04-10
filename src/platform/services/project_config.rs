@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 use crate::platform::error::PlatformError;
+use crate::infra::execution::placement::ProjectRuntimeProfile;
+use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::model::{
     ZebflowJson, ZebflowJsonAssistant, ZebflowJsonProject, ZebflowJsonRweLibraries,
     ZebflowJsonRweLibraryEntry, slug_segment,
@@ -94,6 +96,42 @@ impl ZebflowJsonService {
     /// Returns the assistant section of zebflow.json.
     pub fn get_assistant(&self, owner: &str, project: &str) -> ZebflowJsonAssistant {
         self.read_or_default(owner, project).assistant
+    }
+
+    /// Returns the portable runtime profile section of `zebflow.json`.
+    pub fn get_runtime_profile(&self, owner: &str, project: &str) -> ProjectRuntimeProfile {
+        self.read_or_default(owner, project).runtime
+    }
+
+    /// Sets the portable runtime profile section of `zebflow.json`, preserving other fields.
+    pub fn set_runtime_profile(
+        &self,
+        owner: &str,
+        project: &str,
+        runtime: ProjectRuntimeProfile,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            cfg.runtime = runtime;
+        })?;
+        Ok(())
+    }
+
+    /// Returns the bootstrap/activation plan section of `zebflow.json`.
+    pub fn get_bootstrap(&self, owner: &str, project: &str) -> ProjectBootstrapPlan {
+        self.read_or_default(owner, project).bootstrap
+    }
+
+    /// Sets the bootstrap/activation plan section of `zebflow.json`, preserving other fields.
+    pub fn set_bootstrap(
+        &self,
+        owner: &str,
+        project: &str,
+        bootstrap: ProjectBootstrapPlan,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            cfg.bootstrap = bootstrap;
+        })?;
+        Ok(())
     }
 
     /// Sets the assistant section of zebflow.json, preserving other fields.

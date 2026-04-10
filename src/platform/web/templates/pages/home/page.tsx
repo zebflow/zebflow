@@ -35,20 +35,29 @@ export const page = {
 
 export default function Page(input) {
   const projects = Array.isArray(input?.projects) ? input.projects : [];
+  const runtimeTargets = Array.isArray(input?.runtime_targets)
+    ? input.runtime_targets
+    : [{ value: "local", label: "Local office", description: "" }];
 
   const [createOpen, setCreateOpen] = useState(false);
   const [cloneOpen, setCloneOpen] = useState(false);
   const [provider, setProvider] = useState("gitlab");
   const [projectSlug, setProjectSlug] = useState("");
   const [createBranch, setCreateBranch] = useState("main");
+  const [createRuntimeMode, setCreateRuntimeMode] = useState("shared");
+  const [createPlacementWorker, setCreatePlacementWorker] = useState("local");
   const [remoteBranch, setRemoteBranch] = useState("main");
   const [localBranch, setLocalBranch] = useState("main");
+  const [cloneRuntimeMode, setCloneRuntimeMode] = useState("shared");
+  const [clonePlacementWorker, setClonePlacementWorker] = useState("local");
 
   const openCloneDialog = () => {
     setProvider("gitlab");
     setProjectSlug("");
     setRemoteBranch("main");
     setLocalBranch("main");
+    setCloneRuntimeMode("shared");
+    setClonePlacementWorker("local");
     setCloneOpen(true);
   };
 
@@ -83,7 +92,9 @@ export default function Page(input) {
               <h1 className="text-3xl font-black tracking-tighter text-slate-900">
                 Projects for {input.owner}
               </h1>
-              <p className="mt-2 text-sm text-slate-500">Create and manage your automation projects.</p>
+              <p className="mt-2 text-sm text-slate-500">
+                Create and manage automation projects inside this office.
+              </p>
               {input?.app_version ? (
                 <p className="mt-1 text-[0.7rem] text-slate-400 tracking-wide">v{input.app_version}</p>
               ) : null}
@@ -110,13 +121,27 @@ export default function Page(input) {
                 href={item?.path ?? "#"}
                 className="block hover:no-underline"
               >
-                <Card className="cursor-pointer transition-all hover:border-slate-300 hover:shadow-md">
-                  <CardContent className="py-5">
-                    <CardTitle className="text-lg">{item?.title}</CardTitle>
-                    <CardDescription className="mt-1">{item?.project}</CardDescription>
-                  </CardContent>
-                </Card>
-              </Link>
+                    <Card className="cursor-pointer transition-all hover:border-slate-300 hover:shadow-md">
+                      <CardContent className="py-5">
+                        <CardTitle className="text-lg">{item?.title}</CardTitle>
+                        <CardDescription className="mt-1">{item?.project}</CardDescription>
+                        <div className="mt-4 space-y-1 text-xs text-slate-500">
+                          <p>
+                            <span className="font-medium text-slate-700">Runtime:</span>{" "}
+                            {item?.runtime_mode || "shared"} · {item?.runtime_summary || "Local office"}
+                          </p>
+                          <p>
+                            <span className="font-medium text-slate-700">Office:</span>{" "}
+                            {item?.office_label || "Local office"}
+                          </p>
+                          <p className="truncate">
+                            <span className="font-medium text-slate-700">Address:</span>{" "}
+                            {item?.office_url || "Uses the current office address"}
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </Link>
             ))}
           </section>
         </section>
@@ -153,6 +178,38 @@ export default function Page(input) {
                     value={createBranch}
                     onInput={(e) => setCreateBranch(e.target.value)}
                   />
+                </Field>
+                <Field label="Runtime mode" id="home-create-runtime-mode">
+                  <select
+                    id="home-create-runtime-mode"
+                    name="runtime_mode"
+                    value={createRuntimeMode}
+                    onChange={(e) => setCreateRuntimeMode(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                  >
+                    <option value="shared">Shared</option>
+                    <option value="pinned">Pinned</option>
+                    <option value="dedicated">Dedicated</option>
+                  </select>
+                </Field>
+                <Field
+                  label="Office target"
+                  id="home-create-placement-worker"
+                  description="Local keeps the project inside this office. Pick another office to place the runtime remotely."
+                >
+                  <select
+                    id="home-create-placement-worker"
+                    name="placement_worker_id"
+                    value={createPlacementWorker}
+                    onChange={(e) => setCreatePlacementWorker(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                  >
+                    {runtimeTargets.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
               </div>
             </div>
@@ -264,6 +321,40 @@ export default function Page(input) {
                     value={localBranch}
                     onInput={(e) => setLocalBranch(e.target.value)}
                   />
+                </Field>
+
+                <Field label="Runtime mode" id="home-clone-runtime-mode">
+                  <select
+                    id="home-clone-runtime-mode"
+                    name="runtime_mode"
+                    value={cloneRuntimeMode}
+                    onChange={(e) => setCloneRuntimeMode(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                  >
+                    <option value="shared">Shared</option>
+                    <option value="pinned">Pinned</option>
+                    <option value="dedicated">Dedicated</option>
+                  </select>
+                </Field>
+
+                <Field
+                  label="Office target"
+                  id="home-clone-placement-worker"
+                  description="Choose which office should host the cloned project's resident runtime."
+                >
+                  <select
+                    id="home-clone-placement-worker"
+                    name="placement_worker_id"
+                    value={clonePlacementWorker}
+                    onChange={(e) => setClonePlacementWorker(e.target.value)}
+                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                  >
+                    {runtimeTargets.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
                 </Field>
 
                 <Field label="Username" id="home-clone-username">

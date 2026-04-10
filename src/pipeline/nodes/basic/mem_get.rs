@@ -18,13 +18,11 @@
 //! | n.script -- "return { name: input.profile?.name ?? 'Guest' };"
 //! ```
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::infra::mem::MemHub;
+use crate::infra::io::state::DynStateBus;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -99,12 +97,12 @@ pub struct Config {
 
 pub struct Node {
     config: Config,
-    mem_hub: Arc<MemHub>,
+    state_bus: DynStateBus,
 }
 
 impl Node {
-    pub fn new(config: Config, mem_hub: Arc<MemHub>) -> Self {
-        Self { config, mem_hub }
+    pub fn new(config: Config, state_bus: DynStateBus) -> Self {
+        Self { config, state_bus }
     }
 }
 
@@ -127,8 +125,9 @@ impl NodeHandler for Node {
         }
 
         let value = self
-            .mem_hub
+            .state_bus
             .get(owner, project, key)
+            .map_err(|err| PipelineError::new("MEM_GET_STATE_BUS", err.to_string()))?
             .or_else(|| self.config.default.clone())
             .unwrap_or(Value::Null);
 

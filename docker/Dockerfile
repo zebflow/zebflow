@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# zebflow platform
+# zebflow
 # Build:  docker build -f docker/Dockerfile -t zebflow:local .
 # Run:    docker run --rm -p 10610:10610 -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=... zebflow:local
 # Data:   -v zebflow-data:/var/lib/zebflow/data
@@ -39,7 +39,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 ARG BUILD_VERSION
-RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow_platform
+RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow
 
 # ── Stage 4: runtime image ────────────────────────────────────────────────
 FROM dhi.io/debian-base:trixie-debian13-dev
@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && mkdir -p /var/lib/zebflow/data \
     && chown -R nonroot:nonroot /var/lib/zebflow
 
-COPY --from=builder --chmod=755 /app/target/release/zebflow_platform /usr/local/bin/zebflow_platform
+COPY --from=builder --chmod=755 /app/target/release/zebflow /usr/local/bin/zebflow
 
 USER nonroot
 WORKDIR /home/nonroot
@@ -63,4 +63,4 @@ ENV ZEBFLOW_PLATFORM_DATA_DIR=/var/lib/zebflow/data \
 
 EXPOSE 10610
 
-ENTRYPOINT ["/usr/local/bin/zebflow_platform"]
+ENTRYPOINT ["/usr/local/bin/zebflow"]

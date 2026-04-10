@@ -33,17 +33,18 @@ use crate::infra::scheduler::PipelineScheduler;
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::platform::error::PlatformError;
+use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::platform::model::{
-    CreateProjectRequest, CreateUserRequest,
-    DeletePipelineRequest, DescribeProjectDbConnectionRequest, ExecutePipelineRequest,
-    GitCommitRequest, LoginRequest, McpSessionCreateRequest, McpSessionToggleRequest,
-    PipelineExecuteTrigger, PipelineInvocationEntry,
+    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateProjectRequest,
+    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
+    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
+    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
     PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    QueryProjectDbConnectionRequest, TemplateCompileRequest,
-    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
-    TemplateSaveRequest, TestProjectDbConnectionRequest, UpsertPipelineDefinitionRequest,
-    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    ProjectRuntimeMaterializationRequest, QueryProjectDbConnectionRequest,
+    TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic,
+    TemplateMoveRequest, TemplateSaveRequest, TestProjectDbConnectionRequest,
+    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
+    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
     UpdateSettingsSectionRequest,
 };
 use crate::platform::services::PlatformService;
@@ -58,6 +59,8 @@ use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
 const LOGIN_PATH: &str = "/login";
 /// Platform home path — redirect target after successful login.
 const HOME_PATH: &str = "/home";
+/// Shared internal auth header for the first controller/office control-plane slice.
+const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
@@ -94,6 +97,7 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ("platform-project-section",                "platform.project.section",                "pages/project-studio/files/page.tsx"),
     ("platform-project-dashboard",              "platform.project.dashboard",              "pages/project-studio/dashboard/page.tsx"),
     ("platform-project-settings",               "platform.project.settings",               "pages/project-studio/settings/page.tsx"),
+    ("platform-project-infrastructure",         "platform.project.infrastructure",         "pages/project-studio/infrastructure/page.tsx"),
     ("platform-project-credentials",            "platform.project.credentials",            "pages/project-studio/credentials/page.tsx"),
     ("platform-project-tables",                 "platform.project.tables",                 "pages/project-studio/connections/page.tsx"),
     ("platform-project-table-connection",       "platform.project.table_connection",       "pages/project-studio/connections/db/connection/page.tsx"),
@@ -121,6 +125,8 @@ struct PlatformFrontend {
 pub struct PlatformAppState {
     /// Platform service graph.
     pub platform: Arc<PlatformService>,
+    /// Shared outbound HTTP client for cluster/runtime proxy flows.
+    http_client: reqwest::Client,
     frontend: PlatformFrontend,
     render_script_cache: Option<Arc<RenderScriptCache>>,
     /// Shared template compile cache — keyed by markup content hash, reused across requests.
@@ -158,7 +164,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .with_platform(platform.clone())
         .with_ws_hub(platform.ws_hub.clone())
-        .with_mem_hub(platform.mem_hub.clone())
+        .with_state_bus(platform.state_bus.clone())
         .with_data_root(platform.config.data_root.clone()),
     );
 
@@ -177,7 +183,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     println!("✅ Pipeline scheduler started");
 
     let mem_subscriber = Arc::new(MemSubscriber::new(
-        platform.mem_hub.clone(),
+        platform.state_bus.clone(),
         platform.pipeline_runtime.clone(),
         sched_engine,
         platform.pipeline_hits.clone(),
@@ -272,6 +278,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(project_settings_tab_page),
         )
         .route(
+            "/projects/{owner}/{project}/infrastructure",
+            get(project_infrastructure_page),
+        )
+        .route(
             "/projects/{owner}/{project}/editor",
             get(project_editor_page),
         )
@@ -285,6 +295,31 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_node_definitions),
         )
         .route("/api/users", get(api_list_users).post(api_create_user))
+        .route("/api/cluster/workers", get(api_cluster_workers))
+        .route(
+            "/api/internal/cluster/workers/register",
+            post(api_internal_cluster_register_worker),
+        )
+        .route(
+            "/api/internal/cluster/workers/heartbeat",
+            post(api_internal_cluster_worker_heartbeat),
+        )
+        .route(
+            "/api/internal/runtime/materialize",
+            post(api_internal_runtime_materialize_project),
+        )
+        .route(
+            "/api/internal/runtime/execute/{owner}/{project}",
+            post(api_internal_runtime_execute_pipeline),
+        )
+        .route(
+            "/api/internal/runtime/webhook/{owner}/{project}",
+            any(api_internal_runtime_webhook_root),
+        )
+        .route(
+            "/api/internal/runtime/webhook/{owner}/{project}/{*tail}",
+            any(api_internal_runtime_webhook),
+        )
         .route(
             "/api/users/{owner}/projects",
             get(api_list_projects).post(api_create_project),
@@ -552,17 +587,34 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/preview/status",
             get(api_preview_status),
         )
+        .route(
+            "/api/projects/{owner}/{project}/runtime",
+            get(api_project_runtime_status),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/runtime/sync",
+            post(api_project_runtime_sync),
+        )
         .route("/preview/{owner}/{project}", get(preview_page))
         .route("/ws/preview/{owner}/{project}", get(ws_preview_handler))
-        .with_state(PlatformAppState {
+        ;
+
+    let app_state = PlatformAppState {
             platform,
+            http_client: reqwest::Client::new(),
             frontend,
             render_script_cache,
             template_cache,
             scheduler,
             mem_subscriber,
             preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        });
+        };
+
+    if app_state.platform.cluster_bootstrap.is_worker() {
+        tokio::spawn(cluster_worker_registration_loop(app_state.clone()));
+    }
+
+    let router = router.with_state(app_state);
 
     // Debug-only: SSE reload endpoint added after with_state because it needs no app state.
     #[cfg(debug_assertions)]
@@ -1670,6 +1722,17 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
 
     match state.platform.projects.list_projects(&owner) {
         Ok(items) => {
+            let runtime_targets = state
+                .platform
+                .cluster_registry
+                .runtime_target_options()
+                .unwrap_or_else(|_| {
+                    vec![crate::platform::model::ClusterRuntimeTargetOption {
+                        value: "local".to_string(),
+                        label: "Local office".to_string(),
+                        description: "Run inside the current self-controlled office.".to_string(),
+                    }]
+                });
             let projects = items
                 .into_iter()
                 .map(|item| {
@@ -1678,11 +1741,61 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     } else {
                         item.owner.clone()
                     };
+                    let placement = state
+                        .platform
+                        .cluster_placement
+                        .get(&item_owner, &item.project)
+                        .ok()
+                        .flatten();
+                    let runtime_mode = placement
+                        .as_ref()
+                        .map(|value| value.mode.to_string())
+                        .unwrap_or_else(|| {
+                            state
+                                .platform
+                                .zebflow_cfg
+                                .get_runtime_profile(&item_owner, &item.project)
+                                .mode
+                                .to_string()
+                        });
+                    let runtime_summary =
+                        state.platform.cluster_placement.describe(placement.as_ref());
+                    let (office_label, office_url) = match placement.as_ref() {
+                        Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => {
+                            if let Some(worker_id) = value.worker_id.as_deref() {
+                                match state.platform.cluster_registry.get_worker(worker_id) {
+                                    Ok(Some(worker)) => (
+                                        worker.label,
+                                        if worker.base_url.trim().is_empty() {
+                                            None
+                                        } else {
+                                            Some(worker.base_url)
+                                        },
+                                    ),
+                                    _ => (worker_id.to_string(), None),
+                                }
+                            } else {
+                                ("Remote office".to_string(), None)
+                            }
+                        }
+                        _ => (
+                            state.platform.cluster_bootstrap.node_label(),
+                            state
+                                .platform
+                                .cluster_bootstrap
+                                .advertise_url()
+                                .map(str::to_string),
+                        ),
+                    };
                     json!({
                         "owner": item_owner,
                         "project": item.project,
                         "title": item.title,
                         "path": format!("/projects/{}/{}", item_owner, item.project),
+                        "runtime_mode": runtime_mode,
+                        "runtime_summary": runtime_summary,
+                        "office_label": office_label,
+                        "office_url": office_url,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1697,6 +1810,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     },
                     "owner": owner,
                     "projects": projects,
+                    "runtime_targets": runtime_targets,
                     "app_version": APP_VERSION,
                 }),
             ) {
@@ -1768,7 +1882,10 @@ async fn home_create_project_submit(
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok(_) => Redirect::to(HOME_PATH).into_response(),
+        Ok((project, _layout)) => match finalize_project_runtime_setup(&state, &owner, &project.project, &req.runtime).await {
+            Ok(_) => Redirect::to(HOME_PATH).into_response(),
+            Err(err) => internal_error(err),
+        },
         Err(err) => internal_error(err),
     }
 }
@@ -1797,6 +1914,12 @@ struct CloneProjectFormRequest {
     /// Local branch name after clone. Empty means same as remote_branch.
     #[serde(default)]
     local_branch: String,
+    /// Optional runtime mode for the cloned project.
+    #[serde(default)]
+    runtime_mode: Option<ProjectRuntimeMode>,
+    /// Optional office id to pin the cloned project to after creation.
+    #[serde(default)]
+    placement_worker_id: Option<String>,
 }
 
 async fn home_clone_project_submit(
@@ -1884,15 +2007,34 @@ async fn home_clone_project_submit(
         project: project.clone(),
         title: Some(title.clone()),
         local_branch: None, // branch already set by git clone + rename above
+        runtime: crate::platform::model::ProjectRuntimeSelectionRequest {
+            runtime_mode: req.runtime_mode,
+            placement_worker_id: req.placement_worker_id.clone(),
+        },
     };
     if let Err(e) = state.platform.projects.create_or_update_project(&owner, &create_req) {
         return internal_error(e);
     }
 
-    // Save git credential + identity + remote config in zebflow.json
+    // Save git credential + identity + remote config in zebflow.json.
+    // Blank form values inherit from the acting user's profile before falling
+    // back to generated defaults.
     let cred_id = format!("{}-origin", req.provider);
-    let git_name = req.git_name.trim().to_string();
-    let git_email = req.git_email.trim().to_string();
+    let resolved_git = state.platform.git_identity.resolve_for_actor(
+        Some(&owner),
+        &crate::platform::model::ZebflowJsonGit::default(),
+        &project,
+    );
+    let git_name = if req.git_name.trim().is_empty() {
+        resolved_git.name.clone()
+    } else {
+        req.git_name.trim().to_string()
+    };
+    let git_email = if req.git_email.trim().is_empty() {
+        resolved_git.email.clone()
+    } else {
+        req.git_email.trim().to_string()
+    };
     let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         if !git_name.is_empty() { cfg.git.author_name = git_name.clone(); }
         if !git_email.is_empty() { cfg.git.author_email = git_email.clone(); }
@@ -1906,8 +2048,8 @@ async fn home_clone_project_submit(
     let secret = serde_json::json!({
         "username": req.username,
         "token": req.token,
-        "git_name": req.git_name,
-        "git_email": req.git_email,
+        "git_name": git_name.clone(),
+        "git_email": git_email.clone(),
         "repo_url": req.repo_url,
         "instance_url": req.instance_url,
     });
@@ -1966,6 +2108,10 @@ async fn home_clone_project_submit(
         }
     }
 
+    if let Err(err) = finalize_project_runtime_setup(&state, &owner, &project, &create_req.runtime).await {
+        return internal_error(err);
+    }
+
     Redirect::to(HOME_PATH).into_response()
 }
 
@@ -2018,6 +2164,342 @@ fn percent_encode_userinfo(s: &str) -> String {
 fn scrub_token_from_str(s: &str, token: &str) -> String {
     if token.is_empty() { return s.to_string(); }
     s.replace(token, "***")
+}
+
+fn cluster_internal_token_value(state: &PlatformAppState) -> Result<&str, PlatformError> {
+    state
+        .platform
+        .cluster_bootstrap
+        .join_token()
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_TOKEN_MISSING",
+                "cluster join token is not configured for this process",
+            )
+        })
+}
+
+fn has_valid_cluster_token(state: &PlatformAppState, headers: &HeaderMap) -> bool {
+    let Some(expected) = state.platform.cluster_bootstrap.join_token() else {
+        return false;
+    };
+    headers
+        .get(INTERNAL_CLUSTER_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
+fn require_cluster_internal_token(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+) -> Result<(), Response> {
+    if has_valid_cluster_token(state, headers) {
+        return Ok(());
+    }
+    Err((
+        StatusCode::UNAUTHORIZED,
+        Json(json!({
+            "ok": false,
+            "error": {
+                "code": "CLUSTER_TOKEN_INVALID",
+                "message": "cluster internal token missing or invalid"
+            }
+        })),
+    )
+        .into_response())
+}
+
+async fn finalize_project_runtime_setup(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    selection: &crate::platform::model::ProjectRuntimeSelectionRequest,
+) -> Result<crate::infra::execution::placement::ProjectRuntimePlacement, PlatformError> {
+    if let Some(mode) = selection.runtime_mode {
+        state.platform.zebflow_cfg.update(owner, project, |cfg| {
+            cfg.runtime.mode = mode;
+        })?;
+    }
+    state
+        .platform
+        .cluster_runtime_sync
+        .refresh_local_repo_state(owner, project)?;
+    let runtime_profile = state.platform.zebflow_cfg.get_runtime_profile(owner, project);
+    let placement = state
+        .platform
+        .cluster_placement
+        .assign_for_project(owner, project, &runtime_profile, selection)?;
+    if placement.target == ProjectRuntimePlacementTarget::Worker {
+        sync_project_to_remote_worker(state, owner, project, &placement).await?;
+    }
+    Ok(placement)
+}
+
+async fn sync_project_to_remote_worker(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    placement: &crate::infra::execution::placement::ProjectRuntimePlacement,
+) -> Result<(), PlatformError> {
+    state
+        .platform
+        .cluster_runtime_sync
+        .refresh_local_repo_state(owner, project)?;
+    let worker_id = placement
+        .worker_id
+        .as_deref()
+        .ok_or_else(|| PlatformError::new("CLUSTER_WORKER_UNKNOWN", "placement does not include an office id"))?;
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' is not registered", worker_id),
+            )
+        })?;
+    if worker.base_url.trim().is_empty() {
+        return Err(PlatformError::new(
+            "CLUSTER_WORKER_UNREACHABLE",
+            format!("office '{}' has no advertised base URL", worker_id),
+        ));
+    }
+    let token = cluster_internal_token_value(state)?;
+    let request = state.platform.cluster_runtime_sync.build_materialization_request(
+        owner,
+        project,
+        state.platform.data.list_project_credentials(owner, project)?,
+        state.platform.data.list_project_db_connections(owner, project)?,
+    )?;
+    let url = format!(
+        "{}/api/internal/runtime/materialize",
+        worker.base_url.trim_end_matches('/')
+    );
+    let response = state
+        .http_client
+        .post(url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            PlatformError::new(
+                "CLUSTER_WORKER_SYNC",
+                format!("failed syncing project to office '{}': {err}", worker_id),
+            )
+        })?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "office returned an unreadable error response".to_string());
+    Err(PlatformError::new(
+        "CLUSTER_WORKER_SYNC",
+        format!("office '{}' rejected runtime sync with {}: {}", worker_id, status, body),
+    ))
+}
+
+fn cluster_runtime_summary(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Value, PlatformError> {
+    let placement = state.platform.cluster_placement.get(owner, project)?;
+    let workers = state.platform.cluster_registry.snapshot()?.workers;
+    Ok(json!({
+        "placement": placement,
+        "workers": workers,
+        "summary": state.platform.cluster_placement.describe(placement.as_ref()),
+    }))
+}
+
+async fn reqwest_response_to_axum(response: reqwest::Response) -> Response {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.bytes().await.unwrap_or_default();
+    let mut axum_response = Response::new(Body::from(body));
+    *axum_response.status_mut() =
+        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("transfer-encoding")
+            || name.as_str().eq_ignore_ascii_case("content-length")
+            || name.as_str().eq_ignore_ascii_case("connection")
+        {
+            continue;
+        }
+        axum_response.headers_mut().insert(name.clone(), value.clone());
+    }
+    axum_response
+}
+
+async fn forward_runtime_execute_to_worker(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    req: &ExecutePipelineRequest,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let url = format!(
+        "{}/api/internal/runtime/execute/{}/{}",
+        worker.base_url.trim_end_matches('/'),
+        owner,
+        project
+    );
+    let response = state
+        .http_client
+        .post(url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .json(req)
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    Ok(reqwest_response_to_axum(response).await)
+}
+
+async fn forward_runtime_webhook_to_worker(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    tail: &str,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: &Bytes,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let mut url = format!(
+        "{}/api/internal/runtime/webhook/{}/{}",
+        worker.base_url.trim_end_matches('/'),
+        owner,
+        project
+    );
+    let tail = tail.trim_matches('/');
+    if !tail.is_empty() {
+        url.push('/');
+        url.push_str(tail);
+    }
+    if let Some(query) = uri.query() {
+        url.push('?');
+        url.push_str(query);
+    }
+    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
+        PlatformError::new(
+            "CLUSTER_WORKER_PROXY",
+            format!("unsupported HTTP method '{}': {err}", method.as_str()),
+        )
+    })?;
+    let mut request = state
+        .http_client
+        .request(reqwest_method, url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("host")
+            || name.as_str().eq_ignore_ascii_case("content-length")
+            || name.as_str().eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
+        {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+    let response = request
+        .body(body.clone())
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    Ok(reqwest_response_to_axum(response).await)
+}
+
+async fn cluster_worker_registration_loop(state: PlatformAppState) {
+    let Some(master_url) = state.platform.cluster_bootstrap.master_url().map(str::to_string) else {
+        eprintln!("Zebflow office: controller_url missing; office registration loop disabled");
+        return;
+    };
+    let Ok(token) = cluster_internal_token_value(&state).map(str::to_string) else {
+        eprintln!("Zebflow office: cluster token missing; office registration loop disabled");
+        return;
+    };
+    let node_id = state.platform.cluster_bootstrap.node_id();
+    let label = state.platform.cluster_bootstrap.node_label();
+    let Some(base_url) = state.platform.cluster_bootstrap.advertise_url().map(str::to_string) else {
+        eprintln!("Zebflow office: advertise_url missing; office registration loop disabled");
+        return;
+    };
+    let register_url = format!(
+        "{}/api/internal/cluster/workers/register",
+        master_url.trim_end_matches('/')
+    );
+    let heartbeat_url = format!(
+        "{}/api/internal/cluster/workers/heartbeat",
+        master_url.trim_end_matches('/')
+    );
+    let capabilities = crate::infra::execution::runner::RunnerCapabilities {
+        supports_resident: true,
+        ..Default::default()
+    };
+    loop {
+        let register_request = ClusterWorkerRegisterRequest {
+            node_id: node_id.clone(),
+            label: label.clone(),
+            base_url: base_url.clone(),
+            capabilities: capabilities.clone(),
+        };
+        if let Err(err) = state
+            .http_client
+            .post(&register_url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, &token)
+            .json(&register_request)
+            .send()
+            .await
+        {
+            eprintln!("Zebflow office register failed: {err}");
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        let heartbeat_request = ClusterWorkerHeartbeatRequest {
+            node_id: node_id.clone(),
+            status: "online".to_string(),
+            base_url: base_url.clone(),
+            capabilities: capabilities.clone(),
+        };
+        if let Err(err) = state
+            .http_client
+            .post(&heartbeat_url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, &token)
+            .json(&heartbeat_request)
+            .send()
+            .await
+        {
+            eprintln!("Zebflow office heartbeat failed: {err}");
+        }
+        tokio::time::sleep(Duration::from_secs(15)).await;
+    }
 }
 
 async fn project_root_page(
@@ -3600,6 +4082,55 @@ async fn project_settings_tab_page(
     Path((owner, project, tab)): Path<(String, String, String)>,
 ) -> Response {
     render_settings_tab_page(state, headers, owner, project, tab).await
+}
+
+async fn project_infrastructure_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let nav = nav_classes(&owner, &project, "settings", None);
+            let runtime = match cluster_runtime_summary(&state, &owner, &project) {
+                Ok(runtime) => runtime,
+                Err(err) => return internal_error(err),
+            };
+            match render_page(
+                &state,
+                "platform-project-infrastructure",
+                &format!("/projects/{owner}/{project}/infrastructure"),
+                json!({
+                    "seo": {
+                        "title": format!("{} - Infrastructure", info.title),
+                        "description": "Cluster runtime control"
+                    },
+                    "project": {
+                        "owner": owner,
+                        "project": project,
+                        "title": info.title,
+                    },
+                    "nav": nav,
+                    "runtime": runtime,
+                }),
+            ) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => Redirect::to(HOME_PATH).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn render_settings_tab_page(
@@ -5543,16 +6074,205 @@ async fn api_create_project(
     Path(owner): Path<String>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Response {
+    let runtime = req.runtime.clone();
     match state
         .platform
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok((project, layout)) => {
-            Json(json!({"ok": true, "project": project, "layout": layout})).into_response()
-        }
+        Ok((project, layout)) => match finalize_project_runtime_setup(&state, &owner, &project.project, &runtime).await {
+            Ok(placement) => Json(json!({"ok": true, "project": project, "layout": layout, "placement": placement})).into_response(),
+            Err(err) => internal_error(err),
+        },
         Err(err) => internal_error(err),
     }
+}
+
+async fn api_cluster_workers(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_registry.snapshot() {
+        Ok(snapshot) => Json(json!({ "ok": true, "workers": snapshot.workers })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_project_runtime_status(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    let placement = match state.platform.cluster_placement.get(&owner, &project) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    let workers = match state.platform.cluster_registry.snapshot() {
+        Ok(snapshot) => snapshot.workers,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({
+        "ok": true,
+        "placement": placement,
+        "summary": state.platform.cluster_placement.describe(placement.as_ref()),
+        "workers": workers,
+    }))
+    .into_response()
+}
+
+async fn api_project_runtime_sync(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    let placement = match state.platform.cluster_placement.get(&owner, &project) {
+        Ok(Some(placement)) => placement,
+        Ok(None) => {
+            return Json(json!({
+                "ok": true,
+                "placement": null,
+                "message": "project is local; no remote sync required"
+            }))
+            .into_response();
+        }
+        Err(err) => return internal_error(err),
+    };
+    if placement.target != ProjectRuntimePlacementTarget::Worker {
+        return Json(json!({
+            "ok": true,
+            "placement": placement,
+            "message": "project is local; no remote sync required"
+        }))
+        .into_response();
+    }
+    match sync_project_to_remote_worker(&state, &owner, &project, &placement).await {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "placement": placement,
+            "message": "runtime synced to remote office"
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_internal_cluster_register_worker(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ClusterWorkerRegisterRequest>,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_registry.register_worker(&req) {
+        Ok(worker) => Json(json!({"ok": true, "worker": worker})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_internal_cluster_worker_heartbeat(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ClusterWorkerHeartbeatRequest>,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_registry.heartbeat(&req) {
+        Ok(heartbeat) => Json(heartbeat).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_internal_runtime_materialize_project(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ProjectRuntimeMaterializationRequest>,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    match state.platform.cluster_runtime_sync.apply_materialization_request(&req) {
+        Ok(_) => Json(json!({"ok": true, "project": req.bundle.identity})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_internal_runtime_execute_pipeline(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<ExecutePipelineRequest>,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    execute_pipeline_local(&state, &owner, &project, &req).await
+}
+
+async fn api_internal_runtime_webhook(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, tail)): Path<(String, String, String)>,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    public_webhook_ingress(
+        State(state),
+        Path((owner, project, tail)),
+        method,
+        uri,
+        headers,
+        body,
+    )
+    .await
+}
+
+async fn api_internal_runtime_webhook_root(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    public_webhook_ingress_root(
+        State(state),
+        Path((owner, project)),
+        method,
+        uri,
+        headers,
+        body,
+    )
+    .await
 }
 
 /// Request body for `DELETE /api/users/{owner}/projects/{project}`.
@@ -6099,7 +6819,8 @@ async fn api_pipeline_lock_toggle(
     let commit_msg = format!("{verb}: pipeline {name}");
     let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     let git_cfg = &zebflow_cfg.git;
-    let identity_args = git_identity_args(git_cfg, &project_slug);
+    let actor_user = session_owner(&headers);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
         add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg(&req.file_rel_path);
@@ -6143,7 +6864,8 @@ async fn api_template_lock_toggle(
     let commit_msg = format!("{verb}: template {}", req.rel_path);
     let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     let git_cfg = &zebflow_cfg.git;
-    let identity_args = git_identity_args(git_cfg, &project_slug);
+    let actor_user = session_owner(&headers);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
         add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg("zebflow.json");
@@ -6251,23 +6973,23 @@ async fn api_git_checkout_branch(
 }
 
 /// Returns `-c user.name=… -c user.email=…` args for git.
-/// Falls back to project slug / `{slug}@zebflow.local` when identity not configured.
-fn git_identity_args(git_cfg: &crate::platform::model::ZebflowJsonGit, project_slug: &str) -> Vec<String> {
-    let name = if git_cfg.author_name.is_empty() {
-        project_slug.to_string()
-    } else {
-        git_cfg.author_name.clone()
-    };
-    let email = if git_cfg.author_email.is_empty() {
-        format!("{project_slug}@zebflow.local")
-    } else {
-        git_cfg.author_email.clone()
-    };
+/// Prefers the acting user's git profile, then project settings, then a
+/// generated fallback identity.
+fn git_identity_args(
+    state: &PlatformAppState,
+    actor_user: Option<&str>,
+    git_cfg: &crate::platform::model::ZebflowJsonGit,
+    project_slug: &str,
+) -> Vec<String> {
+    let resolved = state
+        .platform
+        .git_identity
+        .resolve_for_actor(actor_user, git_cfg, project_slug);
     vec![
         "-c".to_string(),
-        format!("user.name={name}"),
+        format!("user.name={}", resolved.name),
         "-c".to_string(),
-        format!("user.email={email}"),
+        format!("user.email={}", resolved.email),
     ]
 }
 
@@ -6337,7 +7059,8 @@ async fn api_git_commit(
     // git commit -m <message>
     let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     let git_cfg = &zebflow_cfg.git;
-    let identity_args = git_identity_args(git_cfg, &project_slug);
+    let actor_user = session_owner(&headers);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let mut commit_cmd = std::process::Command::new("git");
     for arg in &identity_args { commit_cmd.arg(arg); }
     commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.message.trim());
@@ -6615,19 +7338,46 @@ async fn api_execute_pipeline(
     ) {
         return response;
     }
+    if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
+        if placement.target == ProjectRuntimePlacementTarget::Worker {
+            if let Some(worker_id) = placement.worker_id.as_deref() {
+                return match forward_runtime_execute_to_worker(
+                    &state,
+                    &owner,
+                    &project,
+                    &req,
+                    worker_id,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+        }
+    }
+    execute_pipeline_local(&state, &owner, &project, &req).await
+}
+
+async fn execute_pipeline_local(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    req: &ExecutePipelineRequest,
+) -> Response {
     let exec_start = std::time::Instant::now();
     let log_max_n = state
         .platform
         .zebflow_cfg
-        .read_or_default(&owner, &project)
+        .read_or_default(owner, project)
         .logging
         .effective_max_invocations();
 
-    let meta = match state.platform.projects.get_pipeline_meta_by_file_id(
-        &owner,
-        &project,
-        &req.file_rel_path,
-    ) {
+    let meta = match state
+        .platform
+        .projects
+        .get_pipeline_meta_by_file_id(owner, project, &req.file_rel_path)
+    {
         Ok(Some(meta)) => meta,
         Ok(None) => {
             return (
@@ -6644,20 +7394,20 @@ async fn api_execute_pipeline(
     let source = match state
         .platform
         .projects
-        .read_active_pipeline_source(&owner, &project, &meta)
+        .read_active_pipeline_source(owner, project, &meta)
     {
         Ok(source) => source,
         Err(err) if err.code == "PLATFORM_PIPELINE_NOT_ACTIVE" => {
             state.platform.pipeline_hits.record_failure(
-                &owner,
-                &project,
+                owner,
+                project,
                 &meta.file_rel_path,
                 "api.execute",
                 err.code,
                 "pipeline must be activated before execution",
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                &owner, &project, &meta.file_rel_path,
+                owner, project, &meta.file_rel_path,
                 &PipelineInvocationEntry {
                     at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -6683,15 +7433,15 @@ async fn api_execute_pipeline(
         Ok(graph) => graph,
         Err(err) => {
             state.platform.pipeline_hits.record_failure(
-                &owner,
-                &project,
+                owner,
+                project,
                 &meta.file_rel_path,
                 "api.execute",
                 "PLATFORM_PIPELINE_PARSE",
                 &err.to_string(),
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                &owner, &project, &meta.file_rel_path,
+                owner, project, &meta.file_rel_path,
                 &PipelineInvocationEntry {
                     at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -6711,18 +7461,18 @@ async fn api_execute_pipeline(
                 .into_response();
         }
     };
-    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph)
+    if let Err(err) = hydrate_template_markup(state, owner, project, &mut graph)
     {
         state.platform.pipeline_hits.record_failure(
-            &owner,
-            &project,
+            owner,
+            project,
             &meta.file_rel_path,
             "api.execute",
             err.code,
             &err.message,
         );
         let _ = state.platform.data.log_pipeline_invocation(
-            &owner, &project, &meta.file_rel_path,
+            owner, project, &meta.file_rel_path,
             &PipelineInvocationEntry {
                 at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                 duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -6739,19 +7489,19 @@ async fn api_execute_pipeline(
         )
             .into_response();
     }
-    apply_rwe_project_options(&state, &owner, &project, &mut graph);
+    apply_rwe_project_options(state, owner, project, &mut graph);
 
     if let Err(message) = validate_execute_trigger(&graph, &req) {
         state.platform.pipeline_hits.record_failure(
-            &owner,
-            &project,
+            owner,
+            project,
             &meta.file_rel_path,
             "api.execute",
             "PLATFORM_PIPELINE_TRIGGER_MISMATCH",
             &message,
         );
         let _ = state.platform.data.log_pipeline_invocation(
-            &owner, &project, &meta.file_rel_path,
+            owner, project, &meta.file_rel_path,
             &PipelineInvocationEntry {
                 at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                 duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -6781,8 +7531,8 @@ async fn api_execute_pipeline(
     let credentials = state.platform.credentials.clone();
     let graph_for_run = graph.clone();
     let ctx = PipelineContext {
-        owner: owner.clone(),
-        project: project.clone(),
+        owner: owner.to_string(),
+        project: project.to_string(),
         pipeline: graph.id.clone(),
         request_id: request_id.clone(),
         route: Default::default(),
@@ -6796,18 +7546,18 @@ async fn api_execute_pipeline(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
     .with_ws_hub(state.platform.ws_hub.clone())
-    .with_mem_hub(state.platform.mem_hub.clone())
+    .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
     match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => {
             state
                 .platform
                 .pipeline_hits
-                .record_success(&owner, &project, &meta.file_rel_path);
+                .record_success(owner, project, &meta.file_rel_path);
             let _ = state.platform.data.log_pipeline_invocation(
-                &owner, &project, &meta.file_rel_path,
+                owner, project, &meta.file_rel_path,
                 &PipelineInvocationEntry {
                     at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -6828,15 +7578,15 @@ async fn api_execute_pipeline(
         }
         Err(err) => {
             state.platform.pipeline_hits.record_failure(
-                &owner,
-                &project,
+                owner,
+                project,
                 &meta.file_rel_path,
                 "api.execute",
                 err.code,
                 &err.message,
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                &owner, &project, &meta.file_rel_path,
+                owner, project, &meta.file_rel_path,
                 &PipelineInvocationEntry {
                     at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
@@ -7787,7 +8537,8 @@ async fn api_upsert_settings_section(
     let (committed, git_error) = {
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
-        let identity_args = git_identity_args(&cfg.git, &project_slug);
+        let actor_user = session_owner(&headers);
+        let identity_args = git_identity_args(&state, actor_user.as_deref(), &cfg.git, &project_slug);
         match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
             Err(_) => (false, Some("could not resolve project layout".to_string())),
             Ok(layout) => {
@@ -7928,8 +8679,9 @@ async fn api_enable_rwe_library(
         return internal_error(err);
     }
     // Git commit (best-effort).
+    let actor_user = session_owner(&headers);
     let _ = rwe_library_git_commit(
-        &state, &owner, &project,
+        &state, actor_user.as_deref(), &owner, &project,
         &format!("chore(rwe): enable library {}", req.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
@@ -7966,8 +8718,9 @@ async fn api_disable_rwe_library(
         return internal_error(err);
     }
     // Git commit (best-effort).
+    let actor_user = session_owner(&headers);
     let _ = rwe_library_git_commit(
-        &state, &owner, &project,
+        &state, actor_user.as_deref(), &owner, &project,
         &format!("chore(rwe): disable library {}", params.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
@@ -7998,6 +8751,7 @@ async fn api_rwe_cache_clear(
 /// Best-effort: errors are logged but not propagated to the caller.
 fn rwe_library_git_commit(
     state: &PlatformAppState,
+    actor_user: Option<&str>,
     owner: &str,
     project: &str,
     message: &str,
@@ -8017,7 +8771,7 @@ fn rwe_library_git_commit(
         return Err(());
     }
     let git_cfg = state.platform.zebflow_cfg.read_or_default(owner, project).git;
-    let identity_args = git_identity_args(&git_cfg, &project_slug);
+    let identity_args = git_identity_args(state, actor_user, &git_cfg, &project_slug);
     let mut cmd = std::process::Command::new("git");
     for arg in &identity_args { cmd.arg(arg); }
     cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(message);
@@ -9427,7 +10181,7 @@ async fn dispatch_weberror(
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
     .with_ws_hub(state.platform.ws_hub.clone())
-    .with_mem_hub(state.platform.mem_hub.clone())
+    .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
     let ctx = PipelineContext {
@@ -9560,16 +10314,21 @@ async fn public_webhook_ingress(
         return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "not found"}))).into_response();
     };
     // Verify trigger-level auth before executing the pipeline.
-    let auth_claims = match verify_webhook_auth(
-        &headers,
-        &body,
-        &selected.auth_type,
-        &selected.auth_credential,
-        &selected.auth_required_role,
-        &state.platform.credentials,
-        &owner,
-        &project,
-    ) {
+    let auth_claims = if has_valid_cluster_token(&state, &headers) {
+        Ok(None)
+    } else {
+        verify_webhook_auth(
+            &headers,
+            &body,
+            &selected.auth_type,
+            &selected.auth_credential,
+            &selected.auth_required_role,
+            &state.platform.credentials,
+            &owner,
+            &project,
+        )
+    };
+    let auth_claims = match auth_claims {
         Ok(claims) => claims,
         Err(auth_err) => {
             let (status, msg, redirect_url) = match auth_err {
@@ -9584,7 +10343,6 @@ async fn public_webhook_ingress(
                 }
             };
 
-            // Page navigation + redirect configured → 302 instead of JSON error.
             if is_page_navigation(&headers) {
                 if let Some(url) = redirect_url {
                     return axum::response::Redirect::to(&url).into_response();
@@ -9605,6 +10363,29 @@ async fn public_webhook_ingress(
             return (status, Json(json!({"ok": false, "error": msg}))).into_response();
         }
     };
+
+    if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
+        if placement.target == ProjectRuntimePlacementTarget::Worker {
+            if let Some(worker_id) = placement.worker_id.as_deref() {
+                return match forward_runtime_webhook_to_worker(
+                    &state,
+                    &owner,
+                    &project,
+                    &tail,
+                    &method,
+                    &uri,
+                    &headers,
+                    &body,
+                    worker_id,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+        }
+    }
 
     let mut graph = selected.compiled.graph.clone();
     if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph)
@@ -9682,7 +10463,7 @@ async fn public_webhook_ingress(
     .with_template_cache(state.template_cache.clone())
     .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
     .with_ws_hub(state.platform.ws_hub.clone())
-    .with_mem_hub(state.platform.mem_hub.clone())
+    .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
@@ -11040,7 +11821,7 @@ async fn ws_dispatch_event(
         let credentials = state.platform.credentials.clone();
         let rwe = state.frontend.rwe.clone();
         let ws_hub = state.platform.ws_hub.clone();
-        let mem_hub = state.platform.mem_hub.clone();
+        let state_bus = state.platform.state_bus.clone();
         let data_root = state.platform.config.data_root.clone();
         let platform_clone = state.platform.clone();
         tokio::spawn(async move {
@@ -11051,7 +11832,7 @@ async fn ws_dispatch_event(
             )
             .with_platform(platform_clone)
             .with_ws_hub(ws_hub)
-            .with_mem_hub(mem_hub)
+            .with_state_bus(state_bus)
             .with_data_root(data_root);
             let _ = engine.execute_async(&graph, &ctx).await;
         });
