@@ -40,10 +40,13 @@ pub enum AllowedKind {
     Pdf,
     Csv,
     Json,
+    Glb,
+    Audio,
+    Video,
 }
 
 impl AllowedKind {
-    /// Returns the MIME types (exact) accepted by this category.
+    /// Returns the MIME types accepted by this category.
     fn mime_types(&self) -> &'static [&'static str] {
         match self {
             AllowedKind::Images => &[
@@ -61,6 +64,16 @@ impl AllowedKind {
             AllowedKind::Pdf => &["application/pdf"],
             AllowedKind::Csv => &["text/csv", "text/plain"],
             AllowedKind::Json => &["application/json", "text/json"],
+            AllowedKind::Glb => &["model/gltf-binary"],
+            AllowedKind::Audio => &[
+                "audio/mpeg",
+                "audio/wav",
+                "audio/x-wav",
+                "audio/ogg",
+                "audio/mp4",
+                "audio/m4a",
+            ],
+            AllowedKind::Video => &["video/mp4", "video/webm", "video/ogg", "video/x-m4v"],
         }
     }
 
@@ -70,15 +83,68 @@ impl AllowedKind {
             AllowedKind::Pdf => "PDF",
             AllowedKind::Csv => "CSV",
             AllowedKind::Json => "JSON",
+            AllowedKind::Glb => "3D Models (GLB)",
+            AllowedKind::Audio => "Audio",
+            AllowedKind::Video => "Video",
         }
     }
 }
 
 fn kind_accepts_mime(kinds: &[AllowedKind], mime: &str) -> bool {
-    let m = mime.split(';').next().unwrap_or("").trim().to_lowercase();
-    kinds
-        .iter()
-        .any(|k| k.mime_types().iter().any(|t| *t == m.as_str()))
+    let target = normalized_mime(mime);
+    kinds.iter().any(|kind| {
+        kind.mime_types()
+            .iter()
+            .any(|candidate| normalized_mime(candidate) == target)
+    })
+}
+
+fn normalized_mime(mime: &str) -> String {
+    let raw = mime.split(';').next().unwrap_or("").trim().to_lowercase();
+    match raw.as_str() {
+        "image/jpg" => "image/jpeg".to_string(),
+        "audio/x-wav" => "audio/wav".to_string(),
+        "audio/m4a" => "audio/mp4".to_string(),
+        _ => raw,
+    }
+}
+
+fn detect_binary_mime(bytes: &[u8]) -> Option<&'static str> {
+    if is_glb(bytes) {
+        return Some("model/gltf-binary");
+    }
+
+    if is_ogg_theora(bytes) {
+        return Some("video/ogg");
+    }
+
+    infer::get(bytes).map(|kind| kind.mime_type())
+}
+
+fn is_glb(bytes: &[u8]) -> bool {
+    if bytes.len() < 12 || &bytes[0..4] != b"glTF" {
+        return false;
+    }
+
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+    let declared_len = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    (version == 1 || version == 2) && declared_len >= 12 && declared_len <= bytes.len()
+}
+
+fn is_ogg_theora(bytes: &[u8]) -> bool {
+    if bytes.len() < 35 || &bytes[0..4] != b"OggS" {
+        return false;
+    }
+
+    let page_segments = bytes[26] as usize;
+    let payload_start = 27 + page_segments;
+    bytes.get(payload_start..payload_start + 7) == Some(&b"\x80theora"[..])
+}
+
+fn browser_mime_matches_detected(browser_mime: &str, detected_mime: &str) -> bool {
+    let browser = normalized_mime(browser_mime);
+    let detected = normalized_mime(detected_mime);
+    browser.is_empty() || browser == "application/octet-stream" || browser == detected
 }
 
 fn default_allowed_kinds() -> Vec<AllowedKind> {
@@ -88,9 +154,11 @@ fn default_allowed_kinds() -> Vec<AllowedKind> {
 fn default_access() -> String {
     "private".to_string()
 }
+
 fn default_field() -> String {
     "file".to_string()
 }
+
 fn default_max_size_mb() -> f64 {
     10.0
 }
@@ -199,8 +267,10 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--allowed-kinds".to_string(),
                 config_key: "allowed_kinds".to_string(),
-                description: "Comma-separated allowed categories: images,pdf,csv,json (default: images)".to_string(),
-                kind: DslFlagKind::Scalar,
+                description:
+                    "Comma-separated allowed categories: images,pdf,csv,json,glb,audio,video (default: images)"
+                        .to_string(),
+                kind: DslFlagKind::CommaSeparatedList,
                 required: false,
             },
             DslFlag {
@@ -213,7 +283,9 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--filename".to_string(),
                 config_key: "filename".to_string(),
-                description: "Custom filename without extension (default: random UUID). Overwrites if same name exists.".to_string(),
+                description:
+                    "Custom filename without extension (default: random UUID). Overwrites if same name exists."
+                        .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -234,8 +306,14 @@ pub fn definition() -> NodeDefinition {
                 help: Some("public — served without auth. private — requires auth cookie.".to_string()),
                 default_value: Some(json!("private")),
                 options: vec![
-                    SelectOptionDef { value: "private".to_string(), label: "Private (auth required)".to_string() },
-                    SelectOptionDef { value: "public".to_string(),  label: "Public (no auth)".to_string() },
+                    SelectOptionDef {
+                        value: "private".to_string(),
+                        label: "Private (auth required)".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "public".to_string(),
+                        label: "Public (no auth)".to_string(),
+                    },
                 ],
                 ..Default::default()
             },
@@ -254,10 +332,34 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Magic-byte validated. Images = jpg/png/webp/gif/etc.".to_string()),
                 default_value: Some(json!(["images"])),
                 options: vec![
-                    SelectOptionDef { value: "images".to_string(), label: "Images (jpg, png, webp, gif, …)".to_string() },
-                    SelectOptionDef { value: "pdf".to_string(),    label: "PDF".to_string() },
-                    SelectOptionDef { value: "csv".to_string(),    label: "CSV".to_string() },
-                    SelectOptionDef { value: "json".to_string(),   label: "JSON".to_string() },
+                    SelectOptionDef {
+                        value: "images".to_string(),
+                        label: "Images (jpg, png, webp, gif, …)".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "pdf".to_string(),
+                        label: "PDF".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "csv".to_string(),
+                        label: "CSV".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "json".to_string(),
+                        label: "JSON".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "glb".to_string(),
+                        label: "3D Models (GLB)".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "audio".to_string(),
+                        label: "Audio".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "video".to_string(),
+                        label: "Video".to_string(),
+                    },
                 ],
                 ..Default::default()
             },
@@ -313,9 +415,11 @@ impl NodeHandler for Node {
     fn kind(&self) -> &'static str {
         NODE_KIND
     }
+
     fn input_pins(&self) -> &'static [&'static str] {
         &[INPUT_PIN_IN]
     }
+
     fn output_pins(&self) -> &'static [&'static str] {
         &[OUTPUT_PIN_OUT]
     }
@@ -336,7 +440,7 @@ impl NodeHandler for Node {
         let file_obj = input
             .payload
             .get("files")
-            .and_then(|f| f.get(field))
+            .and_then(|files| files.get(field))
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FILE_SAVE",
@@ -348,19 +452,22 @@ impl NodeHandler for Node {
 
         let original_name = file_obj
             .get("filename")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("upload");
 
         let browser_mime = file_obj
             .get("content_type")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .unwrap_or("application/octet-stream");
 
-        let size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let size = file_obj
+            .get("size")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as usize;
 
         let data_b64 = file_obj
             .get("data")
-            .and_then(|v| v.as_str())
+            .and_then(|value| value.as_str())
             .ok_or_else(|| {
                 PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
             })?;
@@ -380,8 +487,8 @@ impl NodeHandler for Node {
         // ── Decode base64 ─────────────────────────────────────────────────────
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_b64)
-            .map_err(|e| {
-                PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {e}"))
+            .map_err(|err| {
+                PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
             })?;
 
         // Re-check against actual decoded size
@@ -407,21 +514,14 @@ impl NodeHandler for Node {
             ));
         }
 
-        let inferred_mime: Option<&str> = infer::get(&bytes).map(|t| t.mime_type());
+        let inferred_mime = detect_binary_mime(&bytes).map(normalized_mime);
 
         // Special case: SVG and JSON/CSV are text — infer won't detect them from bytes.
         // Fall back to browser MIME for those, but still check against the allowed list.
-        let effective_mime = match inferred_mime {
-            Some(m) => m,
+        let effective_mime = match inferred_mime.as_deref() {
+            Some(mime) => mime.to_string(),
             None => {
-                // infer returned None → likely a text format (SVG, JSON, CSV)
-                // Trust browser MIME only for known text types in our allowed set
-                let bm = browser_mime
-                    .split(';')
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_lowercase();
+                let fallback_mime = normalized_mime(browser_mime);
                 let text_allowed = [
                     "image/svg+xml",
                     "application/json",
@@ -429,8 +529,8 @@ impl NodeHandler for Node {
                     "text/csv",
                     "text/plain",
                 ];
-                if text_allowed.contains(&bm.as_str()) {
-                    browser_mime
+                if text_allowed.contains(&fallback_mime.as_str()) {
+                    fallback_mime
                 } else {
                     return Err(PipelineError::new(
                         "FW_NODE_FILE_SAVE",
@@ -443,9 +543,8 @@ impl NodeHandler for Node {
             }
         };
 
-        // Check inferred MIME against the allowed kinds
-        if !kind_accepts_mime(allowed, effective_mime) {
-            let allowed_labels: Vec<&str> = allowed.iter().map(|k| k.label()).collect();
+        if !kind_accepts_mime(allowed, &effective_mime) {
+            let allowed_labels: Vec<&str> = allowed.iter().map(|kind| kind.label()).collect();
             return Err(PipelineError::new(
                 "FW_NODE_FILE_SAVE",
                 format!(
@@ -456,20 +555,12 @@ impl NodeHandler for Node {
         }
 
         // Detect MIME mismatch (potential spoofing: browser says image/jpeg, content is application/pdf)
-        if let Some(inf) = inferred_mime {
-            let bm = browser_mime
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
-            // Allow image/* sub-type drift (e.g. browser says image/jpg, infer says image/jpeg)
-            let same_top_level = inf.split('/').next() == bm.split('/').next();
-            if !same_top_level {
+        if let Some(inferred) = inferred_mime.as_deref() {
+            if !browser_mime_matches_detected(browser_mime, inferred) {
                 return Err(PipelineError::new(
                     "FW_NODE_FILE_SAVE",
                     format!(
-                        "MIME mismatch: browser declared '{browser_mime}' but file content is '{inf}'. \
+                        "MIME mismatch: browser declared '{browser_mime}' but file content is '{inferred}'. \
                         Possible spoofing attempt rejected."
                     ),
                 ));
@@ -488,14 +579,15 @@ impl NodeHandler for Node {
             self.config.folder.trim()
         });
 
-        let ext = safe_extension(original_name, effective_mime);
+        let ext = safe_extension(original_name, &effective_mime);
         let storage_name = {
             let custom = self
                 .config
                 .filename
                 .as_deref()
-                .map(|f| sanitize_filename(f.trim()))
-                .filter(|s| !s.is_empty());
+                .map(|filename| sanitize_filename(filename.trim()))
+                .filter(|name| !name.is_empty());
+
             match (custom, ext.is_empty()) {
                 (Some(name), true) => name,
                 (Some(name), false) => format!("{name}.{ext}"),
@@ -512,12 +604,12 @@ impl NodeHandler for Node {
             .platform
             .file
             .ensure_project_layout(owner, project)
-            .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", e.to_string()))?;
+            .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
 
         let abs_path = layout.files_dir.join(&rel_path);
         if let Some(parent) = abs_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                PipelineError::new("FW_NODE_FILE_SAVE", format!("create dirs: {e}"))
+            std::fs::create_dir_all(parent).map_err(|err| {
+                PipelineError::new("FW_NODE_FILE_SAVE", format!("create dirs: {err}"))
             })?;
         }
 
@@ -526,13 +618,15 @@ impl NodeHandler for Node {
             "{}.tmp",
             abs_path
                 .extension()
-                .and_then(|e| e.to_str())
+                .and_then(|ext| ext.to_str())
                 .unwrap_or("bin")
         ));
-        std::fs::write(&tmp_path, &bytes)
-            .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", format!("write error: {e}")))?;
-        std::fs::rename(&tmp_path, &abs_path)
-            .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", format!("rename error: {e}")))?;
+        std::fs::write(&tmp_path, &bytes).map_err(|err| {
+            PipelineError::new("FW_NODE_FILE_SAVE", format!("write error: {err}"))
+        })?;
+        std::fs::rename(&tmp_path, &abs_path).map_err(|err| {
+            PipelineError::new("FW_NODE_FILE_SAVE", format!("rename error: {err}"))
+        })?;
 
         let url = format!("/files/{owner}/{project}/{rel_path}");
 
@@ -540,11 +634,11 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({
                 "saved": {
-                    "path":          rel_path,
-                    "url":           url,
+                    "path": rel_path,
+                    "url": url,
                     "original_name": original_name,
-                    "content_type":  effective_mime,
-                    "size":          bytes.len(),
+                    "content_type": effective_mime,
+                    "size": bytes.len(),
                 }
             }),
             trace: vec![format!(
@@ -560,21 +654,21 @@ impl NodeHandler for Node {
 /// Only alphanumeric chars, max 10 chars.
 fn safe_extension(original_name: &str, mime: &str) -> String {
     if let Some(ext) = std::path::Path::new(original_name).extension() {
-        if let Some(s) = ext.to_str() {
-            let e: String = s
+        if let Some(value) = ext.to_str() {
+            let ext: String = value
                 .chars()
-                .filter(|c| c.is_alphanumeric())
+                .filter(|char| char.is_alphanumeric())
                 .take(10)
                 .collect::<String>()
                 .to_lowercase();
-            if !e.is_empty() {
-                return e;
+            if !ext.is_empty() {
+                return ext;
             }
         }
     }
-    // Fallback from MIME
-    let ct = mime.split(';').next().unwrap_or("").trim();
-    match ct {
+
+    let mime = normalized_mime(mime);
+    match mime.as_str() {
         "image/jpeg" => "jpg",
         "image/png" => "png",
         "image/webp" => "webp",
@@ -592,7 +686,14 @@ fn safe_extension(original_name: &str, mime: &str) -> String {
         "text/json" => "json",
         "application/zip" => "zip",
         "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/ogg" => "ogv",
+        "video/x-m4v" => "m4v",
         "audio/mpeg" => "mp3",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/mp4" => "m4a",
+        "model/gltf-binary" => "glb",
         _ => "",
     }
     .to_string()
@@ -601,7 +702,7 @@ fn safe_extension(original_name: &str, mime: &str) -> String {
 /// Sanitize a dest path: strip leading/trailing slashes, reject `..` and `.` components.
 fn sanitize_dest_path(dest: &str) -> String {
     dest.split('/')
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
+        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -612,13 +713,13 @@ fn sanitize_dest_path(dest: &str) -> String {
 fn sanitize_filename(name: &str) -> String {
     let stem = std::path::Path::new(name)
         .file_stem()
-        .and_then(|s| s.to_str())
+        .and_then(|value| value.to_str())
         .unwrap_or(name);
     let sanitized: String = stem
         .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
+        .map(|char| {
+            if char.is_alphanumeric() || char == '-' || char == '_' {
+                char
             } else {
                 '_'
             }
@@ -626,4 +727,59 @@ fn sanitize_filename(name: &str) -> String {
         .collect();
     let trimmed = sanitized.trim_matches('_');
     trimmed.chars().take(200).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowed_kinds_flag_uses_comma_separated_list() {
+        let flag = definition()
+            .dsl_flags
+            .into_iter()
+            .find(|flag| flag.flag == "--allowed-kinds")
+            .expect("missing --allowed-kinds");
+        assert_eq!(flag.kind, DslFlagKind::CommaSeparatedList);
+    }
+
+    #[test]
+    fn audio_aliases_are_accepted() {
+        assert!(kind_accepts_mime(&[AllowedKind::Audio], "audio/x-wav"));
+        assert!(kind_accepts_mime(&[AllowedKind::Audio], "audio/m4a"));
+    }
+
+    #[test]
+    fn detects_glb_by_header() {
+        let mut bytes = b"glTF".to_vec();
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&(12u32).to_le_bytes());
+        assert_eq!(detect_binary_mime(&bytes), Some("model/gltf-binary"));
+    }
+
+    #[test]
+    fn detects_ogg_theora_as_video() {
+        let mut bytes = vec![0; 35];
+        bytes[0..4].copy_from_slice(b"OggS");
+        bytes[26] = 1;
+        bytes[27] = 7;
+        bytes[28..35].copy_from_slice(b"\x80theora");
+        assert_eq!(detect_binary_mime(&bytes), Some("video/ogg"));
+    }
+
+    #[test]
+    fn generic_browser_mime_is_allowed_when_content_is_verified() {
+        assert!(browser_mime_matches_detected(
+            "application/octet-stream",
+            "model/gltf-binary"
+        ));
+    }
+
+    #[test]
+    fn safe_extension_knows_new_formats() {
+        assert_eq!(safe_extension("upload", "model/gltf-binary"), "glb");
+        assert_eq!(safe_extension("upload", "audio/x-wav"), "wav");
+        assert_eq!(safe_extension("upload", "video/webm"), "webm");
+        assert_eq!(safe_extension("upload", "audio/m4a"), "m4a");
+    }
 }
