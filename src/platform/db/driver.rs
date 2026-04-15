@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use crate::platform::services::CredentialService;
 pub struct DbDriverContext {
     pub owner: String,
     pub project: String,
+    pub data_root: PathBuf,
     pub connection: ProjectDbConnection,
     pub credentials: Arc<CredentialService>,
 }

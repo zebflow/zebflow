@@ -11,6 +11,7 @@ use crate::platform::model::{
     ProjectDbConnection, ProjectDbConnectionListItem, ProjectDbConnectionTestResult,
     TestProjectDbConnectionRequest, UpsertProjectDbConnectionRequest, now_ts, slug_segment,
 };
+use crate::platform::sekejap;
 
 /// Project-scoped DB connections stored in the metadata catalog.
 pub struct DbConnectionService {
@@ -146,10 +147,13 @@ impl DbConnectionService {
                 "connection slug must not be empty",
             ));
         }
-        if connection_slug == "default" {
+        if is_builtin_connection_slug(&connection_slug) {
             return Err(PlatformError::new(
                 "PLATFORM_DB_CONNECTION_LOCKED",
-                "default connection cannot be deleted",
+                format!(
+                    "built-in connection '{}' cannot be deleted",
+                    connection_slug
+                ),
             ));
         }
         self.data
@@ -329,22 +333,51 @@ impl DbConnectionService {
             .data
             .get_project_db_connection(owner, project, "default")?
             .is_some()
+            && self
+                .data
+                .get_project_db_connection(owner, project, sekejap::BUILTIN_CONNECTION_SLUG)?
+                .is_some()
         {
             return Ok(());
         }
         let now = now_ts();
-        self.data.put_project_db_connection(&ProjectDbConnection {
-            owner: owner.to_string(),
-            project: project.to_string(),
-            connection_id: generate_connection_id(),
-            connection_slug: "default".to_string(),
-            connection_label: "Default Data Store".to_string(),
-            database_kind: "sqlite".to_string(),
-            credential_id: None,
-            config: json!({}),
-            created_at: now,
-            updated_at: now,
-        })
+        if self
+            .data
+            .get_project_db_connection(owner, project, "default")?
+            .is_none()
+        {
+            self.data.put_project_db_connection(&ProjectDbConnection {
+                owner: owner.to_string(),
+                project: project.to_string(),
+                connection_id: generate_connection_id(),
+                connection_slug: "default".to_string(),
+                connection_label: "Default Data Store".to_string(),
+                database_kind: "sqlite".to_string(),
+                credential_id: None,
+                config: json!({}),
+                created_at: now,
+                updated_at: now,
+            })?;
+        }
+        if self
+            .data
+            .get_project_db_connection(owner, project, sekejap::BUILTIN_CONNECTION_SLUG)?
+            .is_none()
+        {
+            self.data.put_project_db_connection(&ProjectDbConnection {
+                owner: owner.to_string(),
+                project: project.to_string(),
+                connection_id: generate_connection_id(),
+                connection_slug: sekejap::BUILTIN_CONNECTION_SLUG.to_string(),
+                connection_label: sekejap::BUILTIN_CONNECTION_LABEL.to_string(),
+                database_kind: sekejap::DB_KIND.to_string(),
+                credential_id: None,
+                config: json!({}),
+                created_at: now,
+                updated_at: now,
+            })?;
+        }
+        Ok(())
     }
 
     fn validate_credential_binding(
@@ -355,7 +388,7 @@ impl DbConnectionService {
         credential_id: Option<&str>,
     ) -> Result<(), PlatformError> {
         match database_kind {
-            "sqlite" => {
+            "sqlite" | "sekejap" => {
                 if credential_id.is_some() {
                     return Err(PlatformError::new(
                         "PLATFORM_DB_CONNECTION_INVALID",
@@ -437,6 +470,10 @@ fn normalize_optional_slug(raw: Option<&str>) -> Option<String> {
     raw.map(slug_segment).filter(|value| !value.is_empty())
 }
 
+fn is_builtin_connection_slug(slug: &str) -> bool {
+    slug == "default" || slug == sekejap::BUILTIN_CONNECTION_SLUG
+}
+
 fn generate_connection_id() -> String {
     let mut bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut bytes);
@@ -449,6 +486,7 @@ fn normalize_database_kind(raw: &str) -> Result<String, PlatformError> {
         "postgres" | "postgresql" | "pg" => "postgresql",
         "mysql" => "mysql",
         "sqlite" => "sqlite",
+        "sekejap" => "sekejap",
         "sqlserver" | "mssql" => "sqlserver",
         "mongodb" | "mongo" => "mongodb",
         "redis" => "redis",
