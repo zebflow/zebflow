@@ -1,0 +1,116 @@
+---
+# Browserless for the zebflow namespace.
+# Browser node credential values:
+#   URL:   http://browserless.zebflow.svc.cluster.local:3000
+#   Token: stored in Secret/browserless-secrets as TOKEN
+apiVersion: v1
+kind: Secret
+metadata:
+  name: browserless-secrets
+  namespace: zebflow
+type: Opaque
+stringData:
+  TOKEN: "CHANGE_ME_BROWSERLESS_TOKEN"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: browserless
+  namespace: zebflow
+  labels:
+    app: browserless
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: browserless
+  template:
+    metadata:
+      labels:
+        app: browserless
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: browserless
+          image: ghcr.io/browserless/chromium:v2.38.2
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: browserless-secrets
+                  key: TOKEN
+            - name: CONCURRENT
+              value: "4"
+            - name: QUEUED
+              value: "8"
+            - name: TIMEOUT
+              value: "300000"
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: browserless
+  namespace: zebflow
+  labels:
+    app: browserless
+spec:
+  type: ClusterIP
+  selector:
+    app: browserless
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,249 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zebflow-auto-updater
+  namespace: zebflow
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zebflow-auto-updater
+  namespace: zebflow
+rules:
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    resourceNames:
+      - zebflow
+    verbs:
+      - get
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zebflow-auto-updater
+  namespace: zebflow
+subjects:
+  - kind: ServiceAccount
+    name: zebflow-auto-updater
+    namespace: zebflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zebflow-auto-updater
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zebflow-auto-updater-script
+  namespace: zebflow
+data:
+  update.py: |
+    import json
+    import os
+    import re
+    import ssl
+    import sys
+    import urllib.request
+    from datetime import datetime, timezone
+
+
+    IMAGE_REPO = os.environ.get("IMAGE_REPO", "insanalamin/zebflow")
+    TAG_REGEX = re.compile(os.environ.get("TAG_REGEX", r"^\d+\.\d+\.\d+\.\d+$"))
+    TARGET_NAMESPACE = os.environ.get("TARGET_NAMESPACE", "zebflow")
+    TARGET_DEPLOYMENT = os.environ.get("TARGET_DEPLOYMENT", "zebflow")
+    TARGET_CONTAINER = os.environ.get("TARGET_CONTAINER", "zebflow")
+    PAGE_SIZE = int(os.environ.get("PAGE_SIZE", "25"))
+    MAX_PAGES = int(os.environ.get("MAX_PAGES", "4"))
+
+
+    def fetch_json(url: str, headers: dict | None = None, cafile: str | None = None) -> dict:
+        req = urllib.request.Request(url, headers=headers or {})
+        context = ssl.create_default_context(cafile=cafile) if cafile else None
+        with urllib.request.urlopen(req, timeout=20, context=context) as resp:
+            return json.load(resp)
+
+
+    def docker_hub_latest_numbered_tag() -> str:
+        url = (
+            f"https://hub.docker.com/v2/repositories/{IMAGE_REPO}/tags/"
+            f"?page_size={PAGE_SIZE}&ordering=last_updated"
+        )
+        pages = 0
+        while url and pages < MAX_PAGES:
+            payload = fetch_json(url)
+            for item in payload.get("results", []):
+                name = str(item.get("name", "")).strip()
+                if name == "latest":
+                    continue
+                if TAG_REGEX.match(name):
+                    return name
+            url = payload.get("next")
+            pages += 1
+        raise RuntimeError("no numbered Docker Hub tag matched the configured regex")
+
+
+    def kube_api_headers(token: str, content_type: str | None = None) -> dict:
+        headers = {"Authorization": f"Bearer {token}"}
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
+
+
+    def read_service_account_token() -> str:
+        with open("/var/run/secrets/kubernetes.io/serviceaccount/token", "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+
+
+    def kubernetes_ca_file() -> str:
+        return "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+
+    def deployment_url() -> str:
+        host = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+        port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS", "443")
+        return (
+            f"https://{host}:{port}/apis/apps/v1/namespaces/"
+            f"{TARGET_NAMESPACE}/deployments/{TARGET_DEPLOYMENT}"
+        )
+
+
+    def current_image(payload: dict) -> str:
+        containers = payload.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+        for container in containers:
+            if container.get("name") == TARGET_CONTAINER:
+                return str(container.get("image", "")).strip()
+        raise RuntimeError(f"container {TARGET_CONTAINER!r} not found in deployment")
+
+
+    def patch_deployment(token: str, image_ref: str) -> None:
+        patch = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "zebflow.auto-update/last-applied": datetime.now(timezone.utc).isoformat()
+                        }
+                    },
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": TARGET_CONTAINER,
+                                "image": image_ref,
+                            }
+                        ]
+                    },
+                }
+            }
+        }
+        req = urllib.request.Request(
+            deployment_url(),
+            data=json.dumps(patch).encode("utf-8"),
+            headers=kube_api_headers(token, "application/strategic-merge-patch+json"),
+            method="PATCH",
+        )
+        context = ssl.create_default_context(cafile=kubernetes_ca_file())
+        with urllib.request.urlopen(req, timeout=20, context=context) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                raise RuntimeError(f"deployment patch failed with HTTP {resp.status}")
+
+
+    def main() -> int:
+        latest_tag = docker_hub_latest_numbered_tag()
+        desired_image = f"{IMAGE_REPO}:{latest_tag}"
+        token = read_service_account_token()
+        deployment = fetch_json(
+            deployment_url(),
+            kube_api_headers(token),
+            cafile=kubernetes_ca_file(),
+        )
+        current = current_image(deployment)
+
+        print(f"current image: {current}")
+        print(f"latest image:  {desired_image}")
+
+        if current == desired_image:
+            print("zebflow is already up to date")
+            return 0
+
+        patch_deployment(token, desired_image)
+        print(f"patched deployment {TARGET_NAMESPACE}/{TARGET_DEPLOYMENT} to {desired_image}")
+        return 0
+
+
+    if __name__ == "__main__":
+        try:
+            raise SystemExit(main())
+        except Exception as exc:  # pragma: no cover
+            print(f"auto-update failed: {exc}", file=sys.stderr)
+            raise
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: zebflow-auto-updater
+  namespace: zebflow
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: zebflow-auto-updater
+          restartPolicy: OnFailure
+          tolerations:
+            - effect: NoSchedule
+              key: node-role.kubernetes.io/control-plane
+              operator: Exists
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: updater
+              image: python:3.12-slim
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+                - /opt/zebflow-auto-update/update.py
+              env:
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: IMAGE_REPO
+                  value: insanalamin/zebflow
+                - name: TAG_REGEX
+                  value: "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]{12}$"
+                - name: TARGET_NAMESPACE
+                  value: zebflow
+                - name: TARGET_DEPLOYMENT
+                  value: zebflow
+                - name: TARGET_CONTAINER
+                  value: zebflow
+              volumeMounts:
+                - name: script
+                  mountPath: /opt/zebflow-auto-update
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: "25m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "128Mi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+          volumes:
+            - name: script
+              configMap:
+                name: zebflow-auto-updater-script
+                defaultMode: 0555

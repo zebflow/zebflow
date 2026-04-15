@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: zebflow-main
+  namespace: zebflow
+  labels:
+    app: zebflow
+    zebflow.role: controller
+spec:
+  selector:
+    app: zebflow
+  ports:
+    - name: http
+      port: 10610
+      targetPort: http
