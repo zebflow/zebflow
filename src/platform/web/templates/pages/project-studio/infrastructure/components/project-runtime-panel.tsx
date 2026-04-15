@@ -13,36 +13,36 @@
 
 export function ProjectRuntimePanel({ placement, summary }) {
   return (
-    <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="rounded-3xl border border-gray-200 bg-white p-5 shadow-sm">
       <div className="mb-4 space-y-1">
-        <h2 className="text-lg font-semibold text-slate-900">Project runtime</h2>
-        <p className="text-sm text-slate-600">
+        <h2 className="text-lg font-semibold text-gray-900">Project runtime</h2>
+        <p className="text-sm text-gray-600">
           New projects choose which office should host their resident runtime.
         </p>
       </div>
-      <div className="space-y-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-600">
+      <div className="space-y-4 rounded-2xl border border-dashed border-gray-300 bg-gray-50 p-4 text-sm leading-6 text-gray-600">
         <div>
-          <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-500">
+          <p className="text-xs font-medium uppercase tracking-[0.18em] text-gray-500">
             Current placement
           </p>
-          <p className="mt-1 text-base font-semibold text-slate-900">
+          <p className="mt-1 text-base font-semibold text-gray-900">
             {summary || "Local"}
           </p>
         </div>
-        <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+        <div className="grid gap-3 rounded-2xl border border-gray-200 bg-white p-4 text-sm text-gray-700">
           <div>
-            <span className="text-xs uppercase tracking-[0.16em] text-slate-500">
+            <span className="text-xs uppercase tracking-[0.16em] text-gray-500">
               Mode
             </span>
-            <p className="mt-1 font-medium text-slate-900">
+            <p className="mt-1 font-medium text-gray-900">
               {placement?.mode || "shared"}
             </p>
           </div>
           <div>
-            <span className="text-xs uppercase tracking-[0.16em] text-slate-500">
+            <span className="text-xs uppercase tracking-[0.16em] text-gray-500">
               Office
             </span>
-            <p className="mt-1 font-medium text-slate-900">
+            <p className="mt-1 font-medium text-gray-900">
               {placement?.worker_id || "local"}
             </p>
           </div>

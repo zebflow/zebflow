@@ -12,7 +12,7 @@ export default function Kbd({ children, className = "" }) {
       "px-[0.45em] py-[0.18em]",
       "border border-white/[0.22] border-b-2",
       "rounded-[0.3em]",
-      "bg-white/[0.05] text-slate-400",
+      "bg-white/[0.05] text-gray-400",
       "whitespace-nowrap align-middle",
       className,
     )}>

@@ -88,15 +88,15 @@ export default function Page() {
           <div className="mb-6">
             <Link
               href="/home"
-              className="text-sm font-medium text-slate-600 hover:text-slate-900 hover:underline"
+              className="text-sm font-medium text-gray-600 hover:text-gray-900 hover:underline"
             >
               ← Back to projects
             </Link>
           </div>
 
-          <header className="mb-10 border-b border-slate-200 pb-6">
-            <h1 className="text-3xl font-black tracking-tighter text-slate-900">Project templates</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-500">
+          <header className="mb-10 border-b border-gray-200 pb-6">
+            <h1 className="text-3xl font-black tracking-tighter text-gray-900">Project templates</h1>
+            <p className="mt-2 max-w-2xl text-sm text-gray-500">
               Starter blueprints you can map to new projects. These are illustrative recipes—not one-click installers yet.
             </p>
           </header>
@@ -104,13 +104,13 @@ export default function Page() {
           <ul className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
             {BLUEPRINTS.map((item) => (
               <li key={item.id}>
-                <Card className="h-full border-slate-200 bg-white">
+                <Card className="h-full border-gray-200 bg-white">
                   <CardContent className="flex h-full flex-col gap-3 py-6">
                     <div className="flex flex-wrap items-start justify-between gap-2">
                       <CardTitle className="text-lg leading-snug">{item.title}</CardTitle>
                       <Badge variant="secondary">Blueprint</Badge>
                     </div>
-                    <CardDescription className="text-sm leading-relaxed text-slate-600">
+                    <CardDescription className="text-sm leading-relaxed text-gray-600">
                       {item.blurb}
                     </CardDescription>
                     <div className="mt-auto pt-2">

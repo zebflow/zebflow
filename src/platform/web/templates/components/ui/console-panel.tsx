@@ -32,8 +32,8 @@ export default function ConsolePanel({ owner, project, isOpen, children }) {
     >
       {/* Header row */}
       <div className="flex items-center gap-2 px-4 py-1.5 border-b border-white/[0.06] min-h-[2rem] select-none">
-        <span className="text-xs font-bold text-slate-500 font-mono">Console</span>
-        <span className="inline-flex items-center gap-1 text-slate-700 text-[0.65rem] font-mono">
+        <span className="text-xs font-bold text-gray-500 font-mono">Console</span>
+        <span className="inline-flex items-center gap-1 text-gray-700 text-[0.65rem] font-mono">
           <Kbd>`</Kbd>
           <span>toggle</span>
         </span>
@@ -47,7 +47,7 @@ export default function ConsolePanel({ owner, project, isOpen, children }) {
           type="button"
           aria-label="Close console"
           data-console-close
-          className="ml-1 text-slate-700 hover:text-slate-400 size-6 text-[0.9rem]"
+          className="ml-1 text-gray-700 hover:text-gray-400 size-6 text-[0.9rem]"
         >✕</Button>
       </div>
 
@@ -70,7 +70,7 @@ export default function ConsolePanel({ owner, project, isOpen, children }) {
         {/* Raw input — avoids Input component's bg-white base class overriding bg-transparent */}
         <input
           type="text"
-          className="flex-1 min-w-0 bg-transparent border-none outline-none font-mono text-[0.82rem] text-green-300 placeholder:text-slate-600 caret-green-400"
+          className="flex-1 min-w-0 bg-transparent border-none outline-none font-mono text-[0.82rem] text-green-300 placeholder:text-gray-600 caret-green-400"
           data-cli-input
           placeholder="ask or type commands"
           autoComplete="off"

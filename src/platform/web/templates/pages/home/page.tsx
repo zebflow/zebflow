@@ -35,6 +35,7 @@ export const page = {
 
 export default function Page(input) {
   const projects = Array.isArray(input?.projects) ? input.projects : [];
+  const offices = Array.isArray(input?.offices) ? input.offices : [];
   const runtimeTargets = Array.isArray(input?.runtime_targets)
     ? input.runtime_targets
     : [{ value: "local", label: "Local office", description: "" }];
@@ -87,16 +88,16 @@ export default function Page(input) {
 
       <main className="pb-16 pt-24">
         <section className="mx-auto max-w-6xl px-6">
-          <header className="mb-10 flex flex-col gap-4 border-b border-slate-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+          <header className="mb-10 flex flex-col gap-4 border-b border-gray-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h1 className="text-3xl font-black tracking-tighter text-slate-900">
+              <h1 className="text-3xl font-black tracking-tighter text-gray-900">
                 Projects for {input.owner}
               </h1>
-              <p className="mt-2 text-sm text-slate-500">
+              <p className="mt-2 text-sm text-gray-500">
                 Create and manage automation projects inside this office.
               </p>
               {input?.app_version ? (
-                <p className="mt-1 text-[0.7rem] text-slate-400 tracking-wide">v{input.app_version}</p>
+                <p className="mt-1 text-[0.7rem] text-gray-400 tracking-wide">v{input.app_version}</p>
               ) : null}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
@@ -121,28 +122,100 @@ export default function Page(input) {
                 href={item?.path ?? "#"}
                 className="block hover:no-underline"
               >
-                    <Card className="cursor-pointer transition-all hover:border-slate-300 hover:shadow-md">
+                    <Card className="cursor-pointer transition-all hover:border-gray-300 hover:shadow-md">
                       <CardContent className="py-5">
                         <CardTitle className="text-lg">{item?.title}</CardTitle>
                         <CardDescription className="mt-1">{item?.project}</CardDescription>
-                        <div className="mt-4 space-y-1 text-xs text-slate-500">
+                        <div className="mt-4 space-y-1 text-xs text-gray-500">
                           <p>
-                            <span className="font-medium text-slate-700">Runtime:</span>{" "}
+                            <span className="font-medium text-gray-700">Runtime:</span>{" "}
                             {item?.runtime_mode || "shared"} · {item?.runtime_summary || "Local office"}
                           </p>
                           <p>
-                            <span className="font-medium text-slate-700">Office:</span>{" "}
+                            <span className="font-medium text-gray-700">Office:</span>{" "}
                             {item?.office_label || "Local office"}
                           </p>
                           <p className="truncate">
-                            <span className="font-medium text-slate-700">Address:</span>{" "}
+                            <span className="font-medium text-gray-700">Address:</span>{" "}
                             {item?.office_url || "Uses the current office address"}
                           </p>
                         </div>
                       </CardContent>
                     </Card>
-                  </Link>
+              </Link>
             ))}
+          </section>
+
+          <section className="mt-12">
+            <header className="mb-4">
+              <h2 className="text-xl font-black tracking-tight text-gray-900">Office status</h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Current office inventory, runtime availability, and placement health.
+              </p>
+            </header>
+            <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+              {offices.map((office, index) => {
+                const availability = String(office?.availability || "unknown");
+                const availabilityTone =
+                  availability === "online"
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : availability === "dangling"
+                      ? "bg-amber-50 text-amber-700 border-amber-200"
+                      : "bg-gray-100 text-gray-700 border-gray-200";
+                const projects = Array.isArray(office?.hosted_projects) ? office.hosted_projects : [];
+                const capabilities = Array.isArray(office?.capabilities) ? office.capabilities : [];
+                return (
+                  <Card key={`${office?.id ?? "office"}-${index}`}>
+                    <CardContent className="py-5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <CardTitle className="text-lg">{office?.label || office?.id}</CardTitle>
+                          <CardDescription className="mt-1">{office?.role || "Office"}</CardDescription>
+                        </div>
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-wide ${availabilityTone}`}
+                        >
+                          {availability}
+                        </span>
+                      </div>
+                      <div className="mt-4 space-y-1 text-xs text-gray-500">
+                        <p>
+                          <span className="font-medium text-gray-700">State:</span>{" "}
+                          {office?.resource_state || "unknown"}
+                        </p>
+                        <p className="truncate">
+                          <span className="font-medium text-gray-700">Address:</span>{" "}
+                          {office?.address || "No advertised address"}
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-700">Version:</span>{" "}
+                          {office?.version || "unknown"}
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-700">Last seen:</span>{" "}
+                          {office?.last_seen || "unknown"}
+                        </p>
+                        <p>
+                          <span className="font-medium text-gray-700">Hosted projects:</span>{" "}
+                          {office?.hosted_project_count ?? 0}
+                        </p>
+                        <p className="truncate">
+                          <span className="font-medium text-gray-700">Capabilities:</span>{" "}
+                          {capabilities.length > 0 ? capabilities.join(", ") : "none declared"}
+                        </p>
+                        {projects.length > 0 ? (
+                          <p className="truncate">
+                            <span className="font-medium text-gray-700">Examples:</span>{" "}
+                            {projects.slice(0, 3).join(", ")}
+                            {projects.length > 3 ? ` +${projects.length - 3} more` : ""}
+                          </p>
+                        ) : null}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
           </section>
         </section>
       </main>
@@ -185,7 +258,7 @@ export default function Page(input) {
                     name="runtime_mode"
                     value={createRuntimeMode}
                     onChange={(e) => setCreateRuntimeMode(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
                   >
                     <option value="shared">Shared</option>
                     <option value="pinned">Pinned</option>
@@ -202,7 +275,7 @@ export default function Page(input) {
                     name="placement_worker_id"
                     value={createPlacementWorker}
                     onChange={(e) => setCreatePlacementWorker(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
                   >
                     {runtimeTargets.map((item) => (
                       <option key={item.value} value={item.value}>
@@ -329,7 +402,7 @@ export default function Page(input) {
                     name="runtime_mode"
                     value={cloneRuntimeMode}
                     onChange={(e) => setCloneRuntimeMode(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
                   >
                     <option value="shared">Shared</option>
                     <option value="pinned">Pinned</option>
@@ -347,7 +420,7 @@ export default function Page(input) {
                     name="placement_worker_id"
                     value={clonePlacementWorker}
                     onChange={(e) => setClonePlacementWorker(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm text-slate-900"
+                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
                   >
                     {runtimeTargets.map((item) => (
                       <option key={item.value} value={item.value}>

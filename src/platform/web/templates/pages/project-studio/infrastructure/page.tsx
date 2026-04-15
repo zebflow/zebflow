@@ -21,13 +21,13 @@ export default function InfrastructurePage(input) {
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
       <header className="space-y-2">
-        <p className="text-xs uppercase tracking-[0.24em] text-slate-500">
+        <p className="text-xs uppercase tracking-[0.24em] text-gray-500">
           Infrastructure
         </p>
-        <h1 className="text-3xl font-semibold text-slate-900">
+        <h1 className="text-3xl font-semibold text-gray-900">
           Controller and office topology
         </h1>
-        <p className="max-w-3xl text-sm leading-6 text-slate-600">
+        <p className="max-w-3xl text-sm leading-6 text-gray-600">
           This surface will manage office inventory, project placement, and
           controller bootstrap. The structure exists now so runtime work can land
           behind stable UI module boundaries.

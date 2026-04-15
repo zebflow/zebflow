@@ -5,52 +5,52 @@
  */
 
 [data-studio-theme="dark"] {
-  --color-bg: #101010;
-  --color-surface: #111827;
-  --color-surface-2: #172033;
-  --color-surface-3: #1e293b;
-  --color-border: #2b3648;
-  --color-border-soft: #20293a;
-  --color-body: #e5edf7;
-  --color-body-soft: #93a4ba;
-  --color-body-muted: #64748b;
+  --color-bg: var(--color-dark-background);
+  --color-surface: #161616;
+  --color-surface-2: #1b1b1b;
+  --color-surface-3: #242424;
+  --color-border: var(--color-dark-border);
+  --color-border-soft: #202020;
+  --color-body: #f3f4f6;
+  --color-body-soft: #9ca3af;
+  --color-body-muted: #6b7280;
   --color-accent: var(--color-brand-orange);
   --color-accent-strong: var(--color-brand-orange-ink);
   --color-accent-alt: var(--color-brand-blue);
   --color-accent-alt-strong: var(--color-brand-blue-ink);
-  --color-ui-bg: #020617;
-  --color-ui-bg-subtle: #0f172a;
-  --color-ui-bg-muted: #1e293b;
-  --color-ui-border: #1e293b;
-  --color-ui-border-subtle: #1e293b;
-  --color-ui-text: #f8fafc;
-  --color-ui-text-soft: #94a3b8;
-  --color-ui-text-muted: #94a3b8;
+  --color-ui-bg: var(--color-dark-menus);
+  --color-ui-bg-subtle: #111111;
+  --color-ui-bg-muted: #1a1a1a;
+  --color-ui-border: var(--color-dark-border);
+  --color-ui-border-subtle: #202020;
+  --color-ui-text: #f3f4f6;
+  --color-ui-text-soft: #9ca3af;
+  --color-ui-text-muted: #9ca3af;
   color: var(--color-ui-text);
 }
 
 [data-studio-theme="light"] {
-  --color-bg: rgb(248 250 252);
+  --color-bg: rgb(249 250 251);
   --color-surface: rgb(255 255 255);
-  --color-surface-2: rgb(248 250 252);
-  --color-surface-3: rgb(241 245 249);
-  --color-border: rgb(203 213 225);
-  --color-border-soft: rgb(226 232 240);
-  --color-body: rgb(15 23 42);
-  --color-body-soft: rgb(71 85 105);
-  --color-body-muted: rgb(100 116 139);
+  --color-surface-2: rgb(249 250 251);
+  --color-surface-3: rgb(243 244 246);
+  --color-border: rgb(229 231 235);
+  --color-border-soft: rgb(243 244 246);
+  --color-body: rgb(17 24 39);
+  --color-body-soft: rgb(75 85 99);
+  --color-body-muted: rgb(107 114 128);
   --color-accent: var(--color-brand-orange);
   --color-accent-strong: var(--color-brand-orange-ink);
   --color-accent-alt: var(--color-brand-blue);
   --color-accent-alt-strong: var(--color-brand-blue-ink);
   --color-ui-bg: #ffffff;
-  --color-ui-bg-subtle: #f8fafc;
-  --color-ui-bg-muted: #f1f5f9;
-  --color-ui-border: #e2e8f0;
-  --color-ui-border-subtle: #f1f5f9;
-  --color-ui-text: #020617;
-  --color-ui-text-soft: #475569;
-  --color-ui-text-muted: #64748b;
+  --color-ui-bg-subtle: #f9fafb;
+  --color-ui-bg-muted: #f3f4f6;
+  --color-ui-border: #e5e7eb;
+  --color-ui-border-subtle: #f3f4f6;
+  --color-ui-text: #111827;
+  --color-ui-text-soft: #4b5563;
+  --color-ui-text-muted: #6b7280;
   color: var(--color-ui-text);
 }
 
@@ -522,8 +522,9 @@ button.pipeline-editor-item:hover {
   border-bottom: 1px solid var(--color-border-soft);
   background: color-mix(in srgb, var(--color-surface) 82%, transparent);
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: 0.7rem;
 }
 
@@ -555,8 +556,8 @@ button.pipeline-editor-item:hover {
   width: 0.44rem;
   height: 0.44rem;
   border-radius: 999px;
-  background: #64748b;
-  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.25);
+  background: #6b7280;
+  box-shadow: 0 0 0 1px rgba(156, 163, 175, 0.25);
 }
 
 .pipeline-editor-indicator-trigger[data-trigger-kind="webhook"]::before {
@@ -589,7 +590,7 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-editor-indicator-draft[data-tone="neutral"]::before {
-  background: #64748b;
+  background: #6b7280;
 }
 
 .pipeline-editor-template-host {
@@ -628,10 +629,10 @@ button.pipeline-editor-item:hover {
   height: 1.5rem;
   padding: 0;
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--color-border, #334155) 90%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border, #2a2a2a) 90%, transparent);
   border-radius: 0.25rem;
-  background: color-mix(in srgb, var(--color-surface-2, #1e293b) 88%, #000);
-  color: var(--color-body, #e2e8f0);
+  background: color-mix(in srgb, var(--color-surface-2, #1b1b1b) 88%, #000);
+  color: var(--color-body, #f3f4f6);
   font-size: 0.65rem;
   font-weight: 700;
   line-height: 1;
@@ -658,7 +659,7 @@ button.pipeline-editor-item:hover {
   font-size: 0.58rem;
   font-weight: 600;
   font-family: var(--font-mono, var(--font-mono, ui-monospace), monospace);
-  color: var(--color-body-muted, #94a3b8);
+  color: var(--color-body-muted, #9ca3af);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1011,7 +1012,7 @@ button.pipeline-editor-item:hover {
 .pipeline-render-editor-shell {
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
-  background: #0f172a;
+  background: var(--color-surface);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -1834,7 +1835,7 @@ button.pipeline-editor-item:hover {
   width: 8px;
   height: 8px;
   border-radius: 9999px;
-  background: #94a3b8;
+  background: #9ca3af;
   pointer-events: none;
 }
 
@@ -2133,10 +2134,10 @@ dialog.git-cred-dialog::backdrop {
 
 /* ── MCP Session Panel ───────────────────────────────────────────────────── */
 .mcp-token-input {
-  background: var(--color-surface-2, #0d1117);
-  border: 1px solid var(--color-border, #1e293b);
+  background: var(--color-surface-2, #1b1b1b);
+  border: 1px solid var(--color-border, #2a2a2a);
   border-radius: 0.35rem;
-  color: var(--color-body-soft, #94a3b8);
+  color: var(--color-body-soft, #9ca3af);
   font-size: 0.68rem;
   font-family: ui-monospace, monospace;
   padding: 0.3rem 0.5rem;
@@ -2272,7 +2273,7 @@ dialog.git-cred-dialog::backdrop {
 .git-tree-code.is-added    { color: #22c55e; }
 .git-tree-code.is-modified { color: #f59e0b; }
 .git-tree-code.is-deleted  { color: #ef4444; }
-.git-tree-code.is-untracked { color: #94a3b8; }
+.git-tree-code.is-untracked { color: #9ca3af; }
 
 /* ── Pipeline editor save error banner ──────────────────────────────────── */
 .pipeline-editor-save-error {
