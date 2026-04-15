@@ -1,33 +1,34 @@
 //! Real framework engine with graph traversal and built-in node dispatch.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_exprs};
-use crate::pipeline::interface::PipelineEngine;
-use crate::pipeline::model::{
-    ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineOutput, PipelineGraph, PipelineNode,
-};
-use crate::pipeline::nodes::basic::{
-    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
-    img_thumbnail, logic, mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
-    sqlite_mutate, sqlite_query,
-    trigger::{function as trigger_function, manual, memsubscribe, schedule, webhook, weberror},
-    web_response, ws_emit, ws_sync_state, ws_trigger,
-};
-use crate::platform::services::PlatformService;
-use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
-use crate::language::{DenoSandboxEngine, LanguageEngine};
-use crate::platform::services::CredentialService;
-use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
+use crate::language::{DenoSandboxEngine, LanguageEngine};
+use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_exprs};
+use crate::pipeline::interface::PipelineEngine;
+use crate::pipeline::model::{
+    ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph, PipelineNode,
+    PipelineOutput,
+};
+use crate::pipeline::nodes::basic::{
+    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
+    img_thumbnail, logic, mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set,
+    pg_query, script, sekejap_query, sqlite_mutate, sqlite_query,
+    trigger::{function as trigger_function, manual, memsubscribe, schedule, weberror, webhook},
+    web_response, web_static_generate, ws_emit, ws_sync_state, ws_trigger,
+};
+use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
+use crate::platform::services::CredentialService;
+use crate::platform::services::PlatformService;
+use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
 
 /// A single entry in the template compile cache.
 /// Pairs the compiled page artifact with the set of component files it depends on,
@@ -158,6 +159,69 @@ fn extend_unique_paths(target: &mut Vec<Vec<String>>, extra: Vec<Vec<String>>) {
             continue;
         }
         target.push(item);
+    }
+}
+
+fn is_sensitive_trace_config_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "passwd"
+            | "passphrase"
+            | "secret"
+            | "clientsecret"
+            | "accesstoken"
+            | "refreshtoken"
+            | "idtoken"
+            | "authorization"
+            | "apikey"
+            | "privatekey"
+            | "signingkey"
+            | "jwtsecret"
+            | "cookiesecret"
+            | "webhooksecret"
+    )
+}
+
+fn sanitize_trace_config_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, value) in map {
+                if key == "ui" {
+                    continue;
+                }
+                let sanitized = if is_sensitive_trace_config_key(key) {
+                    Value::String("••••••".to_string())
+                } else {
+                    sanitize_trace_config_value(value)
+                };
+                out.insert(key.clone(), sanitized);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(sanitize_trace_config_value)
+                .collect::<Vec<_>>(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn trace_config_snapshot(value: &Value) -> Option<Value> {
+    let sanitized = sanitize_trace_config_value(value);
+    match &sanitized {
+        Value::Null => None,
+        Value::Object(map) if map.is_empty() => None,
+        Value::Array(items) if items.is_empty() => None,
+        _ => Some(sanitized),
     }
 }
 
@@ -305,9 +369,8 @@ impl BasicPipelineEngine {
     fn build_node(&self, node: &PipelineNode) -> Result<NodeDispatch, PipelineError> {
         match node.kind.as_str() {
             webhook::NODE_KIND => Ok(NodeDispatch::Webhook(webhook::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_WEBHOOK_CONFIG", err.to_string())
-                })?,
+                serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new("FW_NODE_WEBHOOK_CONFIG", err.to_string()))?,
             ))),
             schedule::NODE_KIND => Ok(NodeDispatch::Schedule(schedule::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|err| {
@@ -345,6 +408,20 @@ impl BasicPipelineEngine {
                     data_root.clone(),
                 )?))
             }
+            sekejap_query::NODE_KIND => {
+                let Some(data_root) = &self.data_root else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_SEKEJAP_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::SekejapQuery(sekejap_query::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_SEKEJAP_QUERY_CONFIG", err.to_string())
+                    })?,
+                    data_root.clone(),
+                )?))
+            }
             sqlite_mutate::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
@@ -367,8 +444,9 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::BrowserRun(browser_run::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string()))?,
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_BROWSER_RUN_CONFIG", e.to_string())
+                    })?,
                     credentials.clone(),
                 )?))
             }
@@ -400,10 +478,30 @@ impl BasicPipelineEngine {
                     Ok(NodeDispatch::WebResponse(web_response::Node::new(config)))
                 }
             }
+            web_static_generate::NODE_KIND => {
+                if self.data_root.is_none() {
+                    return Err(PipelineError::new(
+                        "FW_NODE_WEB_STATIC_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
+                    ));
+                }
+                let config: web_static_generate::Config =
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_WEB_STATIC_CONFIG", err.to_string())
+                    })?;
+                Ok(NodeDispatch::InlineWebStaticGenerate {
+                    node_id: node.id.clone(),
+                    config,
+                })
+            }
             agent::NODE_KIND => {
                 let config: agent::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
-                Ok(NodeDispatch::Agent(agent::Node::new(config, self.credentials.clone(), self.platform.clone())))
+                Ok(NodeDispatch::Agent(agent::Node::new(
+                    config,
+                    self.credentials.clone(),
+                    self.platform.clone(),
+                )))
             }
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
@@ -413,14 +511,16 @@ impl BasicPipelineEngine {
             )?)),
             logic::switch::NODE_KIND => Ok(NodeDispatch::LogicSwitch(logic::switch::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone())
-                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_SWITCH_CONFIG", e.to_string()))?,
+                serde_json::from_value(node.config.clone()).map_err(|e| {
+                    PipelineError::new("FW_NODE_LOGIC_SWITCH_CONFIG", e.to_string())
+                })?,
                 self.language.clone(),
             )?)),
             logic::branch::NODE_KIND => Ok(NodeDispatch::LogicBranch(logic::branch::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone())
-                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_BRANCH_CONFIG", e.to_string()))?,
+                serde_json::from_value(node.config.clone()).map_err(|e| {
+                    PipelineError::new("FW_NODE_LOGIC_BRANCH_CONFIG", e.to_string())
+                })?,
                 self.language.clone(),
             )?)),
             logic::merge::NODE_KIND => Ok(NodeDispatch::LogicMerge(logic::merge::Node::new(
@@ -486,7 +586,9 @@ impl BasicPipelineEngine {
             trigger_function::NODE_KIND => {
                 let config: trigger_function::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
-                Ok(NodeDispatch::TriggerFunction(trigger_function::Node::new(config)))
+                Ok(NodeDispatch::TriggerFunction(trigger_function::Node::new(
+                    config,
+                )))
             }
             function_call::NODE_KIND => {
                 let config: function_call::Config =
@@ -505,7 +607,10 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileSave(file_save::Node::new(config, platform.clone())?))
+                Ok(NodeDispatch::FileSave(file_save::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
             }
             img_thumbnail::NODE_KIND => {
                 let config: img_thumbnail::Config =
@@ -516,7 +621,10 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(config, platform.clone())?))
+                Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
             }
             mem_set::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
@@ -565,8 +673,9 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::MemIncr(mem_incr::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_INCR_CONFIG", e.to_string()))?,
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_MEM_INCR_CONFIG", e.to_string())
+                    })?,
                     state_bus.clone(),
                 )))
             }
@@ -578,8 +687,9 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::MemPublish(mem_publish::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_PUBLISH_CONFIG", e.to_string()))?,
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_MEM_PUBLISH_CONFIG", e.to_string())
+                    })?,
                     state_bus.clone(),
                 )))
             }
@@ -591,8 +701,9 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::MemExists(mem_exists::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_EXISTS_CONFIG", e.to_string()))?,
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_MEM_EXISTS_CONFIG", e.to_string())
+                    })?,
                     state_bus.clone(),
                 )))
             }
@@ -604,14 +715,16 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::MemExpire(mem_expire::Node::new(
-                    serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_EXPIRE_CONFIG", e.to_string()))?,
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_MEM_EXPIRE_CONFIG", e.to_string())
+                    })?,
                     state_bus.clone(),
                 )))
             }
             memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(
-                serde_json::from_value(node.config.clone())
-                    .map_err(|e| PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string()))?,
+                serde_json::from_value(node.config.clone()).map_err(|e| {
+                    PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string())
+                })?,
             ))),
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
@@ -761,11 +874,15 @@ impl PipelineEngine for BasicPipelineEngine {
                 &input.metadata,
                 &self.language,
             )?;
+            let base_trace_config = trace_config_snapshot(&effective_config);
             let dispatch = if effective_config == node.config {
                 // No expressions resolved — use original node directly (common fast path).
                 self.build_node(node)?
             } else {
-                self.build_node(&PipelineNode { config: effective_config, ..(*node).clone() })?
+                self.build_node(&PipelineNode {
+                    config: effective_config.clone(),
+                    ..(*node).clone()
+                })?
             };
 
             // Capture context for per-node trace before consuming `input`.
@@ -780,82 +897,96 @@ impl PipelineEngine for BasicPipelineEngine {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(30);
             let exec_fut = async {
-            match dispatch {
-                NodeDispatch::Webhook(node) => node.execute_async(input).await,
-                NodeDispatch::Schedule(node) => node.execute_async(input).await,
-                NodeDispatch::Manual(node) => node.execute_async(input).await,
-                NodeDispatch::Script(node) => node.execute_async(input).await,
-                NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
-                NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
-                NodeDispatch::SqliteQuery(node) => node.execute_async(input).await,
-                NodeDispatch::SqliteMutate(node) => node.execute_async(input).await,
-                NodeDispatch::Postgres(node) => node.execute_async(input).await,
-                NodeDispatch::InlineWebResponse { node_id, config } => {
-                    let markup = config.markup.as_deref().unwrap_or("").trim();
-                    if markup.is_empty() {
-                        Err(PipelineError::new(
-                            "FW_NODE_WEB_RESPONSE_CONFIG",
-                            format!("node '{node_id}' --template set but markup not loaded"),
-                        ))
-                    } else {
-                        // Resolve response envelope from config + input
-                        let location = config.location.as_deref().map(|loc| {
-                            if loc.starts_with("$.") || loc == "$" {
-                                web_response::resolve_json_path_string(&input.payload, loc)
-                                    .unwrap_or_else(|| loc.to_string())
-                            } else {
-                                loc.to_string()
-                            }
-                        });
-                        let status = config.status
-                            .or_else(|| if location.is_some() { Some(302) } else { None });
-                        let cookie = config.set_cookie.as_deref()
-                            .and_then(|s| web_response::parse_cookie_spec(s, &input.payload));
-                        let headers = config.headers.clone();
-
-                        let template_id = config.template.clone().unwrap_or_default();
-                        let source_path = self.template_root.as_ref()
-                            .and_then(|r| config.template.as_deref().map(|t| r.join(t)));
-                        let options = crate::rwe::ReactiveWebOptions {
-                            templates: crate::rwe::TemplateOptions {
-                                template_root: self.template_root.clone(),
-                                style_entries: Vec::new(),
-                            },
-                            ..Default::default()
-                        };
-
-                        let key = hash_markup(markup);
-                        let cached = self.template_cache.as_ref().and_then(|c| {
-                            c.read().unwrap_or_else(|e| e.into_inner()).get(&key).map(|e| e.page.clone())
-                        });
-                        let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) = cached {
-                            Ok(hit)
+                match dispatch {
+                    NodeDispatch::Webhook(node) => node.execute_async(input).await,
+                    NodeDispatch::Schedule(node) => node.execute_async(input).await,
+                    NodeDispatch::Manual(node) => node.execute_async(input).await,
+                    NodeDispatch::Script(node) => node.execute_async(input).await,
+                    NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
+                    NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
+                    NodeDispatch::SqliteQuery(node) => node.execute_async(input).await,
+                    NodeDispatch::SekejapQuery(node) => node.execute_async(input).await,
+                    NodeDispatch::SqliteMutate(node) => node.execute_async(input).await,
+                    NodeDispatch::Postgres(node) => node.execute_async(input).await,
+                    NodeDispatch::InlineWebResponse { node_id, config } => {
+                        let markup = config.markup.as_deref().unwrap_or("").trim();
+                        if markup.is_empty() {
+                            Err(PipelineError::new(
+                                "FW_NODE_WEB_RESPONSE_CONFIG",
+                                format!("node '{node_id}' --template set but markup not loaded"),
+                            ))
                         } else {
-                            let fresh = web_response::compile_page(
-                                &node_id,
-                                &TemplateSource {
-                                    id: template_id,
-                                    source_path,
-                                    markup: markup.to_string(),
-                                },
-                                &options,
-                                self.rwe.as_ref(),
-                                self.language.as_ref(),
-                            )
-                            .map(Arc::new);
-                            if let Ok(ref fresh_arc) = fresh {
-                                if let Some(cache) = &self.template_cache {
-                                    let deps = fresh_arc.template.dependency_paths.clone();
-                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(key, CacheEntry {
-                                        page: fresh_arc.clone(),
-                                        dependencies: deps,
-                                    });
+                            // Resolve response envelope from config + input
+                            let location = config.location.as_deref().map(|loc| {
+                                if loc.starts_with("$.") || loc == "$" {
+                                    web_response::resolve_json_path_string(&input.payload, loc)
+                                        .unwrap_or_else(|| loc.to_string())
+                                } else {
+                                    loc.to_string()
                                 }
-                            }
-                            fresh
-                        };
+                            });
+                            let status = config
+                                .status
+                                .or_else(|| if location.is_some() { Some(302) } else { None });
+                            let cookie = config
+                                .set_cookie
+                                .as_deref()
+                                .and_then(|s| web_response::parse_cookie_spec(s, &input.payload));
+                            let headers = config.headers.clone();
 
-                        compiled_result.and_then(|compiled| {
+                            let template_id = config.template.clone().unwrap_or_default();
+                            let source_path = self
+                                .template_root
+                                .as_ref()
+                                .and_then(|r| config.template.as_deref().map(|t| r.join(t)));
+                            let options = crate::rwe::ReactiveWebOptions {
+                                templates: crate::rwe::TemplateOptions {
+                                    template_root: self.template_root.clone(),
+                                    style_entries: Vec::new(),
+                                },
+                                ..Default::default()
+                            };
+
+                            let key = hash_markup(markup);
+                            let cached = self.template_cache.as_ref().and_then(|c| {
+                                c.read()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .get(&key)
+                                    .map(|e| e.page.clone())
+                            });
+                            let compiled_result: Result<Arc<_>, PipelineError> = if let Some(hit) =
+                                cached
+                            {
+                                Ok(hit)
+                            } else {
+                                let fresh = web_response::compile_page(
+                                    &node_id,
+                                    &TemplateSource {
+                                        id: template_id,
+                                        source_path,
+                                        markup: markup.to_string(),
+                                    },
+                                    &options,
+                                    self.rwe.as_ref(),
+                                    self.language.as_ref(),
+                                )
+                                .map(Arc::new);
+                                if let Ok(ref fresh_arc) = fresh {
+                                    if let Some(cache) = &self.template_cache {
+                                        let deps = fresh_arc.template.dependency_paths.clone();
+                                        cache.write().unwrap_or_else(|e| e.into_inner()).insert(
+                                            key,
+                                            CacheEntry {
+                                                page: fresh_arc.clone(),
+                                                dependencies: deps,
+                                            },
+                                        );
+                                    }
+                                }
+                                fresh
+                            };
+
+                            compiled_result.and_then(|compiled| {
                             let enabled_libraries: Vec<String> = self.platform
                                 .as_ref()
                                 .and_then(|p| {
@@ -888,45 +1019,215 @@ impl PipelineEngine for BasicPipelineEngine {
                                 trace: render_out.trace,
                             })
                         })
+                        }
                     }
+                    NodeDispatch::WebResponse(node) => node.execute_async(input).await,
+                    NodeDispatch::InlineWebStaticGenerate { node_id, config } => {
+                        let Some(data_root) = &self.data_root else {
+                            return Err(PipelineError::new(
+                                "FW_NODE_WEB_STATIC_UNAVAILABLE",
+                                "data_root is not configured on this pipeline engine",
+                            ));
+                        };
+
+                        let template_source = web_static_generate::resolve_template_source(
+                            &node_id,
+                            &config,
+                            self.template_root.as_deref(),
+                        )?;
+
+                        let options = crate::rwe::ReactiveWebOptions {
+                            templates: crate::rwe::TemplateOptions {
+                                template_root: self.template_root.clone(),
+                                style_entries: Vec::new(),
+                            },
+                            ..Default::default()
+                        };
+
+                        let key = hash_markup(&template_source.markup);
+                        let cached = self.template_cache.as_ref().and_then(|c| {
+                            c.read()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(&key)
+                                .map(|e| e.page.clone())
+                        });
+                        let compiled_result: Result<Arc<_>, PipelineError> =
+                            if let Some(hit) = cached {
+                                Ok(hit)
+                            } else {
+                                let fresh = web_response::compile_page(
+                                    &node_id,
+                                    &template_source,
+                                    &options,
+                                    self.rwe.as_ref(),
+                                    self.language.as_ref(),
+                                )
+                                .map(Arc::new);
+                                if let Ok(ref fresh_arc) = fresh
+                                    && let Some(cache) = &self.template_cache
+                                {
+                                    let deps = fresh_arc.template.dependency_paths.clone();
+                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(
+                                        key,
+                                        CacheEntry {
+                                            page: fresh_arc.clone(),
+                                            dependencies: deps,
+                                        },
+                                    );
+                                }
+                                fresh
+                            };
+
+                        compiled_result.and_then(|compiled| {
+                            let rel_path = web_static_generate::normalize_output_rel_path(
+                                &config.scope,
+                                &config.output_path,
+                            )?;
+                            let abs_path = data_root
+                                .join("users")
+                                .join(&ctx.owner)
+                                .join(&ctx.project)
+                                .join("files")
+                                .join(&rel_path);
+                            let route = config
+                                .route
+                                .clone()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| {
+                                    web_static_generate::default_route(
+                                        &ctx.owner,
+                                        &ctx.project,
+                                        &rel_path,
+                                    )
+                                });
+
+                            let mut metadata = input.metadata.clone();
+                            if let Some(map) = metadata.as_object_mut() {
+                                map.insert("route".to_string(), Value::String(route.clone()));
+                            }
+
+                            let enabled_libraries: Vec<String> = self
+                                .platform
+                                .as_ref()
+                                .and_then(|p| {
+                                    p.zebflow_cfg
+                                        .get_rwe_libraries(&ctx.owner, &ctx.project)
+                                        .ok()
+                                })
+                                .map(|libs| libs.into_keys().collect())
+                                .unwrap_or_default();
+
+                            let render_out = web_response::render_compiled_page(
+                                &compiled,
+                                input.payload,
+                                metadata,
+                                self.rwe.as_ref(),
+                                self.language.as_ref(),
+                                &ctx.request_id,
+                                enabled_libraries,
+                            )?;
+
+                            let html = render_out
+                                .payload
+                                .get("html")
+                                .and_then(Value::as_str)
+                                .ok_or_else(|| {
+                                    PipelineError::new(
+                                        "FW_NODE_WEB_STATIC_RENDER",
+                                        format!("node '{node_id}' did not return rendered html"),
+                                    )
+                                })?
+                                .to_string();
+
+                            let hydration_payload = render_out
+                                .payload
+                                .get("hydration_payload")
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            let compiled_scripts = render_out
+                                .payload
+                                .get("compiled_scripts")
+                                .cloned()
+                                .and_then(|value| {
+                                    serde_json::from_value::<Vec<crate::rwe::CompiledScript>>(value)
+                                        .ok()
+                                })
+                                .unwrap_or_default();
+
+                            let final_html = web_static_generate::build_static_html(
+                                html,
+                                &hydration_payload,
+                                &compiled_scripts,
+                                self.template_root.as_deref(),
+                            );
+                            let status = web_static_generate::write_generated_html(
+                                &abs_path,
+                                &final_html,
+                                &config.on_conflict,
+                            )?;
+                            let bytes = final_html.as_bytes().len() as u64;
+                            let url = format!("/files/{}/{}/{}", ctx.owner, ctx.project, rel_path);
+
+                            let mut trace = render_out.trace;
+                            trace.push(format!("node_kind={}", web_static_generate::NODE_KIND));
+                            trace.push(format!("generated_path={rel_path}"));
+                            trace.push(format!("generated_status={status}"));
+
+                            Ok(NodeExecutionOutput {
+                                output_pins: vec![web_static_generate::OUTPUT_PIN_OUT.to_string()],
+                                payload: json!({
+                                    "generated": {
+                                        "status": status,
+                                        "path": rel_path,
+                                        "url": url,
+                                        "route": route,
+                                        "template": template_source.id,
+                                        "scope": config.scope,
+                                        "bytes": bytes,
+                                    }
+                                }),
+                                trace,
+                            })
+                        })
+                    }
+                    NodeDispatch::Agent(node) => node.execute_async(input).await,
+                    NodeDispatch::LogicIf(node) => node.execute_async(input).await,
+                    NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
+                    NodeDispatch::LogicBranch(node) => node.execute_async(input).await,
+                    NodeDispatch::LogicMerge(node) => node.execute_async(input).await,
+                    NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await,
+                    NodeDispatch::WebError(node) => node.execute_async(input).await,
+                    NodeDispatch::WsTrigger(node) => node.execute_async(input).await,
+                    NodeDispatch::WsSyncState(node) => node.execute_async(input).await,
+                    NodeDispatch::WsEmit(node) => node.execute_async(input).await,
+                    NodeDispatch::Crypto(node) => node.execute_async(input).await,
+                    NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
+                    NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
+                    NodeDispatch::FileSave(node) => node.execute_async(input).await,
+                    NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
+                    NodeDispatch::MemSet(node) => node.execute_async(input).await,
+                    NodeDispatch::MemGet(node) => node.execute_async(input).await,
+                    NodeDispatch::MemDel(node) => node.execute_async(input).await,
+                    NodeDispatch::MemExists(node) => node.execute_async(input).await,
+                    NodeDispatch::MemExpire(node) => node.execute_async(input).await,
+                    NodeDispatch::MemIncr(node) => node.execute_async(input).await,
+                    NodeDispatch::MemPublish(node) => node.execute_async(input).await,
+                    NodeDispatch::MemSubscribe(node) => node.execute_async(input).await,
                 }
-                NodeDispatch::WebResponse(node) => node.execute_async(input).await,
-                NodeDispatch::Agent(node) => node.execute_async(input).await,
-                NodeDispatch::LogicIf(node) => node.execute_async(input).await,
-                NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
-                NodeDispatch::LogicBranch(node) => node.execute_async(input).await,
-                NodeDispatch::LogicMerge(node) => node.execute_async(input).await,
-                NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await,
-                NodeDispatch::WebError(node) => node.execute_async(input).await,
-                NodeDispatch::WsTrigger(node) => node.execute_async(input).await,
-                NodeDispatch::WsSyncState(node) => node.execute_async(input).await,
-                NodeDispatch::WsEmit(node) => node.execute_async(input).await,
-                NodeDispatch::Crypto(node) => node.execute_async(input).await,
-                NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
-                NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
-                NodeDispatch::FileSave(node) => node.execute_async(input).await,
-                NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
-                NodeDispatch::MemSet(node) => node.execute_async(input).await,
-                NodeDispatch::MemGet(node) => node.execute_async(input).await,
-                NodeDispatch::MemDel(node) => node.execute_async(input).await,
-                NodeDispatch::MemExists(node) => node.execute_async(input).await,
-                NodeDispatch::MemExpire(node) => node.execute_async(input).await,
-                NodeDispatch::MemIncr(node) => node.execute_async(input).await,
-                NodeDispatch::MemPublish(node) => node.execute_async(input).await,
-                NodeDispatch::MemSubscribe(node) => node.execute_async(input).await,
-            }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
             let exec_result: Result<NodeExecutionOutput, PipelineError> =
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(node_timeout_secs),
-                    exec_fut,
-                )
-                .await
-                .unwrap_or_else(|_| Err(PipelineError::new(
-                    "FW_NODE_TIMEOUT",
-                    format!("node '{}' timed out after {node_timeout_secs}s", timeout_node_id),
-                )));
+                tokio::time::timeout(std::time::Duration::from_secs(node_timeout_secs), exec_fut)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(PipelineError::new(
+                            "FW_NODE_TIMEOUT",
+                            format!(
+                                "node '{}' timed out after {node_timeout_secs}s",
+                                timeout_node_id
+                            ),
+                        ))
+                    });
 
             let output = match exec_result {
                 Ok(mut out) => {
@@ -974,11 +1275,24 @@ impl PipelineEngine for BasicPipelineEngine {
                             &[],
                         )
                     };
+                    let redacted_config = base_trace_config.as_ref().map(|config| {
+                        if trace_redact_tokens.is_empty() {
+                            config.clone()
+                        } else {
+                            redact_json_value(
+                                config,
+                                &trace_redact_tokens,
+                                &trace_redact_except_paths,
+                                &[],
+                            )
+                        }
+                    });
                     // Record this node's output so downstream nodes can access it via $nodes.
                     nodes_output.insert(trace_node_id.clone(), payload_output.clone());
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id,
                         node_kind: trace_node_kind,
+                        config: redacted_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: redacted_input,
                         output: redacted_output.clone(),
@@ -991,6 +1305,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id.clone(),
                         node_kind: trace_node_kind.clone(),
+                        config: base_trace_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: input_snapshot,
                         output: Value::Null,
@@ -1001,6 +1316,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         e.node_id = Some(trace_node_id);
                         e.node_kind = Some(trace_node_kind);
                     }
+                    e.node_trace = node_trace.clone();
                     return Err(e);
                 }
             };
@@ -1011,17 +1327,24 @@ impl PipelineEngine for BasicPipelineEngine {
                 if let Some(next_edges) = outgoing.get(&(node.id.as_str(), emitted_pin.as_str())) {
                     for (to_node, to_pin) in next_edges {
                         let target = node_map.get(to_node).ok_or_else(|| {
-                            PipelineError::new("FW_EXEC_EDGE", format!("target node '{}' missing", to_node))
+                            PipelineError::new(
+                                "FW_EXEC_EDGE",
+                                format!("target node '{}' missing", to_node),
+                            )
                         })?;
                         let merge_strategy = logic_merge_strategy(target);
                         match merge_strategy {
                             Some(MergeStrategy::WaitAll) => {
-                                let pending = merge_pending.entry((*to_node).to_string()).or_default();
+                                let pending =
+                                    merge_pending.entry((*to_node).to_string()).or_default();
                                 pending.insert((*to_pin).to_string(), output.payload.clone());
                                 let expected = target.input_pins.len();
                                 if pending.len() >= expected {
                                     let combined = Value::Object(
-                                        pending.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+                                        pending
+                                            .iter()
+                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                            .collect(),
                                     );
                                     merge_pending.remove(*to_node);
                                     queue.push_back(NodeExecutionInput {
@@ -1097,7 +1420,7 @@ mod tests {
 
     use super::{
         redact_json_value, take_private_redact_except_paths, take_private_redact_tokens,
-        take_private_trace_redact_tokens,
+        take_private_trace_redact_tokens, trace_config_snapshot,
     };
 
     #[test]
@@ -1164,6 +1487,26 @@ mod tests {
         assert!(payload.get("__zf_private_trace_redact").is_none());
         assert_eq!(payload["token"], "abc123");
     }
+
+    #[test]
+    fn trace_config_snapshot_redacts_sensitive_keys_but_keeps_query_text() {
+        let snapshot = trace_config_snapshot(&json!({
+            "query": "SELECT * FROM posts LIMIT 10",
+            "limit": 20,
+            "ui": { "x": 100, "y": 120 },
+            "password": "super-secret",
+            "headers": {
+                "authorization": "Bearer abc123"
+            }
+        }))
+        .expect("config snapshot");
+
+        assert_eq!(snapshot["query"], "SELECT * FROM posts LIMIT 10");
+        assert_eq!(snapshot["limit"], 20);
+        assert!(snapshot.get("ui").is_none());
+        assert_eq!(snapshot["password"], "••••••");
+        assert_eq!(snapshot["headers"]["authorization"], "••••••");
+    }
 }
 
 enum NodeDispatch {
@@ -1174,11 +1517,16 @@ enum NodeDispatch {
     HttpRequest(http_request::Node),
     BrowserRun(browser_run::Node),
     SqliteQuery(sqlite_query::Node),
+    SekejapQuery(sekejap_query::Node),
     SqliteMutate(sqlite_mutate::Node),
     Postgres(pg_query::Node),
     InlineWebResponse {
         node_id: String,
         config: web_response::Config,
+    },
+    InlineWebStaticGenerate {
+        node_id: String,
+        config: web_static_generate::Config,
     },
     WebResponse(web_response::Node),
     Agent(agent::Node),
@@ -1216,7 +1564,11 @@ fn logic_merge_strategy(node: &PipelineNode) -> Option<MergeStrategy> {
     if node.kind != logic::merge::NODE_KIND {
         return None;
     }
-    let strategy = node.config.get("strategy").and_then(|v| v.as_str()).unwrap_or("pass_through");
+    let strategy = node
+        .config
+        .get("strategy")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pass_through");
     Some(match strategy {
         "wait_all" => MergeStrategy::WaitAll,
         "first_completed" => MergeStrategy::FirstCompleted,

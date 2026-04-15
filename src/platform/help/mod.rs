@@ -56,7 +56,9 @@ pub fn get_help(path: &str) -> Result<String, String> {
     }
 
     // Static HELP array lookup — also try "{path}/index" for directory-style nodes
-    let node = HELP.iter().find(|n| n.path == path)
+    let node = HELP
+        .iter()
+        .find(|n| n.path == path)
         .or_else(|| HELP.iter().find(|n| n.path == &format!("{}/index", path)));
 
     if let Some(node) = node {
@@ -81,7 +83,10 @@ pub fn get_help(path: &str) -> Result<String, String> {
             out.push_str("| Example | Description |\n|---------|-------------|\n");
             for ex in examples {
                 let slug = ex.path.trim_start_matches("pipeline/examples/");
-                out.push_str(&format!("| `help(\"pipeline/examples/{}\")` | {} |\n", slug, ex.title));
+                out.push_str(&format!(
+                    "| `help(\"pipeline/examples/{}\")` | {} |\n",
+                    slug, ex.title
+                ));
             }
             return Ok(out);
         }
@@ -94,7 +99,11 @@ pub fn get_help(path: &str) -> Result<String, String> {
     } else {
         format!(
             "Did you mean one of:\n{}",
-            closest.iter().map(|p| format!("  help(\"{}\")", p)).collect::<Vec<_>>().join("\n")
+            closest
+                .iter()
+                .map(|p| format!("  help(\"{}\")", p))
+                .collect::<Vec<_>>()
+                .join("\n")
         )
     };
     Err(format!("Help topic '{}' not found. {}", path, suggestions))
@@ -127,8 +136,15 @@ pub fn help_root_index() -> String {
 
     for top in top_levels {
         // Top-level section header (from /index file if it exists)
-        if let Some(idx) = HELP.iter().find(|n| n.path == &format!("{}/index", top) || n.path == top) {
-            let display = if idx.path.ends_with("/index") { top } else { idx.path };
+        if let Some(idx) = HELP
+            .iter()
+            .find(|n| n.path == &format!("{}/index", top) || n.path == top)
+        {
+            let display = if idx.path.ends_with("/index") {
+                top
+            } else {
+                idx.path
+            };
             out.push_str(&format!(
                 "| **`help(\"{}\")`** | **{}** | {} |\n",
                 display, idx.title, idx.last_updated
@@ -156,7 +172,9 @@ pub fn help_root_index() -> String {
 
         // Inject dynamic pipeline entries after pipeline children
         if top == "pipeline" {
-            out.push_str("| `help(\"pipeline/nodes\")` | **Node Catalog** (live from Rust) | live |\n");
+            out.push_str(
+                "| `help(\"pipeline/nodes\")` | **Node Catalog** (live from Rust) | live |\n",
+            );
             out.push_str("| `help(\"pipeline/examples\")` | Pipeline Examples Index | — |\n");
         }
     }
@@ -173,14 +191,23 @@ pub fn help_root_index() -> String {
 pub fn all_searchable_content() -> Vec<(String, String, String)> {
     let mut all: Vec<(String, String, String)> = HELP
         .iter()
-        .map(|n| (n.path.to_string(), n.title.to_string(), n.content.to_string()))
+        .map(|n| {
+            (
+                n.path.to_string(),
+                n.title.to_string(),
+                n.content.to_string(),
+            )
+        })
         .collect();
 
     // One entry per built-in node — kind, title, description, and all DSL flag text
     for def in crate::pipeline::nodes::builtin_node_definitions() {
         let path = format!("pipeline/nodes/{}", def.kind);
         let title = format!("{} — {}", def.kind, def.title);
-        let mut content = format!("kind: {}\ntitle: {}\n{}\n", def.kind, def.title, def.description);
+        let mut content = format!(
+            "kind: {}\ntitle: {}\n{}\n",
+            def.kind, def.title, def.description
+        );
         for flag in &def.dsl_flags {
             content.push_str(&format!(
                 "flag: {} key: {} required: {} {}\n",
@@ -200,7 +227,6 @@ pub fn format_for_system_prompt() -> String {
         .collect::<Vec<_>>()
         .join("\n---\n\n")
 }
-
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -246,7 +272,12 @@ fn closest_paths(query: &str) -> Vec<&'static str> {
         .collect();
     if hits.is_empty() {
         // Return top-level paths as fallback
-        hits = HELP.iter().filter(|n| !n.path.contains('/')).map(|n| n.path).take(5).collect();
+        hits = HELP
+            .iter()
+            .filter(|n| !n.path.contains('/'))
+            .map(|n| n.path)
+            .take(5)
+            .collect();
     }
     hits
 }
