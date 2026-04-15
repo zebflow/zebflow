@@ -12,9 +12,9 @@
 //! That split lets the product add master/worker UX, placement, and bootstrap flows without
 //! burying transport/security logic inside the web router or individual handlers.
 
+pub mod access;
 pub mod assistant_config;
 pub mod assistant_tools;
-pub mod access;
 pub mod auth;
 pub mod authorization;
 pub mod cluster;
@@ -29,13 +29,15 @@ pub mod pipeline_runtime;
 pub mod platform;
 pub mod project;
 pub mod project_config;
+pub mod project_operation;
+pub mod project_transfer;
 pub mod tsx_outline;
 pub mod user;
 pub mod zeb_lock;
 
+pub use access::{GitIdentityService, ProjectInviteService, ProjectMembershipService};
 pub use assistant_config::AssistantConfigService;
 pub use assistant_tools::AssistantPlatformTools;
-pub use access::{GitIdentityService, ProjectInviteService, ProjectMembershipService};
 pub use auth::AuthService;
 pub use authorization::AuthorizationService;
 pub use cluster::{
@@ -53,5 +55,7 @@ pub use pipeline_runtime::{PipelineRuntimeService, WsTriggerSpec};
 pub use platform::PlatformService;
 pub use project::ProjectService;
 pub use project_config::ZebflowJsonService;
-pub use zeb_lock::ZebLockService;
+pub use project_operation::ProjectOperationService;
+pub use project_transfer::ProjectTransferService;
 pub use user::UserService;
+pub use zeb_lock::ZebLockService;

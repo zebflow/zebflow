@@ -1,5 +1,6 @@
 //! Project DB runtime service (describe/query) dispatching by database kind.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::platform::db::{DbDriverContext, DbDriverRegistry};
@@ -14,6 +15,7 @@ use super::{CredentialService, DbConnectionService};
 pub struct DbRuntimeService {
     db_connections: Arc<DbConnectionService>,
     credentials: Arc<CredentialService>,
+    data_root: PathBuf,
     drivers: DbDriverRegistry,
 }
 
@@ -22,10 +24,12 @@ impl DbRuntimeService {
     pub fn new(
         db_connections: Arc<DbConnectionService>,
         credentials: Arc<CredentialService>,
+        data_root: PathBuf,
     ) -> Self {
         Self {
             db_connections,
             credentials,
+            data_root,
             drivers: DbDriverRegistry::with_defaults(),
         }
     }
@@ -50,6 +54,7 @@ impl DbRuntimeService {
         let ctx = DbDriverContext {
             owner,
             project,
+            data_root: self.data_root.clone(),
             connection,
             credentials: self.credentials.clone(),
         };
@@ -76,6 +81,7 @@ impl DbRuntimeService {
         let ctx = DbDriverContext {
             owner,
             project,
+            data_root: self.data_root.clone(),
             connection,
             credentials: self.credentials.clone(),
         };

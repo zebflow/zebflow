@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use crate::infra::io::state::{DynStateBus, MemStateBus};
+use crate::infra::mem::MemHub;
+use crate::infra::transport::ws::WsHub;
 use crate::platform::adapters::data::{DataAdapter, build_data_adapter};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
@@ -10,13 +12,12 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
-    ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService,
-    CredentialService, DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService,
-    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectInviteService,
-    ProjectMembershipService, ProjectService, UserService, ZebLockService, ZebflowJsonService,
+    ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
+    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService, McpSessionService,
+    PipelineHitsService, PipelineRuntimeService, ProjectInviteService, ProjectMembershipService,
+    ProjectOperationService, ProjectService, ProjectTransferService, UserService, ZebLockService,
+    ZebflowJsonService,
 };
-use crate::infra::mem::MemHub;
-use crate::infra::transport::ws::WsHub;
 
 /// Main platform service graph, created once per process.
 #[derive(Clone)]
@@ -61,6 +62,10 @@ pub struct PlatformService {
     pub db_runtime: Arc<DbRuntimeService>,
     /// Project domain service.
     pub projects: Arc<ProjectService>,
+    /// Durable controller-side operation log for portability and sync actions.
+    pub project_operations: Arc<ProjectOperationService>,
+    /// Archive-based export/import service for project portability.
+    pub project_transfer: Arc<ProjectTransferService>,
     /// Active production pipeline registry compiled from activated snapshots.
     pub pipeline_runtime: Arc<PipelineRuntimeService>,
     /// Lightweight execution hit/error counters per pipeline.
@@ -105,11 +110,21 @@ impl PlatformService {
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
         let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
         let credentials = Arc::new(CredentialService::new(data.clone()));
-        let assistant_configs = Arc::new(AssistantConfigService::new(data.clone(), zebflow_cfg.clone()));
+        let assistant_configs = Arc::new(AssistantConfigService::new(
+            data.clone(),
+            zebflow_cfg.clone(),
+        ));
         let db_connections = Arc::new(DbConnectionService::new(data.clone()));
         let db_runtime = Arc::new(DbRuntimeService::new(
             db_connections.clone(),
             credentials.clone(),
+            config.data_root.clone(),
+        ));
+        let project_operations = Arc::new(ProjectOperationService::new(data.clone()));
+        let project_transfer = Arc::new(ProjectTransferService::new(
+            file.clone(),
+            zebflow_cfg.clone(),
+            config.data_root.join("platform").join("project-operations"),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
@@ -149,6 +164,8 @@ impl PlatformService {
             db_connections,
             db_runtime,
             projects,
+            project_operations,
+            project_transfer,
             pipeline_runtime,
             pipeline_hits,
             mcp_sessions,
@@ -166,7 +183,9 @@ impl PlatformService {
             for user in &users {
                 if let Ok(projects) = svc.projects.list_projects(&user.owner) {
                     for project in &projects {
-                        let _ = svc.pipeline_runtime.refresh_project(&user.owner, &project.project);
+                        let _ = svc
+                            .pipeline_runtime
+                            .refresh_project(&user.owner, &project.project);
                     }
                 }
             }
@@ -235,7 +254,8 @@ impl PlatformService {
         )
         .with_platform(std::sync::Arc::new(self.clone()))
         .with_ws_hub(self.ws_hub.clone())
-        .with_state_bus(self.state_bus.clone());
+        .with_state_bus(self.state_bus.clone())
+        .with_data_root(self.config.data_root.clone());
 
         let output = engine.execute_async(&compiled.graph, &ctx).await?;
 
