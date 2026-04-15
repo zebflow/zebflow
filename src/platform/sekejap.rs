@@ -512,12 +512,7 @@ pub fn execute_sql(
         let rows = defs
             .into_iter()
             .take(max_rows)
-            .map(|def| {
-                vec![
-                    Value::String(def.table),
-                    json!(def.row_count),
-                ]
-            })
+            .map(|def| vec![Value::String(def.table), json!(def.row_count)])
             .collect::<Vec<_>>();
         return Ok(QueryPayload {
             columns: vec![
@@ -755,9 +750,11 @@ mod tests {
             .expect("show structure");
         assert!(read.row_count >= 2);
         assert_eq!(read.columns.len(), 4);
-        assert!(read.rows.iter().any(|row| {
-            row.first() == Some(&Value::String("title".to_string()))
-        }));
+        assert!(
+            read.rows
+                .iter()
+                .any(|row| { row.first() == Some(&Value::String("title".to_string())) })
+        );
     }
 
     #[test]

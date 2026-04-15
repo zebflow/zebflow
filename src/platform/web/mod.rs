@@ -3921,7 +3921,6 @@ async fn render_project_editor(
         listing
             .files
             .iter()
-            .filter(|d| d.kind == "file")
             .map(|f| {
                 let template_path = f
                     .rel_path
