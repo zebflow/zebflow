@@ -10,14 +10,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::{Body, Bytes};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
-    HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri,
-    header::CACHE_CONTROL, header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
+    HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL,
+    header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -26,33 +26,34 @@ use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
-use crate::version::APP_VERSION;
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
+use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::infra::mem::subscriber::MemSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
-use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
+use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
-use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::platform::model::{
-    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateProjectRequest,
-    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
-    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
-    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
-    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    ProjectRuntimeMaterializationRequest, QueryProjectDbConnectionRequest,
-    TemplateCompileRequest, TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic,
-    TemplateMoveRequest, TemplateSaveRequest, TestProjectDbConnectionRequest,
+    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateProjectDocFolderRequest,
+    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
+    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest, LoginRequest,
+    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
+    PipelineInvocationEntry, PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
+    ProjectDocMoveRequest, ProjectOperationKind, ProjectRuntimeMaterializationRequest,
+    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
     UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
     UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
-    UpdateSettingsSectionRequest,
 };
+use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
     RenderScriptCache, ScriptCacheConfig, TemplateOptions, TemplateSource,
     resolve_engine_or_default,
 };
+use crate::version::APP_VERSION;
 use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
 
 /// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
@@ -76,8 +77,7 @@ const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-conn
 /// In debug builds, set to true when source templates change.
 /// The SSE endpoint consumes this flag and broadcasts a reload to all browser tabs.
 #[cfg(debug_assertions)]
-static DEV_DIRTY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DEV_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Absolute path to platform template sources — resolved at compile time.
 /// Used in debug builds to watch for file changes and serve CSS directly from disk.
@@ -89,21 +89,78 @@ const TEMPLATE_SOURCE_DIR: &str =
 /// Used by build_frontend() at startup and by render_page() in debug builds for per-request
 /// recompilation.
 const PAGE_DEFS: &[(&str, &str, &str)] = &[
-    ("platform-login",                           "platform.login",                          "pages/login/page.tsx"),
-    ("platform-home",                            "platform.home",                           "pages/home/page.tsx"),
-    ("platform-home-project-templates",          "platform.home.project.templates",         "pages/home/project-templates/page.tsx"),
-    ("platform-project-pipelines",              "platform.project.pipelines",              "pages/project-studio/pipelines/page.tsx"),
-    ("platform-project-editor",                 "platform.project.editor",                 "pages/project-studio/pipelines/registry/page.tsx"),
-    ("platform-project-section",                "platform.project.section",                "pages/project-studio/files/page.tsx"),
-    ("platform-project-dashboard",              "platform.project.dashboard",              "pages/project-studio/dashboard/page.tsx"),
-    ("platform-project-settings",               "platform.project.settings",               "pages/project-studio/settings/page.tsx"),
-    ("platform-project-infrastructure",         "platform.project.infrastructure",         "pages/project-studio/infrastructure/page.tsx"),
-    ("platform-project-credentials",            "platform.project.credentials",            "pages/project-studio/credentials/page.tsx"),
-    ("platform-project-tables",                 "platform.project.tables",                 "pages/project-studio/connections/page.tsx"),
-    ("platform-project-table-connection",       "platform.project.table_connection",       "pages/project-studio/connections/db/connection/page.tsx"),
-    ("platform-project-table-connection-postgresql", "platform.project.table_connection.postgresql", "pages/project-studio/connections/db/postgresql/page.tsx"),
-    ("platform-design-system",                  "platform.dev.design_system",              "pages/dev/design-system/page.tsx"),
-    ("platform-project-settings-clone-ui-preview", "platform.project.settings.clone_ui_preview", "pages/project-studio/settings/clone/ui/preview/page.tsx"),
+    ("platform-login", "platform.login", "pages/login/page.tsx"),
+    ("platform-home", "platform.home", "pages/home/page.tsx"),
+    (
+        "platform-home-project-templates",
+        "platform.home.project.templates",
+        "pages/home/project-templates/page.tsx",
+    ),
+    (
+        "platform-project-pipelines",
+        "platform.project.pipelines",
+        "pages/project-studio/pipelines/page.tsx",
+    ),
+    (
+        "platform-project-editor",
+        "platform.project.editor",
+        "pages/project-studio/pipelines/registry/page.tsx",
+    ),
+    (
+        "platform-project-section",
+        "platform.project.section",
+        "pages/project-studio/files/page.tsx",
+    ),
+    (
+        "platform-project-dashboard",
+        "platform.project.dashboard",
+        "pages/project-studio/dashboard/page.tsx",
+    ),
+    (
+        "platform-project-settings",
+        "platform.project.settings",
+        "pages/project-studio/settings/page.tsx",
+    ),
+    (
+        "platform-project-infrastructure",
+        "platform.project.infrastructure",
+        "pages/project-studio/infrastructure/page.tsx",
+    ),
+    (
+        "platform-project-credentials",
+        "platform.project.credentials",
+        "pages/project-studio/credentials/page.tsx",
+    ),
+    (
+        "platform-project-tables",
+        "platform.project.tables",
+        "pages/project-studio/connections/page.tsx",
+    ),
+    (
+        "platform-project-table-connection",
+        "platform.project.table_connection",
+        "pages/project-studio/connections/db/connection/page.tsx",
+    ),
+    (
+        "platform-project-table-connection-postgresql",
+        "platform.project.table_connection.postgresql",
+        "pages/project-studio/connections/db/postgresql/page.tsx",
+    ),
+    (
+        "platform-project-table-connection-sekejap",
+        "platform.project.table_connection.sekejap",
+        "pages/project-studio/connections/db/sekejap/page.tsx",
+    ),
+    (
+        "platform-design-system",
+        "platform.dev.design_system",
+        "pages/dev/design-system/page.tsx",
+    ),
+    (
+        "platform-project-settings-clone-ui-preview",
+        "platform.project.settings.clone_ui_preview",
+        "pages/project-studio/settings/clone/ui/preview/page.tsx",
+    ),
 ];
 
 /// Shared frontend render bundle (compiled templates + engines).
@@ -194,7 +251,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
     println!("✅ Mem subscriber started");
 
     let template_cache = crate::pipeline::engines::basic::new_template_cache();
-    let mcp_service = crate::platform::mcp::build_mcp_service(platform.clone(), template_cache.clone());
+    let mcp_service =
+        crate::platform::mcp::build_mcp_service(platform.clone(), template_cache.clone());
 
     let router = Router::new()
         // Liveness/readiness probes — no auth, always fast.
@@ -226,7 +284,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route("/assets/{owner}/{project}/{*path}", get(project_asset))
         .route("/assets/libraries/{*path}", get(library_asset))
-        .route("/p/{owner}/{project}/assets/{*path}", get(project_static_asset))
+        .route(
+            "/p/{owner}/{project}/assets/{*path}",
+            get(project_static_asset),
+        )
         .route("/files/{owner}/{project}/{*path}", get(project_file_serve))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
@@ -263,7 +324,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(project_db_suite_page),
         )
         .route("/projects/{owner}/{project}/files", get(project_files_page))
-        .route("/projects/{owner}/{project}/files/{tab}", get(project_files_tab_page))
+        .route(
+            "/projects/{owner}/{project}/files/{tab}",
+            get(project_files_tab_page),
+        )
         .route("/projects/{owner}/{project}/todo", get(project_todo_page))
         .route(
             "/projects/{owner}/{project}/settings/clone/ui/preview",
@@ -287,9 +351,15 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route("/api/meta", get(api_meta))
         .route("/api/system/info", get(api_system_info))
-        .route("/api/admin/db/collections", get(api_admin_db_list_collections))
+        .route(
+            "/api/admin/db/collections",
+            get(api_admin_db_list_collections),
+        )
         .route("/api/admin/db/query", post(api_admin_db_query))
-        .route("/api/admin/db/node/{slug}", get(api_admin_db_get_node).delete(api_admin_db_delete_node))
+        .route(
+            "/api/admin/db/node/{slug}",
+            get(api_admin_db_get_node).delete(api_admin_db_delete_node),
+        )
         .route(
             "/api/projects/{owner}/{project}/nodes",
             get(api_list_node_definitions),
@@ -319,6 +389,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/internal/runtime/webhook/{owner}/{project}/{*tail}",
             any(api_internal_runtime_webhook),
+        )
+        .route(
+            "/api/internal/project-transfer/{owner}/{project}/export/{kind}",
+            post(api_internal_project_transfer_export),
+        )
+        .route(
+            "/api/internal/project-transfer/{owner}/{project}/import/{kind}",
+            post(api_internal_project_transfer_import),
         )
         .route(
             "/api/users/{owner}/projects",
@@ -485,6 +563,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_db_connections).post(api_upsert_db_connection),
         )
         .route(
+            "/api/projects/{owner}/{project}/tables",
+            get(api_list_simple_tables).post(api_create_simple_table),
+        )
+        .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/describe",
             get(api_describe_db_connection),
         )
@@ -524,7 +606,21 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/docs/file",
-            get(api_read_project_doc).put(api_upsert_project_doc_file).delete(api_delete_project_doc_file),
+            get(api_read_project_doc)
+                .put(api_upsert_project_doc_file)
+                .delete(api_delete_project_doc_file),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/docs/folder",
+            post(api_create_project_doc_folder),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/docs/move",
+            post(api_move_project_doc_entry),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/docs/entry",
+            delete(api_delete_project_doc_entry),
         )
         .route(
             "/api/projects/{owner}/{project}/agent-docs",
@@ -551,9 +647,9 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/assets",
-            get(api_list_assets).post(api_upload_asset).layer(
-                axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024),
-            ),
+            get(api_list_assets)
+                .post(api_upload_asset)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/assets/{*path}",
@@ -595,20 +691,36 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/runtime/sync",
             post(api_project_runtime_sync),
         )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/operations",
+            get(api_project_transfer_operations),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/export/{kind}",
+            post(api_project_transfer_export),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/import/{kind}",
+            post(api_project_transfer_import)
+                .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/download/{operation_id}",
+            get(api_project_transfer_download),
+        )
         .route("/preview/{owner}/{project}", get(preview_page))
-        .route("/ws/preview/{owner}/{project}", get(ws_preview_handler))
-        ;
+        .route("/ws/preview/{owner}/{project}", get(ws_preview_handler));
 
     let app_state = PlatformAppState {
-            platform,
-            http_client: reqwest::Client::new(),
-            frontend,
-            render_script_cache,
-            template_cache,
-            scheduler,
-            mem_subscriber,
-            preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        };
+        platform,
+        http_client: reqwest::Client::new(),
+        frontend,
+        render_script_cache,
+        template_cache,
+        scheduler,
+        mem_subscriber,
+        preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+    };
 
     if app_state.platform.cluster_bootstrap.is_worker() {
         tokio::spawn(cluster_worker_registration_loop(app_state.clone()));
@@ -661,7 +773,14 @@ fn build_frontend(data_root: &FsPath) -> Result<PlatformFrontend, PlatformError>
     for &(key, id, rel_path) in PAGE_DEFS {
         pages.insert(
             key,
-            compile_page(rwe.as_ref(), language.as_ref(), id, &template_root, rel_path, options.clone())?,
+            compile_page(
+                rwe.as_ref(),
+                language.as_ref(),
+                id,
+                &template_root,
+                rel_path,
+                options.clone(),
+            )?,
         );
     }
 
@@ -711,7 +830,9 @@ async fn dev_template_watcher(temp_root: PathBuf) {
 
         // Copy each changed source file into the matching temp-dir slot.
         for src in &changed {
-            let Ok(rel) = src.strip_prefix(source_dir) else { continue };
+            let Ok(rel) = src.strip_prefix(source_dir) else {
+                continue;
+            };
             let dest = temp_root.join(rel);
             if let Some(parent) = dest.parent() {
                 let _ = fs::create_dir_all(parent);
@@ -724,7 +845,10 @@ async fn dev_template_watcher(temp_root: PathBuf) {
 
         DEV_DIRTY.store(true, Ordering::Relaxed);
         known = current;
-        println!("🔄 [dev] {} template file(s) changed — signalling reload", changed.len());
+        println!(
+            "🔄 [dev] {} template file(s) changed — signalling reload",
+            changed.len()
+        );
     }
 }
 
@@ -812,8 +936,10 @@ fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, Pl
     let needs_extract = cfg!(debug_assertions) || !sentinel.exists();
     if needs_extract {
         // Build set of asset paths that belong to the current binary.
-        let asset_paths: std::collections::HashSet<PathBuf> =
-            PLATFORM_TEMPLATE_ASSETS.iter().map(|a| root.join(a.path)).collect();
+        let asset_paths: std::collections::HashSet<PathBuf> = PLATFORM_TEMPLATE_ASSETS
+            .iter()
+            .map(|a| root.join(a.path))
+            .collect();
 
         // In debug mode, remove any existing files that are no longer embedded
         // (e.g. stale files left by a previous binary build).
@@ -822,7 +948,11 @@ fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, Pl
                 let Ok(rd) = fs::read_dir(dir) else { return };
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    if p.is_dir() { collect_files(&p, out); } else { out.push(p); }
+                    if p.is_dir() {
+                        collect_files(&p, out);
+                    } else {
+                        out.push(p);
+                    }
                 }
             }
             let mut existing = Vec::new();
@@ -842,9 +972,8 @@ fn materialize_platform_template_root(_data_root: &FsPath) -> Result<PathBuf, Pl
         crate::rwe::core::prepare_template_root(&root)
             .map_err(|e| PlatformError::new("PLATFORM_TEMPLATE_REWRITE", e.message))?;
         if !cfg!(debug_assertions) {
-            fs::write(&sentinel, b"").map_err(|e| {
-                PlatformError::new("PLATFORM_TEMPLATE_SENTINEL", e.to_string())
-            })?;
+            fs::write(&sentinel, b"")
+                .map_err(|e| PlatformError::new("PLATFORM_TEMPLATE_SENTINEL", e.to_string()))?;
         }
     }
     Ok(root)
@@ -930,10 +1059,7 @@ fn render_page(
     }
     // Any page that uses devicon- classes gets the icon font CSS injected.
     if html.contains("devicon-") {
-        html = ensure_stylesheet_link(
-            html,
-            "/assets/libraries/zeb/icons/0.1/runtime/devicons.css",
-        );
+        html = ensure_stylesheet_link(html, "/assets/libraries/zeb/icons/0.1/runtime/devicons.css");
     }
 
     let mut final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None);
@@ -1067,7 +1193,10 @@ fn externalize_rwe_scripts(
         } else {
             match project_scope {
                 Some((owner, project)) => {
-                    format!("/assets/{owner}/{project}/rwe/scripts/{}", script.content_hash)
+                    format!(
+                        "/assets/{owner}/{project}/rwe/scripts/{}",
+                        script.content_hash
+                    )
                 }
                 None => format!("/assets/rwe/scripts/{}", script.content_hash),
             }
@@ -1130,7 +1259,11 @@ async fn ready_handler() -> impl IntoResponse {
     if deno_worker::is_pool_ready() {
         (StatusCode::OK, Json(json!({"status": "ready"}))).into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status": "not_ready"}))).into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"status": "not_ready"})),
+        )
+            .into_response()
     }
 }
 
@@ -1347,7 +1480,9 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
         "main.css" => {
             let css = [
                 fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/main.css")),
-                fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/pages/project-studio/styles.css")),
+                fs::read_to_string(format!(
+                    "{TEMPLATE_SOURCE_DIR}/pages/project-studio/styles.css"
+                )),
             ]
             .map(|r| r.unwrap_or_default())
             .join("\n\n");
@@ -1359,17 +1494,16 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
             return asset_response("text/css; charset=utf-8", css.as_bytes());
         }
         "db-connections.css" => {
-            let css = fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/db-connections.css"))
-                .unwrap_or_default();
+            let css =
+                fs::read_to_string(format!("{TEMPLATE_SOURCE_DIR}/styles/db-connections.css"))
+                    .unwrap_or_default();
             return asset_response("text/css; charset=utf-8", css.as_bytes());
         }
         _ => {}
     }
 
     match asset.as_str() {
-        "main.css" => {
-            asset_response("text/css; charset=utf-8", PLATFORM_MAIN_CSS.as_bytes())
-        }
+        "main.css" => asset_response("text/css; charset=utf-8", PLATFORM_MAIN_CSS.as_bytes()),
         "db-suite.css" => {
             asset_response("text/css; charset=utf-8", PLATFORM_DB_SUITE_CSS.as_bytes())
         }
@@ -1506,7 +1640,9 @@ async fn project_asset(
     let (serve_bytes, serve_path) = if abs.is_file() {
         match std::fs::read(&abs) {
             Ok(b) => (b, abs),
-            Err(err) => return internal_error(PlatformError::new("PLATFORM_ASSET_READ", err.to_string())),
+            Err(err) => {
+                return internal_error(PlatformError::new("PLATFORM_ASSET_READ", err.to_string()));
+            }
         }
     } else {
         let static_root = layout.repo_pipelines_dir.join("assets");
@@ -1516,7 +1652,12 @@ async fn project_asset(
         }
         match std::fs::read(&static_abs) {
             Ok(b) => (b, static_abs),
-            Err(err) => return internal_error(PlatformError::new("PLATFORM_STATIC_ASSET_READ", err.to_string())),
+            Err(err) => {
+                return internal_error(PlatformError::new(
+                    "PLATFORM_STATIC_ASSET_READ",
+                    err.to_string(),
+                ));
+            }
         }
     };
     let mut resp = Response::new(Body::from(serve_bytes));
@@ -1566,7 +1707,10 @@ async fn project_static_asset(
     let bytes = match std::fs::read(&abs) {
         Ok(bytes) => bytes,
         Err(err) => {
-            return internal_error(PlatformError::new("PLATFORM_STATIC_ASSET_READ", err.to_string()));
+            return internal_error(PlatformError::new(
+                "PLATFORM_STATIC_ASSET_READ",
+                err.to_string(),
+            ));
         }
     };
     let mut resp = Response::new(Body::from(bytes));
@@ -1587,7 +1731,9 @@ async fn project_file_serve(
     Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let valid_segment = |value: &str| {
-        value.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
+        value
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
     };
     if !valid_segment(&owner) || !valid_segment(&project) {
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
@@ -1622,7 +1768,9 @@ async fn project_file_serve(
 
     let bytes = match std::fs::read(&abs) {
         Ok(b) => b,
-        Err(err) => return internal_error(PlatformError::new("PLATFORM_FILE_SERVE", err.to_string())),
+        Err(err) => {
+            return internal_error(PlatformError::new("PLATFORM_FILE_SERVE", err.to_string()));
+        }
     };
 
     let mut resp = Response::new(Body::from(bytes));
@@ -1632,7 +1780,8 @@ async fn project_file_serve(
     }
     // No caching for dynamic upload files — content can change
     if let Ok(v) = HeaderValue::from_str("no-cache") {
-        resp.headers_mut().insert(axum::http::header::CACHE_CONTROL, v);
+        resp.headers_mut()
+            .insert(axum::http::header::CACHE_CONTROL, v);
     }
     resp
 }
@@ -1722,6 +1871,169 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
 
     match state.platform.projects.list_projects(&owner) {
         Ok(items) => {
+            let known_workers = state
+                .platform
+                .cluster_registry
+                .snapshot()
+                .map(|snapshot| snapshot.workers)
+                .unwrap_or_default();
+            let all_projects = state
+                .platform
+                .data
+                .list_users()
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|user| {
+                    state
+                        .platform
+                        .projects
+                        .list_projects(&user.owner)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(move |project| (user.owner.clone(), project.project.clone()))
+                })
+                .collect::<Vec<_>>();
+            let mut hosted_projects: std::collections::BTreeMap<String, Vec<String>> =
+                std::collections::BTreeMap::new();
+            let local_office_id = state.platform.cluster_bootstrap.node_id();
+            for (project_owner, project_slug) in &all_projects {
+                let placement = state
+                    .platform
+                    .cluster_placement
+                    .get(project_owner, project_slug)
+                    .ok()
+                    .flatten();
+                let target_key = match placement.as_ref() {
+                    Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => value
+                        .worker_id
+                        .clone()
+                        .unwrap_or_else(|| "__dangling__".to_string()),
+                    _ => local_office_id.clone(),
+                };
+                hosted_projects
+                    .entry(target_key)
+                    .or_default()
+                    .push(format!("{project_owner}/{project_slug}"));
+            }
+            let now = chrono::Utc::now().timestamp();
+            let mut offices = vec![json!({
+                "id": local_office_id,
+                "label": state.platform.cluster_bootstrap.node_label(),
+                "role": if state.platform.cluster_bootstrap.is_master() {
+                    "Managing office"
+                } else if state.platform.cluster_bootstrap.is_worker() {
+                    "Office"
+                } else {
+                    "Self-managed office"
+                },
+                "availability": "online",
+                "resource_state": "local runtime available",
+                "address": state.platform.cluster_bootstrap.advertise_url().map(str::to_string),
+                "version": APP_VERSION,
+                "last_seen": "Current process",
+                "hosted_project_count": hosted_projects
+                    .get(&state.platform.cluster_bootstrap.node_id())
+                    .map(|items| items.len())
+                    .unwrap_or(0usize),
+                "hosted_projects": hosted_projects
+                    .get(&state.platform.cluster_bootstrap.node_id())
+                    .cloned()
+                    .unwrap_or_default(),
+                "capabilities": vec!["resident".to_string()],
+            })];
+            let known_worker_ids = known_workers
+                .iter()
+                .map(|worker| worker.node_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            for worker in known_workers {
+                let worker_id = worker.node_id.clone();
+                let worker_label = worker.label.clone();
+                let worker_status = worker.status.clone();
+                let worker_base_url = worker.base_url.clone();
+                let heartbeat_age = if worker.last_heartbeat_at > 0 {
+                    now.saturating_sub(worker.last_heartbeat_at)
+                } else {
+                    i64::MAX
+                };
+                let availability = if heartbeat_age > 45 {
+                    "offline"
+                } else {
+                    "online"
+                };
+                let mut capabilities = Vec::new();
+                if worker.capabilities.supports_resident {
+                    capabilities.push("resident".to_string());
+                }
+                if worker.capabilities.supports_k8s_job {
+                    capabilities.push("k8s-job".to_string());
+                }
+                if worker.capabilities.supports_spark_submit {
+                    capabilities.push("spark-submit".to_string());
+                }
+                capabilities.extend(
+                    worker
+                        .capabilities
+                        .tags
+                        .iter()
+                        .filter(|tag| !tag.starts_with("app_version:"))
+                        .cloned(),
+                );
+                let version = worker
+                    .capabilities
+                    .tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix("app_version:"))
+                    .map(str::to_string);
+                let last_seen = if heartbeat_age == i64::MAX {
+                    "No heartbeat yet".to_string()
+                } else if heartbeat_age <= 1 {
+                    "just now".to_string()
+                } else {
+                    format!("{heartbeat_age}s ago")
+                };
+                offices.push(json!({
+                    "id": worker_id,
+                    "label": worker_label,
+                    "role": "Joined office",
+                    "availability": availability,
+                    "resource_state": if worker_status.trim().is_empty() {
+                        if availability == "online" {
+                            "healthy".to_string()
+                        } else {
+                            "heartbeat stale".to_string()
+                        }
+                    } else {
+                        worker_status
+                    },
+                    "address": if worker_base_url.trim().is_empty() { None::<String> } else { Some(worker_base_url) },
+                    "version": version,
+                    "last_seen": last_seen,
+                    "hosted_project_count": hosted_projects.get(&worker_id).map(|items| items.len()).unwrap_or(0usize),
+                    "hosted_projects": hosted_projects.get(&worker_id).cloned().unwrap_or_default(),
+                    "capabilities": capabilities,
+                }));
+            }
+            for (office_id, projects) in &hosted_projects {
+                if office_id == "__dangling__"
+                    || office_id == &state.platform.cluster_bootstrap.node_id()
+                    || known_worker_ids.contains(office_id)
+                {
+                    continue;
+                }
+                offices.push(json!({
+                    "id": office_id,
+                    "label": office_id,
+                    "role": "Missing office",
+                    "availability": "dangling",
+                    "resource_state": "project placement exists but office is not registered",
+                    "address": serde_json::Value::Null,
+                    "version": serde_json::Value::Null,
+                    "last_seen": "No active registration",
+                    "hosted_project_count": projects.len(),
+                    "hosted_projects": projects,
+                    "capabilities": Vec::<String>::new(),
+                }));
+            }
             let runtime_targets = state
                 .platform
                 .cluster_registry
@@ -1758,8 +2070,10 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                                 .mode
                                 .to_string()
                         });
-                    let runtime_summary =
-                        state.platform.cluster_placement.describe(placement.as_ref());
+                    let runtime_summary = state
+                        .platform
+                        .cluster_placement
+                        .describe(placement.as_ref());
                     let (office_label, office_url) = match placement.as_ref() {
                         Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => {
                             if let Some(worker_id) = value.worker_id.as_deref() {
@@ -1810,6 +2124,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     },
                     "owner": owner,
                     "projects": projects,
+                    "offices": offices,
                     "runtime_targets": runtime_targets,
                     "app_version": APP_VERSION,
                 }),
@@ -1845,10 +2160,7 @@ async fn home_project_templates_page(
     }
 }
 
-async fn design_system_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-) -> Response {
+async fn design_system_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
     let Some(_owner) = session_owner(&headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
@@ -1882,15 +2194,21 @@ async fn home_create_project_submit(
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok((project, _layout)) => match finalize_project_runtime_setup(&state, &owner, &project.project, &req.runtime).await {
-            Ok(_) => Redirect::to(HOME_PATH).into_response(),
-            Err(err) => internal_error(err),
-        },
+        Ok((project, _layout)) => {
+            match finalize_project_runtime_setup(&state, &owner, &project.project, &req.runtime)
+                .await
+            {
+                Ok(_) => Redirect::to(HOME_PATH).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
         Err(err) => internal_error(err),
     }
 }
 
-fn default_branch_main() -> String { "main".to_string() }
+fn default_branch_main() -> String {
+    "main".to_string()
+}
 
 /// Form payload for cloning a remote git repository into a new project.
 #[derive(serde::Deserialize)]
@@ -1937,14 +2255,23 @@ async fn home_clone_project_submit(
     }
 
     // Build clone target path: data_root/users/{owner}/{project}/repo
-    let repo_dir = state.platform.config.data_root
+    let repo_dir = state
+        .platform
+        .config
+        .data_root
         .join("users")
         .join(crate::platform::model::slug_segment(&owner))
         .join(&project)
         .join("repo");
 
     // Build authenticated clone URL
-    let auth_url = match build_git_clone_auth_url(&req.provider, &req.instance_url, &req.repo_url, &req.username, &req.token) {
+    let auth_url = match build_git_clone_auth_url(
+        &req.provider,
+        &req.instance_url,
+        &req.repo_url,
+        &req.username,
+        &req.token,
+    ) {
         Ok(u) => u,
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
@@ -1952,7 +2279,10 @@ async fn home_clone_project_submit(
     // Ensure parent dir exists before cloning
     if let Some(parent) = repo_dir.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            return internal_error(crate::platform::error::PlatformError::new("CLONE_MKDIR", e.to_string()));
+            return internal_error(crate::platform::error::PlatformError::new(
+                "CLONE_MKDIR",
+                e.to_string(),
+            ));
         }
     }
 
@@ -1970,9 +2300,15 @@ async fn home_clone_project_submit(
     let clone_out = clone_cmd.output();
 
     match clone_out {
-        Err(e) => return internal_error(crate::platform::error::PlatformError::new("CLONE_SPAWN", e.to_string())),
+        Err(e) => {
+            return internal_error(crate::platform::error::PlatformError::new(
+                "CLONE_SPAWN",
+                e.to_string(),
+            ));
+        }
         Ok(out) if !out.status.success() => {
-            let stderr = scrub_token_from_str(String::from_utf8_lossy(&out.stderr).as_ref(), &req.token);
+            let stderr =
+                scrub_token_from_str(String::from_utf8_lossy(&out.stderr).as_ref(), &req.token);
             let msg = format!("git clone failed: {stderr}");
             return (StatusCode::BAD_REQUEST, msg).into_response();
         }
@@ -1982,12 +2318,18 @@ async fn home_clone_project_submit(
     // Compute effective local branch name; rename if it differs from the remote branch.
     let effective_local = {
         let lb = req.local_branch.trim().to_string();
-        if lb.is_empty() { remote_branch.clone() } else { lb }
+        if lb.is_empty() {
+            remote_branch.clone()
+        } else {
+            lb
+        }
     };
     if effective_local != remote_branch {
         let _ = std::process::Command::new("git")
-            .arg("-C").arg(&repo_dir)
-            .arg("branch").arg("-m")
+            .arg("-C")
+            .arg(&repo_dir)
+            .arg("branch")
+            .arg("-m")
             .arg(&remote_branch)
             .arg(&effective_local)
             .output();
@@ -1995,14 +2337,20 @@ async fn home_clone_project_submit(
 
     // Detect whether the cloned repo has any commits (empty remote repos have no HEAD)
     let has_commits = std::process::Command::new("git")
-        .arg("-C").arg(&repo_dir)
-        .arg("rev-parse").arg("HEAD")
+        .arg("-C")
+        .arg(&repo_dir)
+        .arg("rev-parse")
+        .arg("HEAD")
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
 
     // Create project record + layout dirs (git init is skipped since .git already exists)
-    let title = if req.title.trim().is_empty() { project.clone() } else { req.title.clone() };
+    let title = if req.title.trim().is_empty() {
+        project.clone()
+    } else {
+        req.title.clone()
+    };
     let create_req = crate::platform::model::CreateProjectRequest {
         project: project.clone(),
         title: Some(title.clone()),
@@ -2012,7 +2360,11 @@ async fn home_clone_project_submit(
             placement_worker_id: req.placement_worker_id.clone(),
         },
     };
-    if let Err(e) = state.platform.projects.create_or_update_project(&owner, &create_req) {
+    if let Err(e) = state
+        .platform
+        .projects
+        .create_or_update_project(&owner, &create_req)
+    {
         return internal_error(e);
     }
 
@@ -2036,8 +2388,12 @@ async fn home_clone_project_submit(
         req.git_email.trim().to_string()
     };
     let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-        if !git_name.is_empty() { cfg.git.author_name = git_name.clone(); }
-        if !git_email.is_empty() { cfg.git.author_email = git_email.clone(); }
+        if !git_name.is_empty() {
+            cfg.git.author_name = git_name.clone();
+        }
+        if !git_email.is_empty() {
+            cfg.git.author_email = git_email.clone();
+        }
         cfg.remote.credential_id = cred_id.clone();
         cfg.remote.repo_url = req.repo_url.clone();
         cfg.remote.branch = effective_local.clone();
@@ -2060,12 +2416,19 @@ async fn home_clone_project_submit(
         secret,
         notes: format!("Auto-created on project clone from {}", req.repo_url),
     };
-    let _ = state.platform.credentials.upsert_project_credential(&owner, &project, &upsert_req);
+    let _ = state
+        .platform
+        .credentials
+        .upsert_project_credential(&owner, &project, &upsert_req);
 
     // Empty repo: create initial commit + push so the remote gets a default branch
     if !has_commits {
         let project_slug = crate::platform::model::slug_segment(&project);
-        let identity_fallback_name = if git_name.is_empty() { project_slug.clone() } else { git_name.clone() };
+        let identity_fallback_name = if git_name.is_empty() {
+            project_slug.clone()
+        } else {
+            git_name.clone()
+        };
         let identity_fallback_email = if git_email.is_empty() {
             format!("{project_slug}@zebflow.local")
         } else {
@@ -2074,30 +2437,38 @@ async fn home_clone_project_submit(
 
         // Stage everything scaffolded by create_or_update_project
         let _ = std::process::Command::new("git")
-            .arg("-C").arg(&repo_dir)
-            .arg("add").arg("-A")
+            .arg("-C")
+            .arg(&repo_dir)
+            .arg("add")
+            .arg("-A")
             .output();
 
         let commit_out = std::process::Command::new("git")
-            .arg("-c").arg(format!("user.name={identity_fallback_name}"))
-            .arg("-c").arg(format!("user.email={identity_fallback_email}"))
-            .arg("-C").arg(&repo_dir)
-            .arg("commit").arg("-m").arg("Initial commit")
+            .arg("-c")
+            .arg(format!("user.name={identity_fallback_name}"))
+            .arg("-c")
+            .arg(format!("user.email={identity_fallback_email}"))
+            .arg("-C")
+            .arg(&repo_dir)
+            .arg("commit")
+            .arg("-m")
+            .arg("Initial commit")
             .output();
 
         if commit_out.map(|o| o.status.success()).unwrap_or(false) {
             // Push to establish the default branch on the remote
             let push_out = std::process::Command::new("git")
-                .arg("-C").arg(&repo_dir)
-                .arg("push").arg("--set-upstream")
-                .arg(&auth_url).arg(format!("HEAD:{}", effective_local))
+                .arg("-C")
+                .arg(&repo_dir)
+                .arg("push")
+                .arg("--set-upstream")
+                .arg(&auth_url)
+                .arg(format!("HEAD:{}", effective_local))
                 .output();
             if let Ok(ref o) = push_out {
                 if !o.status.success() {
-                    let stderr = scrub_token_from_str(
-                        &String::from_utf8_lossy(&o.stderr),
-                        &req.token,
-                    );
+                    let stderr =
+                        scrub_token_from_str(&String::from_utf8_lossy(&o.stderr), &req.token);
                     return (
                         StatusCode::BAD_REQUEST,
                         format!("Initial push to empty repo failed: {stderr}"),
@@ -2108,7 +2479,9 @@ async fn home_clone_project_submit(
         }
     }
 
-    if let Err(err) = finalize_project_runtime_setup(&state, &owner, &project, &create_req.runtime).await {
+    if let Err(err) =
+        finalize_project_runtime_setup(&state, &owner, &project, &create_req.runtime).await
+    {
         return internal_error(err);
     }
 
@@ -2141,28 +2514,46 @@ fn build_git_clone_auth_url(
 
     // Insert credentials into the URL
     if let Some(after_scheme) = base.strip_prefix("https://") {
-        Ok(format!("https://{}:{}@{}", enc_user, enc_token, after_scheme))
+        Ok(format!(
+            "https://{}:{}@{}",
+            enc_user, enc_token, after_scheme
+        ))
     } else if let Some(after_scheme) = base.strip_prefix("http://") {
-        Ok(format!("http://{}:{}@{}", enc_user, enc_token, after_scheme))
+        Ok(format!(
+            "http://{}:{}@{}",
+            enc_user, enc_token, after_scheme
+        ))
     } else {
-        Err(format!("Repo URL must start with https:// or http://: {base}"))
+        Err(format!(
+            "Repo URL must start with https:// or http://: {base}"
+        ))
     }
 }
 
 /// Percent-encodes characters not allowed in userinfo (RFC 3986).
 fn percent_encode_userinfo(s: &str) -> String {
-    s.chars().flat_map(|c| {
-        if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~' | '!' | '$' | '\'' | '(' | ')' | '*' | '+' | ',' | ';') {
-            vec![c as u8]
-        } else {
-            format!("%{:02X}", c as u32).into_bytes()
-        }
-    }).map(|b| b as char).collect()
+    s.chars()
+        .flat_map(|c| {
+            if c.is_ascii_alphanumeric()
+                || matches!(
+                    c,
+                    '-' | '.' | '_' | '~' | '!' | '$' | '\'' | '(' | ')' | '*' | '+' | ',' | ';'
+                )
+            {
+                vec![c as u8]
+            } else {
+                format!("%{:02X}", c as u32).into_bytes()
+            }
+        })
+        .map(|b| b as char)
+        .collect()
 }
 
 /// Replaces occurrences of `token` in `s` with `***` (for safe error messages).
 fn scrub_token_from_str(s: &str, token: &str) -> String {
-    if token.is_empty() { return s.to_string(); }
+    if token.is_empty() {
+        return s.to_string();
+    }
     s.replace(token, "***")
 }
 
@@ -2225,11 +2616,16 @@ async fn finalize_project_runtime_setup(
         .platform
         .cluster_runtime_sync
         .refresh_local_repo_state(owner, project)?;
-    let runtime_profile = state.platform.zebflow_cfg.get_runtime_profile(owner, project);
-    let placement = state
+    let runtime_profile = state
         .platform
-        .cluster_placement
-        .assign_for_project(owner, project, &runtime_profile, selection)?;
+        .zebflow_cfg
+        .get_runtime_profile(owner, project);
+    let placement = state.platform.cluster_placement.assign_for_project(
+        owner,
+        project,
+        &runtime_profile,
+        selection,
+    )?;
     if placement.target == ProjectRuntimePlacementTarget::Worker {
         sync_project_to_remote_worker(state, owner, project, &placement).await?;
     }
@@ -2246,10 +2642,12 @@ async fn sync_project_to_remote_worker(
         .platform
         .cluster_runtime_sync
         .refresh_local_repo_state(owner, project)?;
-    let worker_id = placement
-        .worker_id
-        .as_deref()
-        .ok_or_else(|| PlatformError::new("CLUSTER_WORKER_UNKNOWN", "placement does not include an office id"))?;
+    let worker_id = placement.worker_id.as_deref().ok_or_else(|| {
+        PlatformError::new(
+            "CLUSTER_WORKER_UNKNOWN",
+            "placement does not include an office id",
+        )
+    })?;
     let worker = state
         .platform
         .cluster_registry
@@ -2267,12 +2665,21 @@ async fn sync_project_to_remote_worker(
         ));
     }
     let token = cluster_internal_token_value(state)?;
-    let request = state.platform.cluster_runtime_sync.build_materialization_request(
-        owner,
-        project,
-        state.platform.data.list_project_credentials(owner, project)?,
-        state.platform.data.list_project_db_connections(owner, project)?,
-    )?;
+    let request = state
+        .platform
+        .cluster_runtime_sync
+        .build_materialization_request(
+            owner,
+            project,
+            state
+                .platform
+                .data
+                .list_project_credentials(owner, project)?,
+            state
+                .platform
+                .data
+                .list_project_db_connections(owner, project)?,
+        )?;
     let url = format!(
         "{}/api/internal/runtime/materialize",
         worker.base_url.trim_end_matches('/')
@@ -2300,7 +2707,10 @@ async fn sync_project_to_remote_worker(
         .unwrap_or_else(|_| "office returned an unreadable error response".to_string());
     Err(PlatformError::new(
         "CLUSTER_WORKER_SYNC",
-        format!("office '{}' rejected runtime sync with {}: {}", worker_id, status, body),
+        format!(
+            "office '{}' rejected runtime sync with {}: {}",
+            worker_id, status, body
+        ),
     ))
 }
 
@@ -2332,7 +2742,9 @@ async fn reqwest_response_to_axum(response: reqwest::Response) -> Response {
         {
             continue;
         }
-        axum_response.headers_mut().insert(name.clone(), value.clone());
+        axum_response
+            .headers_mut()
+            .insert(name.clone(), value.clone());
     }
     axum_response
 }
@@ -2409,12 +2821,13 @@ async fn forward_runtime_webhook_to_worker(
         url.push('?');
         url.push_str(query);
     }
-    let reqwest_method = reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
-        PlatformError::new(
-            "CLUSTER_WORKER_PROXY",
-            format!("unsupported HTTP method '{}': {err}", method.as_str()),
-        )
-    })?;
+    let reqwest_method =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
+            PlatformError::new(
+                "CLUSTER_WORKER_PROXY",
+                format!("unsupported HTTP method '{}': {err}", method.as_str()),
+            )
+        })?;
     let mut request = state
         .http_client
         .request(reqwest_method, url)
@@ -2422,7 +2835,9 @@ async fn forward_runtime_webhook_to_worker(
     for (name, value) in headers.iter() {
         if name.as_str().eq_ignore_ascii_case("host")
             || name.as_str().eq_ignore_ascii_case("content-length")
-            || name.as_str().eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
+            || name
+                .as_str()
+                .eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
         {
             continue;
         }
@@ -2436,8 +2851,117 @@ async fn forward_runtime_webhook_to_worker(
     Ok(reqwest_response_to_axum(response).await)
 }
 
+fn parse_project_transfer_kind(raw: &str) -> Result<ProjectTransferArtifactKind, Response> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bundle" => Ok(ProjectTransferArtifactKind::Bundle),
+        "files" => Ok(ProjectTransferArtifactKind::Files),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "PROJECT_TRANSFER_KIND_INVALID",
+                    "message": "kind must be 'bundle' or 'files'"
+                }
+            })),
+        )
+            .into_response()),
+    }
+}
+
+fn remote_project_worker_id(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Option<String>, PlatformError> {
+    let placement = state.platform.cluster_placement.get(owner, project)?;
+    Ok(match placement {
+        Some(record) if record.target == ProjectRuntimePlacementTarget::Worker => record.worker_id,
+        _ => None,
+    })
+}
+
+async fn forward_project_api_request_to_worker(
+    state: &PlatformAppState,
+    uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Bytes,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
+    if let Some(query) = uri.query() {
+        url.push('?');
+        url.push_str(query);
+    }
+    let reqwest_method =
+        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|err| {
+            PlatformError::new(
+                "CLUSTER_WORKER_PROXY",
+                format!("unsupported HTTP method '{}': {err}", method.as_str()),
+            )
+        })?;
+    let mut request = state
+        .http_client
+        .request(reqwest_method, url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("host")
+            || name.as_str().eq_ignore_ascii_case("content-length")
+            || name.as_str().eq_ignore_ascii_case("cookie")
+            || name
+                .as_str()
+                .eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
+        {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+    let response = request
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    Ok(reqwest_response_to_axum(response).await)
+}
+
+async fn forward_project_json_request_to_worker<T: serde::Serialize>(
+    state: &PlatformAppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    method: Method,
+    payload: &T,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
+    forward_project_api_request_to_worker(
+        state,
+        uri,
+        &method,
+        headers,
+        Bytes::from(serde_json::to_vec(payload)?),
+        worker_id,
+    )
+    .await
+}
+
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
-    let Some(master_url) = state.platform.cluster_bootstrap.master_url().map(str::to_string) else {
+    let Some(master_url) = state
+        .platform
+        .cluster_bootstrap
+        .master_url()
+        .map(str::to_string)
+    else {
         eprintln!("Zebflow office: controller_url missing; office registration loop disabled");
         return;
     };
@@ -2447,7 +2971,12 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
     };
     let node_id = state.platform.cluster_bootstrap.node_id();
     let label = state.platform.cluster_bootstrap.node_label();
-    let Some(base_url) = state.platform.cluster_bootstrap.advertise_url().map(str::to_string) else {
+    let Some(base_url) = state
+        .platform
+        .cluster_bootstrap
+        .advertise_url()
+        .map(str::to_string)
+    else {
         eprintln!("Zebflow office: advertise_url missing; office registration loop disabled");
         return;
     };
@@ -2460,6 +2989,7 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
         master_url.trim_end_matches('/')
     );
     let capabilities = crate::infra::execution::runner::RunnerCapabilities {
+        tags: vec![format!("app_version:{APP_VERSION}")],
         supports_resident: true,
         ..Default::default()
     };
@@ -2698,17 +3228,25 @@ async fn render_project_pipelines_with_tab(
                         let current_path = listing.current_path;
                         let breadcrumbs = listing.breadcrumbs;
                         let folders = listing.folders;
-                        let template_files: Vec<Value> = listing.files.into_iter().map(|f| {
-                            let template_path = f.rel_path.strip_prefix("pipelines/").unwrap_or(&f.rel_path).to_string();
-                            let git_status = registry_git_map.get(&f.rel_path).cloned();
-                            json!({
-                                "name": f.name,
-                                "rel_path": template_path,
-                                "kind": f.kind,
-                                "edit_href": f.edit_href,
-                                "git_status": git_status,
+                        let template_files: Vec<Value> = listing
+                            .files
+                            .into_iter()
+                            .map(|f| {
+                                let template_path = f
+                                    .rel_path
+                                    .strip_prefix("pipelines/")
+                                    .unwrap_or(&f.rel_path)
+                                    .to_string();
+                                let git_status = registry_git_map.get(&f.rel_path).cloned();
+                                json!({
+                                    "name": f.name,
+                                    "rel_path": template_path,
+                                    "kind": f.kind,
+                                    "edit_href": f.edit_href,
+                                    "git_status": git_status,
+                                })
                             })
-                        }).collect();
+                            .collect();
                         let pipelines = listing
                             .pipelines
                             .into_iter()
@@ -2739,7 +3277,10 @@ async fn render_project_pipelines_with_tab(
                             .filter(|d| d.kind == "file")
                             .map(|d| {
                                 let encoded = d.path.replace(' ', "%20");
-                                let href = format!("/projects/{owner}/{project}/editor?type=doc&file={}", encoded);
+                                let href = format!(
+                                    "/projects/{owner}/{project}/editor?type=doc&file={}",
+                                    encoded
+                                );
                                 json!({ "name": d.name, "path": d.path, "href": href })
                             })
                             .collect::<Vec<_>>();
@@ -2902,7 +3443,11 @@ async fn render_project_pipelines_with_tab(
                     *folder_counts.entry(vpath).or_insert(0) += 1;
                 }
                 // Also count template files so folder badges reflect all items, not just pipelines.
-                if let Ok(workspace) = state.platform.projects.list_template_workspace(&owner, &project) {
+                if let Ok(workspace) = state
+                    .platform
+                    .projects
+                    .list_template_workspace(&owner, &project)
+                {
                     for item in &workspace.items {
                         if item.kind == "file" {
                             let parent = std::path::Path::new(&item.rel_path)
@@ -2979,32 +3524,35 @@ async fn render_project_pipelines_with_tab(
                     .collect::<Vec<_>>();
 
                 // Template/script files at the current scope folder
-                let editor_template_files: Vec<Value> = match state
-                    .platform
-                    .projects
-                    .list_pipeline_registry(&owner, &project, &scope_path, &route_base, &editor_base)
-                {
-                    Ok(listing) => listing
-                        .files
-                        .into_iter()
-                        .map(|f| {
-                            let template_path = f
-                                .rel_path
-                                .strip_prefix("pipelines/")
-                                .unwrap_or(&f.rel_path)
-                                .to_string();
-                            let git_status = registry_git_map.get(&f.rel_path).cloned();
-                            json!({
-                                "name": f.name,
-                                "rel_path": template_path,
-                                "kind": f.kind,
-                                "template_path": template_path,
-                                "git_status": git_status,
+                let editor_template_files: Vec<Value> =
+                    match state.platform.projects.list_pipeline_registry(
+                        &owner,
+                        &project,
+                        &scope_path,
+                        &route_base,
+                        &editor_base,
+                    ) {
+                        Ok(listing) => listing
+                            .files
+                            .into_iter()
+                            .map(|f| {
+                                let template_path = f
+                                    .rel_path
+                                    .strip_prefix("pipelines/")
+                                    .unwrap_or(&f.rel_path)
+                                    .to_string();
+                                let git_status = registry_git_map.get(&f.rel_path).cloned();
+                                json!({
+                                    "name": f.name,
+                                    "rel_path": template_path,
+                                    "kind": f.kind,
+                                    "template_path": template_path,
+                                    "git_status": git_status,
+                                })
                             })
-                        })
-                        .collect(),
-                    Err(_) => Vec::new(),
-                };
+                            .collect(),
+                        Err(_) => Vec::new(),
+                    };
 
                 json!({
                     "scope_path": scope_path,
@@ -3027,6 +3575,7 @@ async fn render_project_pipelines_with_tab(
                         "definition": format!("/api/projects/{owner}/{project}/pipelines/definition"),
                         "activate": format!("/api/projects/{owner}/{project}/pipelines/activate"),
                         "deactivate": format!("/api/projects/{owner}/{project}/pipelines/deactivate"),
+                        "execute": format!("/api/projects/{owner}/{project}/pipelines/execute"),
                         "hits": format!("/api/projects/{owner}/{project}/pipelines/hits"),
                         "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
                         "nodes": format!("/api/projects/{owner}/{project}/nodes"),
@@ -3076,7 +3625,6 @@ async fn render_project_pipelines_with_tab(
     }
 }
 
-
 async fn project_editor_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -3093,6 +3641,32 @@ fn derive_scope_from_file_path(file: &str) -> String {
         "/".to_string()
     } else {
         crate::platform::model::normalize_virtual_path(parent)
+    }
+}
+
+fn is_docs_virtual_path(path: &str) -> bool {
+    path == "/docs" || path.starts_with("/docs/")
+}
+
+fn docs_scope_rel_path(path: &str) -> Option<String> {
+    if path == "/docs" {
+        Some(String::new())
+    } else {
+        path.strip_prefix("/docs/")
+            .map(|rest| rest.trim_matches('/').to_string())
+    }
+}
+
+fn docs_parent_virtual_path(rel_path: &str) -> String {
+    let parent = std::path::Path::new(rel_path)
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("")
+        .trim_matches('/');
+    if parent.is_empty() {
+        "/docs".to_string()
+    } else {
+        format!("/docs/{parent}")
     }
 }
 
@@ -3117,7 +3691,7 @@ async fn render_project_editor(
     let project_info = match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => info,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response()
+            return (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response();
         }
         Err(err) => return internal_error(err),
     };
@@ -3141,13 +3715,27 @@ async fn render_project_editor(
     let scope_path = if let Some(path) = query.path.as_deref().filter(|s| !s.trim().is_empty()) {
         crate::platform::model::normalize_virtual_path(path)
     } else if let Some(ref file) = file_param {
-        derive_scope_from_file_path(file)
+        if editor_type == "doc" {
+            docs_parent_virtual_path(file)
+        } else {
+            derive_scope_from_file_path(file)
+        }
     } else {
         "/".to_string()
     };
 
     // /docs is a virtual folder — detect it for special handling
-    let is_docs_scope = scope_path == "/docs";
+    let is_docs_scope = is_docs_virtual_path(&scope_path);
+    let docs_scope_rel = docs_scope_rel_path(&scope_path).unwrap_or_default();
+    let docs_items = if is_docs_scope || scope_path == "/" {
+        state
+            .platform
+            .projects
+            .list_project_docs(&owner, &project)
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
 
     // Git status map for git indicators
     let git_map: std::collections::HashMap<String, String> = state
@@ -3161,11 +3749,13 @@ async fn render_project_editor(
 
     // Registry listing — skip for /docs (virtual folder not in the pipeline tree)
     let listing = if !is_docs_scope {
-        match state
-            .platform
-            .projects
-            .list_pipeline_registry(&owner, &project, &scope_path, &route_base, &editor_base)
-        {
+        match state.platform.projects.list_pipeline_registry(
+            &owner,
+            &project,
+            &scope_path,
+            &route_base,
+            &editor_base,
+        ) {
             Ok(l) => l,
             Err(err) => return internal_error(err),
         }
@@ -3212,12 +3802,15 @@ async fn render_project_editor(
     // All virtual paths with counts (for the sidebar folder accordion)
     let mut folder_counts = std::collections::BTreeMap::<String, usize>::new();
     for meta in &all_rows {
-        let vpath =
-            crate::platform::model::normalize_virtual_path(&meta.virtual_path);
+        let vpath = crate::platform::model::normalize_virtual_path(&meta.virtual_path);
         *folder_counts.entry(vpath).or_insert(0) += 1;
     }
     // Include template files in counts so badges reflect all items per folder.
-    if let Ok(workspace) = state.platform.projects.list_template_workspace(&owner, &project) {
+    if let Ok(workspace) = state
+        .platform
+        .projects
+        .list_template_workspace(&owner, &project)
+    {
         for item in &workspace.items {
             if item.kind == "file" {
                 let parent = std::path::Path::new(&item.rel_path)
@@ -3241,7 +3834,9 @@ async fn render_project_editor(
         .collect::<Vec<_>>();
 
     // Locked templates list (for both sidebar indicators and lock toggle)
-    let locked_templates = state.platform.zebflow_cfg
+    let locked_templates = state
+        .platform
+        .zebflow_cfg
         .get_locked_templates(&owner, &project)
         .unwrap_or_default();
 
@@ -3289,17 +3884,29 @@ async fn render_project_editor(
 
     // Sidebar template/doc files — with new editor URLs
     let sidebar_template_files: Vec<Value> = if is_docs_scope {
-        state
-            .platform
-            .projects
-            .list_project_docs(&owner, &project)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|d| d.kind == "file")
-            .map(|d| {
+        docs_items
+            .iter()
+            .filter_map(|d| {
+                if d.kind != "file" {
+                    return None;
+                }
+                let remainder = if docs_scope_rel.is_empty() {
+                    d.path.clone()
+                } else {
+                    d.path
+                        .strip_prefix(&format!("{docs_scope_rel}/"))?
+                        .to_string()
+                };
+                if remainder.contains('/') {
+                    return None;
+                }
                 let is_selected = file_param.as_deref() == Some(d.path.as_str());
-                let editor_href = format!("{editor_base}?type=doc&path=/docs&file={}", d.path);
-                json!({
+                let editor_href = format!(
+                    "{editor_base}?type=doc&path={}&file={}",
+                    docs_parent_virtual_path(&d.path),
+                    d.path
+                );
+                Some(json!({
                     "name": d.name,
                     "rel_path": format!("docs/{}", d.path),
                     "template_path": d.path,
@@ -3307,13 +3914,14 @@ async fn render_project_editor(
                     "git_status": null,
                     "is_selected": is_selected,
                     "editor_href": editor_href,
-                })
+                }))
             })
             .collect()
     } else {
         listing
             .files
             .iter()
+            .filter(|d| d.kind == "file")
             .map(|f| {
                 let template_path = f
                     .rel_path
@@ -3355,16 +3963,40 @@ async fn render_project_editor(
             })
         })
         .collect();
+    if is_docs_scope {
+        child_folders = docs_items
+            .iter()
+            .filter_map(|item| {
+                if item.kind != "folder" {
+                    return None;
+                }
+                let remainder = if docs_scope_rel.is_empty() {
+                    item.path.clone()
+                } else {
+                    item.path
+                        .strip_prefix(&format!("{docs_scope_rel}/"))?
+                        .to_string()
+                };
+                if remainder.is_empty() || remainder.contains('/') {
+                    return None;
+                }
+                let virtual_path = if docs_scope_rel.is_empty() {
+                    format!("/docs/{remainder}")
+                } else {
+                    format!("/docs/{docs_scope_rel}/{remainder}")
+                };
+                Some(json!({
+                    "name": item.name,
+                    "virtual_path": virtual_path,
+                    "href": format!("{editor_base}?path={virtual_path}"),
+                    "count": 0,
+                }))
+            })
+            .collect();
+    }
     // At root: inject virtual /docs folder
     if scope_path == "/" {
-        let docs_count = state
-            .platform
-            .projects
-            .list_project_docs(&owner, &project)
-            .unwrap_or_default()
-            .iter()
-            .filter(|d| d.kind == "file")
-            .count();
+        let docs_count = docs_items.iter().filter(|d| d.kind == "file").count();
         child_folders.push(json!({
             "name": "docs",
             "virtual_path": "/docs",
@@ -3393,10 +4025,7 @@ async fn render_project_editor(
     // Pipeline payload
     let pipeline_payload = if effective_type == "pipeline" {
         let file = file_param.as_deref().unwrap_or("");
-        let meta = all_rows
-            .iter()
-            .find(|r| r.file_rel_path == file)
-            .cloned();
+        let meta = all_rows.iter().find(|r| r.file_rel_path == file).cloned();
 
         let (source, graph_json, parse_error, hit_stats, selected_locked) =
             if let Some(ref meta) = meta {
@@ -3416,11 +4045,10 @@ async fn render_project_editor(
                         Value::String(format!("pipeline JSON parse error: {err}")),
                     ),
                 };
-                let stats = state.platform.pipeline_hits.get(
-                    &owner,
-                    &project,
-                    &meta.file_rel_path,
-                );
+                let stats = state
+                    .platform
+                    .pipeline_hits
+                    .get(&owner, &project, &meta.file_rel_path);
                 (
                     Value::String(source),
                     graph_json,
@@ -3429,7 +4057,13 @@ async fn render_project_editor(
                     Value::Bool(locked),
                 )
             } else {
-                (Value::Null, Value::Null, Value::Null, Value::Null, Value::Bool(false))
+                (
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Null,
+                    Value::Bool(false),
+                )
             };
 
         let node_catalog = crate::pipeline::nodes::builtin_node_definitions()
@@ -3461,6 +4095,7 @@ async fn render_project_editor(
                 "definition": format!("/api/projects/{owner}/{project}/pipelines/definition"),
                 "activate": format!("/api/projects/{owner}/{project}/pipelines/activate"),
                 "deactivate": format!("/api/projects/{owner}/{project}/pipelines/deactivate"),
+                "execute": format!("/api/projects/{owner}/{project}/pipelines/execute"),
                 "hits": format!("/api/projects/{owner}/{project}/pipelines/hits"),
                 "invocations": format!("/api/projects/{owner}/{project}/pipelines/invocations"),
                 "nodes": format!("/api/projects/{owner}/{project}/nodes"),
@@ -3525,7 +4160,9 @@ async fn render_project_editor(
         let name = file.rsplit('/').next().unwrap_or(file).to_string();
         json!({
             "name": name,
+            "path": file,
             "rel_path": format!("docs/{}", file),
+            "parent_virtual_path": docs_parent_virtual_path(file),
             "file_kind": "doc",
             "content": content,
             "api": {
@@ -3557,9 +4194,15 @@ async fn render_project_editor(
     };
 
     let (seo_title, current_menu) = if nav_sub == "registry" {
-        (format!("{} - Pipelines", project_info.title), "Pipelines / Registry")
+        (
+            format!("{} - Pipelines", project_info.title),
+            "Pipelines / Registry",
+        )
     } else {
-        (format!("{} - Editor", project_info.title), "Pipelines / Editor")
+        (
+            format!("{} - Editor", project_info.title),
+            "Pipelines / Editor",
+        )
     };
 
     let input = json!({
@@ -3825,6 +4468,7 @@ async fn project_db_suite_page(
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
             let table_page_key = match connection_info.database_kind.as_str() {
                 "postgresql" => "platform-project-table-connection-postgresql",
+                "sekejap" => "platform-project-table-connection-sekejap",
                 _ => "platform-project-table-connection",
             };
 
@@ -3833,7 +4477,10 @@ async fn project_db_suite_page(
                 |c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.',
                 "-",
             );
-            let query_example = "-- Write SQL and click Run Query.".to_string();
+            let query_example = match connection_info.database_kind.as_str() {
+                "sekejap" => "SHOW TABLES".to_string(),
+                _ => "-- Write SQL and click Run Query.".to_string(),
+            };
 
             let table_query = if selected_table.is_empty() {
                 String::new()
@@ -3950,9 +4597,13 @@ async fn render_files_page(
     tab: &str,
     browse_path: String,
 ) -> Response {
-    if let Err(response) =
-        require_project_page_capability(&state, &headers, &owner, &project, ProjectCapability::FilesRead)
-    {
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
         return response;
     }
     match state.platform.projects.get_project(&owner, &project) {
@@ -3979,8 +4630,13 @@ async fn render_files_page(
                                 entries.sort_by_key(|e| e.file_name());
                                 for entry in entries {
                                     let name = entry.file_name().to_string_lossy().into_owned();
-                                    let entry_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-                                    let is_protected = rel.is_empty() && protected_roots.contains(&name.as_str());
+                                    let entry_rel = if rel.is_empty() {
+                                        name.clone()
+                                    } else {
+                                        format!("{rel}/{name}")
+                                    };
+                                    let is_protected =
+                                        rel.is_empty() && protected_roots.contains(&name.as_str());
                                     if entry.path().is_dir() {
                                         fds.push(json!({
                                             "name": name,
@@ -3990,10 +4646,14 @@ async fn render_files_page(
                                     } else {
                                         let meta = entry.path().metadata().ok();
                                         let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                                        let modified = meta.as_ref()
+                                        let modified = meta
+                                            .as_ref()
                                             .and_then(|m| m.modified().ok())
-                                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                            .map(|d| d.as_secs()).unwrap_or(0);
+                                            .and_then(|t| {
+                                                t.duration_since(std::time::UNIX_EPOCH).ok()
+                                            })
+                                            .map(|d| d.as_secs())
+                                            .unwrap_or(0);
                                         fls.push(json!({
                                             "name": name,
                                             "path": entry_rel,
@@ -4169,19 +4829,28 @@ async fn render_settings_tab_page(
             let (node_count, node_groups) = settings_nodes();
 
             // Build library list: merge embedded manifests with per-project enabled state.
-            let rwe_libs = state.platform.zebflow_cfg.get_rwe_libraries(&owner, &project).unwrap_or_default();
-            let libraries_available = state.platform.library.list().map(|m| {
-                let enabled_entry = rwe_libs.get(&m.name);
-                json!({
-                    "name": m.name,
-                    "description": m.description,
-                    "packed_version": m.packed_version(),
-                    "packed_kind": m.packed_kind(),
-                    "enabled": enabled_entry.is_some(),
-                    "installed_version": enabled_entry.map(|e| e.version.clone()),
-                    "source": enabled_entry.map(|e| e.source.clone())
+            let rwe_libs = state
+                .platform
+                .zebflow_cfg
+                .get_rwe_libraries(&owner, &project)
+                .unwrap_or_default();
+            let libraries_available = state
+                .platform
+                .library
+                .list()
+                .map(|m| {
+                    let enabled_entry = rwe_libs.get(&m.name);
+                    json!({
+                        "name": m.name,
+                        "description": m.description,
+                        "packed_version": m.packed_version(),
+                        "packed_kind": m.packed_kind(),
+                        "enabled": enabled_entry.is_some(),
+                        "installed_version": enabled_entry.map(|e| e.version.clone()),
+                        "source": enabled_entry.map(|e| e.source.clone())
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
             let libraries_api = format!("/api/projects/{owner}/{project}/rwe/libraries");
 
             let assistant_config = match state
@@ -4216,6 +4885,11 @@ async fn render_settings_tab_page(
                 .platform
                 .mcp_sessions
                 .get_for_project(&owner, &project);
+            let transfer_operations = state
+                .platform
+                .project_operations
+                .list(&owner, &project, 10)
+                .unwrap_or_default();
 
             let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
 
@@ -4272,6 +4946,16 @@ async fn render_settings_tab_page(
                     "config": zebflow_cfg.assets
                 },
                 "reindex_api": format!("/api/projects/{owner}/{project}/reindex"),
+                "transfer": {
+                    "api": {
+                        "operations": format!("/api/projects/{owner}/{project}/transfer/operations"),
+                        "export_bundle": format!("/api/projects/{owner}/{project}/transfer/export/bundle"),
+                        "export_files": format!("/api/projects/{owner}/{project}/transfer/export/files"),
+                        "import_bundle": format!("/api/projects/{owner}/{project}/transfer/import/bundle"),
+                        "import_files": format!("/api/projects/{owner}/{project}/transfer/import/files"),
+                    },
+                    "operations": transfer_operations,
+                },
                 "mcp": {
                     "active": mcp_session.is_some(),
                     "status_label": if mcp_session.is_some() { "active" } else { "inactive" },
@@ -4389,21 +5073,32 @@ fn settings_policy_cards() -> Vec<Value> {
     ]
 }
 
-
 fn node_group_rank(kind: &str) -> u8 {
-    if kind.starts_with("n.trigger.") { 0 }
-    else if kind == "n.script" || kind.starts_with("n.script.") { 1 }
-    else if kind.starts_with("n.logic.") { 2 }
-    else if kind.starts_with("n.ai.") { 3 }
-    else { 4 }
+    if kind.starts_with("n.trigger.") {
+        0
+    } else if kind == "n.script" || kind.starts_with("n.script.") {
+        1
+    } else if kind.starts_with("n.logic.") {
+        2
+    } else if kind.starts_with("n.ai.") {
+        3
+    } else {
+        4
+    }
 }
 
 fn node_group_prefix(kind: &str) -> &'static str {
-    if kind.starts_with("n.trigger.") { "n.trigger" }
-    else if kind == "n.script" || kind.starts_with("n.script.") { "n.script" }
-    else if kind.starts_with("n.logic.") { "n.logic" }
-    else if kind.starts_with("n.ai.") { "n.ai" }
-    else { "" }
+    if kind.starts_with("n.trigger.") {
+        "n.trigger"
+    } else if kind == "n.script" || kind.starts_with("n.script.") {
+        "n.script"
+    } else if kind.starts_with("n.logic.") {
+        "n.logic"
+    } else if kind.starts_with("n.ai.") {
+        "n.ai"
+    } else {
+        ""
+    }
 }
 
 fn settings_nodes() -> (usize, Vec<Value>) {
@@ -4518,7 +5213,6 @@ fn pipeline_tab_payload(
         _ => None,
     }
 }
-
 
 fn project_nav_map(owner: &str, project: &str) -> String {
     let b = format!("/projects/{owner}/{project}");
@@ -5607,10 +6301,7 @@ async fn api_meta(State(state): State<PlatformAppState>) -> Response {
 
 // ── System info endpoint ─────────────────────────────────────────────────────
 
-async fn api_system_info(
-    _state: State<PlatformAppState>,
-    headers: HeaderMap,
-) -> Response {
+async fn api_system_info(_state: State<PlatformAppState>, headers: HeaderMap) -> Response {
     // Require a logged-in session (not necessarily superadmin)
     if session_owner(&headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -5635,46 +6326,62 @@ fn collect_system_info() -> serde_json::Value {
     sys.refresh_cpu_usage();
 
     // ── OS ──
-    let os_name    = System::name().unwrap_or_else(|| "Unknown".into());
+    let os_name = System::name().unwrap_or_else(|| "Unknown".into());
     let os_version = System::os_version().unwrap_or_default();
-    let kernel     = System::kernel_version().unwrap_or_default();
-    let hostname   = System::host_name().unwrap_or_default();
-    let arch       = std::env::consts::ARCH;
+    let kernel = System::kernel_version().unwrap_or_default();
+    let hostname = System::host_name().unwrap_or_default();
+    let arch = std::env::consts::ARCH;
 
     // Detect environment variant (Raspberry Pi, WSL, etc.)
     let os_variant = detect_os_variant();
 
     // ── CPU ──
     let cpu_count = sys.cpus().len();
-    let cpu_brand = sys.cpus().first().map(|c| c.brand().to_string()).unwrap_or_default();
+    let cpu_brand = sys
+        .cpus()
+        .first()
+        .map(|c| c.brand().to_string())
+        .unwrap_or_default();
     let cpu_usage = sys.global_cpu_usage();
 
     // ── Memory ──
     let total_mem = sys.total_memory();
-    let used_mem  = sys.used_memory();
+    let used_mem = sys.used_memory();
     let avail_mem = sys.available_memory();
-    let mem_pct   = if total_mem > 0 { used_mem as f64 / total_mem as f64 * 100.0 } else { 0.0 };
+    let mem_pct = if total_mem > 0 {
+        used_mem as f64 / total_mem as f64 * 100.0
+    } else {
+        0.0
+    };
 
     // ── Disk (aggregate all mounts) ──
     let disks = Disks::new_with_refreshed_list();
-    let (total_disk, avail_disk) = disks
-        .iter()
-        .fold((0u64, 0u64), |(t, a), d| (t + d.total_space(), a + d.available_space()));
+    let (total_disk, avail_disk) = disks.iter().fold((0u64, 0u64), |(t, a), d| {
+        (t + d.total_space(), a + d.available_space())
+    });
     let used_disk = total_disk.saturating_sub(avail_disk);
-    let disk_pct  = if total_disk > 0 { used_disk as f64 / total_disk as f64 * 100.0 } else { 0.0 };
+    let disk_pct = if total_disk > 0 {
+        used_disk as f64 / total_disk as f64 * 100.0
+    } else {
+        0.0
+    };
 
     // ── Current process ──
     let pid = Pid::from_u32(std::process::id());
     let (proc_cpu, proc_mem, proc_virt, proc_threads) = sys
         .process(pid)
-        .map(|p| (p.cpu_usage(), p.memory(), p.virtual_memory(), p.tasks().map(|t| t.len()).unwrap_or(0)))
+        .map(|p| {
+            (
+                p.cpu_usage(),
+                p.memory(),
+                p.virtual_memory(),
+                p.tasks().map(|t| t.len()).unwrap_or(0),
+            )
+        })
         .unwrap_or((0.0, 0, 0, 0));
 
     // Process uptime via process start_time vs system boot
-    let proc_uptime = sys
-        .process(pid)
-        .map(|p| p.run_time())
-        .unwrap_or(0);
+    let proc_uptime = sys.process(pid).map(|p| p.run_time()).unwrap_or(0);
 
     // ── Capabilities ──
     let caps = collect_capabilities();
@@ -5739,10 +6446,22 @@ fn detect_os_variant() -> &'static str {
         }
     }
 
-    #[cfg(target_os = "macos")]   { "macos" }
-    #[cfg(target_os = "windows")] { "windows" }
-    #[cfg(target_os = "linux")]   { "linux" }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))] { "unknown" }
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        "unknown"
+    }
 }
 
 fn collect_capabilities() -> serde_json::Value {
@@ -5753,7 +6472,11 @@ fn collect_capabilities() -> serde_json::Value {
     let python_info = probe_python_system();
 
     // Python (managed by zebflow)
-    let managed_python = zf_base.join("engines").join("python").join("bin").join("python3");
+    let managed_python = zf_base
+        .join("engines")
+        .join("python")
+        .join("bin")
+        .join("python3");
     let python_managed_available = managed_python.exists();
 
     // Lightpanda
@@ -5767,7 +6490,11 @@ fn collect_capabilities() -> serde_json::Value {
 
     // Chromium (chromiumoxide fetcher puts it in a subdirectory)
     let chromium_dir = zf_base.join("browsers").join("chromium");
-    let chromium_installed = chromium_dir.exists() && chromium_dir.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false);
+    let chromium_installed = chromium_dir.exists()
+        && chromium_dir
+            .read_dir()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
 
     // Ollama (managed)
     let ollama_path = zf_base.join("engines").join("ollama");
@@ -5786,14 +6513,14 @@ fn collect_capabilities() -> serde_json::Value {
     let vips_version = probe_binary_version(std::path::Path::new("vips"), "--version");
 
     // Security / pentest tools (system PATH only — no managed path)
-    let nmap_version    = probe_binary_version(std::path::Path::new("nmap"),    "--version");
-    let nuclei_version  = probe_binary_version(std::path::Path::new("nuclei"),  "-version");
-    let httpx_version   = probe_binary_version(std::path::Path::new("httpx"),   "-version");
-    let trivy_version   = probe_binary_version(std::path::Path::new("trivy"),   "--version");
+    let nmap_version = probe_binary_version(std::path::Path::new("nmap"), "--version");
+    let nuclei_version = probe_binary_version(std::path::Path::new("nuclei"), "-version");
+    let httpx_version = probe_binary_version(std::path::Path::new("httpx"), "-version");
+    let trivy_version = probe_binary_version(std::path::Path::new("trivy"), "--version");
     let masscan_version = probe_binary_version(std::path::Path::new("masscan"), "--version");
-    let ffuf_version    = probe_binary_version(std::path::Path::new("ffuf"),    "-V");
-    let sqlmap_version  = probe_binary_version(std::path::Path::new("sqlmap"),  "--version");
-    let nikto_version   = probe_binary_version(std::path::Path::new("nikto"),   "--version");
+    let ffuf_version = probe_binary_version(std::path::Path::new("ffuf"), "-V");
+    let sqlmap_version = probe_binary_version(std::path::Path::new("sqlmap"), "--version");
+    let nikto_version = probe_binary_version(std::path::Path::new("nikto"), "--version");
 
     json!({
         "python": python_info,
@@ -5836,20 +6563,23 @@ fn detect_container_context() -> serde_json::Value {
     let in_docker = std::path::Path::new("/.dockerenv").exists();
 
     #[cfg(target_os = "linux")]
-    let host_gateway: Option<String> = std::fs::read_to_string("/proc/net/route").ok().and_then(|content| {
-        content.lines().skip(1).find_map(|line| {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            // Default route: Destination == 00000000
-            if cols.len() >= 3 && cols[1] == "00000000" {
-                u32::from_str_radix(cols[2], 16).ok().map(|hex| {
-                    let b = hex.to_le_bytes();
-                    format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+    let host_gateway: Option<String> =
+        std::fs::read_to_string("/proc/net/route")
+            .ok()
+            .and_then(|content| {
+                content.lines().skip(1).find_map(|line| {
+                    let cols: Vec<&str> = line.split_whitespace().collect();
+                    // Default route: Destination == 00000000
+                    if cols.len() >= 3 && cols[1] == "00000000" {
+                        u32::from_str_radix(cols[2], 16).ok().map(|hex| {
+                            let b = hex.to_le_bytes();
+                            format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3])
+                        })
+                    } else {
+                        None
+                    }
                 })
-            } else {
-                None
-            }
-        })
-    });
+            });
 
     #[cfg(not(target_os = "linux"))]
     let host_gateway: Option<String> = None;
@@ -6033,9 +6763,7 @@ async fn api_admin_db_delete_node(
         return r;
     }
     match state.platform.data.admin_delete_node(&slug) {
-        Ok(deleted) => {
-            Json(json!({"ok": true, "deleted": deleted, "slug": slug})).into_response()
-        }
+        Ok(deleted) => Json(json!({"ok": true, "deleted": deleted, "slug": slug})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -6080,8 +6808,18 @@ async fn api_create_project(
         .projects
         .create_or_update_project(&owner, &req)
     {
-        Ok((project, layout)) => match finalize_project_runtime_setup(&state, &owner, &project.project, &runtime).await {
-            Ok(placement) => Json(json!({"ok": true, "project": project, "layout": layout, "placement": placement})).into_response(),
+        Ok((project, layout)) => match finalize_project_runtime_setup(
+            &state,
+            &owner,
+            &project.project,
+            &runtime,
+        )
+        .await
+        {
+            Ok(placement) => Json(
+                json!({"ok": true, "project": project, "layout": layout, "placement": placement}),
+            )
+            .into_response(),
             Err(err) => internal_error(err),
         },
         Err(err) => internal_error(err),
@@ -6213,7 +6951,11 @@ async fn api_internal_runtime_materialize_project(
     if let Err(response) = require_cluster_internal_token(&state, &headers) {
         return response;
     }
-    match state.platform.cluster_runtime_sync.apply_materialization_request(&req) {
+    match state
+        .platform
+        .cluster_runtime_sync
+        .apply_materialization_request(&req)
+    {
         Ok(_) => Json(json!({"ok": true, "project": req.bundle.identity})).into_response(),
         Err(err) => internal_error(err),
     }
@@ -6275,6 +7017,581 @@ async fn api_internal_runtime_webhook_root(
     .await
 }
 
+fn local_office_id(state: &PlatformAppState) -> Option<String> {
+    let node_id = state.platform.cluster_bootstrap.node_id();
+    if node_id.trim().is_empty() {
+        None
+    } else {
+        Some(node_id)
+    }
+}
+
+fn controller_id(state: &PlatformAppState) -> Option<String> {
+    if state.platform.cluster_bootstrap.is_worker() {
+        None
+    } else {
+        local_office_id(state)
+    }
+}
+
+fn project_transfer_operation_kind(
+    kind: ProjectTransferArtifactKind,
+    is_import: bool,
+) -> ProjectOperationKind {
+    match (is_import, kind) {
+        (false, ProjectTransferArtifactKind::Bundle) => ProjectOperationKind::ExportBundle,
+        (false, ProjectTransferArtifactKind::Files) => ProjectOperationKind::ExportFiles,
+        (true, ProjectTransferArtifactKind::Bundle) => ProjectOperationKind::ImportBundle,
+        (true, ProjectTransferArtifactKind::Files) => ProjectOperationKind::ImportFiles,
+    }
+}
+
+fn refresh_local_project_workspace(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<(), PlatformError> {
+    state
+        .platform
+        .cluster_runtime_sync
+        .refresh_local_repo_state(owner, project)?;
+    state
+        .platform
+        .pipeline_runtime
+        .refresh_project(owner, project)?;
+    Ok(())
+}
+
+async fn api_internal_project_transfer_export(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, raw_kind)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    let kind = match parse_project_transfer_kind(&raw_kind) {
+        Ok(kind) => kind,
+        Err(response) => return response,
+    };
+    let op_id = format!(
+        "internal-export-{}-{}",
+        kind.key(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let output_path = state.platform.project_transfer.artifact_path(&op_id, kind);
+    let export = state.platform.project_transfer.export_project(
+        &owner,
+        &project,
+        kind,
+        local_office_id(&state).as_deref(),
+        controller_id(&state).as_deref(),
+        state
+            .platform
+            .cluster_placement
+            .get(&owner, &project)
+            .ok()
+            .flatten(),
+        &output_path,
+    );
+    match export {
+        Ok(_) => {}
+        Err(err) => return internal_error(err),
+    }
+    let bytes = match fs::read(&output_path) {
+        Ok(bytes) => bytes,
+        Err(err) => return internal_error(err.into()),
+    };
+    let _ = fs::remove_dir_all(state.platform.project_transfer.operation_dir(&op_id));
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
+    if let Ok(value) = HeaderValue::from_str(kind.archive_name()) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("x-zebflow-transfer-archive"), value);
+    }
+    response
+}
+
+async fn api_internal_project_transfer_import(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, raw_kind)): Path<(String, String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(response) = require_cluster_internal_token(&state, &headers) {
+        return response;
+    }
+    let kind = match parse_project_transfer_kind(&raw_kind) {
+        Ok(kind) => kind,
+        Err(response) => return response,
+    };
+    let op_id = format!(
+        "internal-import-{}-{}",
+        kind.key(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
+    let archive_path = state.platform.project_transfer.artifact_path(&op_id, kind);
+    if let Some(parent) = archive_path.parent()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        return internal_error(err.into());
+    }
+    if let Err(err) = fs::write(&archive_path, &body) {
+        return internal_error(err.into());
+    }
+    let import =
+        state
+            .platform
+            .project_transfer
+            .import_project(&owner, &project, kind, &archive_path);
+    let manifest = match import {
+        Ok(manifest) => manifest,
+        Err(err) => return internal_error(err),
+    };
+    if let Err(err) = refresh_local_project_workspace(&state, &owner, &project) {
+        return internal_error(err);
+    }
+    let _ = fs::remove_dir_all(state.platform.project_transfer.operation_dir(&op_id));
+    Json(json!({"ok": true, "manifest": manifest})).into_response()
+}
+
+async fn api_project_transfer_operations(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    match state.platform.project_operations.list(&owner, &project, 10) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_project_transfer_export(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, raw_kind)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    let kind = match parse_project_transfer_kind(&raw_kind) {
+        Ok(kind) => kind,
+        Err(response) => return response,
+    };
+    let remote_worker_id = match remote_project_worker_id(&state, &owner, &project) {
+        Ok(worker_id) => worker_id,
+        Err(err) => return internal_error(err),
+    };
+    let mut operation = match state.platform.project_operations.create(
+        &owner,
+        &project,
+        project_transfer_operation_kind(kind, false),
+        remote_worker_id.clone().or_else(|| local_office_id(&state)),
+        None,
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    operation = match state
+        .platform
+        .project_operations
+        .mark_running(&operation, "preparing export")
+    {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    let artifact_path = state
+        .platform
+        .project_transfer
+        .artifact_path(&operation.operation_id, kind);
+    let export_result = if let Some(worker_id) = remote_worker_id.as_deref() {
+        let worker = match state.platform.cluster_registry.get_worker(worker_id) {
+            Ok(Some(worker)) => worker,
+            Ok(None) => {
+                let _ = state.platform.project_operations.mark_failed(
+                    &operation,
+                    "locating office",
+                    format!("office '{}' is not registered", worker_id),
+                );
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "error": {"code":"CLUSTER_WORKER_UNKNOWN","message":"office not registered"}})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
+        let token = match cluster_internal_token_value(&state) {
+            Ok(token) => token,
+            Err(err) => return internal_error(err),
+        };
+        let url = format!(
+            "{}/api/internal/project-transfer/{}/{}/export/{}",
+            worker.base_url.trim_end_matches('/'),
+            owner,
+            project,
+            kind.key()
+        );
+        match state
+            .http_client
+            .post(url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => match response.bytes().await {
+                Ok(bytes) => fs::write(&artifact_path, &bytes).map_err(PlatformError::from),
+                Err(err) => Err(PlatformError::new(
+                    "PROJECT_TRANSFER_EXPORT",
+                    err.to_string(),
+                )),
+            },
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                Err(PlatformError::new(
+                    "PROJECT_TRANSFER_EXPORT",
+                    format!("remote office export failed with {status}: {body}"),
+                ))
+            }
+            Err(err) => Err(PlatformError::new(
+                "PROJECT_TRANSFER_EXPORT",
+                err.to_string(),
+            )),
+        }
+    } else {
+        match state.platform.project_transfer.export_project(
+            &owner,
+            &project,
+            kind,
+            local_office_id(&state).as_deref(),
+            controller_id(&state).as_deref(),
+            state
+                .platform
+                .cluster_placement
+                .get(&owner, &project)
+                .ok()
+                .flatten(),
+            &artifact_path,
+        ) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        }
+    };
+    if let Err(err) = export_result {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "export failed",
+            err.message.clone(),
+        );
+        return internal_error(err);
+    }
+    let sha256 = match state.platform.project_transfer.sha256_hex(&artifact_path) {
+        Ok(value) => value,
+        Err(err) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "hashing archive",
+                err.message.clone(),
+            );
+            return internal_error(err);
+        }
+    };
+    let artifact_bytes = fs::metadata(&artifact_path).ok().map(|meta| meta.len());
+    let operation = match state.platform.project_operations.mark_completed(
+        &operation,
+        "export completed",
+        Some(
+            state
+                .platform
+                .project_transfer
+                .artifact_rel_path(&operation.operation_id, kind),
+        ),
+        Some(sha256),
+        artifact_bytes,
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({
+        "ok": true,
+        "operation": operation,
+        "download_url": format!(
+            "/api/projects/{}/{}/transfer/download/{}",
+            owner, project, operation.operation_id
+        )
+    }))
+    .into_response()
+}
+
+async fn api_project_transfer_import(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, raw_kind)): Path<(String, String, String)>,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    let kind = match parse_project_transfer_kind(&raw_kind) {
+        Ok(kind) => kind,
+        Err(response) => return response,
+    };
+    let remote_worker_id = match remote_project_worker_id(&state, &owner, &project) {
+        Ok(worker_id) => worker_id,
+        Err(err) => return internal_error(err),
+    };
+    let mut operation = match state.platform.project_operations.create(
+        &owner,
+        &project,
+        project_transfer_operation_kind(kind, true),
+        None,
+        remote_worker_id.clone().or_else(|| local_office_id(&state)),
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    operation = match state
+        .platform
+        .project_operations
+        .mark_running(&operation, "receiving upload")
+    {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "receiving upload",
+                "no archive file in multipart body",
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code":"PROJECT_TRANSFER_UPLOAD_MISSING","message":"no archive file in multipart body"}})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "receiving upload",
+                err.to_string(),
+            );
+            return internal_error(PlatformError::new(
+                "PROJECT_TRANSFER_UPLOAD",
+                err.to_string(),
+            ));
+        }
+    };
+    let bytes = match field.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let _ = state.platform.project_operations.mark_failed(
+                &operation,
+                "reading upload",
+                err.to_string(),
+            );
+            return internal_error(PlatformError::new(
+                "PROJECT_TRANSFER_UPLOAD",
+                err.to_string(),
+            ));
+        }
+    };
+    let archive_path = state
+        .platform
+        .project_transfer
+        .artifact_path(&operation.operation_id, kind);
+    if let Some(parent) = archive_path.parent()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "staging upload",
+            err.to_string(),
+        );
+        return internal_error(err.into());
+    }
+    if let Err(err) = fs::write(&archive_path, &bytes) {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "staging upload",
+            err.to_string(),
+        );
+        return internal_error(err.into());
+    }
+    let import_result = if let Some(worker_id) = remote_worker_id.as_deref() {
+        let worker = match state.platform.cluster_registry.get_worker(worker_id) {
+            Ok(Some(worker)) => worker,
+            Ok(None) => {
+                let _ = state.platform.project_operations.mark_failed(
+                    &operation,
+                    "locating office",
+                    format!("office '{}' is not registered", worker_id),
+                );
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "error": {"code":"CLUSTER_WORKER_UNKNOWN","message":"office not registered"}})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
+        let token = match cluster_internal_token_value(&state) {
+            Ok(token) => token,
+            Err(err) => return internal_error(err),
+        };
+        let url = format!(
+            "{}/api/internal/project-transfer/{}/{}/import/{}",
+            worker.base_url.trim_end_matches('/'),
+            owner,
+            project,
+            kind.key()
+        );
+        match state
+            .http_client
+            .post(url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+            .header(CONTENT_TYPE, "application/x-tar")
+            .body(bytes.clone())
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => Ok(()),
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                Err(PlatformError::new(
+                    "PROJECT_TRANSFER_IMPORT",
+                    format!("remote office import failed with {status}: {body}"),
+                ))
+            }
+            Err(err) => Err(PlatformError::new(
+                "PROJECT_TRANSFER_IMPORT",
+                err.to_string(),
+            )),
+        }
+    } else {
+        match state
+            .platform
+            .project_transfer
+            .import_project(&owner, &project, kind, &archive_path)
+        {
+            Ok(_) => refresh_local_project_workspace(&state, &owner, &project),
+            Err(err) => Err(err),
+        }
+    };
+    if let Err(err) = import_result {
+        let _ = state.platform.project_operations.mark_failed(
+            &operation,
+            "import failed",
+            err.message.clone(),
+        );
+        return internal_error(err);
+    }
+    let operation = match state.platform.project_operations.mark_completed(
+        &operation,
+        "import completed",
+        None,
+        None,
+        Some(bytes.len() as u64),
+    ) {
+        Ok(record) => record,
+        Err(err) => return internal_error(err),
+    };
+    Json(json!({"ok": true, "operation": operation})).into_response()
+}
+
+async fn api_project_transfer_download(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, operation_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    let record = match state
+        .platform
+        .project_operations
+        .get(&owner, &project, &operation_id)
+    {
+        Ok(Some(record)) => record,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal_error(err),
+    };
+    let Some(rel_path) = record.artifact_rel_path.as_deref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let path = state
+        .platform
+        .config
+        .data_root
+        .join("platform")
+        .join("project-operations")
+        .join(rel_path);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) => return internal_error(err.into()),
+    };
+    let archive_name = match record.kind {
+        ProjectOperationKind::ExportBundle | ProjectOperationKind::ImportBundle => {
+            ProjectTransferArtifactKind::Bundle.archive_name()
+        }
+        ProjectOperationKind::ExportFiles | ProjectOperationKind::ImportFiles => {
+            ProjectTransferArtifactKind::Files.archive_name()
+        }
+    };
+    let mut response = Response::new(Body::from(bytes));
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/x-tar"));
+    if let Ok(disposition) =
+        HeaderValue::from_str(&format!("attachment; filename=\"{archive_name}\""))
+    {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("content-disposition"), disposition);
+    }
+    response
+}
+
 /// Request body for `DELETE /api/users/{owner}/projects/{project}`.
 #[derive(serde::Deserialize)]
 struct DeleteProjectRequest {
@@ -6302,13 +7619,21 @@ async fn api_delete_project(
 ) -> Response {
     // Must be authenticated as the project owner
     let Some(session_owner) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "Not authenticated"}))).into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "Not authenticated"})),
+        )
+            .into_response();
     };
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
 
     if crate::platform::model::slug_segment(&session_owner) != owner_slug {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "Forbidden"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "Forbidden"})),
+        )
+            .into_response();
     }
 
     // Confirm project name matches
@@ -6322,7 +7647,11 @@ async fn api_delete_project(
     }
 
     // Re-verify password
-    match state.platform.users.authenticate(&owner_slug, &req.password) {
+    match state
+        .platform
+        .users
+        .authenticate(&owner_slug, &req.password)
+    {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -6348,7 +7677,11 @@ async fn api_delete_project(
     }
 
     // Delete metadata from the platform DB
-    if let Err(e) = state.platform.data.delete_project(&owner_slug, &project_slug) {
+    if let Err(e) = state
+        .platform
+        .data
+        .delete_project(&owner_slug, &project_slug)
+    {
         return internal_error(e);
     }
 
@@ -6427,6 +7760,7 @@ async fn api_pipeline_registry(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<PipelineRegistryQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6437,6 +7771,21 @@ async fn api_pipeline_registry(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let scope = match resolve_pipeline_registry_scope(&query) {
         Ok(scope) => scope,
@@ -6484,8 +7833,16 @@ async fn api_pipeline_registry(
                 let items = rows
                     .into_iter()
                     .map(|meta| {
-                        let is_active = meta.active_hash.as_deref().map(|h| !h.is_empty() && h == meta.hash).unwrap_or(false);
-                        let has_draft = meta.active_hash.as_deref().map(|h| !h.is_empty() && h != meta.hash).unwrap_or(false);
+                        let is_active = meta
+                            .active_hash
+                            .as_deref()
+                            .map(|h| !h.is_empty() && h == meta.hash)
+                            .unwrap_or(false);
+                        let has_draft = meta
+                            .active_hash
+                            .as_deref()
+                            .map(|h| !h.is_empty() && h != meta.hash)
+                            .unwrap_or(false);
                         let git_status = git_map.get(&meta.file_rel_path).cloned();
                         let file_rel_path = meta.file_rel_path.clone();
                         json!({
@@ -6520,6 +7877,7 @@ async fn api_list_pipelines(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<PipelineListQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6530,6 +7888,21 @@ async fn api_list_pipelines(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let base_path =
         crate::platform::model::normalize_virtual_path(query.path.as_deref().unwrap_or("/"));
@@ -6566,6 +7939,7 @@ async fn api_get_pipeline_by_id(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<PipelineByIdQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6576,6 +7950,21 @@ async fn api_get_pipeline_by_id(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let Some(file_id) = query
         .id
@@ -6669,6 +8058,7 @@ async fn api_upsert_pipeline_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertPipelineDefinitionRequest>,
 ) -> Response {
     // Milestone 1: allow direct pipeline creation even without authenticated session.
@@ -6682,6 +8072,21 @@ async fn api_upsert_pipeline_definition(
         )
     {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let self_file_rel_path = req.file_rel_path.clone();
@@ -6715,8 +8120,8 @@ async fn api_upsert_pipeline_definition(
 
     // Derive trigger_kind from the actual graph entry nodes so that it stays correct
     // even when the user changes the trigger node in the visual editor after creation.
-    let trigger_kind = derive_trigger_kind_from_source(&req.source)
-        .unwrap_or_else(|| req.trigger_kind.clone());
+    let trigger_kind =
+        derive_trigger_kind_from_source(&req.source).unwrap_or_else(|| req.trigger_kind.clone());
 
     match state.platform.projects.upsert_pipeline_definition(
         &owner,
@@ -6736,6 +8141,7 @@ async fn api_delete_pipeline_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<DeletePipelineRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6746,6 +8152,21 @@ async fn api_delete_pipeline_definition(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::DELETE,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -6763,13 +8184,13 @@ async fn api_delete_pipeline_definition(
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct PipelineLockToggleRequest {
     file_rel_path: String,
     locked: bool,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct TemplateLockToggleRequest {
     rel_path: String,
     locked: bool,
@@ -6779,6 +8200,7 @@ async fn api_pipeline_lock_toggle(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<PipelineLockToggleRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6790,31 +8212,77 @@ async fn api_pipeline_lock_toggle(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
     let pipeline_path = layout.repo_dir.join(&req.file_rel_path);
     let source = match std::fs::read_to_string(&pipeline_path) {
         Ok(s) => s,
-        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "pipeline not found"}))).into_response(),
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": "pipeline not found"})),
+            )
+                .into_response();
+        }
     };
     let mut value: Value = match serde_json::from_str(&source) {
         Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
     value["metadata"]["locked"] = Value::Bool(req.locked);
     let serialized = match serde_json::to_string_pretty(&value) {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response();
+        }
     };
     if let Err(e) = std::fs::write(&pipeline_path, &serialized) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"ok": false, "error": e.to_string()})),
+        )
+            .into_response();
     }
     // Auto-commit
-    let name = req.file_rel_path.rsplit('/').next().unwrap_or(&req.file_rel_path).replace(".zf.json", "");
+    let name = req
+        .file_rel_path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&req.file_rel_path)
+        .replace(".zf.json", "");
     let verb = if req.locked { "lock" } else { "unlock" };
     let commit_msg = format!("{verb}: pipeline {name}");
     let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
@@ -6823,13 +8291,25 @@ async fn api_pipeline_lock_toggle(
     let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
-        add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg(&req.file_rel_path);
+        add_cmd
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("add")
+            .arg("--")
+            .arg(&req.file_rel_path);
         add_cmd.output()
     };
     let _ = {
         let mut commit_cmd = std::process::Command::new("git");
-        for arg in &identity_args { commit_cmd.arg(arg); }
-        commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(&commit_msg);
+        for arg in &identity_args {
+            commit_cmd.arg(arg);
+        }
+        commit_cmd
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("commit")
+            .arg("-m")
+            .arg(&commit_msg);
         commit_cmd.output()
     };
     Json(json!({"ok": true, "is_locked": req.locked})).into_response()
@@ -6839,6 +8319,7 @@ async fn api_template_lock_toggle(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TemplateLockToggleRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6850,13 +8331,37 @@ async fn api_template_lock_toggle(
     ) {
         return response;
     }
-    if let Err(err) = state.platform.zebflow_cfg.set_template_locked(&owner, &project, &req.rel_path, req.locked) {
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    if let Err(err) =
+        state
+            .platform
+            .zebflow_cfg
+            .set_template_locked(&owner, &project, &req.rel_path, req.locked)
+    {
         return internal_error(err);
     }
     // Auto-commit
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
@@ -6868,13 +8373,25 @@ async fn api_template_lock_toggle(
     let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
-        add_cmd.arg("-C").arg(&layout.repo_dir).arg("add").arg("--").arg("zebflow.json");
+        add_cmd
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("add")
+            .arg("--")
+            .arg("zebflow.json");
         add_cmd.output()
     };
     let _ = {
         let mut commit_cmd = std::process::Command::new("git");
-        for arg in &identity_args { commit_cmd.arg(arg); }
-        commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(&commit_msg);
+        for arg in &identity_args {
+            commit_cmd.arg(arg);
+        }
+        commit_cmd
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("commit")
+            .arg("-m")
+            .arg(&commit_msg);
         commit_cmd.output()
     };
     Json(json!({"ok": true, "is_locked": req.locked})).into_response()
@@ -6884,6 +8401,7 @@ async fn api_repo_git_status(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -6893,6 +8411,21 @@ async fn api_repo_git_status(
         ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -6915,6 +8448,7 @@ async fn api_git_list_branches(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -6925,18 +8459,37 @@ async fn api_git_list_branches(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let current = state
         .platform
         .projects
         .get_repo_git_branch(&owner, &project)
         .unwrap_or_default();
-    match state.platform.projects.list_repo_git_local_branches(&owner, &project) {
+    match state
+        .platform
+        .projects
+        .list_repo_git_local_branches(&owner, &project)
+    {
         Ok(branches) => Json(json!({ "current": current, "branches": branches })).into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct GitCheckoutRequest {
     branch: String,
     #[serde(default)]
@@ -6947,6 +8500,7 @@ async fn api_git_checkout_branch(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<GitCheckoutRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -6958,11 +8512,27 @@ async fn api_git_checkout_branch(
     ) {
         return response;
     }
-    match state
-        .platform
-        .projects
-        .checkout_repo_git_branch(&owner, &project, &req.branch, req.create)
-    {
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state.platform.projects.checkout_repo_git_branch(
+        &owner,
+        &project,
+        &req.branch,
+        req.create,
+    ) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -6997,6 +8567,7 @@ async fn api_git_commit(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<GitCommitRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7007,6 +8578,21 @@ async fn api_git_commit(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     if req.files.is_empty() {
         return (
@@ -7045,7 +8631,7 @@ async fn api_git_commit(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"ok": false, "error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
     if !add_out.status.success() {
@@ -7062,8 +8648,15 @@ async fn api_git_commit(
     let actor_user = session_owner(&headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
     let mut commit_cmd = std::process::Command::new("git");
-    for arg in &identity_args { commit_cmd.arg(arg); }
-    commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.message.trim());
+    for arg in &identity_args {
+        commit_cmd.arg(arg);
+    }
+    commit_cmd
+        .arg("-C")
+        .arg(&layout.repo_dir)
+        .arg("commit")
+        .arg("-m")
+        .arg(req.message.trim());
     let commit_out = match commit_cmd.output() {
         Ok(o) => o,
         Err(e) => {
@@ -7071,7 +8664,7 @@ async fn api_git_commit(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"ok": false, "error": e.to_string()})),
             )
-                .into_response()
+                .into_response();
         }
     };
     if !commit_out.status.success() {
@@ -7087,16 +8680,26 @@ async fn api_git_commit(
         // Resolve push target: prefer explicit request fields, fall back to zebflow.json remote
         let (cred_id, repo_url, branch) = {
             let remote_cfg = &zebflow_cfg.remote;
-            let cid = req.credential_id.clone()
+            let cid = req
+                .credential_id
+                .clone()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| remote_cfg.credential_id.clone());
-            let url = req.repo_url.clone()
+            let url = req
+                .repo_url
+                .clone()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| remote_cfg.repo_url.clone());
-            let br = req.branch.clone()
+            let br = req
+                .branch
+                .clone()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| {
-                    if remote_cfg.branch.is_empty() { "main".to_string() } else { remote_cfg.branch.clone() }
+                    if remote_cfg.branch.is_empty() {
+                        "main".to_string()
+                    } else {
+                        remote_cfg.branch.clone()
+                    }
                 });
             (cid, url, br)
         };
@@ -7143,9 +8746,12 @@ async fn api_git_commit(
 
         // Pull --rebase before push to handle diverged remote
         let pull_out = std::process::Command::new("git")
-            .arg("-C").arg(&layout.repo_dir)
-            .arg("pull").arg("--rebase")
-            .arg(&auth_url).arg(&branch)
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("pull")
+            .arg("--rebase")
+            .arg(&auth_url)
+            .arg(&branch)
             .output();
         match pull_out {
             Err(e) => {
@@ -7158,8 +8764,10 @@ async fn api_git_commit(
             Ok(ref o) if !o.status.success() => {
                 // Abort the rebase so the repo is not left mid-rebase
                 let _ = std::process::Command::new("git")
-                    .arg("-C").arg(&layout.repo_dir)
-                    .arg("rebase").arg("--abort")
+                    .arg("-C")
+                    .arg(&layout.repo_dir)
+                    .arg("rebase")
+                    .arg("--abort")
                     .output();
                 let raw = String::from_utf8_lossy(&o.stderr);
                 let safe = redact_auth_urls(&raw);
@@ -7174,9 +8782,12 @@ async fn api_git_commit(
 
         // Push --set-upstream so future pushes work without tracking config
         let push_out = std::process::Command::new("git")
-            .arg("-C").arg(&layout.repo_dir)
-            .arg("push").arg("--set-upstream")
-            .arg(&auth_url).arg(format!("HEAD:{}", branch))
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("push")
+            .arg("--set-upstream")
+            .arg(&auth_url)
+            .arg(format!("HEAD:{}", branch))
             .output();
         match push_out {
             Err(e) => {
@@ -7202,7 +8813,7 @@ async fn api_git_commit(
 }
 
 /// Request body for `PUT /api/projects/{owner}/{project}/git/remote`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct GitRemoteRequest {
     #[serde(default)]
     credential_id: String,
@@ -7217,11 +8828,31 @@ async fn api_git_get_remote(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::TemplatesRead,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     Json(json!({
@@ -7237,14 +8868,38 @@ async fn api_git_put_remote(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<GitRemoteRequest>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
     ) {
         return r;
     }
-    let branch = if req.branch.trim().is_empty() { "main".to_string() } else { req.branch.trim().to_string() };
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::PUT,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let branch = if req.branch.trim().is_empty() {
+        "main".to_string()
+    } else {
+        req.branch.trim().to_string()
+    };
     match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         cfg.remote.credential_id = req.credential_id.trim().to_string();
         cfg.remote.repo_url = req.repo_url.trim().to_string();
@@ -7259,6 +8914,7 @@ async fn api_activate_pipeline_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<PipelineLocateRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7270,12 +8926,27 @@ async fn api_activate_pipeline_definition(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
 
-    match state.platform.projects.activate_pipeline_definition(
-        &owner,
-        &project,
-        &req.file_rel_path,
-    ) {
+    match state
+        .platform
+        .projects
+        .activate_pipeline_definition(&owner, &project, &req.file_rel_path)
+    {
         Ok(meta) => {
             if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
                 &owner,
@@ -7284,8 +8955,14 @@ async fn api_activate_pipeline_definition(
             ) {
                 return internal_error(err);
             }
-            state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
-            state.mem_subscriber.sync_pipeline(&owner, &project, &req.file_rel_path).await;
+            state
+                .scheduler
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
+            state
+                .mem_subscriber
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -7296,6 +8973,7 @@ async fn api_deactivate_pipeline_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<PipelineLocateRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7307,6 +8985,21 @@ async fn api_deactivate_pipeline_definition(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
 
     match state.platform.projects.deactivate_pipeline_definition(
         &owner,
@@ -7314,9 +9007,18 @@ async fn api_deactivate_pipeline_definition(
         &req.file_rel_path,
     ) {
         Ok(meta) => {
-            state.platform.pipeline_runtime.evict(&owner, &project, &req.file_rel_path);
-            state.scheduler.sync_pipeline(&owner, &project, &req.file_rel_path).await;
-            state.mem_subscriber.sync_pipeline(&owner, &project, &req.file_rel_path).await;
+            state
+                .platform
+                .pipeline_runtime
+                .evict(&owner, &project, &req.file_rel_path);
+            state
+                .scheduler
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
+            state
+                .mem_subscriber
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -7342,11 +9044,7 @@ async fn api_execute_pipeline(
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_execute_to_worker(
-                    &state,
-                    &owner,
-                    &project,
-                    &req,
-                    worker_id,
+                    &state, &owner, &project, &req, worker_id,
                 )
                 .await
                 {
@@ -7372,12 +9070,19 @@ async fn execute_pipeline_local(
         .read_or_default(owner, project)
         .logging
         .effective_max_invocations();
+    let request_id = format!(
+        "pipeline-exec-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
-    let meta = match state
-        .platform
-        .projects
-        .get_pipeline_meta_by_file_id(owner, project, &req.file_rel_path)
-    {
+    let meta = match state.platform.projects.get_pipeline_meta_by_file_id(
+        owner,
+        project,
+        &req.file_rel_path,
+    ) {
         Ok(Some(meta)) => meta,
         Ok(None) => {
             return (
@@ -7407,9 +9112,15 @@ async fn execute_pipeline_local(
                 "pipeline must be activated before execution",
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                owner, project, &meta.file_rel_path,
+                owner,
+                project,
+                &meta.file_rel_path,
                 &PipelineInvocationEntry {
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
@@ -7441,9 +9152,15 @@ async fn execute_pipeline_local(
                 &err.to_string(),
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                owner, project, &meta.file_rel_path,
+                owner,
+                project,
+                &meta.file_rel_path,
                 &PipelineInvocationEntry {
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
@@ -7461,8 +9178,7 @@ async fn execute_pipeline_local(
                 .into_response();
         }
     };
-    if let Err(err) = hydrate_template_markup(state, owner, project, &mut graph)
-    {
+    if let Err(err) = hydrate_template_markup(state, owner, project, &mut graph) {
         state.platform.pipeline_hits.record_failure(
             owner,
             project,
@@ -7472,9 +9188,15 @@ async fn execute_pipeline_local(
             &err.message,
         );
         let _ = state.platform.data.log_pipeline_invocation(
-            owner, project, &meta.file_rel_path,
+            owner,
+            project,
+            &meta.file_rel_path,
             &PipelineInvocationEntry {
-                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                run_id: request_id.clone(),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
                 duration_ms: exec_start.elapsed().as_millis() as u64,
                 status: "error".to_string(),
                 trigger: "manual".to_string(),
@@ -7501,9 +9223,15 @@ async fn execute_pipeline_local(
             &message,
         );
         let _ = state.platform.data.log_pipeline_invocation(
-            owner, project, &meta.file_rel_path,
+            owner,
+            project,
+            &meta.file_rel_path,
             &PipelineInvocationEntry {
-                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                run_id: request_id.clone(),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
                 duration_ms: exec_start.elapsed().as_millis() as u64,
                 status: "error".to_string(),
                 trigger: "manual".to_string(),
@@ -7521,13 +9249,6 @@ async fn execute_pipeline_local(
             .into_response();
     }
 
-    let request_id = format!(
-        "pipeline-exec-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
     let credentials = state.platform.credentials.clone();
     let graph_for_run = graph.clone();
     let ctx = PipelineContext {
@@ -7546,7 +9267,13 @@ async fn execute_pipeline_local(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
+    .with_template_root(
+        state
+            .platform
+            .projects
+            .get_project_template_root(owner, project)
+            .ok(),
+    )
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
@@ -7557,9 +9284,15 @@ async fn execute_pipeline_local(
                 .pipeline_hits
                 .record_success(owner, project, &meta.file_rel_path);
             let _ = state.platform.data.log_pipeline_invocation(
-                owner, project, &meta.file_rel_path,
+                owner,
+                project,
+                &meta.file_rel_path,
                 &PipelineInvocationEntry {
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
                     status: "ok".to_string(),
                     trigger: "manual".to_string(),
@@ -7570,6 +9303,7 @@ async fn execute_pipeline_local(
             );
             Json(json!({
                 "ok": true,
+                "run_id": request_id,
                 "meta": meta,
                 "output": output.value,
                 "trace": output.trace
@@ -7586,14 +9320,20 @@ async fn execute_pipeline_local(
                 &err.message,
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                owner, project, &meta.file_rel_path,
+                owner,
+                project,
+                &meta.file_rel_path,
                 &PipelineInvocationEntry {
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
                     status: "error".to_string(),
                     trigger: "manual".to_string(),
                     error: Some(err.message.clone()),
-                    trace: vec![],
+                    trace: err.node_trace.clone(),
                 },
                 log_max_n,
             );
@@ -7638,6 +9378,7 @@ async fn api_pipeline_hits(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -7647,6 +9388,21 @@ async fn api_pipeline_hits(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     match state
@@ -7687,6 +9443,7 @@ async fn api_pipeline_invocations(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7697,6 +9454,21 @@ async fn api_pipeline_invocations(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let Some(file_rel_path) = params.get("pipeline") else {
@@ -7727,6 +9499,7 @@ async fn api_template_workspace(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -7736,6 +9509,21 @@ async fn api_template_workspace(
         ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -7753,6 +9541,7 @@ async fn api_template_search(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<TemplateSearchQuery>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
@@ -7764,12 +9553,31 @@ async fn api_template_search(
     ) {
         return r;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let q = query.q.as_deref().unwrap_or("").trim().to_string();
     if q.is_empty() {
         return Json(json!({ "matches": [] })).into_response();
     }
     let scope = query.scope.as_deref().unwrap_or("all");
-    let glob = if scope == "pages" { Some("pages/*.tsx") } else { None };
+    let glob = if scope == "pages" {
+        Some("pages/*.tsx")
+    } else {
+        None
+    };
     match state
         .platform
         .projects
@@ -7799,6 +9607,7 @@ async fn api_template_pages(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7810,8 +9619,27 @@ async fn api_template_pages(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let path = query.path.as_deref();
-    match state.platform.projects.list_template_pages(&owner, &project, path) {
+    match state
+        .platform
+        .projects
+        .list_template_pages(&owner, &project, path)
+    {
         Ok(items) => Json(json!({
             "ok": true,
             "path": path.unwrap_or("/"),
@@ -7826,6 +9654,7 @@ async fn api_template_file(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7836,6 +9665,21 @@ async fn api_template_file(
         ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let Some(path) = query.path.as_deref() else {
         return (
@@ -7858,6 +9702,7 @@ async fn api_template_outline(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7868,6 +9713,21 @@ async fn api_template_outline(
         ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let Some(path) = query.path.as_deref() else {
         return (
@@ -7882,7 +9742,8 @@ async fn api_template_outline(
         .read_template_file(&owner, &project, path)
     {
         Ok(content) => {
-            let outline = crate::platform::services::tsx_outline::extract_outline(&content, Some(path));
+            let outline =
+                crate::platform::services::tsx_outline::extract_outline(&content, Some(path));
             Json(json!({
                 "ok": true,
                 "rel_path": path,
@@ -7898,6 +9759,7 @@ async fn api_template_save(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TemplateSaveRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7908,6 +9770,21 @@ async fn api_template_save(
         ProjectCapability::TemplatesWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::PUT,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -7926,7 +9803,9 @@ async fn api_template_save(
                 // Entry-page saves cause a hash miss automatically; component saves
                 // need explicit eviction so importing pages recompile with the new content.
                 if let Ok(abs) = state.platform.projects.resolve_template_abs_path(
-                    &owner_slug, &project_slug, &req.rel_path,
+                    &owner_slug,
+                    &project_slug,
+                    &req.rel_path,
                 ) {
                     crate::pipeline::engines::basic::evict_template_cache_by_path(
                         &state.template_cache,
@@ -7956,6 +9835,7 @@ async fn api_template_create(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TemplateCreateRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7966,6 +9846,21 @@ async fn api_template_create(
         ProjectCapability::TemplatesCreate,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -7981,6 +9876,7 @@ async fn api_template_move(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TemplateMoveRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -7991,6 +9887,21 @@ async fn api_template_move(
         ProjectCapability::TemplatesMove,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -8006,6 +9917,7 @@ async fn api_template_delete(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<TemplatePathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -8016,6 +9928,21 @@ async fn api_template_delete(
         ProjectCapability::TemplatesDelete,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let Some(path) = query.path.as_deref() else {
         return (
@@ -8038,6 +9965,7 @@ async fn api_template_git_status(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8047,6 +9975,21 @@ async fn api_template_git_status(
         ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state
         .platform
@@ -8062,6 +10005,7 @@ async fn api_template_diagnostics(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TemplateCompileRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -8072,6 +10016,21 @@ async fn api_template_diagnostics(
         ProjectCapability::TemplatesDiagnostics,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let owner = crate::platform::model::slug_segment(&owner);
@@ -8093,19 +10052,43 @@ async fn api_files_list(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::FilesRead,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
 
-    let rel = params.get("path").map(|s| s.trim().trim_start_matches('/')).unwrap_or("").to_string();
+    let rel = params
+        .get("path")
+        .map(|s| s.trim().trim_start_matches('/'))
+        .unwrap_or("")
+        .to_string();
     let rel = sanitize_file_path(&rel);
 
     let dir = if rel.is_empty() {
@@ -8116,7 +10099,11 @@ async fn api_files_list(
 
     // Security: must stay within files_dir
     if !dir.starts_with(&layout.files_dir) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid path"})),
+        )
+            .into_response();
     }
 
     let mut folders: Vec<serde_json::Value> = Vec::new();
@@ -8129,7 +10116,11 @@ async fn api_files_list(
             entries.sort_by_key(|e| e.file_name());
             for entry in entries {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let entry_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                let entry_rel = if rel.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{rel}/{name}")
+                };
                 let is_protected_root = rel.is_empty() && protected_roots.contains(&name.as_str());
                 if entry.path().is_dir() {
                     folders.push(json!({
@@ -8140,7 +10131,8 @@ async fn api_files_list(
                 } else {
                     let meta = entry.path().metadata().ok();
                     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let modified = meta.as_ref()
+                    let modified = meta
+                        .as_ref()
                         .and_then(|m| m.modified().ok())
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())
@@ -8165,32 +10157,70 @@ async fn api_files_mkdir(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::FilesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &body,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
 
-    let path_str = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().trim_start_matches('/').to_string();
+    let path_str = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('/')
+        .to_string();
     let path_str = sanitize_file_path(&path_str);
     if path_str.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"path is required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"path is required"})),
+        )
+            .into_response();
     }
 
     let abs = layout.files_dir.join(&path_str);
     if !abs.starts_with(&layout.files_dir) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid path"})),
+        )
+            .into_response();
     }
 
     match std::fs::create_dir_all(&abs) {
         Ok(_) => Json(json!({ "ok": true, "path": path_str })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -8199,33 +10229,71 @@ async fn api_files_rm(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::FilesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &body,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
 
-    let path_str = body.get("path").and_then(|v| v.as_str()).unwrap_or("").trim().trim_start_matches('/').to_string();
+    let path_str = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('/')
+        .to_string();
     let path_str = sanitize_file_path(&path_str);
     if path_str.is_empty() {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"path is required"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"path is required"})),
+        )
+            .into_response();
     }
 
     // Protect root dirs: public/ and private/ themselves cannot be deleted
     let protected_roots = ["public", "private"];
     if protected_roots.contains(&path_str.as_str()) {
-        return (StatusCode::FORBIDDEN, Json(json!({"error":"cannot delete protected root folder"}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"cannot delete protected root folder"})),
+        )
+            .into_response();
     }
 
     let abs = layout.files_dir.join(&path_str);
     if !abs.starts_with(&layout.files_dir) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid path"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":"invalid path"})),
+        )
+            .into_response();
     }
 
     let result = if abs.is_dir() {
@@ -8236,7 +10304,11 @@ async fn api_files_rm(
 
     match result {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -8411,6 +10483,7 @@ async fn api_get_settings_section(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, section)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8421,10 +10494,27 @@ async fn api_get_settings_section(
     ) {
         return response;
     }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     match section.as_str() {
         "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.rwe})).into_response(),
-        "logging" => Json(json!({"ok": true, "section": "logging", "data": cfg.logging})).into_response(),
+        "logging" => {
+            Json(json!({"ok": true, "section": "logging", "data": cfg.logging})).into_response()
+        }
         "git" => Json(json!({"ok": true, "section": "git", "data": cfg.git})).into_response(),
         _ => (
             StatusCode::NOT_FOUND,
@@ -8444,6 +10534,7 @@ async fn api_upsert_settings_section(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, section)): Path<(String, String, String)>,
+    uri: Uri,
     Json(req): Json<UpdateSettingsSectionRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -8454,6 +10545,21 @@ async fn api_upsert_settings_section(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::PUT,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     if req.commit_message.trim().is_empty() {
@@ -8466,66 +10572,88 @@ async fn api_upsert_settings_section(
 
     let mut cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
 
-    let section_data = match section.as_str() {
-        "rwe" => {
-            #[derive(serde::Deserialize)]
-            struct RwePayload {
-                #[serde(default)]
-                allow_list: Vec<String>,
-                #[serde(default)]
-                minify_html: bool,
-                #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
-                strict_mode: bool,
-                #[serde(default)]
-                deployment_asset_base: Option<String>,
-            }
-            let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({"ok": false, "error": e.to_string()})),
-                    )
-                        .into_response()
+    let section_data =
+        match section.as_str() {
+            "rwe" => {
+                #[derive(serde::Deserialize)]
+                struct RwePayload {
+                    #[serde(default)]
+                    allow_list: Vec<String>,
+                    #[serde(default)]
+                    minify_html: bool,
+                    #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
+                    strict_mode: bool,
+                    #[serde(default)]
+                    deployment_asset_base: Option<String>,
                 }
-            };
-            cfg.rwe.allow_list = payload.allow_list;
-            cfg.rwe.minify_html = payload.minify_html;
-            cfg.rwe.strict_mode = payload.strict_mode;
-            cfg.rwe.deployment_asset_base = payload.deployment_asset_base
-                .and_then(|s| if s.trim().is_empty() { None } else { Some(s.trim().to_string()) });
-            json!(cfg.rwe)
-        }
-        "logging" => {
-            let max_inv: Option<u32> = req.data.get("max_invocations")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.min(1000) as u32);
-            cfg.logging.max_invocations = max_inv;
-            json!(cfg.logging)
-        }
-        "git" => {
-            let name = req.data.get("author_name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let email = req.data.get("author_email").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            cfg.git.author_name = name;
-            cfg.git.author_email = email;
-            json!(cfg.git)
-        }
-        "assets" => {
-            let max_mb = req.data.get("max_asset_size_mb")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(5, 50) as u32)
-                .unwrap_or(10);
-            cfg.assets.max_asset_size_mb = max_mb;
-            json!(cfg.assets)
-        }
-        _ => {
-            return (
+                let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"ok": false, "error": e.to_string()})),
+                        )
+                            .into_response();
+                    }
+                };
+                cfg.rwe.allow_list = payload.allow_list;
+                cfg.rwe.minify_html = payload.minify_html;
+                cfg.rwe.strict_mode = payload.strict_mode;
+                cfg.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
+                    if s.trim().is_empty() {
+                        None
+                    } else {
+                        Some(s.trim().to_string())
+                    }
+                });
+                json!(cfg.rwe)
+            }
+            "logging" => {
+                let max_inv: Option<u32> = req
+                    .data
+                    .get("max_invocations")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.min(1000) as u32);
+                cfg.logging.max_invocations = max_inv;
+                json!(cfg.logging)
+            }
+            "git" => {
+                let name = req
+                    .data
+                    .get("author_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let email = req
+                    .data
+                    .get("author_email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                cfg.git.author_name = name;
+                cfg.git.author_email = email;
+                json!(cfg.git)
+            }
+            "assets" => {
+                let max_mb = req
+                    .data
+                    .get("max_asset_size_mb")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.clamp(5, 50) as u32)
+                    .unwrap_or(10);
+                cfg.assets.max_asset_size_mb = max_mb;
+                json!(cfg.assets)
+            }
+            _ => return (
                 StatusCode::NOT_FOUND,
-                Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
+                Json(
+                    json!({"ok": false, "error": format!("unknown settings section '{section}'")}),
+                ),
             )
-                .into_response()
-        }
-    };
+                .into_response(),
+        };
 
     if let Err(err) = state.platform.zebflow_cfg.write(&owner, &project, &cfg) {
         return internal_error(err);
@@ -8538,13 +10666,20 @@ async fn api_upsert_settings_section(
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
         let actor_user = session_owner(&headers);
-        let identity_args = git_identity_args(&state, actor_user.as_deref(), &cfg.git, &project_slug);
-        match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+        let identity_args =
+            git_identity_args(&state, actor_user.as_deref(), &cfg.git, &project_slug);
+        match state
+            .platform
+            .file
+            .ensure_project_layout(&owner_slug, &project_slug)
+        {
             Err(_) => (false, Some("could not resolve project layout".to_string())),
             Ok(layout) => {
                 let add_ok = std::process::Command::new("git")
-                    .arg("-C").arg(&layout.repo_dir)
-                    .arg("add").arg("zebflow.json")
+                    .arg("-C")
+                    .arg(&layout.repo_dir)
+                    .arg("add")
+                    .arg("zebflow.json")
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -8553,8 +10688,15 @@ async fn api_upsert_settings_section(
                     (false, Some("git add failed".to_string()))
                 } else {
                     let mut commit_cmd = std::process::Command::new("git");
-                    for arg in &identity_args { commit_cmd.arg(arg); }
-                    commit_cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(req.commit_message.trim());
+                    for arg in &identity_args {
+                        commit_cmd.arg(arg);
+                    }
+                    commit_cmd
+                        .arg("-C")
+                        .arg(&layout.repo_dir)
+                        .arg("commit")
+                        .arg("-m")
+                        .arg(req.commit_message.trim());
                     let commit_out = commit_cmd.output();
                     match commit_out {
                         Err(e) => (false, Some(e.to_string())),
@@ -8599,25 +10741,36 @@ async fn api_list_rwe_libraries(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::LibrariesRead,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::LibrariesRead,
     ) {
         return response;
     }
-    let rwe_libs = state.platform.zebflow_cfg
+    let rwe_libs = state
+        .platform
+        .zebflow_cfg
         .get_rwe_libraries(&owner, &project)
         .unwrap_or_default();
-    let items = state.platform.library.list().map(|m| {
-        let enabled_entry = rwe_libs.get(&m.name);
-        json!({
-            "name": m.name,
-            "description": m.description,
-            "packed_version": m.packed_version(),
-            "packed_kind": m.packed_kind(),
-            "enabled": enabled_entry.is_some(),
-            "installed_version": enabled_entry.map(|e| e.version.clone()),
-            "source": enabled_entry.map(|e| e.source.clone())
+    let items = state
+        .platform
+        .library
+        .list()
+        .map(|m| {
+            let enabled_entry = rwe_libs.get(&m.name);
+            json!({
+                "name": m.name,
+                "description": m.description,
+                "packed_version": m.packed_version(),
+                "packed_kind": m.packed_kind(),
+                "enabled": enabled_entry.is_some(),
+                "installed_version": enabled_entry.map(|e| e.version.clone()),
+                "source": enabled_entry.map(|e| e.source.clone())
+            })
         })
-    }).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     Json(items).into_response()
 }
 
@@ -8637,7 +10790,11 @@ async fn api_enable_rwe_library(
     Json(req): Json<EnableRweLibraryRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::LibrariesInstall,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::LibrariesInstall,
     ) {
         return response;
     }
@@ -8645,30 +10802,42 @@ async fn api_enable_rwe_library(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "library name must not be empty"})),
-        ).into_response();
+        )
+            .into_response();
     }
     // Verify library exists in embedded registry.
     if state.platform.library.get(req.name.trim()).is_none() {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": format!("library '{}' is not registered", req.name)})),
-        ).into_response();
+            Json(
+                json!({"ok": false, "error": format!("library '{}' is not registered", req.name)}),
+            ),
+        )
+            .into_response();
     }
     // Get the entry path for the requested version from the manifest.
-    let entry = state.platform.library
+    let entry = state
+        .platform
+        .library
         .get(req.name.trim())
         .and_then(|m| m.version(req.version.trim()))
         .map(|v| v.entry.clone())
         .unwrap_or_default();
     // Update zebflow.json.
     if let Err(err) = state.platform.zebflow_cfg.enable_rwe_library(
-        &owner, &project, req.name.trim(), req.version.trim(), req.source.trim(),
+        &owner,
+        &project,
+        req.name.trim(),
+        req.version.trim(),
+        req.source.trim(),
     ) {
         return internal_error(err);
     }
     // Update zeb.lock.
     if let Err(err) = state.platform.zeb_lock.add_entry(
-        &owner, &project, req.name.trim(),
+        &owner,
+        &project,
+        req.name.trim(),
         crate::platform::model::ZebLockEntry {
             version: req.version.trim().to_string(),
             source: req.source.trim().to_string(),
@@ -8681,7 +10850,10 @@ async fn api_enable_rwe_library(
     // Git commit (best-effort).
     let actor_user = session_owner(&headers);
     let _ = rwe_library_git_commit(
-        &state, actor_user.as_deref(), &owner, &project,
+        &state,
+        actor_user.as_deref(),
+        &owner,
+        &project,
         &format!("chore(rwe): enable library {}", req.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
@@ -8701,7 +10873,11 @@ async fn api_disable_rwe_library(
     Query(params): Query<DisableRweLibraryQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::LibrariesRemove,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::LibrariesRemove,
     ) {
         return response;
     }
@@ -8709,18 +10885,31 @@ async fn api_disable_rwe_library(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "library name must not be empty"})),
-        ).into_response();
+        )
+            .into_response();
     }
-    if let Err(err) = state.platform.zebflow_cfg.disable_rwe_library(&owner, &project, params.name.trim()) {
+    if let Err(err) =
+        state
+            .platform
+            .zebflow_cfg
+            .disable_rwe_library(&owner, &project, params.name.trim())
+    {
         return internal_error(err);
     }
-    if let Err(err) = state.platform.zeb_lock.remove_entry(&owner, &project, params.name.trim()) {
+    if let Err(err) = state
+        .platform
+        .zeb_lock
+        .remove_entry(&owner, &project, params.name.trim())
+    {
         return internal_error(err);
     }
     // Git commit (best-effort).
     let actor_user = session_owner(&headers);
     let _ = rwe_library_git_commit(
-        &state, actor_user.as_deref(), &owner, &project,
+        &state,
+        actor_user.as_deref(),
+        &owner,
+        &project,
         &format!("chore(rwe): disable library {}", params.name.trim()),
     );
     Json(json!({"ok": true})).into_response()
@@ -8735,7 +10924,11 @@ async fn api_rwe_cache_clear(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::SettingsWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
     ) {
         return response;
     }
@@ -8758,23 +10951,38 @@ fn rwe_library_git_commit(
 ) -> Result<(), ()> {
     let owner_slug = crate::platform::model::slug_segment(owner);
     let project_slug = crate::platform::model::slug_segment(project);
-    let layout = state.platform.file
+    let layout = state
+        .platform
+        .file
         .ensure_project_layout(&owner_slug, &project_slug)
         .map_err(|_| ())?;
     let add_ok = std::process::Command::new("git")
-        .arg("-C").arg(&layout.repo_dir)
-        .arg("add").arg("zebflow.json").arg("zeb.lock")
+        .arg("-C")
+        .arg(&layout.repo_dir)
+        .arg("add")
+        .arg("zebflow.json")
+        .arg("zeb.lock")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !add_ok {
         return Err(());
     }
-    let git_cfg = state.platform.zebflow_cfg.read_or_default(owner, project).git;
+    let git_cfg = state
+        .platform
+        .zebflow_cfg
+        .read_or_default(owner, project)
+        .git;
     let identity_args = git_identity_args(state, actor_user, &git_cfg, &project_slug);
     let mut cmd = std::process::Command::new("git");
-    for arg in &identity_args { cmd.arg(arg); }
-    cmd.arg("-C").arg(&layout.repo_dir).arg("commit").arg("-m").arg(message);
+    for arg in &identity_args {
+        cmd.arg(arg);
+    }
+    cmd.arg("-C")
+        .arg(&layout.repo_dir)
+        .arg("commit")
+        .arg("-m")
+        .arg(message);
     cmd.output().map(|_| ()).map_err(|_| ())
 }
 
@@ -8870,11 +11078,10 @@ fn save_chat_history(
         Err(_) => return,
     };
     let path = layout.data_runtime_dir.join("chat_history.json");
-    let mut history: Vec<Value> =
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|c| serde_json::from_str(&c).ok())
-            .unwrap_or_default();
+    let mut history: Vec<Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok())
+        .unwrap_or_default();
     history.push(json!({"role": "user", "content": user_msg}));
     history.push(json!({"role": "assistant", "content": assistant_msg}));
     // Keep last max_pairs pairs = max_pairs * 2 messages
@@ -8919,7 +11126,12 @@ async fn api_project_assistant_chat(
             .into_response();
     }
 
-    let bundle = match load_project_assistant_llm(state.platform.data.as_ref(), state.platform.assistant_configs.as_ref(), &owner, &project) {
+    let bundle = match load_project_assistant_llm(
+        state.platform.data.as_ref(),
+        state.platform.assistant_configs.as_ref(),
+        &owner,
+        &project,
+    ) {
         Ok(bundle) => bundle,
         Err(err) => {
             let status = match err.code {
@@ -8952,12 +11164,14 @@ async fn api_project_assistant_chat(
     let mut messages: Vec<Value> = Vec::new();
     {
         let skills_text = crate::platform::help::format_for_system_prompt();
-        let page_context = req.current_page
+        let page_context = req
+            .current_page
             .as_deref()
             .filter(|p| !p.is_empty())
             .map(|p| format!("\nCurrently viewing: {p}"))
             .unwrap_or_default();
-        let time_context = req.client_time
+        let time_context = req
+            .client_time
             .as_deref()
             .filter(|t| !t.is_empty())
             .map(|t| format!("\nUser local time: {t}"))
@@ -8965,11 +11179,31 @@ async fn api_project_assistant_chat(
         let nav_map = project_nav_map(&owner, &project);
 
         // Load agent docs for system prompt
-        state.platform.projects.ensure_agent_docs_defaults(&owner, &project).ok();
-        let memory = state.platform.projects.read_agent_doc(&owner, &project, "MEMORY.md").unwrap_or_default();
-        let soul   = state.platform.projects.read_agent_doc(&owner, &project, "SOUL.md").unwrap_or_default();
-        let agents = state.platform.projects.read_agent_doc(&owner, &project, "AGENTS.md").unwrap_or_default();
-        let readme = state.platform.projects.read_project_doc(&owner, &project, "README.md").unwrap_or_default();
+        state
+            .platform
+            .projects
+            .ensure_agent_docs_defaults(&owner, &project)
+            .ok();
+        let memory = state
+            .platform
+            .projects
+            .read_agent_doc(&owner, &project, "MEMORY.md")
+            .unwrap_or_default();
+        let soul = state
+            .platform
+            .projects
+            .read_agent_doc(&owner, &project, "SOUL.md")
+            .unwrap_or_default();
+        let agents = state
+            .platform
+            .projects
+            .read_agent_doc(&owner, &project, "AGENTS.md")
+            .unwrap_or_default();
+        let readme = state
+            .platform
+            .projects
+            .read_project_doc(&owner, &project, "README.md")
+            .unwrap_or_default();
         let readme_section = if readme.trim().is_empty() {
             String::new()
         } else {
@@ -9014,7 +11248,9 @@ async fn api_project_assistant_chat(
                 .into_iter()
                 .filter(|item| !item.content.trim().is_empty())
                 .filter_map(|item| match item.role.as_str() {
-                    "user" | "assistant" => Some(json!({"role": item.role, "content": item.content.trim()})),
+                    "user" | "assistant" => {
+                        Some(json!({"role": item.role, "content": item.content.trim()}))
+                    }
                     _ => None,
                 })
                 .take(20),
@@ -9035,11 +11271,14 @@ async fn api_project_assistant_chat(
 
     let max_steps = bundle.max_steps;
     let chat_history_pairs_for_save = bundle.chat_history_pairs;
-    let model_tier = if req.use_high_model { "high" } else { "general" };
+    let model_tier = if req.use_high_model {
+        "high"
+    } else {
+        "general"
+    };
 
     // Channel for streaming step events to SSE
-    let (step_tx, mut step_rx) =
-        tokio::sync::mpsc::unbounded_channel::<AssistantStepEvent>();
+    let (step_tx, mut step_rx) = tokio::sync::mpsc::unbounded_channel::<AssistantStepEvent>();
 
     // Spawn the agentic loop as a background task
     let loop_task = tokio::spawn(async move {
@@ -9224,8 +11463,7 @@ async fn run_assistant_loop(
 
                 // Execute each call and append tool result messages
                 for tc in &calls {
-                    let args: Value =
-                        serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+                    let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
 
                     let _ = step_tx.send(AssistantStepEvent::ToolCall {
                         step,
@@ -9299,6 +11537,91 @@ async fn api_list_db_connections(
         .list_project_connections(&owner, &project)
     {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_simple_tables(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match sekejap::list_tables(&state.platform.config.data_root, &owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<CreateSimpleTableRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match sekejap::create_table(&state.platform.config.data_root, &owner, &project, &req) {
+        Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
+        Err(err)
+            if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
+                || err.code == "PLATFORM_SEKEJAP_TABLE_EXISTS" =>
+        {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -9568,14 +11891,28 @@ async fn api_preview_db_connection_table(
         )
             .into_response();
     }
+    let limit = query.limit.unwrap_or(120).clamp(1, 5000);
+    let database_kind = match state.platform.db_connections.list_project_connections(&owner, &project)
+    {
+        Ok(items) => items
+            .into_iter()
+            .find(|item| item.connection_id == connection_id)
+            .map(|item| item.database_kind),
+        Err(err) => return internal_error(err),
+    };
+    let Some(database_kind) = database_kind else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_DB_CONNECTION_MISSING","message":"connection not found"}})),
+        )
+            .into_response();
+    };
+    let table_name = table.split('.').next_back().unwrap_or(&table).trim();
+    let sql = build_table_preview_sql(&database_kind, &table, table_name, limit);
     let req = QueryProjectDbConnectionRequest {
-        table: Some(table.split('.').next_back().unwrap_or(&table).to_string()),
-        sql: format!(
-            "SELECT * FROM {} LIMIT {}",
-            quote_sql_identifier_path(&table),
-            query.limit.unwrap_or(120).clamp(1, 5000)
-        ),
-        limit: Some(query.limit.unwrap_or(120).clamp(1, 5000)),
+        table: Some(table_name.to_string()),
+        sql,
+        limit: Some(limit),
         read_only: Some(true),
         ..Default::default()
     };
@@ -9620,6 +11957,7 @@ async fn api_list_project_docs(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -9629,6 +11967,21 @@ async fn api_list_project_docs(
         ProjectCapability::ProjectRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     match state.platform.projects.list_project_docs(&owner, &project) {
@@ -9641,6 +11994,7 @@ async fn api_read_project_doc(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<DocPathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -9664,6 +12018,21 @@ async fn api_read_project_doc(
         )
             .into_response();
     };
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
 
     match state
         .platform
@@ -9691,6 +12060,7 @@ async fn api_upsert_project_doc(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertProjectDocRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -9701,6 +12071,21 @@ async fn api_upsert_project_doc(
         ProjectCapability::FilesWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     match state
@@ -9722,6 +12107,7 @@ async fn api_upsert_project_doc_file(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<DocPathQuery>,
     body: Bytes,
 ) -> Response {
@@ -9741,13 +12127,36 @@ async fn api_upsert_project_doc_file(
         path: path.to_string(),
         content: String::from_utf8(body.to_vec()).unwrap_or_default(),
     };
-    api_upsert_project_doc(State(state), headers, Path((owner, project)), Json(req)).await
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::PUT,
+            &headers,
+            body,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    api_upsert_project_doc(
+        State(state),
+        headers,
+        Path((owner, project)),
+        uri,
+        Json(req),
+    )
+    .await
 }
 
 async fn api_delete_project_doc_file(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<DocPathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -9755,18 +12164,196 @@ async fn api_delete_project_doc_file(
         &headers,
         &owner,
         &project,
-        ProjectCapability::TemplatesDelete,
+        ProjectCapability::FilesWrite,
     ) {
         return response;
     }
-    let Some(path) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(path) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing doc path"}})),
         )
             .into_response();
     };
-    match state.platform.projects.delete_project_doc(&owner, &project, path) {
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state
+        .platform
+        .projects
+        .delete_project_doc(&owner, &project, path)
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_project_doc_folder(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<CreateProjectDocFolderRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match state
+        .platform
+        .projects
+        .create_project_doc_folder(&owner, &project, &req.path)
+    {
+        Ok(item) => Json(json!({"ok": true, "doc": item})).into_response(),
+        Err(err) if err.code == "PLATFORM_DOC_PATH" => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_move_project_doc_entry(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<ProjectDocMoveRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match state
+        .platform
+        .projects
+        .move_project_doc_entry(&owner, &project, &req)
+    {
+        Ok(path) => Json(json!({"ok": true, "path": path})).into_response(),
+        Err(err)
+            if matches!(
+                err.code,
+                "PLATFORM_DOC_PATH" | "PLATFORM_DOC_MOVE" | "PLATFORM_DOC_MISSING"
+            ) =>
+        {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_project_doc_entry(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Query(query): Query<DocPathQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return response;
+    }
+    let Some(path) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": {"code":"PLATFORM_DOC_PATH","message":"missing doc path"}})),
+        )
+            .into_response();
+    };
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state
+        .platform
+        .projects
+        .delete_project_doc_entry(&owner, &project, path)
+    {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => internal_error(err),
     }
@@ -9807,15 +12394,26 @@ async fn api_read_agent_doc(
     ) {
         return response;
     }
-    let Some(name) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(name) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code":"PLATFORM_AGENT_DOC_INVALID","message":"missing name query param"}})),
         )
             .into_response();
     };
-    match state.platform.projects.read_agent_doc(&owner, &project, name) {
-        Ok(content) => Json(json!({"ok": true, "doc": {"name": name, "content": content}})).into_response(),
+    match state
+        .platform
+        .projects
+        .read_agent_doc(&owner, &project, name)
+    {
+        Ok(content) => {
+            Json(json!({"ok": true, "doc": {"name": name, "content": content}})).into_response()
+        }
         Err(err) if err.code == "PLATFORM_AGENT_DOC_INVALID" => (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
@@ -9841,7 +12439,12 @@ async fn api_upsert_agent_doc_file(
     ) {
         return response;
     }
-    let Some(name) = query.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(name) = query
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": {"code":"PLATFORM_AGENT_DOC_INVALID","message":"missing name query param"}})),
@@ -9857,7 +12460,11 @@ async fn api_upsert_agent_doc_file(
             .into_response();
     }
     let content = String::from_utf8(body.to_vec()).unwrap_or_default();
-    match state.platform.projects.upsert_agent_doc(&owner, &project, name, &content) {
+    match state
+        .platform
+        .projects
+        .upsert_agent_doc(&owner, &project, name, &content)
+    {
         Ok(_) => Json(json!({"ok": true, "name": name})).into_response(),
         Err(err) if err.code == "PLATFORM_AGENT_DOC_INVALID" => (
             StatusCode::BAD_REQUEST,
@@ -9873,9 +12480,15 @@ async fn api_upsert_agent_doc_file(
 /// Auth failure kinds returned by [`verify_webhook_auth`].
 enum AuthError {
     /// 401 — not authenticated or token invalid. Carries optional redirect URL from credential.
-    Unauthenticated { message: String, redirect_url: Option<String> },
+    Unauthenticated {
+        message: String,
+        redirect_url: Option<String>,
+    },
     /// 403 — authenticated but role check failed. Carries optional redirect URL from credential.
-    Forbidden { message: String, redirect_url: Option<String> },
+    Forbidden {
+        message: String,
+        redirect_url: Option<String>,
+    },
     /// 500 — server-side misconfiguration.
     Internal(String),
 }
@@ -9956,7 +12569,11 @@ fn verify_webhook_auth(
             use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
             // Check Authorization: Bearer header first, then Cookie: <cookie_name> fallback.
-            let cookie_name = if auth_credential.is_empty() { "zebflow_session" } else { "zebflow_session" };
+            let cookie_name = if auth_credential.is_empty() {
+                "zebflow_session"
+            } else {
+                "zebflow_session"
+            };
             let token = headers
                 .get("Authorization")
                 .and_then(|h| h.to_str().ok())
@@ -9965,14 +12582,13 @@ fn verify_webhook_auth(
                 .or_else(|| {
                     let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
                     cookie.split(';').map(str::trim).find_map(|part| {
-                        part.strip_prefix(&format!("{cookie_name}=")).map(ToString::to_string)
+                        part.strip_prefix(&format!("{cookie_name}="))
+                            .map(ToString::to_string)
                     })
                 })
-                .ok_or_else(|| {
-                    AuthError::Unauthenticated {
-                        message: "missing Authorization: Bearer <token> or session cookie".to_string(),
-                        redirect_url: auth_redirect.clone(),
-                    }
+                .ok_or_else(|| AuthError::Unauthenticated {
+                    message: "missing Authorization: Bearer <token> or session cookie".to_string(),
+                    redirect_url: auth_redirect.clone(),
                 })?;
 
             let algo_str = credential
@@ -10026,11 +12642,12 @@ fn verify_webhook_auth(
             let mut validation = Validation::new(algorithm);
             validation.validate_exp = true;
 
-            let token_data = decode::<Value>(&token, &decoding_key, &validation)
-                .map_err(|e| AuthError::Unauthenticated {
+            let token_data = decode::<Value>(&token, &decoding_key, &validation).map_err(|e| {
+                AuthError::Unauthenticated {
                     message: format!("JWT invalid: {e}"),
                     redirect_url: auth_redirect.clone(),
-                })?;
+                }
+            })?;
 
             let claims = token_data.claims;
 
@@ -10043,13 +12660,12 @@ fn verify_webhook_auth(
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
-                let authorized = required_roles.iter().any(|r| user_roles.contains(&r.as_str()));
+                let authorized = required_roles
+                    .iter()
+                    .any(|r| user_roles.contains(&r.as_str()));
                 if !authorized {
                     return Err(AuthError::Forbidden {
-                        message: format!(
-                            "roles {:?} are not permitted for this route",
-                            user_roles
-                        ),
+                        message: format!("roles {:?} are not permitted for this route", user_roles),
                         redirect_url: auth_forbidden_redirect.clone(),
                     });
                 }
@@ -10068,11 +12684,9 @@ fn verify_webhook_auth(
                 .or_else(|| headers.get("x-hub-signature-256"))
                 .or_else(|| headers.get("X-Signature"))
                 .and_then(|h| h.to_str().ok())
-                .ok_or_else(|| {
-                    AuthError::Unauthenticated {
-                        message: "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
-                        redirect_url: None,
-                    }
+                .ok_or_else(|| AuthError::Unauthenticated {
+                    message: "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
+                    redirect_url: None,
                 })?;
             let expected = sig_header.trim_start_matches("sha256=");
 
@@ -10110,11 +12724,10 @@ fn verify_webhook_auth(
                         .and_then(|h| h.to_str().ok())
                         .and_then(|h| h.strip_prefix("ApiKey "))
                 })
-                .ok_or_else(|| {
-                    AuthError::Unauthenticated {
-                        message: "missing API key (X-API-Key or Authorization: ApiKey <key>)".to_string(),
-                        redirect_url: None,
-                    }
+                .ok_or_else(|| AuthError::Unauthenticated {
+                    message: "missing API key (X-API-Key or Authorization: ApiKey <key>)"
+                        .to_string(),
+                    redirect_url: None,
                 })?;
 
             let stored = credential
@@ -10157,8 +12770,10 @@ async fn dispatch_weberror(
     use crate::pipeline::nodes::basic::trigger::weberror::match_specificity;
 
     // Find the most specific matching weberror pipeline.
-    let mut best: Option<(u8, crate::platform::services::pipeline_runtime::CompiledPipeline)> =
-        None;
+    let mut best: Option<(
+        u8,
+        crate::platform::services::pipeline_runtime::CompiledPipeline,
+    )> = None;
     for compiled in state.platform.pipeline_runtime.list_project(owner, project) {
         for trigger in &compiled.weberror_triggers {
             if let Some(spec) = match_specificity(&trigger.code, error_code) {
@@ -10179,7 +12794,13 @@ async fn dispatch_weberror(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(owner, project).ok())
+    .with_template_root(
+        state
+            .platform
+            .projects
+            .get_project_template_root(owner, project)
+            .ok(),
+    )
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
@@ -10196,8 +12817,7 @@ async fn dispatch_weberror(
 
     let output = engine.execute_async(&compiled.graph, &ctx).await.ok()?;
 
-    let status =
-        StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status = StatusCode::from_u16(error_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     // Prefer rendered HTML output.
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
@@ -10223,8 +12843,7 @@ async fn dispatch_weberror(
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
             .unwrap_or_default();
-        let externalized =
-            externalize_rwe_scripts(state, &html, &scripts, Some((owner, project)));
+        let externalized = externalize_rwe_scripts(state, &html, &scripts, Some((owner, project)));
         return Some((status, Html(externalized)).into_response());
     }
 
@@ -10253,6 +12872,13 @@ async fn public_webhook_ingress(
         .read_or_default(&owner, &project)
         .logging
         .effective_max_invocations();
+    let request_id = format!(
+        "webhook-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     struct Candidate {
         compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
@@ -10311,7 +12937,11 @@ async fn public_webhook_ingress(
         {
             return err_resp;
         }
-        return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "not found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "not found"})),
+        )
+            .into_response();
     };
     // Verify trigger-level auth before executing the pipeline.
     let auth_claims = if has_valid_cluster_token(&state, &headers) {
@@ -10332,15 +12962,15 @@ async fn public_webhook_ingress(
         Ok(claims) => claims,
         Err(auth_err) => {
             let (status, msg, redirect_url) = match auth_err {
-                AuthError::Unauthenticated { message, redirect_url } => {
-                    (StatusCode::UNAUTHORIZED, message, redirect_url)
-                }
-                AuthError::Forbidden { message, redirect_url } => {
-                    (StatusCode::FORBIDDEN, message, redirect_url)
-                }
-                AuthError::Internal(message) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, message, None)
-                }
+                AuthError::Unauthenticated {
+                    message,
+                    redirect_url,
+                } => (StatusCode::UNAUTHORIZED, message, redirect_url),
+                AuthError::Forbidden {
+                    message,
+                    redirect_url,
+                } => (StatusCode::FORBIDDEN, message, redirect_url),
+                AuthError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message, None),
             };
 
             if is_page_navigation(&headers) {
@@ -10368,15 +12998,7 @@ async fn public_webhook_ingress(
         if placement.target == ProjectRuntimePlacementTarget::Worker {
             if let Some(worker_id) = placement.worker_id.as_deref() {
                 return match forward_runtime_webhook_to_worker(
-                    &state,
-                    &owner,
-                    &project,
-                    &tail,
-                    &method,
-                    &uri,
-                    &headers,
-                    &body,
-                    worker_id,
+                    &state, &owner, &project, &tail, &method, &uri, &headers, &body, worker_id,
                 )
                 .await
                 {
@@ -10388,8 +13010,7 @@ async fn public_webhook_ingress(
     }
 
     let mut graph = selected.compiled.graph.clone();
-    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph)
-    {
+    if let Err(err) = hydrate_template_markup(&state, &owner, &project, &mut graph) {
         state.platform.pipeline_hits.record_failure(
             &owner,
             &project,
@@ -10399,9 +13020,15 @@ async fn public_webhook_ingress(
             &err.message,
         );
         let _ = state.platform.data.log_pipeline_invocation(
-            &owner, &project, &selected.compiled.file_rel_path,
+            &owner,
+            &project,
+            &selected.compiled.file_rel_path,
             &PipelineInvocationEntry {
-                at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                run_id: request_id.clone(),
+                at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64,
                 duration_ms: exec_start.elapsed().as_millis() as u64,
                 status: "error".to_string(),
                 trigger: "webhook".to_string(),
@@ -10418,15 +13045,9 @@ async fn public_webhook_ingress(
     }
     apply_rwe_project_options(&state, &owner, &project, &mut graph);
 
-    let request_id = format!(
-        "webhook-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
     let mut input =
-        build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params).await;
+        build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params)
+            .await;
     // Inject JWT claims as `auth` field when auth_type == "jwt".
     if let Some(claims) = auth_claims {
         if let Value::Object(ref mut map) = input {
@@ -10461,7 +13082,13 @@ async fn public_webhook_ingress(
     )
     .with_platform(state.platform.clone())
     .with_template_cache(state.template_cache.clone())
-    .with_template_root(state.platform.projects.get_project_template_root(&owner, &project).ok())
+    .with_template_root(
+        state
+            .platform
+            .projects
+            .get_project_template_root(&owner, &project)
+            .ok(),
+    )
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
@@ -10477,14 +13104,20 @@ async fn public_webhook_ingress(
                 &err.message,
             );
             let _ = state.platform.data.log_pipeline_invocation(
-                &owner, &project, &file_rel_path,
+                &owner,
+                &project,
+                &file_rel_path,
                 &PipelineInvocationEntry {
-                    at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+                    run_id: request_id.clone(),
+                    at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                     duration_ms: exec_start.elapsed().as_millis() as u64,
                     status: "error".to_string(),
                     trigger: "webhook".to_string(),
                     error: Some(err.message.clone()),
-                    trace: vec![],
+                    trace: err.node_trace.clone(),
                 },
                 log_max_n,
             );
@@ -10511,9 +13144,15 @@ async fn public_webhook_ingress(
         .pipeline_hits
         .record_success(&owner, &project, &file_rel_path);
     let _ = state.platform.data.log_pipeline_invocation(
-        &owner, &project, &file_rel_path,
+        &owner,
+        &project,
+        &file_rel_path,
         &PipelineInvocationEntry {
-            at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64,
+            run_id: request_id.clone(),
+            at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64,
             duration_ms: exec_start.elapsed().as_millis() as u64,
             status: "ok".to_string(),
             trigger: "webhook".to_string(),
@@ -10541,11 +13180,16 @@ async fn public_webhook_ingress(
         if let Some(html) = resp_cfg.get("html").and_then(Value::as_str) {
             let mut html = html.to_string();
             // Inject project styles/main.css as inline <style> so CSS vars are available.
-            if let Ok(tmpl_root) = state.platform.projects.get_project_template_root(&owner, &project) {
+            if let Ok(tmpl_root) = state
+                .platform
+                .projects
+                .get_project_template_root(&owner, &project)
+            {
                 let main_css_path = tmpl_root.join("styles").join("main.css");
                 if let Ok(project_css) = std::fs::read_to_string(&main_css_path) {
                     if !project_css.trim().is_empty() {
-                        let style_block = format!("<style data-project-theme>{project_css}</style>");
+                        let style_block =
+                            format!("<style data-project-theme>{project_css}</style>");
                         if let Some(pos) = html.find("</head>") {
                             html.insert_str(pos, &style_block);
                         } else {
@@ -10620,30 +13264,31 @@ async fn public_webhook_ingress(
     // ── _set_cookie convention (legacy) ──────────────────────────────────────
     // If the pipeline output contains `_set_cookie`, build the Set-Cookie header string.
     // Applied to the final response regardless of response type.
-    let set_cookie_header: Option<String> = output.value
-        .get("_set_cookie")
-        .and_then(|sc| {
-            let name = sc.get("name")?.as_str()?;
-            let value = sc.get("value")?.as_str()?;
-            let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
-            let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
-            let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
-            let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
-            let mut parts = vec![
-                format!("{name}={value}"),
-                format!("Path={path}"),
-                format!("Max-Age={max_age}"),
-                format!("SameSite={same_site}"),
-            ];
-            if http_only { parts.push("HttpOnly".to_string()); }
-            Some(parts.join("; "))
-        });
+    let set_cookie_header: Option<String> = output.value.get("_set_cookie").and_then(|sc| {
+        let name = sc.get("name")?.as_str()?;
+        let value = sc.get("value")?.as_str()?;
+        let max_age = sc.get("max_age").and_then(Value::as_i64).unwrap_or(900);
+        let path = sc.get("path").and_then(Value::as_str).unwrap_or("/");
+        let same_site = sc.get("same_site").and_then(Value::as_str).unwrap_or("Lax");
+        let http_only = sc.get("http_only").and_then(Value::as_bool).unwrap_or(true);
+        let mut parts = vec![
+            format!("{name}={value}"),
+            format!("Path={path}"),
+            format!("Max-Age={max_age}"),
+            format!("SameSite={same_site}"),
+        ];
+        if http_only {
+            parts.push("HttpOnly".to_string());
+        }
+        Some(parts.join("; "))
+    });
 
     // ── HTML response (rendered template output) ─────────────────────────────
     if let Some(html) = output.value.get("html").and_then(Value::as_str) {
         let mut html = html.to_string();
         // Re-inject Tailwind CSS from hydration_payload (extracted by RWE engine).
-        if let Some(css) = output.value
+        if let Some(css) = output
+            .value
             .get("hydration_payload")
             .and_then(|hp| hp.get("css"))
             .and_then(Value::as_str)
@@ -10743,8 +13388,15 @@ async fn public_webhook_ingress_root(
 /// Excludes Authorization and Cookie to avoid leaking credentials downstream.
 fn safe_headers(headers: &HeaderMap) -> Value {
     const SAFE: &[&str] = &[
-        "content-type", "accept", "user-agent", "x-forwarded-for",
-        "x-real-ip", "referer", "origin", "sec-fetch-mode", "sec-fetch-dest",
+        "content-type",
+        "accept",
+        "user-agent",
+        "x-forwarded-for",
+        "x-real-ip",
+        "referer",
+        "origin",
+        "sec-fetch-mode",
+        "sec-fetch-dest",
     ];
     let map: serde_json::Map<String, Value> = SAFE
         .iter()
@@ -10851,9 +13503,7 @@ async fn build_webhook_ingress_input(
     if content_type_lc.contains("multipart/form-data") {
         if let Ok(boundary) = multer::parse_boundary(&content_type) {
             let body_clone = body.clone();
-            let stream = futures::stream::once(async move {
-                Ok::<_, std::io::Error>(body_clone)
-            });
+            let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(body_clone) });
             let mut mp = multer::Multipart::new(stream, boundary);
             let mut obj = serde_json::Map::new();
             let mut files = serde_json::Map::new();
@@ -10868,12 +13518,15 @@ async fn build_webhook_ingress_input(
                 if let Some(filename) = filename {
                     let size = data.len();
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-                    files.insert(name, json!({
-                        "filename": filename,
-                        "content_type": field_ct.unwrap_or_default(),
-                        "size": size,
-                        "data": encoded,
-                    }));
+                    files.insert(
+                        name,
+                        json!({
+                            "filename": filename,
+                            "content_type": field_ct.unwrap_or_default(),
+                            "size": size,
+                            "data": encoded,
+                        }),
+                    );
                 } else {
                     let text = String::from_utf8_lossy(&data).to_string();
                     obj.insert(name, Value::String(text));
@@ -10929,6 +13582,38 @@ fn quote_sql_identifier_path(raw: &str) -> String {
         .map(|part| format!("\"{}\"", part.trim().replace('\"', "\"\"")))
         .collect::<Vec<_>>()
         .join(".")
+}
+
+fn build_table_preview_sql(database_kind: &str, raw_table: &str, bare_table: &str, limit: usize) -> String {
+    match database_kind {
+        "sekejap" => format!("SELECT * FROM {} LIMIT {}", bare_table.trim(), limit),
+        _ => format!(
+            "SELECT * FROM {} LIMIT {}",
+            quote_sql_identifier_path(raw_table),
+            limit
+        ),
+    }
+}
+
+#[cfg(test)]
+mod preview_sql_tests {
+    use super::build_table_preview_sql;
+
+    #[test]
+    fn builds_unquoted_preview_sql_for_sekejap() {
+        assert_eq!(
+            build_table_preview_sql("sekejap", "default.posts", "posts", 120),
+            "SELECT * FROM posts LIMIT 120"
+        );
+    }
+
+    #[test]
+    fn builds_quoted_preview_sql_for_sql_backends() {
+        assert_eq!(
+            build_table_preview_sql("postgresql", "public.posts", "posts", 50),
+            "SELECT * FROM \"public\".\"posts\" LIMIT 50"
+        );
+    }
 }
 
 #[derive(Debug)]
@@ -11070,7 +13755,6 @@ fn resolve_pipeline_registry_scope(
     }
 }
 
-
 fn session_owner(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     cookie.split(';').map(str::trim).find_map(|part| {
@@ -11113,6 +13797,9 @@ fn require_project_api_capability(
     project: &str,
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
+    if has_valid_cluster_token(state, headers) {
+        return Ok(ProjectAccessSubject::user(owner));
+    }
     let Some(session_owner) = session_owner(headers) else {
         return Err(StatusCode::UNAUTHORIZED.into_response());
     };
@@ -11300,7 +13987,10 @@ fn hydrate_template_markup(
             continue;
         }
 
-        let template_rel = node.config.get("template").and_then(Value::as_str)
+        let template_rel = node
+            .config
+            .get("template")
+            .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
@@ -11359,7 +14049,11 @@ fn build_zf_headers(resp_cfg: &Value) -> Vec<(String, String)> {
 }
 
 /// Apply cookie and extra headers from a `__zf_response` envelope to an axum Response.
-fn apply_zf_extras(resp: &mut axum::response::Response, cookie: &Option<String>, headers: &[(String, String)]) {
+fn apply_zf_extras(
+    resp: &mut axum::response::Response,
+    cookie: &Option<String>,
+    headers: &[(String, String)],
+) {
     if let Some(c) = cookie {
         if let Ok(v) = HeaderValue::from_str(c) {
             resp.headers_mut().insert(SET_COOKIE, v);
@@ -11547,11 +14241,13 @@ async fn api_create_mcp_session(
     let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
         .unwrap_or_else(|_| "http://localhost:10610".to_string());
 
-    match state
-        .platform
-        .mcp_sessions
-        .create(&owner, &project, capabilities, &base_url, req.auto_reset_seconds)
-    {
+    match state.platform.mcp_sessions.create(
+        &owner,
+        &project,
+        capabilities,
+        &base_url,
+        req.auto_reset_seconds,
+    ) {
         Ok(response) => Json(json!({"ok": true, "session": response})).into_response(),
         Err(err) => internal_error(err),
     }
@@ -11574,7 +14270,13 @@ async fn api_toggle_mcp_session(
     }
 
     // When enabling, auto-create with all capabilities if no session exists yet.
-    if req.enabled && state.platform.mcp_sessions.get_for_project(&owner, &project).is_none() {
+    if req.enabled
+        && state
+            .platform
+            .mcp_sessions
+            .get_for_project(&owner, &project)
+            .is_none()
+    {
         let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:10610".to_string());
         return match state.platform.mcp_sessions.create(
@@ -11683,9 +14385,7 @@ async fn ws_room_handler(
             .unwrap_or_default()
             .as_nanos()
     );
-    ws.on_upgrade(move |socket| {
-        handle_ws_room(socket, owner, project, room_id, session_id, state)
-    })
+    ws.on_upgrade(move |socket| handle_ws_room(socket, owner, project, room_id, session_id, state))
 }
 
 async fn handle_ws_room(
@@ -11847,7 +14547,11 @@ async fn api_list_ui_catalog(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::PipelinesRead,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
     ) {
         return r;
     }
@@ -11867,7 +14571,11 @@ async fn api_install_ui_components(
     Json(req): Json<crate::platform::catalog::InstallUiRequest>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
     ) {
         return r;
     }
@@ -11876,7 +14584,11 @@ async fn api_install_ui_components(
         Err(e) => return internal_error(e),
     };
     let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
-    match crate::platform::catalog::CatalogService::install_ui(&req.names, &shared_ui_dir, req.overwrite) {
+    match crate::platform::catalog::CatalogService::install_ui(
+        &req.names,
+        &shared_ui_dir,
+        req.overwrite,
+    ) {
         Ok(report) => Json(json!({ "ok": true, "report": report })).into_response(),
         Err(e) => Json(json!({ "ok": false, "error": e })).into_response(),
     }
@@ -11893,7 +14605,11 @@ async fn api_reindex_project(
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::PipelinesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
     ) {
         return r;
     }
@@ -11901,7 +14617,11 @@ async fn api_reindex_project(
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
 
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
@@ -11922,7 +14642,9 @@ async fn api_reindex_project(
         for entry in entries.flatten() {
             let path = entry.path();
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if fname.starts_with('.') { continue; }
+            if fname.starts_with('.') {
+                continue;
+            }
             if path.is_dir() {
                 stack.push(path);
             } else if path.is_file() {
@@ -11937,15 +14659,21 @@ async fn api_reindex_project(
                         Ok(source) => {
                             let file_rel_path = format!("pipelines/{rel}");
                             // Preserve description stored inside the graph JSON
-                            let graph_description = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
-                                .ok()
-                                .and_then(|g| g.description)
-                                .unwrap_or_default();
-                            let reindex_trigger_kind = derive_trigger_kind_from_source(&source)
-                                .unwrap_or_default();
+                            let graph_description =
+                                serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
+                                    .ok()
+                                    .and_then(|g| g.description)
+                                    .unwrap_or_default();
+                            let reindex_trigger_kind =
+                                derive_trigger_kind_from_source(&source).unwrap_or_default();
                             match state.platform.projects.upsert_pipeline_definition(
-                                &owner_slug, &project_slug, &file_rel_path,
-                                "", &graph_description, &reindex_trigger_kind, &source,
+                                &owner_slug,
+                                &project_slug,
+                                &file_rel_path,
+                                "",
+                                &graph_description,
+                                &reindex_trigger_kind,
+                                &source,
                             ) {
                                 Ok(_) => pipelines_indexed += 1,
                                 Err(e) => errors.push(format!("{rel}: {e}")),
@@ -12031,14 +14759,22 @@ fn sanitize_asset_filename(raw: &str) -> Option<String> {
     // Replace spaces and invalid chars with '-', then collapse consecutive dashes.
     let replaced: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Collapse consecutive dashes (e.g. "foo--bar" → "foo-bar")
     let mut sanitized = String::with_capacity(replaced.len());
     let mut prev_dash = false;
     for c in replaced.chars() {
         if c == '-' {
-            if !prev_dash { sanitized.push(c); }
+            if !prev_dash {
+                sanitized.push(c);
+            }
             prev_dash = true;
         } else {
             sanitized.push(c);
@@ -12056,8 +14792,12 @@ fn sanitize_asset_filename(raw: &str) -> Option<String> {
 /// Sanitize a single subfolder segment: `[A-Za-z0-9_-]` only, no slashes or dots.
 fn sanitize_subfolder(s: &str) -> Option<String> {
     let s = s.trim_matches('/');
-    if s.is_empty() { return None; }
-    if s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+    if s.is_empty() {
+        return None;
+    }
+    if s.bytes()
+        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
         Some(s.to_string())
     } else {
         None
@@ -12068,16 +14808,25 @@ fn sanitize_subfolder(s: &str) -> Option<String> {
 /// Each segment must pass `[A-Za-z0-9._-]` rules and not start with `.`.
 fn sanitize_asset_subpath(path: &str) -> Option<std::path::PathBuf> {
     let trimmed = path.trim_matches('/');
-    if trimmed.is_empty() || trimmed.contains("..") { return None; }
+    if trimmed.is_empty() || trimmed.contains("..") {
+        return None;
+    }
     let mut result = std::path::PathBuf::new();
     for part in trimmed.split('/') {
-        if part.is_empty() || part.starts_with('.') { return None; }
-        if !part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b'_') {
+        if part.is_empty() || part.starts_with('.') {
+            return None;
+        }
+        if !part
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-' || c == b'_')
+        {
             return None;
         }
         result.push(part);
     }
-    if result.components().count() == 0 { return None; }
+    if result.components().count() == 0 {
+        return None;
+    }
     Some(result)
 }
 
@@ -12092,22 +14841,50 @@ async fn api_list_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<AssetQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::TemplatesRead,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
 
-    let subfolder = query.subfolder.as_deref().and_then(sanitize_subfolder).unwrap_or_default();
+    let subfolder = query
+        .subfolder
+        .as_deref()
+        .and_then(sanitize_subfolder)
+        .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
         layout.repo_pipelines_dir.join("assets")
     } else {
@@ -12142,7 +14919,10 @@ async fn api_list_assets(
     }
 
     files.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
     });
 
     Json(json!({ "ok": true, "files": files })).into_response()
@@ -12153,26 +14933,106 @@ async fn api_upload_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<AssetQuery>,
     mut multipart: Multipart,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::TemplatesWrite,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesWrite,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": "no file field in multipart body"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(PlatformError::new("ASSET_UPLOAD", err.to_string())),
+        };
+        let raw_filename = field
+            .file_name()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "upload.bin".to_string());
+        let content_type = field.content_type().map(|value| value.to_string());
+        let bytes = match field.bytes().await {
+            Ok(bytes) => bytes,
+            Err(err) => return internal_error(PlatformError::new("ASSET_UPLOAD", err.to_string())),
+        };
+        let worker = match state.platform.cluster_registry.get_worker(&worker_id) {
+            Ok(Some(worker)) => worker,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "error": "office not registered"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
+        let token = match cluster_internal_token_value(&state) {
+            Ok(token) => token,
+            Err(err) => return internal_error(err),
+        };
+        let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
+        if let Some(query) = uri.query() {
+            url.push('?');
+            url.push_str(query);
+        }
+        let part = match content_type {
+            Some(content_type) => reqwest::multipart::Part::bytes(bytes.to_vec())
+                .file_name(raw_filename.clone())
+                .mime_str(&content_type)
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(raw_filename)
+                }),
+            None => reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(raw_filename),
+        };
+        let form = reqwest::multipart::Form::new().part("file", part);
+        let response = match state
+            .http_client
+            .post(url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return internal_error(PlatformError::new("ASSET_UPLOAD", err.to_string())),
+        };
+        return reqwest_response_to_axum(response).await;
     }
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
 
-    let cfg = state.platform.zebflow_cfg.read_or_default(&owner_slug, &project_slug);
+    let cfg = state
+        .platform
+        .zebflow_cfg
+        .read_or_default(&owner_slug, &project_slug);
     let max_bytes = (cfg.assets.max_asset_size_mb as u64) * 1024 * 1024;
 
-    let subfolder = query.subfolder.as_deref().and_then(sanitize_subfolder).unwrap_or_default();
+    let subfolder = query
+        .subfolder
+        .as_deref()
+        .and_then(sanitize_subfolder)
+        .unwrap_or_default();
     let assets_dir = if subfolder.is_empty() {
         layout.repo_pipelines_dir.join("assets")
     } else {
@@ -12185,10 +15045,18 @@ async fn api_upload_asset(
     let field = match multipart.next_field().await {
         Ok(Some(f)) => f,
         Ok(None) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "no file field in multipart body"}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "no file field in multipart body"})),
+            )
+                .into_response();
         }
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response();
         }
     };
 
@@ -12211,7 +15079,11 @@ async fn api_upload_asset(
     let bytes = match field.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": e.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": e.to_string()})),
+            )
+                .into_response();
         }
     };
 
@@ -12232,7 +15104,8 @@ async fn api_upload_asset(
     } else {
         format!("/assets/{owner_slug}/{project_slug}/{subfolder}/{filename}")
     };
-    Json(json!({ "ok": true, "name": filename, "size_bytes": bytes.len(), "url": url })).into_response()
+    Json(json!({ "ok": true, "name": filename, "size_bytes": bytes.len(), "url": url }))
+        .into_response()
 }
 
 /// `DELETE /api/projects/{owner}/{project}/assets/{*path}` — delete an asset file.
@@ -12240,11 +15113,31 @@ async fn api_delete_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, path)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
-        &state, &headers, &owner, &project, ProjectCapability::TemplatesDelete,
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesDelete,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let subpath = match sanitize_asset_subpath(path.trim_start_matches('/')) {
@@ -12253,13 +15146,18 @@ async fn api_delete_asset(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": "invalid asset path"})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
@@ -12268,11 +15166,19 @@ async fn api_delete_asset(
     let abs = assets_dir.join(&subpath);
 
     if !abs.starts_with(&assets_dir) {
-        return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "invalid asset path"}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "invalid asset path"})),
+        )
+            .into_response();
     }
 
     if !abs.is_file() {
-        return (StatusCode::NOT_FOUND, Json(json!({"ok": false, "error": "asset not found"}))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "asset not found"})),
+        )
+            .into_response();
     }
 
     if let Err(e) = std::fs::remove_file(&abs) {
@@ -12320,10 +15226,19 @@ async fn api_preview_toggle(
     };
     let file = match sanitize_preview_file(&body.file) {
         Some(f) => f,
-        None => return (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": "invalid file"}))).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid file"})),
+            )
+                .into_response();
+        }
     };
     let key = preview_key(&owner, &project, &file);
-    let mut reg = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner());
+    let mut reg = state
+        .preview_registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if body.active {
         reg.insert(key);
     } else {
@@ -12342,9 +15257,17 @@ async fn api_preview_status(
     let Some(_session) = session_owner(&headers) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
     };
-    let file = q.file.as_deref().and_then(sanitize_preview_file).unwrap_or_default();
+    let file = q
+        .file
+        .as_deref()
+        .and_then(sanitize_preview_file)
+        .unwrap_or_default();
     let key = preview_key(&owner, &project, &file);
-    let active = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner()).contains(&key);
+    let active = state
+        .preview_registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&key);
     Json(json!({ "active": active })).into_response()
 }
 
@@ -12362,11 +15285,21 @@ async fn preview_page(
 
     let file = match q.file.as_deref().and_then(sanitize_preview_file) {
         Some(f) => f,
-        None => return (StatusCode::BAD_REQUEST, Html("<p>Missing ?file= param</p>".to_string())).into_response(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<p>Missing ?file= param</p>".to_string()),
+            )
+                .into_response();
+        }
     };
 
     let key = preview_key(&owner, &project, &file);
-    let active = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner()).contains(&key);
+    let active = state
+        .preview_registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&key);
     if !active {
         return (
             StatusCode::FORBIDDEN,
@@ -12376,7 +15309,11 @@ async fn preview_page(
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
@@ -12384,7 +15321,13 @@ async fn preview_page(
     let abs_path = layout.repo_pipelines_dir.join(&file);
     let markup = match fs::read_to_string(&abs_path) {
         Ok(m) => m,
-        Err(e) => return (StatusCode::NOT_FOUND, Html(format!("<p>Cannot read file: {e}</p>"))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html(format!("<p>Cannot read file: {e}</p>")),
+            )
+                .into_response();
+        }
     };
 
     let options = crate::rwe::ReactiveWebOptions {
@@ -12449,7 +15392,10 @@ async fn preview_page(
     html = externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None);
 
     // Inject WS live-reload client just before </body>
-    let ws_url = format!("/ws/preview/{owner}/{project}?file={}", urlencoding_encode(&file));
+    let ws_url = format!(
+        "/ws/preview/{owner}/{project}?file={}",
+        urlencoding_encode(&file)
+    );
     let ws_script = format!(
         r#"<script>
 (function(){{
@@ -12471,15 +15417,22 @@ async fn preview_page(
         format!("{html}{ws_script}")
     };
 
-    (StatusCode::OK, [(CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response()
 }
 
 fn urlencoding_encode(s: &str) -> String {
-    s.chars().map(|c| match c {
-        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
-        ' ' => "%20".to_string(),
-        c => format!("%{:02X}", c as u32),
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' => c.to_string(),
+            ' ' => "%20".to_string(),
+            c => format!("%{:02X}", c as u32),
+        })
+        .collect()
 }
 
 /// `GET /ws/preview/{owner}/{project}?file=...`
@@ -12503,7 +15456,10 @@ async fn ws_preview_handler(
 
     let key = preview_key(&owner, &project, &file);
     {
-        let reg = state.preview_registry.lock().unwrap_or_else(|e| e.into_inner());
+        let reg = state
+            .preview_registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if !reg.contains(&key) {
             return (StatusCode::FORBIDDEN, "preview not active").into_response();
         }
@@ -12511,7 +15467,11 @@ async fn ws_preview_handler(
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
     let project_slug = crate::platform::model::slug_segment(&project);
-    let layout = match state.platform.file.ensure_project_layout(&owner_slug, &project_slug) {
+    let layout = match state
+        .platform
+        .file
+        .ensure_project_layout(&owner_slug, &project_slug)
+    {
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };

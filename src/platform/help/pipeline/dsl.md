@@ -358,6 +358,7 @@ n.logic.switch --help           # same
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
+| `web.static.generate` | `n.web.static.generate` | `--template <pages/name> --output-path <path> [--scope public\|private] [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into `files/{scope}/...`; output `{ generated: { status, path, url, route, template, scope, bytes } }` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `-- "SELECT ... FROM collection [WHERE ...] [LIMIT n]"` — raw SQL SELECT/TRAVERSE/VECTOR_NEAR; `{{ expr }}` placeholders resolved before execution; output `{ rows: [...] }` |
 | `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
@@ -463,6 +464,63 @@ register upload-avatar-fixed --path /api \
 - Files live outside the git-synced `repo/` folder — they are not committed with your codebase.
 - Always use `--auth-type jwt` on the webhook trigger for authenticated uploads.
 - Use `--allowed-types` to restrict what users can upload; leave empty only for trusted internal endpoints.
+
+### `n.web.static.generate` — persistent static page generation
+
+Renders a TSX template through the same RWE engine used by `web.response`, then writes the
+final HTML file into project storage under `files/public/` or `files/private/`.
+
+This is the right primitive for:
+- generated lyric pages
+- cached export pages
+- regeneration pipelines after content changes
+- future object-storage publishing flows
+
+The first release writes a self-contained HTML file:
+- project `styles/main.css` is inlined
+- Tailwind CSS extracted by RWE is inlined
+- client hydration scripts are inlined
+
+**Flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--template` | _(required)_ | TSX page under `repo/pipelines`, e.g. `pages/lyrics.tsx` |
+| `--output-path` | _(required)_ | Relative path under `files/{scope}/`. Supports `{{ expr }}` interpolation. |
+| `--scope` | `public` | `public` or `private` |
+| `--route` | generated `/files/...` URL | Optional `ctx.route` override seen by the template during render |
+| `--on-conflict` | `overwrite` | `overwrite`, `skip`, or `error` when the destination exists and content differs |
+
+**Examples:**
+
+```zf
+# Generate one lyric page into files/public/
+register generate-lyric --path /ops \
+  | trigger.manual \
+  | script -- "return { artist_slug: 'iwan-fals', song_slug: 'bento', artist_name: 'Iwan Fals', song_title: 'Bento' }" \
+  | web.static.generate \
+      --template pages/lyric.tsx \
+      --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+
+# Keep the generated file private and stop if it already exists
+register generate-private-preview --path /ops \
+  | trigger.manual \
+  | script -- "return { slug: 'draft-song' }" \
+  | web.static.generate \
+      --template pages/lyric-preview.tsx \
+      --scope private \
+      --output-path "previews/{{ $input.slug }}.html" \
+      --on-conflict error
+
+# Override ctx.route so the template renders canonical links differently from its saved file path
+register generate-canonical-page --path /ops \
+  | trigger.manual \
+  | script -- "return { artist_slug: 'iwan-fals', song_slug: 'bento' }" \
+  | web.static.generate \
+      --template pages/lyric.tsx \
+      --route "/lyrics/{{ $input.artist_slug }}/{{ $input.song_slug }}" \
+      --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
+```
 
 ### `n.img.thumbnail` — image resizing and compression
 

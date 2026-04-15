@@ -340,6 +340,15 @@ pub const OPERATIONS: &[OperationSpec] = &[
         path: "/api/projects/{owner}/{project}/tables",
         params_schema: "",
     },
+    OperationSpec {
+        id: "create_table",
+        category: "tables",
+        description: "Create one sekejap table definition for the project",
+        capability: ProjectCapability::TablesWrite,
+        method: "POST",
+        path: "/api/projects/{owner}/{project}/tables",
+        params_schema: r#"{"table":"string","title":"string?","attributes":[{"name":"string","kind":"string","index_types":["string"]}]}"#,
+    },
     // Files
     OperationSpec {
         id: "list_files",

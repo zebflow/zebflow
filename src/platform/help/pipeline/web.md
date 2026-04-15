@@ -2,6 +2,13 @@
 
 This doc covers **serving HTTP responses** from pipelines: HTML pages, JSON, redirects, cookies, and custom headers — all via `n.web.response`.
 
+For persistent file generation, use `n.web.static.generate`. That node renders the same TSX/RWE
+templates, but writes the resulting HTML into project file storage instead of replying to the
+current request.
+
+Concrete example:
+- `pipeline/examples/static-entry-generation`
+
 See also: **`pipeline-dsl`** (full DSL), **`web-templates`** (how to write `.tsx` pages).
 
 ---
