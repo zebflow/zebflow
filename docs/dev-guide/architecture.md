@@ -1,8 +1,12 @@
-# Zebflow Platform Architecture — Obsolete Reference (v1)
+# Zebflow Platform Architecture
 
-> This file is a historical architecture note.
-> It contains useful implementation details, but many sections drifted from the current code over time.
-> Use `docs/ARCHITECTURE.md` as the current top-down reference.
+> Normative contracts live in:
+>
+> - [Project Contract](./project-contract.md)
+> - [Office Federation Contract](./office-federation-contract.md)
+>
+> This document describes current architecture and implementation state. It must
+> not contradict those contracts.
 
 ---
 
