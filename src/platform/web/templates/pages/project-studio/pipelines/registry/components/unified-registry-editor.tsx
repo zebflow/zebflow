@@ -271,6 +271,33 @@ export default function UnifiedRegistryEditor(input) {
     return "";
   }
 
+  function docsScopeRelPath(virtualPath: string) {
+    if (virtualPath === "/docs") return "";
+    if (virtualPath.startsWith("/docs/")) return virtualPath.slice("/docs/".length);
+    return "";
+  }
+
+  function docsVirtualPathFor(relPath: string) {
+    const clean = String(relPath || "").replace(/^docs\//, "").replace(/^\/+/, "");
+    if (!clean) return "/docs";
+    const parts = clean.split("/");
+    parts.pop();
+    return parts.length > 0 ? `/docs/${parts.join("/")}` : "/docs";
+  }
+
+  function normalizeTemplateTargetParent(raw: string) {
+    const trimmed = String(raw || "").trim().replace(/^\/+/, "").replace(/\/+$/, "");
+    return trimmed === "/" ? "" : trimmed;
+  }
+
+  function normalizeDocsTargetParent(raw: string) {
+    let trimmed = String(raw || "").trim().replace(/\/+$/, "");
+    if (!trimmed || trimmed === "/" || trimmed === "/docs" || trimmed === "docs") return "";
+    trimmed = trimmed.replace(/^\/+/, "");
+    if (trimmed.startsWith("docs/")) return trimmed.slice("docs/".length);
+    return trimmed;
+  }
+
   // ── Lock data ─────────────────────────────────────────────────────────────
   const lockedTemplates: string[] = Array.isArray(input?.locked_templates) ? input.locked_templates : [];
   const selectedTemplateLocked: boolean = !!input?.selected_template_locked;
@@ -335,6 +362,8 @@ export default function UnifiedRegistryEditor(input) {
   const owner = String(input?.owner ?? "");
   const project = String(input?.project ?? "");
   const projectApiBase = `/api/projects/${owner}/${project}`;
+  const isDocsScope = currentPath === "/docs" || currentPath.startsWith("/docs/");
+  const currentDocsRelPath = docsScopeRelPath(currentPath);
 
   // ── Live preview ──────────────────────────────────────────────────────────
   const [previewActive, setPreviewActive] = useState(false);
@@ -568,7 +597,7 @@ export default function UnifiedRegistryEditor(input) {
     setDocSaveState("Saving…");
     try {
       const content = docEditorViewRef.current.state.doc.toString();
-      const docName = String(doc?.name ?? "");
+      const docName = String(doc?.path ?? doc?.rel_path ?? "").replace(/^docs\//, "");
       await fetch(`${projectApiBase}/docs/file?path=${encodeURIComponent(docName)}`, {
         method: "PUT",
         body: content,
@@ -694,15 +723,23 @@ export default function UnifiedRegistryEditor(input) {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const name = peSanitizeSegment(fd.get("name"));
-    const parentRelPath = currentPath.replace(/^\//, "") || null;
     setCreating(true);
     setCreateError(null);
     try {
-      await requestJson(`${projectApiBase}/templates/create`, {
-        method: "POST",
-        body: JSON.stringify({ kind: "folder", name, parent_rel_path: parentRelPath }),
-      });
-      const newFolderVPath = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
+      let newFolderVPath = currentPath === "/" ? `/${name}` : `${currentPath}/${name}`;
+      if (isDocsScope) {
+        const path = currentDocsRelPath ? `${currentDocsRelPath}/${name}` : name;
+        await requestJson(`${projectApiBase}/docs/folder`, {
+          method: "POST",
+          body: JSON.stringify({ path }),
+        });
+      } else {
+        const parentRelPath = currentPath.replace(/^\//, "") || null;
+        await requestJson(`${projectApiBase}/templates/create`, {
+          method: "POST",
+          body: JSON.stringify({ kind: "folder", name, parent_rel_path: parentRelPath }),
+        });
+      }
       nav(`${editorBase}?path=${encodeURIComponent(newFolderVPath)}`);
       if (newFolderDialogRef.current) newFolderDialogRef.current.close();
     } catch (err: any) {
@@ -717,7 +754,7 @@ export default function UnifiedRegistryEditor(input) {
     const fd = new FormData(e.currentTarget);
     const rawName = String(fd.get("name") || "").trim().replace(/\.md$/i, "");
     if (!rawName) return;
-    const filename = `${rawName}.md`;
+    const filename = currentDocsRelPath ? `${currentDocsRelPath}/${rawName}.md` : `${rawName}.md`;
     setCreating(true);
     setCreateError(null);
     try {
@@ -727,7 +764,7 @@ export default function UnifiedRegistryEditor(input) {
         headers: { "Content-Type": "text/plain" },
       });
       if (newDocDialogRef.current) newDocDialogRef.current.close();
-      nav(`${editorBase}?type=doc&path=%2Fdocs&file=docs%2F${encodeURIComponent(filename)}`);
+      nav(`${editorBase}?type=doc&path=${encodeURIComponent(docsVirtualPathFor(filename))}&file=${encodeURIComponent(filename)}`);
     } catch (err: any) {
       setCreateError(String(err?.message || err));
     } finally {
@@ -761,6 +798,10 @@ export default function UnifiedRegistryEditor(input) {
   const [deleteInput, setDeleteInput] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(null as any);
+  const [pendingMove, setPendingMove] = useState(null as any);
+  const [moveTargetParent, setMoveTargetParent] = useState("");
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState(null as any);
 
   async function handleDeleteConfirm() {
     if (!pendingDelete) return;
@@ -777,10 +818,8 @@ export default function UnifiedRegistryEditor(input) {
           body: JSON.stringify({ file_rel_path: pendingDelete.path }),
         });
       } else if (pendingDelete.isDoc) {
-        // Doc files live in repo/docs — use the dedicated docs endpoint.
-        // pendingDelete.path is "docs/foo.md"; strip the "docs/" prefix.
         const docPath = pendingDelete.path.replace(/^docs\//, "");
-        resp = await fetch(`/api/projects/${owner}/${project}/docs/file?path=${encodeURIComponent(docPath)}`, {
+        resp = await fetch(`/api/projects/${owner}/${project}/docs/entry?path=${encodeURIComponent(docPath)}`, {
           method: "DELETE",
         });
       } else {
@@ -812,12 +851,68 @@ export default function UnifiedRegistryEditor(input) {
         if (isTemplate) {
           nav(`${editorBase}?path=${encodeURIComponent(currentPath)}`);
         } else if (isDoc) {
-          nav(`${editorBase}?path=${encodeURIComponent("/docs")}`);
+          nav(`${editorBase}?path=${encodeURIComponent(pendingDelete.parentPath ?? doc?.parent_virtual_path ?? "/docs")}`);
         }
       }
     } catch (err) {
       setDeleteError(err?.message ?? "Network error");
       setDeleting(false);
+    }
+  }
+
+  function openMoveDialog(entry) {
+    setPendingMove(entry);
+    setMoveTargetParent(entry?.targetParent ?? (entry?.isDoc ? "/docs" : "/"));
+    setMoveError(null);
+  }
+
+  async function handleMoveConfirm() {
+    if (!pendingMove) return;
+    setMoving(true);
+    setMoveError(null);
+    try {
+      if (pendingMove.isDoc) {
+        const payload = await requestJson(`${projectApiBase}/docs/move`, {
+          method: "POST",
+          body: JSON.stringify({
+            from_path: pendingMove.fromPath,
+            to_parent_path: normalizeDocsTargetParent(moveTargetParent),
+          }),
+        });
+        const movedPath = String(payload?.path ?? pendingMove.fromPath);
+        const movedParent = docsVirtualPathFor(movedPath);
+        const movedFolderPath = movedParent === "/docs"
+          ? `/docs/${movedPath.split("/").pop()}`
+          : `/docs/${movedPath}`;
+        setPendingMove(null);
+        setMoving(false);
+        if (pendingMove.isFolder) {
+          nav(`${editorBase}?path=${encodeURIComponent(movedFolderPath)}`);
+        } else {
+          nav(`${editorBase}?type=doc&path=${encodeURIComponent(movedParent)}&file=${encodeURIComponent(movedPath)}`);
+        }
+        return;
+      }
+
+      const payload = await requestJson(`${projectApiBase}/templates/move`, {
+        method: "POST",
+        body: JSON.stringify({
+          from_rel_path: pendingMove.fromPath,
+          to_parent_rel_path: normalizeTemplateTargetParent(moveTargetParent),
+        }),
+      });
+      const movedPath = String(payload?.rel_path ?? pendingMove.fromPath);
+      const movedDir = movedPath.includes("/") ? movedPath.split("/").slice(0, -1).join("/") : "";
+      setPendingMove(null);
+      setMoving(false);
+      if (pendingMove.isFolder) {
+        nav(`${editorBase}?path=${encodeURIComponent(`/${movedPath}`)}`);
+      } else {
+        nav(`${editorBase}?type=template&path=${encodeURIComponent(movedDir ? `/${movedDir}` : "/")}&file=${encodeURIComponent(movedPath)}`);
+      }
+    } catch (err: any) {
+      setMoveError(String(err?.message || err));
+      setMoving(false);
     }
   }
 
@@ -1060,14 +1155,29 @@ export default function UnifiedRegistryEditor(input) {
                           <span className="shrink-0 flex items-center text-body-soft"><FolderIcon /></span>
                           <span className="pipeline-registry-row-name">{f?.name}/</span>
                         </Link>
-                        <button
-                          type="button"
-                          className="pipeline-registry-row-del"
-                          title={`Delete folder ${f?.name}`}
-                          onClick={() => { setPendingDelete({ path: folderRelPath, name: f?.name ?? "folder", isPipeline: false, isFolder: true, parentPath: currentPath }); setDeleteInput(""); setDeleteError(null); }}
-                        >
-                          <TrashIcon />
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => openMoveDialog({
+                              name: f?.name ?? "folder",
+                              fromPath: isDocsScope ? folderRelPath.replace(/^docs\//, "") : folderRelPath,
+                              isFolder: true,
+                              isDoc: isDocsScope,
+                              targetParent: isDocsScope ? currentPath : currentPath.replace(/^\//, "") || "/",
+                            })}
+                          >
+                            Move
+                          </Button>
+                          <button
+                            type="button"
+                            className="pipeline-registry-row-del"
+                            title={`Delete folder ${f?.name}`}
+                            onClick={() => { setPendingDelete({ path: folderRelPath, name: f?.name ?? "folder", isPipeline: false, isFolder: true, isDoc: isDocsScope, parentPath: currentPath }); setDeleteInput(""); setDeleteError(null); }}
+                          >
+                            <TrashIcon />
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -1130,14 +1240,29 @@ export default function UnifiedRegistryEditor(input) {
                         {isTemplatePathLocked(file?.rel_path ?? "") && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
                         <span className="pipeline-registry-row-name">{file?.name}</span>
                       </Link>
-                      <button
-                        type="button"
-                        className="pipeline-registry-row-del"
-                        title={`Delete ${file?.name ?? "file"}`}
-                        onClick={() => { setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc" }); setDeleteInput(""); setDeleteError(null); }}
-                      >
-                        <TrashIcon />
-                      </button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          onClick={() => openMoveDialog({
+                            name: file?.name ?? "file",
+                            fromPath: file?.kind === "doc" ? String(file?.template_path ?? "").replace(/^docs\//, "") : file?.rel_path ?? "",
+                            isFolder: false,
+                            isDoc: file?.kind === "doc",
+                            targetParent: file?.kind === "doc" ? currentPath : currentPath.replace(/^\//, "") || "/",
+                          })}
+                        >
+                          Move
+                        </Button>
+                        <button
+                          type="button"
+                          className="pipeline-registry-row-del"
+                          title={`Delete ${file?.name ?? "file"}`}
+                          onClick={() => { setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc", parentPath: currentPath }); setDeleteInput(""); setDeleteError(null); }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
                     </div>
                   ))}
 
@@ -1214,15 +1339,28 @@ export default function UnifiedRegistryEditor(input) {
                     <span className="pipeline-editor-indicator">doc</span>
                     <Button variant="outline" size="xs" onClick={handleSaveDoc}>Save</Button>
                     <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => openMoveDialog({
+                        name: doc?.name ?? "doc",
+                        fromPath: String(doc?.path ?? doc?.rel_path ?? "").replace(/^docs\//, ""),
+                        isFolder: false,
+                        isDoc: true,
+                        targetParent: doc?.parent_virtual_path ?? "/docs",
+                      })}
+                    >
+                      Move
+                    </Button>
+                    <Button
                       variant="destructive"
                       size="xs"
                       onClick={() => {
-                        setPendingDelete({ path: doc?.rel_path ?? "", name: doc?.name ?? "", isPipeline: false, isDoc: true });
+                        setPendingDelete({ path: doc?.rel_path ?? "", name: doc?.name ?? "", isPipeline: false, isDoc: true, parentPath: doc?.parent_virtual_path ?? "/docs" });
                         setDeleteInput("");
                         setDeleteError(null);
                       }}
                     >Delete</Button>
-                    <Link href={`${editorBase}?path=/docs`} className="zf-btn zf-btn-ghost zf-btn-xs">✕ Close</Link>
+                    <Link href={`${editorBase}?path=${encodeURIComponent(doc?.parent_virtual_path ?? "/docs")}`} className="zf-btn zf-btn-ghost zf-btn-xs">✕ Close</Link>
                   </div>
                 </div>
                 <div className="pipeline-editor-template-host" ref={docEditorHostRef} />
@@ -1241,6 +1379,7 @@ export default function UnifiedRegistryEditor(input) {
                   definition: editorApi?.definition ?? "",
                   activate: editorApi?.activate ?? "",
                   deactivate: editorApi?.deactivate ?? "",
+                  execute: editorApi?.execute ?? "",
                   hits: editorApi?.hits ?? "",
                   invocations: editorApi?.invocations ?? "",
                   nodes: editorApi?.nodes ?? "",
@@ -1304,6 +1443,41 @@ export default function UnifiedRegistryEditor(input) {
                     type="button"
                     className="zf-btn zf-btn-ghost zf-btn-sm"
                     onClick={() => { setPendingDelete(null); setDeleteInput(""); }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {pendingMove && (
+            <div className="pipeline-delete-overlay">
+              <div className="pipeline-delete-backdrop" onClick={() => { setPendingMove(null); setMoveError(null); }} />
+              <div className="pipeline-delete-box">
+                <p className="pipeline-delete-title">Move <strong>{pendingMove.name}</strong></p>
+                <p className="pipeline-delete-warn">Enter the destination parent folder.</p>
+                <input
+                  type="text"
+                  className="pipeline-delete-input"
+                  placeholder={pendingMove.isDoc ? "/docs" : "/"}
+                  value={moveTargetParent}
+                  onInput={(e) => setMoveTargetParent(e.currentTarget.value)}
+                />
+                {moveError ? <p className="pipeline-delete-error">{moveError}</p> : null}
+                <div className="pipeline-delete-actions">
+                  <button
+                    type="button"
+                    className="zf-btn zf-btn-primary zf-btn-sm"
+                    disabled={moving}
+                    onClick={handleMoveConfirm}
+                  >
+                    {moving ? "Moving…" : "Move"}
+                  </button>
+                  <button
+                    type="button"
+                    className="zf-btn zf-btn-ghost zf-btn-sm"
+                    onClick={() => { setPendingMove(null); setMoveError(null); }}
                   >
                     Cancel
                   </button>
@@ -1396,7 +1570,7 @@ export default function UnifiedRegistryEditor(input) {
               <label className="pipeline-editor-field">
                 <span>File name</span>
                 <Input name="name" type="text" placeholder="guide" required />
-                <small className="pipeline-editor-field-help">Saved as <code>docs/{"{name}"}.md</code></small>
+                <small className="pipeline-editor-field-help">Saved as <code>{currentDocsRelPath ? `docs/${currentDocsRelPath}/{"{name}"}.md` : 'docs/{"{name}"}.md'}</code></small>
               </label>
               {createError ? <p className="pipeline-editor-dialog-error">{createError}</p> : null}
               <div className="pipeline-editor-dialog-actions">

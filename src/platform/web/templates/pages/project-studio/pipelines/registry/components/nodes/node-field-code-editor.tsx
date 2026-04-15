@@ -30,22 +30,22 @@ async function loadCm() {
 function SidebarPanel({ sections }: { sections: SidebarSection[] }) {
   if (!sections || sections.length === 0) return null;
   return (
-    <div className="w-52 shrink-0 border-l border-slate-200 dark:border-slate-700 overflow-y-auto text-xs">
+    <div className="w-52 shrink-0 border-l border-gray-200 dark:border-gray-700 overflow-y-auto text-xs">
       {sections.map((section, i) => (
         <details key={i} open className="group">
-          <summary className="flex items-center gap-1 px-3 py-1.5 cursor-pointer select-none bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 font-semibold text-slate-600 dark:text-slate-300 list-none">
+          <summary className="flex items-center gap-1 px-3 py-1.5 cursor-pointer select-none bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 font-semibold text-gray-600 dark:text-gray-300 list-none">
             <span className="opacity-60 group-open:rotate-90 transition-transform inline-block">▶</span>
             {section.title}
           </summary>
           <ul className="py-1">
             {(section.items || []).map((item, j) => (
-              <li key={j} className="px-3 py-1 border-b border-slate-100 dark:border-slate-800 last:border-0">
+              <li key={j} className="px-3 py-1 border-b border-gray-100 dark:border-gray-800 last:border-0">
                 <span className="font-mono text-blue-600 dark:text-blue-400">{item.label}</span>
                 {item.type_hint && (
-                  <span className="ml-1 text-slate-400">: {item.type_hint}</span>
+                  <span className="ml-1 text-gray-400">: {item.type_hint}</span>
                 )}
                 {item.description && (
-                  <p className="text-slate-500 dark:text-slate-400 mt-0.5 text-[10px] leading-snug">
+                  <p className="text-gray-500 dark:text-gray-400 mt-0.5 text-[10px] leading-snug">
                     {item.description}
                   </p>
                 )}
@@ -147,7 +147,7 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
           <button
             type="button"
             onClick={() => setSidebarOpen((v) => !v)}
-            className="text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700"
+            className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700"
           >
             {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
           </button>
@@ -155,7 +155,7 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
       </div>
       <div
         className={cx(
-          "flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden",
+          "flex rounded-md border border-gray-200 dark:border-gray-700 overflow-hidden",
           "bg-[#282c34]" // oneDark background
         )}
       >

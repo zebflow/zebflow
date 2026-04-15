@@ -7,7 +7,7 @@ function navRowCx(expanded: boolean, isLight: boolean, routeClass: string) {
     expanded ? "justify-start" : "justify-center",
     !active &&
       (isLight
-        ? "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+        ? "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
         : "border-l-2 border-dark-menus text-dark-text1 hover:bg-gray-100/10 hover:text-gray-100"),
     active &&
       (isLight
@@ -31,13 +31,13 @@ export default function PlatformSidebar(props) {
         className={cx(
           "flex h-full flex-col overflow-visible border-r shadow-lg transition-all duration-200 ease-out",
           expanded ? "w-60 shadow-2xl" : "w-16 shadow-md",
-          isLight ? "border-slate-200 bg-white" : "border-dark-border bg-dark-menus",
+          isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-menus",
         )}
       >
         <div
           className={cx(
             "flex items-center gap-3 border-b px-3 py-3",
-            isLight ? "border-slate-200" : "border-dark-border",
+            isLight ? "border-gray-200" : "border-dark-border",
             expanded ? "justify-between" : "justify-center",
           )}
         >
@@ -64,7 +64,7 @@ export default function PlatformSidebar(props) {
               className={cx(
                 "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full border transition-colors",
                 isLight
-                  ? "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100"
+                  ? "border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100"
                   : "border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700",
               )}
               aria-label="Collapse sidebar"
@@ -90,7 +90,7 @@ export default function PlatformSidebar(props) {
               className={cx(
                 "inline-flex h-7 w-7 items-center justify-center rounded-full border transition-colors",
                 isLight
-                  ? "border-dark-border bg-gray-50 text-slate-500 hover:bg-slate-100"
+                  ? "border-dark-border bg-gray-50 text-gray-500 hover:bg-gray-100"
                   : "border-dark-border bg-gray-800 text-gray-400 hover:bg-gray-700",
               )}
               aria-label="Expand sidebar"

@@ -2,20 +2,20 @@ import { useState, useEffect, useRef, cx } from "zeb";
 import { subscribeConsole, getConsoleLines, navigate } from "@/pages/project-studio/components/studio-shell-behavior";
 
 const LINE_STYLES: Record<string, string> = {
-  "cli-echo":     "text-slate-400",
-  "cli-info":     "text-slate-500 italic",
+  "cli-echo":     "text-gray-400",
+  "cli-info":     "text-gray-500 italic",
   "cli-error":    "text-red-400",
   "cli-success":  "text-green-400",
-  "cli-muted":    "text-slate-500",
+  "cli-muted":    "text-gray-500",
   "cli-blank":    "block h-[0.6em]",
   "cli-ai":       "text-sky-300 whitespace-pre-wrap break-words",
   "cli-tool":     "text-indigo-400 italic",
-  "cli-thinking": "text-slate-600 italic",
+  "cli-thinking": "text-gray-600 italic",
   "cli-nav":      "",
 };
 
 function lineClass(cls?: string) {
-  const base = "text-slate-400 whitespace-pre break-all";
+  const base = "text-gray-400 whitespace-pre break-all";
   if (!cls) return base;
   const extra = cls.split(/\s+/).map((c) => LINE_STYLES[c] ?? "").join(" ");
   return cx(base, extra);

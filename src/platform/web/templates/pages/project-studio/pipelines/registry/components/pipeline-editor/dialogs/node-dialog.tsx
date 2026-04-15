@@ -231,7 +231,7 @@ export default function NodeDialog({
             <Field>
               <Label>Config JSON</Label>
               <textarea
-                className="w-full font-mono text-xs p-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 resize-y"
+                className="w-full font-mono text-xs p-2 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-950 resize-y"
                 rows={10}
                 value={JSON.stringify(config || {}, null, 2)}
                 onInput={(e) => {

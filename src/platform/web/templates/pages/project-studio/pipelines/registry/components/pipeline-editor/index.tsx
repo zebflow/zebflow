@@ -87,6 +87,25 @@ const CAT_ICONS: Record<string, any> = {
   ),
 };
 
+function PipelineRunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+      <path d="M8 6.5v11l8.5-5.5-8.5-5.5Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PipelineDeleteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 7h16" />
+      <path d="M9 3h6" />
+      <path d="M7 7l1 13h8l1-13" />
+      <path d="M10 11v5M14 11v5" />
+    </svg>
+  );
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // ── PipelineEditor ────────────────────────────────────────────────────────────
@@ -116,6 +135,24 @@ export default function PipelineEditor({
   onDeleteClick,
   onLockToggle,
 }: PipelineEditorProps) {
+  type InvocationTraceEntry = {
+    node_id: string;
+    node_kind: string;
+    config?: any;
+    duration_ms: number;
+    input: any;
+    output: any;
+    error?: string | null;
+  };
+  type InvocationEntry = {
+    run_id?: string;
+    at: number;
+    duration_ms: number;
+    status: string;
+    trigger: string;
+    error?: string | null;
+    trace: InvocationTraceEntry[];
+  };
   const graphRef = useRef(null);
   const nav = useNavigate();
 
@@ -176,9 +213,11 @@ export default function PipelineEditor({
 
   // ── Invocation log panel state ───────────────────────────────────────────────
   const [logsOpen, setLogsOpen] = useState(false);
-  const [invocations, setInvocations] = useState<any[]>([]);
+  const [invocations, setInvocations] = useState<InvocationEntry[]>([]);
   const [expandedInv, setExpandedInv] = useState<number | null>(null);
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runStatus, setRunStatus] = useState("");
   const pollRef = useRef<any>(null);
 
   // ── graphui bundle ready ─────────────────────────────────────────────────────
@@ -444,14 +483,54 @@ export default function PipelineEditor({
   }
 
   // ── Invocation log fetch + polling ────────────────────────────────────────
-  async function fetchInvocations() {
+  async function fetchInvocations(focusLatest = false) {
     if (!currentMeta?.file_rel_path || !api.invocations) return;
     try {
       const data = await requestJson(
         `${api.invocations}?pipeline=${encodeURIComponent(currentMeta.file_rel_path)}`
       );
-      setInvocations(Array.isArray(data?.entries) ? data.entries : []);
+      const entries = Array.isArray(data?.entries) ? data.entries as InvocationEntry[] : [];
+      setInvocations(entries);
+      if (focusLatest) {
+        setExpandedInv(entries.length > 0 ? 0 : null);
+        setExpandedNode(null);
+      }
     } catch {}
+  }
+
+  async function refreshPipelineSummary() {
+    if (!currentMeta?.file_rel_path || !api.byId) return;
+    try {
+      const payload = await requestJson(`${api.byId}?id=${encodeURIComponent(currentMeta.file_rel_path)}`);
+      setCurrentMeta(payload?.meta || null);
+      setCurrentLocked(!!payload?.locked);
+      setHits(payload?.hits || null);
+    } catch {}
+  }
+
+  async function handleRunManual() {
+    if (!currentMeta || !api.execute || currentLocked || !currentMeta.active_hash) return;
+    setRunBusy(true);
+    setRunStatus("Running active pipeline…");
+    setLogsOpen(true);
+    try {
+      const payload = await requestJson(api.execute, {
+        method: "POST",
+        body: JSON.stringify({
+          file_rel_path: currentMeta.file_rel_path,
+          trigger: "manual",
+          input: {},
+        }),
+      });
+      await Promise.all([refreshPipelineSummary(), fetchInvocations(true)]);
+      const runId = typeof payload?.run_id === "string" ? payload.run_id : "";
+      setRunStatus(runId ? `Manual run completed. ${runId}` : "Manual run completed.");
+    } catch (err: any) {
+      await Promise.all([refreshPipelineSummary(), fetchInvocations(true)]);
+      setRunStatus(`Run failed: ${err?.message || String(err)}`);
+    } finally {
+      setRunBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -489,6 +568,13 @@ export default function PipelineEditor({
     Array.isArray(hits?.latest_errors) && hits.latest_errors.length > 0
       ? `${hits.latest_errors[0].code}: ${hits.latest_errors[0].message}`
       : "-";
+  const isManualTrigger = String(currentMeta?.trigger_kind || "").toLowerCase() === "manual";
+  const manualRunDisabled = !isManualTrigger || currentLocked || !currentMeta?.active_hash || runBusy;
+  const manualRunTitle = !currentMeta?.active_hash
+    ? "Activate pipeline before running"
+    : hasDraft
+      ? "Runs the active version, not the unsaved draft"
+      : "Run active manual pipeline";
 
 
   // Read PipelineGraph from globalThis after bundle loads
@@ -520,80 +606,106 @@ export default function PipelineEditor({
 
       {/* Toolbar */}
       <div className="pipeline-editor-toolbar">
-        <div className="pipeline-editor-toolbar-main">
-          <p className="pipeline-editor-title">
-            {currentMeta?.title || currentMeta?.name || "No pipeline selected"}
-          </p>
-          <p className="pipeline-editor-subtitle">
-            {currentMeta
-              ? `${currentMeta.virtual_path} | ${currentMeta.trigger_kind} | ${currentMeta.file_rel_path}`
-              : "Select a pipeline to edit."}
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="pipeline-editor-toolbar-main">
+            <p className="pipeline-editor-title">
+              {currentMeta?.title || currentMeta?.name || "No pipeline selected"}
+            </p>
+            <p className="pipeline-editor-subtitle">
+              {currentMeta?.file_rel_path || "Select a pipeline to edit."}
+            </p>
+          </div>
+          <div className="flex min-w-0 shrink-0 flex-col items-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <span
+                className="pipeline-editor-indicator pipeline-editor-indicator-trigger"
+                data-trigger-kind={triggerKind.toLowerCase()}
+              >
+                {triggerKind}
+              </span>
+              <span
+                className="pipeline-editor-indicator pipeline-editor-indicator-draft"
+                data-tone={draftTone}
+              >
+                {draftLabel}
+              </span>
+              <span
+                className="pipeline-editor-indicator pipeline-editor-indicator-lock"
+                data-tone={lockTone}
+              >
+                {currentLocked ? "locked" : "editable"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {isManualTrigger && (
+                <Button
+                  size="icon"
+                  disabled={manualRunDisabled}
+                  onClick={handleRunManual}
+                  title={manualRunTitle}
+                  aria-label={runBusy ? "Running active pipeline" : "Run active pipeline"}
+                >
+                  <PipelineRunIcon />
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={currentLocked || !currentMeta}
+                onClick={handleSave}
+              >
+                Save Draft
+              </Button>
+              <Button
+                size="xs"
+                disabled={currentLocked || !currentMeta}
+                onClick={handleActivate}
+              >
+                Activate
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={currentLocked || !currentMeta}
+                onClick={handleDeactivate}
+              >
+                Deactivate
+              </Button>
+              {onLockToggle && currentMeta && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => onLockToggle(!currentLocked)}
+                  title={currentLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
+                  aria-label={currentLocked ? "Unlock pipeline editor" : "Lock pipeline editor"}
+                  className={currentLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
+                >
+                  {currentLocked ? <LockIcon /> : <LockOpenIcon />}
+                </Button>
+              )}
+              {onDeleteClick ? (
+                <Button
+                  variant="destructive"
+                  size="icon"
+                  disabled={!currentMeta}
+                  onClick={onDeleteClick}
+                  aria-label="Delete pipeline"
+                  title="Delete pipeline"
+                >
+                  <PipelineDeleteIcon />
+                </Button>
+              ) : null}
+            </div>
+          </div>
         </div>
-        <div className="pipeline-editor-toolbar-actions">
-          <span
-            className="pipeline-editor-indicator pipeline-editor-indicator-trigger"
-            data-trigger-kind={triggerKind.toLowerCase()}
-          >
-            trigger: {triggerKind}
-          </span>
-          <span
-            className="pipeline-editor-indicator pipeline-editor-indicator-lock"
-            data-tone={lockTone}
-          >
-            {currentLocked ? "locked" : "editable"}
-          </span>
-          <span
-            className="pipeline-editor-indicator pipeline-editor-indicator-draft"
-            data-tone={draftTone}
-          >
-            {draftLabel}
-          </span>
-          {onLockToggle && currentMeta && (
-            <Button
-              variant="ghost"
-              size="xs"
-              onClick={() => onLockToggle(!currentLocked)}
-              title={currentLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
-              className={currentLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
-            >
-              {currentLocked ? <LockIcon /> : <LockOpenIcon />}
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={currentLocked || !currentMeta}
-            onClick={handleSave}
-          >
-            Save Draft
-          </Button>
-          <Button
-            size="xs"
-            disabled={currentLocked || !currentMeta}
-            onClick={handleActivate}
-          >
-            Activate
-          </Button>
-          <Button
-            variant="outline"
-            size="xs"
-            disabled={currentLocked || !currentMeta}
-            onClick={handleDeactivate}
-          >
-            Deactivate
-          </Button>
-          {onDeleteClick && (
-            <Button
-              variant="destructive"
-              size="xs"
-              disabled={!currentMeta}
-              onClick={onDeleteClick}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
+        {runStatus ? (
+          <div className={cx(
+            "text-[0.72rem]",
+            runStatus.startsWith("Run failed:") ? "text-red-400" : "text-body-soft",
+          )}>
+            {runStatus}
+          </div>
+        ) : null}
         {saveError && (
           <div className="pipeline-editor-save-error" role="alert">
             <span>⚠ {saveError}</span>
@@ -671,7 +783,7 @@ export default function PipelineEditor({
           <div className="pipeline-editor-logs-body text-xs">
             {invocations.length === 0 ? (
               <div className="p-4 text-center text-body-muted">No invocations recorded yet.</div>
-            ) : invocations.map((inv: any, i: number) => (
+            ) : invocations.map((inv: InvocationEntry, i: number) => (
               <div key={i} className="border-b border-border">
                 {/* Invocation row */}
                 <div
@@ -684,6 +796,11 @@ export default function PipelineEditor({
                   <span className="text-body-muted whitespace-nowrap shrink-0">
                     {new Date(inv.at * 1000).toLocaleString()}
                   </span>
+                  {inv.run_id ? (
+                    <code className="max-w-[15rem] truncate text-[0.62rem] text-body-muted">
+                      {inv.run_id}
+                    </code>
+                  ) : null}
                   <Badge variant={inv.status === "ok" ? "default" : "destructive"}>{inv.status}</Badge>
                   <Badge variant="secondary">{inv.trigger}</Badge>
                   <span className="text-body-muted shrink-0">{inv.duration_ms}ms</span>
@@ -697,12 +814,18 @@ export default function PipelineEditor({
                 {/* Per-node trace */}
                 {expandedInv === i && Array.isArray(inv.trace) && inv.trace.length > 0 && (
                   <div className="bg-surface border-t border-border">
+                    {inv.run_id ? (
+                      <div className="px-3 py-2 text-[0.68rem] text-body-soft border-b border-border">
+                        <span className="mr-2 uppercase tracking-[0.12em] text-body-muted">Run ID</span>
+                        <code className="text-body">{inv.run_id}</code>
+                      </div>
+                    ) : null}
                     {inv.error && (
                       <div className="px-3 py-2 text-[0.7rem] text-red-400 bg-red-500/5 border-b border-border whitespace-pre-wrap break-all">
                         {inv.error}
                       </div>
                     )}
-                    {inv.trace.map((entry: any, j: number) => {
+                    {inv.trace.map((entry: InvocationTraceEntry, j: number) => {
                       const nodeKey = `${i}-${j}`;
                       const nodeExpanded = expandedNode === nodeKey;
                       return (
@@ -736,12 +859,16 @@ export default function PipelineEditor({
                               {entry.error && (
                                 <div>
                                   <span className="text-[0.6rem] font-semibold uppercase text-red-400">Error</span>
-                                  <pre className="pipeline-editor-logs-io-pre" style={{ borderColor: 'var(--color-danger, #ef4444)' }}>
+                                  <pre className="pipeline-editor-logs-io-pre border-red-500/40 text-red-100">
                                     {entry.error}
                                   </pre>
                                 </div>
                               )}
-                              {[["Input", entry.input], ["Output", entry.output]].map(([label, val]) => (
+                              {[
+                                ["Config", entry.config],
+                                ["Input", entry.input],
+                                ["Output", entry.output],
+                              ].filter(([, val]) => val !== undefined && val !== null).map(([label, val]) => (
                                 <div key={label as string}>
                                   <span className="text-[0.6rem] font-semibold uppercase text-body-muted">{label}</span>
                                   <pre className="pipeline-editor-logs-io-pre">{JSON.stringify(val, null, 2)}</pre>

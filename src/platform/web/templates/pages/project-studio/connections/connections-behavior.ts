@@ -47,6 +47,11 @@ function normalizeCredentialId(value) {
   return slugify(value);
 }
 
+function isBuiltinConnectionSlug(value) {
+  const normalized = slugify(value);
+  return normalized === "default" || normalized === "default-multimodel";
+}
+
 function dbKindIconClass(kind) {
   const value = String(kind || "").trim().toLowerCase();
   if (value === "postgresql" || value === "postgres" || value === "pg") {
@@ -476,7 +481,7 @@ async function initDbConnections(root) {
     state.form.reset();
     state.slugField.value = normalized;
     state.slugField.disabled = true;
-    state.deleteBtn.style.display = normalized === "default" ? "none" : "inline-flex";
+    state.deleteBtn.style.display = isBuiltinConnectionSlug(normalized) ? "none" : "inline-flex";
     state.titleEl.textContent = `Edit DB Connection | ${normalized}`;
     setStatus(state, "Loading connection details...", "info");
     setBusy(state, true);

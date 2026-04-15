@@ -236,7 +236,7 @@ export function GitRepoPanel({ owner, project }) {
   return (
     <div
       className="relative"
-      tw-variants="fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-slate-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px font-mono px-1.5 text-body-soft border-border bg-green-500 bg-slate-400"
+      tw-variants="fixed inset-0 z-40 top-[calc(100%+6px)] w-[640px] shadow-[0_8px_24px_rgba(0,0,0,0.25)] z-50 py-[0.55rem] gap-[0.35rem] bg-gray-500 max-h-[440px] py-[0.5rem] pb-[0.3rem] border-border-soft tracking-[0.07em] py-[0.4rem] min-h-[2.5rem] pt-[0.3rem] pb-[0.15rem] py-[0.6rem] text-[0.74rem] px-[0.6rem] gap-[0.4rem] px-[0.1rem] text-red-400 text-green-400 w-[260px] gap-[0.85rem] leading-[1.5] text-[0.72rem] underline text-accent rounded-[0.35rem] focus-within:border-green-500 opacity-50 whitespace-nowrap bg-surface-3 border-r h-7 bg-transparent border-none text-[0.68rem] text-green-500 border-green-500 text-[0.75rem] text-[0.7rem] text-[0.65rem] text-[0.6rem] text-blue-400 w-3.5 h-3.5 gap-1.5 w-px font-mono px-1.5 text-body-soft border-border bg-green-500 bg-gray-400"
     >
       {/* Trigger button */}
       <button

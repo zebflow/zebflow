@@ -1,82 +1,132 @@
 # zebflow
 
-**[zebflow.com](https://zebflow.com)** · [Documentation](docs/README.md)
+**[zebflow.com](https://zebflow.com)** · [Docs Index](docs/README.md) · [User Guide](docs/user-guide/README.md) · [Dev Guide](docs/dev-guide/README.md)
 
-> **Ship once. Build forever.**
+> Full-stack reactive web automation.
 
-Zebflow is an open-source platform for building and serving full-stack reactive web apps — without a build toolchain. Write pipelines, render React pages (SSR + SPA), add real-time WebSocket rooms, connect databases, and run scheduled jobs — all from a single binary or Docker container.
+Zebflow is a full-stack reactive web automation platform. Build SSR pages, SPA flows, APIs, real-time rooms and games, and various automations in one running system using Pipelines and Templates.
 
-Keep building from your laptop: connect your IDE or any MCP-compatible AI agent directly to the running instance. Changes go live instantly and sync to git automatically.
+Deploy once, evolve continuously. Write TSX directly in the running instance, compose behavior with pipelines, and build reactive frontend on the fly without a separate frontend build toolchain.
+
+It is designed to grow from one local office to multi-user, multi-project, multi-office deployments. MCP and BYOK agent console flows are first-class at project scope.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
-[![Docker](https://img.shields.io/badge/docker-~450MB-informational.svg)](https://hub.docker.com/r/zebflow/zebflow)
+[![Docker](https://img.shields.io/badge/docker-insanalamin%2Fzebflow-informational.svg)](https://hub.docker.com/r/insanalamin/zebflow)
 
----
+## Overview
 
-## What it does
+Zebflow combines two authoring surfaces:
 
-- **Full-stack React, no build step** — write TSX components directly in the app. They compile and render server-side, live. No `npm install`, no Webpack, no Vite.
-- **Pipeline automation** — connect webhooks, databases, HTTP calls, schedules, script transforms, and AI agents in a pipe-chained DSL or visual editor.
-- **SSR + SPA out of the box** — pages are server-rendered, hydrated on the client with Preact. Navigation is intercepted client-side for instant transitions. No configuration.
-- **Real-time WebSocket rooms** — built-in multi-client rooms with shared state. Trigger pipelines on WS events, sync state, broadcast to all or targeted sessions.
-- **Build from your laptop via MCP** — connect Claude Code, Cursor, or any MCP client to the running instance. Create pipelines, write templates, query data — changes go live without touching the server. Everything commits to git.
-- **Git-synced by default** — every pipeline and template is a file on disk, version-controlled and reviewable.
+- **Templates**
+  TSX pages and components rendered through the Reactive Web Engine without a separate build step.
+- **Pipelines**
+  Triggered automation graphs for webhooks, functions, schedules, data access, HTTP, AI, state, and rendering.
 
----
+Those two surfaces stay inside the same project workspace, so a project can serve:
 
-## Who it's for
+- SSR pages
+- SPA-like navigation
+- JSON or form APIs
+- webhook handlers
+- WebSocket or realtime room flows
+- static generated outputs
+- operator and agent automation
 
-You have a running server. You want to build internal tools, dashboards, or lightweight web apps on top of your data — without spinning up a separate frontend project, CI pipeline, or build server.
+## Walkthroughs
 
-Zebflow runs alongside your stack. You write a TSX page, wire it to a database query in a pipeline, and it's live at a URL. You keep iterating from wherever you are — browser, terminal, or IDE.
+Add short GIF walkthroughs here before the next public-facing release:
 
----
+1. create a page and pipeline in Project Studio
+2. connect MCP or agent console to one project
+3. place a project onto a remote office
 
-## Quick start
+## Install
+
+### Docker
+
+Current stable install path:
 
 ```bash
-docker run -p 10610:10610 zebflow/zebflow
+docker run --name zebflow \
+  -p 10610:10610 \
+  -v zebflow-data:/var/lib/zebflow/data \
+  -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=change-me \
+  insanalamin/zebflow:latest
 ```
 
-Open `http://localhost:10610` — default login: `superadmin` / `admin`.
+Then open:
 
----
+- `http://localhost:10610/login`
 
-## How development works
+### Source Build
 
-1. **Create a pipeline** — write the DSL in the in-app console or use the visual editor. One line connects a trigger to a query to a rendered page.
-2. **Write a React page** — open the template editor, write TSX, save — it's live at the pipeline's path immediately.
-3. **Connect your data** — add a database credential, drop a query node before the render node. The query result flows in as the page's `input` prop.
-4. **Keep building from anywhere** — connect your IDE or AI agent via MCP. Register pipelines, write templates, commit to git — all from your laptop, without SSH or redeploy.
+```bash
+export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=change-me
+cargo run --bin zebflow
+```
 
-No rebuild. No redeploy. The running instance is the development environment.
+### Other Distribution Channels
 
----
+The following channels are planned, but they are not published as stable install
+channels yet:
 
-## Stack
+- `npm install zebflow`
+- `pip install zebflow`
+- single-binary release downloads
 
-| Layer | What it is |
-|-------|-----------|
-| Runtime | Rust — single binary, ~90 MB Docker image |
-| Script engine | Embedded V8 via `deno_core` — no Node.js required |
-| React rendering | TSX → SSR via embedded Deno, hydrated with Preact |
-| Pipelines | 20+ built-in nodes: triggers, HTTP, SQL, WebSocket, AI, logic, web render |
-| Data | Sekejap (embedded graph-first multimodel db engine), PostgreSQL, MySQL, simple tables |
-| Real-time | WebSocket rooms with shared state, event dispatch, broadcast |
-| AI | BYOK — OpenAI-compatible or Anthropic, MCP protocol |
+The README keeps them separate on purpose so install instructions stay honest.
 
----
+## Runtime Modes
+
+One binary, different roles:
+
+```bash
+zebflow
+zebflow controller
+zebflow office
+```
+
+- `zebflow`
+  standalone controller + office
+- `zebflow controller`
+  management-oriented office
+- `zebflow office`
+  execution-oriented office joined under a managing office
+
+## Features
+
+- **Reactive Web Engine**
+  Write TSX directly in the running project. SSR, SPA-style navigation, client hydration, and library loading happen without a separate Vite/Webpack-style build.
+- **Pipeline + Template composition**
+  Build web pages, APIs, webhooks, scheduled jobs, functions, and automation from the same project workspace.
+- **Agentic tools from project nodes and functions**
+  Project functions and pipeline nodes act as tool surfaces for agentic work. The built-in agent node supports two modes: `direct` for immediate task execution and `strategic` for higher-level planning and delegated reasoning.
+- **Real-time runtime**
+  Native WebSocket rooms and event-driven flows for collaborative tools, dashboards, simulations, or realtime game mechanics.
+- **Static generation into project files**
+  Generate durable outputs into `files/public` or `files/private` from pipeline execution.
+- **Project-scoped MCP and agent console**
+  Each project can expose MCP and BYOK assistant workflows as first-class management surfaces.
+- **Git-synced workspace**
+  Source lives on disk, stays reviewable, and can be exported, imported, and versioned as a real project workspace.
+- **Installable libraries, UI components, and examples**
+  The running system can install reusable project assets instead of forcing every project to bootstrap from scratch.
+- **Multi-user, multi-project operation**
+  One office can host multiple projects and multiple operators while preserving project scope.
+- **Office federation**
+  Zebflow can scale from one office to controller-plus-office federation and future multi-office deployments.
+- **Single binary deployment model**
+  The same binary is intended to work on a laptop, Raspberry Pi, one server, or Kubernetes with role-based configuration.
 
 ## Documentation
 
-- [Getting Started](docs/GETTING_STARTED.md)
-- [Pipeline Reference](docs/PIPELINES.md)
-- [RWE — Reactive Web Engine](docs/RWE.md)
-- [MCP Integration](docs/MCP.md)
-- [Platform Web](docs/developer-guide/platform-web.md)
-
----
+- [Docs Index](docs/README.md)
+- [User Guide](docs/user-guide/README.md)
+- [Dev Guide](docs/dev-guide/README.md)
+- [Project Contract](docs/dev-guide/project-contract.md)
+- [Office Federation Contract](docs/dev-guide/office-federation-contract.md)
+- [Architecture](docs/dev-guide/architecture.md)
 
 ## License
 

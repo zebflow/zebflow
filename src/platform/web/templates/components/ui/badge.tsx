@@ -1,7 +1,7 @@
 const VARIANT_CLASSES = {
   default:     "border-transparent bg-ui-text text-ui-bg",
   secondary:   "border-transparent bg-ui-bg-muted text-ui-text",
-  destructive: "border-transparent bg-red-500 text-slate-50",
+  destructive: "border-transparent bg-red-500 text-gray-50",
   outline:     "text-ui-text border-ui-border",
 };
 

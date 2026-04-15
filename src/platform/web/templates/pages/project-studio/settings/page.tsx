@@ -68,6 +68,306 @@ function renderCardGrid(items) {
   ));
 }
 
+function formatOperationTimestamp(ts) {
+  if (!ts) return "unknown";
+  try {
+    return new Date(Number(ts) * 1000).toLocaleString();
+  } catch (_err) {
+    return String(ts);
+  }
+}
+
+function settingsStatusToneClass(tone) {
+  if (tone === "ok") {
+    return "text-dark-accent2";
+  }
+  if (tone === "error") {
+    return "text-dark-accent4";
+  }
+  return "text-body-soft";
+}
+
+const SETTINGS_SECTION_TAG_CLASS =
+  "inline-flex items-center border border-dark-border bg-dark-border px-2 py-[0.38rem] text-[0.66rem] font-mono uppercase tracking-[0.12em] text-body-soft";
+
+function settingsOperationBadgeClass(status) {
+  if (status === "completed") {
+    return "!rounded-none !border !border-dark-accent2 !bg-transparent !text-dark-accent2";
+  }
+  if (status === "failed") {
+    return "!rounded-none !border !border-dark-accent4 !bg-transparent !text-dark-accent4";
+  }
+  return "!rounded-none !border !border-dark-border !bg-transparent !text-body-soft";
+}
+
+function SettingsSection({
+  id,
+  title,
+  description,
+  tag,
+  tone = "default",
+  children,
+}: any) {
+  const titleClass =
+    tone === "danger"
+      ? "text-dark-accent5"
+      : "text-body";
+
+  return (
+    <article
+      id={id}
+      className={cx(
+        "border-b border-dark-border",
+        tone === "danger" && "border-dark-accent4",
+      )}
+    >
+      <header className="flex items-start justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <h3 className={cx("text-[0.83rem] font-semibold tracking-[0.01em]", titleClass)}>
+            {title}
+          </h3>
+          {description ? (
+            <p className="mt-1 text-[0.78rem] leading-[1.45] text-body-soft">
+              {description}
+            </p>
+          ) : null}
+        </div>
+        {tag ? <span className={SETTINGS_SECTION_TAG_CLASS}>{tag}</span> : null}
+      </header>
+      <div className="px-4 py-4">{children}</div>
+    </article>
+  );
+}
+
+function ProjectTransferPanel({ owner, project, api, initialOperations }) {
+  const [operations, setOperations] = useState(Array.isArray(initialOperations) ? initialOperations : []);
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [busyKey, setBusyKey] = useState("");
+  const [bundleFile, setBundleFile] = useState(null);
+  const [filesFile, setFilesFile] = useState(null);
+  const primaryButtonClass = "!rounded-none";
+  const outlineButtonClass = "!rounded-none !border !border-dark-border !bg-transparent !text-body hover:!bg-dark-border";
+  const ghostButtonClass = "!rounded-none !border !border-dark-border !bg-transparent !text-body-soft hover:!bg-dark-border hover:!text-body";
+
+  async function refreshOperations() {
+    if (!api?.operations) return;
+    try {
+      const payload = await requestJson(api.operations);
+      setOperations(Array.isArray(payload?.items) ? payload.items : []);
+    } catch (_err) {}
+  }
+
+  async function handleExport(kind) {
+    const url = kind === "bundle" ? api?.export_bundle : api?.export_files;
+    if (!url) return;
+    setBusyKey(`export:${kind}`);
+    setStatusMsg(`Preparing ${kind} export…`);
+    setStatusTone("info");
+    try {
+      const payload = await requestJson(url, { method: "POST" });
+      await refreshOperations();
+      if (payload?.download_url) {
+        window.location.href = payload.download_url;
+      }
+      setStatusMsg(`${kind === "bundle" ? "Bundle" : "Files"} export ready.`);
+      setStatusTone("ok");
+    } catch (err) {
+      setStatusMsg(`Export failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+      await refreshOperations();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function handleImport(kind) {
+    const file = kind === "bundle" ? bundleFile : filesFile;
+    const url = kind === "bundle" ? api?.import_bundle : api?.import_files;
+    if (!url || !file) return;
+    setBusyKey(`import:${kind}`);
+    setStatusMsg(`Importing ${kind} archive…`);
+    setStatusTone("info");
+    try {
+      const fd = new FormData();
+      fd.append("archive", file);
+      const response = await fetch(url, { method: "POST", body: fd });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          payload?.error?.message ||
+            payload?.message ||
+            payload?.error ||
+            `${response.status} ${response.statusText}`,
+        );
+      }
+      await refreshOperations();
+      setStatusMsg(`${kind === "bundle" ? "Bundle" : "Files"} import applied.`);
+      setStatusTone("ok");
+      if (kind === "bundle") setBundleFile(null);
+      if (kind === "files") setFilesFile(null);
+    } catch (err) {
+      setStatusMsg(`Import failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+      await refreshOperations();
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  return (
+    <SettingsSection
+      id="settings-transfer"
+      title="Project Export"
+      description={
+        <>
+            Download or apply first-class project archives. Bundle includes <code>repo/</code> and <code>data/</code>. Files archive includes <code>files/public</code> and <code>files/private</code>.
+        </>
+      }
+      tag="Portability"
+    >
+      <div className="grid gap-3 md:grid-cols-2">
+        <section className="bg-dark-border px-4 py-4">
+          <p className="text-[0.8rem] font-medium text-body">Export</p>
+          <p className="mt-2 text-[0.78rem] leading-[1.45] text-body-soft">
+            Credentials and DB connections stay platform-managed. Export only project workspace and files.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              className={primaryButtonClass}
+              disabled={busyKey !== ""}
+              onClick={() => handleExport("bundle")}
+            >
+              {busyKey === "export:bundle" ? "Preparing…" : "Export Bundle"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={outlineButtonClass}
+              disabled={busyKey !== ""}
+              onClick={() => handleExport("files")}
+            >
+              {busyKey === "export:files" ? "Preparing…" : "Export Files"}
+            </Button>
+          </div>
+        </section>
+
+        <section className="bg-dark-border px-4 py-4">
+          <p className="text-[0.8rem] font-medium text-body">Import</p>
+          <p className="mt-2 text-[0.78rem] leading-[1.45] text-body-soft">
+            Apply one archive at a time to the current project. This replaces that scope on the target project.
+          </p>
+          <div className="mt-4 grid gap-3">
+            <Field label="Bundle archive">
+              <input
+                type="file"
+                accept=".tar"
+                onChange={(e) => {
+                  const files = e?.target?.files;
+                  setBundleFile(files && files[0] ? files[0] : null);
+                }}
+              />
+            </Field>
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              className={primaryButtonClass}
+              disabled={!bundleFile || busyKey !== ""}
+              onClick={() => handleImport("bundle")}
+            >
+              {busyKey === "import:bundle" ? "Importing…" : "Import Bundle"}
+            </Button>
+            <Field label="Files archive">
+              <input
+                type="file"
+                accept=".tar"
+                onChange={(e) => {
+                  const files = e?.target?.files;
+                  setFilesFile(files && files[0] ? files[0] : null);
+                }}
+              />
+            </Field>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={outlineButtonClass}
+              disabled={!filesFile || busyKey !== ""}
+              onClick={() => handleImport("files")}
+            >
+              {busyKey === "import:files" ? "Importing…" : "Import Files"}
+            </Button>
+          </div>
+        </section>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-[0.7rem]">
+        <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>
+          {statusMsg}
+        </span>
+        <Button type="button" variant="ghost" size="sm" className={ghostButtonClass} onClick={refreshOperations}>
+          Refresh Operations
+        </Button>
+      </div>
+
+      <div className="mt-4">
+        <p className="mb-2 text-[0.8rem] font-medium text-body">Recent Operations</p>
+        <div className="grid gap-2">
+          {operations.length === 0 ? (
+            <div className="text-[0.78rem] text-body-soft">No transfer operations yet.</div>
+          ) : (
+            operations.map((item, index) => (
+              <div
+                key={`${item?.operation_id ?? "op"}-${index}`}
+                className="border border-dark-border px-[0.7rem] py-[0.7rem]"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[0.78rem] font-medium text-body">{item?.kind ?? "operation"}</div>
+                    <div className="text-[0.72rem] text-body-soft">{item?.current_step || item?.status}</div>
+                  </div>
+                  <Badge
+                    variant={
+                      item?.status === "completed"
+                        ? "secondary"
+                        : item?.status === "failed"
+                          ? "destructive"
+                          : "outline"
+                    }
+                    className={settingsOperationBadgeClass(item?.status)}
+                    label={item?.status ?? "unknown"}
+                  />
+                </div>
+                <div className="mt-2 text-[0.72rem] text-body-soft">
+                  Updated {formatOperationTimestamp(item?.updated_at)}
+                </div>
+                {item?.error_message ? (
+                  <div className="mt-2 text-[0.72rem] text-red-300">{item.error_message}</div>
+                ) : null}
+                {item?.artifact_rel_path ? (
+                  <div className="mt-2">
+                    <Link
+                      href={`/api/projects/${owner}/${project}/transfer/download/${item.operation_id}`}
+                      className="text-[0.72rem] text-accent"
+                    >
+              Download artifact
+                    </Link>
+                  </div>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
 // ─── RWE Settings Panel ─────────────────────────────────────────────────────
 
 function RwePanel({ api, initialConfig, owner, project }) {
@@ -143,7 +443,15 @@ function RwePanel({ api, initialConfig, owner, project }) {
   }
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+    <SettingsSection
+      title="Reactive Web Engine"
+      description={
+        <>
+          Project-level compile and render controls for all <code>n.web.render</code> nodes.
+        </>
+      }
+      tag="RWE"
+    >
       <CommitDialog
         open={commitOpen}
         section="rwe"
@@ -151,16 +459,6 @@ function RwePanel({ api, initialConfig, owner, project }) {
         onConfirm={handleCommit}
         onCancel={() => { setCommitOpen(false); setPendingData(null); }}
       />
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title">Reactive Web Engine</h3>
-          <p className="project-card-copy">
-            Project-level compile and render controls for all <code>n.web.render</code> nodes.
-          </p>
-        </div>
-        <span className="project-inline-chip">RWE</span>
-      </header>
-
       <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={handleSubmit}>
         <label className="pipeline-editor-field">
           <span>Script Allow List</span>
@@ -222,10 +520,10 @@ function RwePanel({ api, initialConfig, owner, project }) {
             onClick={handleClearCache}
             label={clearing ? "Clearing…" : "Clear Template Cache"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
         </div>
       </form>
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -375,7 +673,7 @@ function AssistantPanel({ api, credentials, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Assistant Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-dark-accent2" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -471,17 +769,16 @@ function ReIndexPanel({ api }) {
   }
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title">Re-index from Files</h3>
-          <p className="project-card-copy">
+    <SettingsSection
+      title="Re-index from Files"
+      description={
+        <>
             Scan <code>repo/pipelines/</code> on disk and register all found files into the catalog.
             Use this after a DB wipe, crash recovery, or restoring from a git backup.
-          </p>
-        </div>
-        <span className="project-inline-chip">Recovery</span>
-      </header>
+        </>
+      }
+      tag="Recovery"
+    >
       <div className="flex flex-col gap-[0.55rem]">
         <div className="flex items-center gap-[0.7rem]">
           <Button
@@ -503,12 +800,12 @@ function ReIndexPanel({ api }) {
             {Array.isArray(result.errors) && result.errors.length > 0 ? (
               <span className="text-[0.72rem] text-red-300">{result.errors.length} error{result.errors.length !== 1 ? "s" : ""}</span>
             ) : (
-              <span className="text-[0.72rem] text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]">Done.</span>
+              <span className="text-[0.72rem] text-dark-accent2">Done.</span>
             )}
           </div>
         ) : null}
       </div>
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -559,7 +856,11 @@ function GitPanel({ api, initialConfig }) {
   }
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+    <SettingsSection
+      title="Git Identity"
+      description="Author name and email used for all git commits in this project. Required for commits to succeed."
+      tag="Git"
+    >
       <CommitDialog
         open={commitOpen}
         section="git"
@@ -567,16 +868,6 @@ function GitPanel({ api, initialConfig }) {
         onConfirm={handleCommit}
         onCancel={() => { setCommitOpen(false); setPendingData(null); }}
       />
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title">Git Identity</h3>
-          <p className="project-card-copy">
-            Author name and email used for all git commits in this project.
-            Required for commits to succeed.
-          </p>
-        </div>
-        <span className="project-inline-chip">Git</span>
-      </header>
       <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={handleSubmit}>
         <Field label="Author Name">
           <Input
@@ -602,10 +893,10 @@ function GitPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Git Identity"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
         </div>
       </form>
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -655,7 +946,7 @@ function NodeRegistryPanel({ groups, count }) {
             key={tab}
             variant="ghost"
             size="sm"
-            className={cx(tab === activeTab && "bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent border-[color-mix(in_srgb,var(--color-accent)_40%,transparent)]")}
+            className={cx(tab === activeTab && "bg-accent/10 text-accent border-accent/40")}
             label={tab === "installed" ? `Installed · ${count}` : tab === "discover" ? "Discover" : "Updates"}
             onClick={() => setActiveTab(tab)}
           />
@@ -824,7 +1115,7 @@ function LoggingPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Logging Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-dark-accent2" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
         </div>
       </form>
     </article>
@@ -877,7 +1168,11 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
   }
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+    <SettingsSection
+      title="Runtime Defaults"
+      description="Upload size and asset serving limits for this project."
+      tag="Assets"
+    >
       <CommitDialog
         open={commitOpen}
         section="assets"
@@ -885,13 +1180,6 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
         onConfirm={handleCommit}
         onCancel={() => { setCommitOpen(false); setPendingData(null); }}
       />
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title">Runtime Defaults</h3>
-          <p className="project-card-copy">Upload size and asset serving limits for this project.</p>
-        </div>
-        <span className="project-inline-chip">Assets</span>
-      </header>
       <form className="flex flex-col gap-[0.65rem]" onSubmit={handleSubmit}>
         <label className="pipeline-editor-field">
           <span>Max asset upload size: <strong>{maxMb} MB</strong></span>
@@ -903,7 +1191,7 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             step={1}
             value={maxMb}
             onInput={(e) => setMaxMb(Number((e.target as HTMLInputElement).value))}
-            className="w-full accent-[var(--color-accent)] cursor-pointer"
+            className="w-full cursor-pointer accent-dark-accent1"
           />
           <small className="pipeline-editor-field-help">
             Maximum file size per uploaded asset (5–50 MB). Aligns with git hosting soft-warning threshold.
@@ -917,10 +1205,10 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Defaults"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-[color-mix(in_srgb,var(--color-accent)_80%,#e6f9ef)]" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
         </div>
       </form>
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -938,7 +1226,7 @@ function FilesPanel() {
         {/* S3 */}
         <Card className="opacity-60">
           <CardContent className="flex items-start gap-4 pt-5">
-            <div className="mt-0.5 rounded bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)] p-2 text-accent">
+            <div className="mt-0.5 rounded bg-accent/10 p-2 text-accent">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 8V16a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/>
                 <path d="M3 8l9-5 9 5"/>
@@ -1020,18 +1308,12 @@ function GitBranchPanel({ owner, project }) {
   }
 
   return (
-    <article id="git" className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title">Git Branches</h3>
-          <p className="project-card-copy">Switch or create local branches for this project.</p>
-        </div>
-        {current && (
-          <span className="font-mono text-[0.65rem] bg-surface-3 border border-border px-1.5 py-0.5 rounded text-body-soft">
-            {current}
-          </span>
-        )}
-      </header>
+    <SettingsSection
+      id="git"
+      title="Git Branches"
+      description="Switch or create local branches for this project."
+      tag={current || null}
+    >
 
       {branches.length > 1 && (
         <div className="flex items-end gap-[0.65rem] mb-[0.65rem]">
@@ -1064,7 +1346,7 @@ function GitBranchPanel({ owner, project }) {
           {msg}
         </p>
       )}
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -1098,15 +1380,11 @@ function DangerZone({ owner, project }) {
   }
 
   return (
-    <article className="border border-red-500/40 rounded-xl bg-surface p-[0.85rem] mt-[0.9rem]">
-      <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
-        <div>
-          <h3 className="project-card-title text-red-400">Danger Zone</h3>
-          <p className="project-card-copy">
-            Permanently delete this project and all its data. This cannot be undone.
-          </p>
-        </div>
-      </header>
+    <SettingsSection
+      title="Danger Zone"
+      description="Permanently delete this project and all its data. This cannot be undone."
+      tone="danger"
+    >
       <form onSubmit={handleDelete} className="flex flex-col gap-3 max-w-sm">
         <Field label={`Type "${project}" to confirm`} id="danger-confirm-name">
           <Input
@@ -1138,7 +1416,7 @@ function DangerZone({ owner, project }) {
           {busy ? "Deleting…" : "Delete project"}
         </Button>
       </form>
-    </article>
+    </SettingsSection>
   );
 }
 
@@ -1173,21 +1451,30 @@ export default function Page(input) {
             ))}
           </StudioTabNav>
 
-          <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
-            <div className="project-content-wrap">
-              <section className="project-content-section">
-                <div className="project-content-head">
-                  <div>
-                    <p className="project-content-title">{input.page_title}</p>
-                    <p className="project-content-copy">{input.page_subtitle}</p>
-                  </div>
+          <section className="flex-1 min-h-0 overflow-auto flex flex-col">
+            <div className="flex min-h-full flex-col">
+              <section
+                className="border-b border-dark-border px-4 py-3"
+              >
+                <div>
+                  <p className="text-[0.68rem] font-medium uppercase tracking-[0.08em] text-body-soft">
+                    {input.page_title}
+                  </p>
+                  <p className="mt-1 text-[0.78rem] text-body-soft">
+                    {input.page_subtitle}
+                  </p>
                 </div>
               </section>
 
               {tabFlags?.general ? (
-                <section className="project-content-section">
-                  <div className="project-content-body">
-                    <div className="project-card-grid cols-2">{renderCardGrid(input?.cards_general)}</div>
+                <section className="flex flex-col">
+                  <div className="flex flex-col">
+                    <ProjectTransferPanel
+                      owner={input?.owner}
+                      project={input?.project}
+                      api={input?.transfer?.api ?? {}}
+                      initialOperations={input?.transfer?.operations ?? []}
+                    />
                     <RuntimeDefaultsPanel
                       api={input?.assets?.settings_api ?? ""}
                       initialConfig={input?.assets?.config ?? {}}

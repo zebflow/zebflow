@@ -31,7 +31,7 @@ export const nodeCategories: Record<string, string[]> = {
     "n.function.call",
     "n.ai.agent",
   ],
-  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.ws.sync_state", "n.ws.emit"],
+  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.web.static.generate", "n.ws.sync_state", "n.ws.emit"],
   security: ["n.auth.token.create", "n.crypto"],
   files: ["n.file.save", "n.img.thumbnail"],
 };
@@ -47,6 +47,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.sekejap.query": "#0f766e",
   "n.pg.query": "#7c3aed",
   "n.web.render": "#be185d",
+  "n.web.static.generate": "#c2410c",
   "n.ai.agent": "#4338ca",
   "n.logic.if": "#0e7490",
   "n.logic.switch": "#0e7490",

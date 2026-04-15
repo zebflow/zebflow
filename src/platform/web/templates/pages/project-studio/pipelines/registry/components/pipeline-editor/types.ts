@@ -75,6 +75,7 @@ export interface EditorApi {
   definition: string;
   activate: string;
   deactivate: string;
+  execute: string;
   hits: string;
   invocations: string;
   nodes: string;
