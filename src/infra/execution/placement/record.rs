@@ -50,4 +50,3 @@ pub struct ProjectRuntimePlacement {
     /// Unix timestamp when the placement was most recently updated.
     pub updated_at: i64,
 }
-

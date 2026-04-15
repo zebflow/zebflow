@@ -918,6 +918,11 @@ pub struct NodeTraceEntry {
     pub node_id: String,
     /// Node kind, e.g. `"n.pg.query"`.
     pub node_kind: String,
+    /// Effective node config snapshot after expression resolution.
+    ///
+    /// Present when the engine can safely surface config-driven execution details in logs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<Value>,
     /// Wall-clock duration of this node in milliseconds.
     pub duration_ms: u64,
     /// Input payload delivered to this node.
@@ -980,6 +985,9 @@ pub struct PipelineError {
     /// Populated by the engine at the BFS execution boundary; `None` for config errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_kind: Option<String>,
+    /// Partial per-node execution trace captured before the failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_trace: Vec<NodeTraceEntry>,
 }
 
 impl PipelineError {
@@ -990,6 +998,7 @@ impl PipelineError {
             message: message.into(),
             node_id: None,
             node_kind: None,
+            node_trace: vec![],
         }
     }
 
@@ -1000,6 +1009,7 @@ impl PipelineError {
             message: msg.to_string(),
             node_id: Some(node_id.to_string()),
             node_kind: Some(node_kind.to_string()),
+            node_trace: vec![],
         }
     }
 }

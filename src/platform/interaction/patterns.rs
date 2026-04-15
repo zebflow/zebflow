@@ -62,9 +62,7 @@ pub fn match_patterns(dsl: &str, owner: &str, project: &str) -> Option<String> {
     if lower.starts_with("describe connection ") {
         let slug = tokens.get(2).copied().unwrap_or("");
         if !slug.is_empty() {
-            return Some(format!(
-                "/projects/{owner}/{project}/db?slug={slug}"
-            ));
+            return Some(format!("/projects/{owner}/{project}/db?slug={slug}"));
         }
     }
 

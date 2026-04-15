@@ -41,7 +41,8 @@ pub trait ControlTransport: Send + Sync {
     fn id(&self) -> &'static str;
 
     /// Send one control request and await the reply.
-    async fn send(&self, request: ControlRequest) -> Result<ControlResponse, ControlTransportError>;
+    async fn send(&self, request: ControlRequest)
+    -> Result<ControlResponse, ControlTransportError>;
 }
 
 /// Shared control-transport trait object.

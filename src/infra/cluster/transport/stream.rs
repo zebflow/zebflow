@@ -18,7 +18,10 @@ impl ControlTransport for InProcessControlTransport {
         "cluster_transport.in_process"
     }
 
-    async fn send(&self, request: ControlRequest) -> Result<ControlResponse, ControlTransportError> {
+    async fn send(
+        &self,
+        request: ControlRequest,
+    ) -> Result<ControlResponse, ControlTransportError> {
         Ok(ControlResponse::Rejected {
             code: "CONTROL_TRANSPORT_UNWIRED".to_string(),
             message: format!("control transport scaffold received request: {request:?}"),

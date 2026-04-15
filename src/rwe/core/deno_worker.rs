@@ -15,15 +15,14 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use deno_core::{
-    FastString, JsRuntime, ModuleId, ModuleLoadOptions, ModuleLoadReferrer,
-    ModuleLoadResponse, ModuleLoader, ModuleSource, ModuleSourceCode,
-    ModuleSpecifier, ModuleType, PollEventLoopOptions,
-    ResolutionKind, RuntimeOptions,
+    FastString, JsRuntime, ModuleId, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse,
+    ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
+    PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
 use deno_error::JsErrorBox;
 use serde_json::Value;
@@ -51,10 +50,7 @@ fn op_rwe_store_result(#[string] json: String) {
     RENDER_RESULT.with(|r| *r.borrow_mut() = Some(json));
 }
 
-deno_core::extension!(
-    rwe_ops,
-    ops = [op_rwe_store_result],
-);
+deno_core::extension!(rwe_ops, ops = [op_rwe_store_result],);
 
 // ---------------------------------------------------------------------------
 // Public result types (unchanged interface)
@@ -77,7 +73,10 @@ struct JsRequest {
 }
 
 enum JsResponse {
-    Rendered { html: String, page_config: Option<Value> },
+    Rendered {
+        html: String,
+        page_config: Option<Value>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +99,10 @@ static WORKER_POOL: LazyLock<WorkerPool> = LazyLock::new(|| {
         .max(1);
     eprintln!("rwe-js-runtime: starting {count} worker(s) (RWE_WORKER_COUNT={count})");
     let workers = (0..count).map(|i| Mutex::new(spawn_js_thread(i))).collect();
-    WorkerPool { workers, next: AtomicUsize::new(0) }
+    WorkerPool {
+        workers,
+        next: AtomicUsize::new(0),
+    }
 });
 
 fn spawn_js_thread(worker_id: usize) -> tokio::sync::mpsc::UnboundedSender<JsRequest> {
@@ -149,7 +151,10 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
         });
 
         // Load the preact SSR globals once.
-        if let Err(e) = js_rt.execute_script("<preact_ssr_init>", FastString::from_static(PREACT_SSR_INIT)) {
+        if let Err(e) = js_rt.execute_script(
+            "<preact_ssr_init>",
+            FastString::from_static(PREACT_SSR_INIT),
+        ) {
             eprintln!("rwe-js-runtime[{worker_id}]: preact_ssr_init failed: {e}");
             return;
         }
@@ -180,20 +185,24 @@ fn run_js_thread(worker_id: usize, mut rx: tokio::sync::mpsc::UnboundedReceiver<
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // We need a way to run async in catch_unwind. Use block_on nested.
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(
-                        do_render_ssr(&mut js_rt, match &req.op {
+                    tokio::runtime::Handle::current().block_on(do_render_ssr(
+                        &mut js_rt,
+                        match &req.op {
                             JsOp::RenderSsr { source, .. } => source,
-                        }, match &req.op {
+                        },
+                        match &req.op {
                             JsOp::RenderSsr { ctx, .. } => ctx,
-                        })
-                    )
+                        },
+                    ))
                 })
             }));
 
             let result = match result {
                 Ok(r) => r,
                 Err(_panic) => {
-                    eprintln!("rwe-js-runtime[{worker_id}]: panic during render — thread will respawn");
+                    eprintln!(
+                        "rwe-js-runtime[{worker_id}]: panic during render — thread will respawn"
+                    );
                     let _ = req.reply.send(Err(EngineError::new(
                         "RWE_PANIC",
                         "SSR render panicked — runtime will respawn",
@@ -239,8 +248,8 @@ async fn do_render_ssr(
     //     `ctx` is the canonical name — used in `export const page` config and top-level code.
     //     `input` is kept for backward compat (component function parameter convention).
     //     Must run before the module loads so variables are present during top-level eval.
-    let ctx_json = serde_json::to_string(ctx)
-        .map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
+    let ctx_json =
+        serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
     let input_init_code = format!(
         "globalThis.ctx = {ctx_json}; globalThis.input = globalThis.ctx; globalThis.__islandCounter = 0;",
     );
@@ -281,8 +290,8 @@ async fn do_render_ssr(
     // 8. Execute render script.
     //    It calls Deno.core.ops.op_rwe_store_result(json) synchronously,
     //    which stores the HTML+config JSON in our thread-local slot.
-    let ctx_json = serde_json::to_string(ctx)
-        .map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
+    let ctx_json =
+        serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
     let render_code = format!(
         "(function(){{ \
            var __html = globalThis.__rweRenderToString(\
@@ -300,15 +309,25 @@ async fn do_render_ssr(
         .map_err(|e| EngineError::new("RWE_RENDER_EXEC", e.to_string()))?;
 
     // 9. Read the result from the thread-local slot (filled by the op above).
-    let result_str = RENDER_RESULT.with(|r| r.borrow_mut().take())
-        .ok_or_else(|| EngineError::new("RWE_RENDER_EXEC", "render op was not called — page may have no default export"))?;
+    let result_str = RENDER_RESULT
+        .with(|r| r.borrow_mut().take())
+        .ok_or_else(|| {
+            EngineError::new(
+                "RWE_RENDER_EXEC",
+                "render op was not called — page may have no default export",
+            )
+        })?;
 
     let result_json: Value = serde_json::from_str(&result_str)
         .map_err(|e| EngineError::new("RWE_RESULT_JSON", e.to_string()))?;
 
     let html = result_json["html"].as_str().unwrap_or("").to_string();
     let raw_cfg = result_json["page_config"].clone();
-    let page_config = if raw_cfg.is_null() { None } else { Some(raw_cfg) };
+    let page_config = if raw_cfg.is_null() {
+        None
+    } else {
+        Some(raw_cfg)
+    };
 
     Ok(JsResponse::Rendered { html, page_config })
 }
@@ -362,7 +381,9 @@ fn extract_default_export_name(js: &str) -> Option<String> {
             if let Some(pos) = t.find(" as default") {
                 let before = &t[..pos];
                 // Last identifier token before " as default"
-                if let Some(name) = before.split(|c: char| !c.is_alphanumeric() && c != '_').last()
+                if let Some(name) = before
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .last()
                 {
                     let name = name.trim().to_string();
                     if !name.is_empty() {
@@ -426,9 +447,9 @@ pub fn render_ssr(
 /// Used by the /ready health endpoint.
 pub fn is_pool_ready() -> bool {
     let pool = &*WORKER_POOL;
-    pool.workers.iter().any(|slot| {
-        !slot.lock().unwrap_or_else(|e| e.into_inner()).is_closed()
-    })
+    pool.workers
+        .iter()
+        .any(|slot| !slot.lock().unwrap_or_else(|e| e.into_inner()).is_closed())
 }
 
 /// Transpile a TSX/TSX source to plain browser JS (no JsRuntime needed).
@@ -490,8 +511,9 @@ fn load_sync(specifier: &ModuleSpecifier) -> Result<ModuleSource, JsErrorBox> {
     // Transpile TypeScript / TSX → JS.
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let js = if matches!(ext, "tsx" | "ts" | "jsx") {
-        transpile_tsx(&source)
-            .map_err(|e| JsErrorBox::generic(format!("transpile {}: {}", path.display(), e.message)))?
+        transpile_tsx(&source).map_err(|e| {
+            JsErrorBox::generic(format!("transpile {}: {}", path.display(), e.message))
+        })?
     } else {
         source
     };

@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::util::metadata_scope;
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
-use super::util::metadata_scope;
 
 pub const NODE_KIND: &str = "n.sqlite.mutate";
 pub const INPUT_PIN_IN: &str = "in";
@@ -124,18 +124,20 @@ impl NodeHandler for Node {
                 "sql must not be empty — use: -- \"INSERT INTO ...\"",
             ));
         }
-        let db_path = self.data_root
+        let db_path = self
+            .data_root
             .join("users")
             .join(owner)
             .join(project)
             .join("data")
             .join("local.db");
         let affected_rows = tokio::task::spawn_blocking(move || -> Result<usize, String> {
-            let conn = rusqlite::Connection::open(&db_path)
-                .map_err(|e| format!("open db: {e}"))?;
+            let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;
             conn.execute_batch("PRAGMA journal_mode=WAL;")
                 .map_err(|e| format!("pragma: {e}"))?;
-            let n = conn.execute(&sql, []).map_err(|e| format!("execute: {e}"))?;
+            let n = conn
+                .execute(&sql, [])
+                .map_err(|e| format!("execute: {e}"))?;
             Ok(n)
         })
         .await

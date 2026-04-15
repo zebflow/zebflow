@@ -28,9 +28,11 @@ fn generate_version() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let dest = std::path::Path::new(&out_dir).join("version_gen.rs");
-    fs::write(&dest, format!(
-        "pub const APP_VERSION: &str = \"{app_version}\";\n"
-    )).expect("failed writing version_gen.rs");
+    fs::write(
+        &dest,
+        format!("pub const APP_VERSION: &str = \"{app_version}\";\n"),
+    )
+    .expect("failed writing version_gen.rs");
 
     println!("cargo:warning=🔖 Build version: {app_version}");
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -49,15 +51,32 @@ fn format_build_timestamp(secs: u64) -> String {
     loop {
         let leap = is_leap(year);
         let days_in_year = if leap { 366 } else { 365 };
-        if days < days_in_year { break; }
+        if days < days_in_year {
+            break;
+        }
         days -= days_in_year;
         year += 1;
     }
     let leap = is_leap(year);
-    let month_days: [u64; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u64;
     for &md in &month_days {
-        if days < md { break; }
+        if days < md {
+            break;
+        }
         days -= md;
         month += 1;
     }
@@ -79,9 +98,7 @@ fn generate_platform_template_assets() {
     collect_files(Path::new(templates_dir), templates_dir, &mut rel_paths);
     rel_paths.sort();
 
-    let mut code = String::from(
-        "pub const PLATFORM_TEMPLATE_ASSETS: &[EmbeddedAsset] = &[\n",
-    );
+    let mut code = String::from("pub const PLATFORM_TEMPLATE_ASSETS: &[EmbeddedAsset] = &[\n");
     for rel in &rel_paths {
         code.push_str(&format!(
             "    EmbeddedAsset {{ \
@@ -240,7 +257,11 @@ fn git_last_updated(manifest_rel: &str) -> String {
     match output {
         Ok(out) if out.status.success() => {
             let date = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if date.is_empty() { "unknown".to_string() } else { date }
+            if date.is_empty() {
+                "unknown".to_string()
+            } else {
+                date
+            }
         }
         _ => "unknown".to_string(),
     }

@@ -7,14 +7,14 @@ mod sqlite;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::infra::cluster::registry::WorkerRegistryRecord;
+use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject,
     PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMember,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
-use crate::infra::cluster::registry::WorkerRegistryRecord;
-use crate::infra::execution::placement::ProjectRuntimePlacement;
 
 /// Metadata adapter contract used by platform services.
 pub trait DataAdapter: Send + Sync {
@@ -183,7 +183,10 @@ pub trait DataAdapter: Send + Sync {
         node_id: &str,
     ) -> Result<Option<WorkerRegistryRecord>, PlatformError>;
     /// Upsert one registered worker record.
-    fn put_worker_registry_record(&self, record: &WorkerRegistryRecord) -> Result<(), PlatformError>;
+    fn put_worker_registry_record(
+        &self,
+        record: &WorkerRegistryRecord,
+    ) -> Result<(), PlatformError>;
     /// List registered worker records.
     fn list_worker_registry_records(&self) -> Result<Vec<WorkerRegistryRecord>, PlatformError>;
     /// Delete one registered worker record.
@@ -200,13 +203,46 @@ pub trait DataAdapter: Send + Sync {
         placement: &ProjectRuntimePlacement,
     ) -> Result<(), PlatformError>;
     /// List all environment-owned project placement records.
-    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError>;
+    fn list_project_runtime_placements(
+        &self,
+    ) -> Result<Vec<ProjectRuntimePlacement>, PlatformError>;
     /// Delete one environment-owned project placement record.
     fn delete_project_runtime_placement(
         &self,
         owner: &str,
         project: &str,
     ) -> Result<(), PlatformError>;
+    /// Get one durable controller-side project operation record.
+    fn get_project_operation(
+        &self,
+        owner: &str,
+        project: &str,
+        operation_id: &str,
+    ) -> Result<Option<ProjectOperationRecord>, PlatformError> {
+        let _ = (owner, project, operation_id);
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "project operations are not supported by this adapter",
+        ))
+    }
+    /// Upsert one durable controller-side project operation record.
+    fn put_project_operation(&self, record: &ProjectOperationRecord) -> Result<(), PlatformError> {
+        let _ = record;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "project operations are not supported by this adapter",
+        ))
+    }
+    /// List durable controller-side project operation records for one project.
+    fn list_project_operations(
+        &self,
+        owner: &str,
+        project: &str,
+        limit: usize,
+    ) -> Result<Vec<ProjectOperationRecord>, PlatformError> {
+        let _ = (owner, project, limit);
+        Ok(vec![])
+    }
     /// List all persisted MCP sessions.
     fn list_all_mcp_sessions(&self) -> Result<Vec<McpSession>, PlatformError>;
     /// Persist one MCP session.
@@ -221,7 +257,10 @@ pub trait DataAdapter: Send + Sync {
         ))
     }
     /// Admin: run a raw query pipeline JSON. Default impl returns unsupported error.
-    fn admin_raw_query(&self, pipeline_json: &str) -> Result<Vec<serde_json::Value>, PlatformError> {
+    fn admin_raw_query(
+        &self,
+        pipeline_json: &str,
+    ) -> Result<Vec<serde_json::Value>, PlatformError> {
         let _ = pipeline_json;
         Err(PlatformError::new(
             "ADMIN_DB_UNAVAILABLE",

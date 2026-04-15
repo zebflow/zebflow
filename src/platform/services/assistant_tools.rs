@@ -22,13 +22,25 @@ pub struct ToolRunResult {
 
 impl ToolRunResult {
     pub fn ok(s: impl Into<String>) -> Self {
-        Self { text: s.into(), interaction: None, navigate: None }
+        Self {
+            text: s.into(),
+            interaction: None,
+            navigate: None,
+        }
     }
     pub fn ok_navigate(s: impl Into<String>, url: impl Into<String>) -> Self {
-        Self { text: s.into(), interaction: None, navigate: Some(url.into()) }
+        Self {
+            text: s.into(),
+            interaction: None,
+            navigate: Some(url.into()),
+        }
     }
     pub fn err(s: impl Into<String>) -> Self {
-        Self { text: format!("Error: {}", s.into()), interaction: None, navigate: None }
+        Self {
+            text: format!("Error: {}", s.into()),
+            interaction: None,
+            navigate: None,
+        }
     }
 }
 
@@ -558,11 +570,16 @@ impl AssistantPlatformTools {
                     args.get("path").and_then(|v| v.as_str()),
                     args.get("title").and_then(|v| v.as_str()),
                     args.get("description").and_then(|v| v.as_str()),
-                ).await
+                )
+                .await
             }
             "pipeline_describe" => {
-                let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
-                ops.pipeline_describe(args["file_rel_path"].as_str().unwrap_or(""), compact).await
+                let compact = args
+                    .get("compact")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                ops.pipeline_describe(args["file_rel_path"].as_str().unwrap_or(""), compact)
+                    .await
             }
             "pipeline_patch" => {
                 ops.pipeline_patch(
@@ -570,17 +587,24 @@ impl AssistantPlatformTools {
                     args["node_id"].as_str().unwrap_or(""),
                     args.get("flags").and_then(|v| v.as_str()),
                     args.get("body").and_then(|v| v.as_str()),
-                ).await
+                )
+                .await
             }
             "pipeline_activate" => {
-                if let Some(glob) = args.get("glob").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                if let Some(glob) = args
+                    .get("glob")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
                     ops.pipeline_activate_glob(glob).await
                 } else {
-                    ops.pipeline_activate(args["file_rel_path"].as_str().unwrap_or("")).await
+                    ops.pipeline_activate(args["file_rel_path"].as_str().unwrap_or(""))
+                        .await
                 }
             }
             "pipeline_deactivate" => {
-                ops.pipeline_deactivate(args["file_rel_path"].as_str().unwrap_or("")).await
+                ops.pipeline_deactivate(args["file_rel_path"].as_str().unwrap_or(""))
+                    .await
             }
             "pipeline_execute" => {
                 // Accept input as either a JSON string or a JSON object/array.
@@ -593,7 +617,8 @@ impl AssistantPlatformTools {
                 ops.pipeline_execute(
                     args["file_rel_path"].as_str().unwrap_or(""),
                     input_str.as_deref(),
-                ).await
+                )
+                .await
             }
             "pipeline_run" => {
                 let input = args.get("input").and_then(|v| match v {
@@ -601,19 +626,20 @@ impl AssistantPlatformTools {
                     Value::String(s) if !s.is_empty() => serde_json::from_str(s).ok(),
                     _ => None,
                 });
-                ops.pipeline_run(args["body"].as_str().unwrap_or(""), input).await
+                ops.pipeline_run(args["body"].as_str().unwrap_or(""), input)
+                    .await
             }
             "pipeline_get_invocations" => {
                 ops.pipeline_get_invocations(args["file_rel_path"].as_str().unwrap_or(""))
             }
 
             // ── Templates ──────────────────────────────────────────────────────
-            "template_list" => ops.template_list(
-                args.get("glob").and_then(|v| v.as_str()),
-            ),
+            "template_list" => ops.template_list(args.get("glob").and_then(|v| v.as_str())),
             "template_get" => ops.template_get(
                 args["rel_path"].as_str().unwrap_or(""),
-                args.get("offset").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("offset")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32),
                 args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
             ),
             "template_create" => ops.template_create(
@@ -629,32 +655,37 @@ impl AssistantPlatformTools {
                 args["pattern"].as_str().unwrap_or(""),
                 args.get("glob").and_then(|v| v.as_str()),
                 args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                args.get("head_limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("head_limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32),
                 args.get("output_mode").and_then(|v| v.as_str()),
             ),
             "pipeline_search" => ops.pipeline_search(
                 args["pattern"].as_str().unwrap_or(""),
                 args.get("glob").and_then(|v| v.as_str()),
                 args.get("context").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                args.get("head_limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                args.get("head_limit")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32),
                 args.get("output_mode").and_then(|v| v.as_str()),
             ),
-            "template_outline" => ops.template_outline(
-                args["rel_path"].as_str().unwrap_or(""),
-            ),
-            "template_deps" => ops.template_deps(
-                args["rel_path"].as_str().unwrap_or(""),
-            ),
+            "template_outline" => ops.template_outline(args["rel_path"].as_str().unwrap_or("")),
+            "template_deps" => ops.template_deps(args["rel_path"].as_str().unwrap_or("")),
             "template_batch_edit" => {
-                let edits: Vec<(String, String, String)> = args.get("edits")
+                let edits: Vec<(String, String, String)> = args
+                    .get("edits")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|e| {
-                        Some((
-                            e.get("rel_path")?.as_str()?.to_string(),
-                            e.get("old_string")?.as_str()?.to_string(),
-                            e.get("new_string")?.as_str()?.to_string(),
-                        ))
-                    }).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|e| {
+                                Some((
+                                    e.get("rel_path")?.as_str()?.to_string(),
+                                    e.get("old_string")?.as_str()?.to_string(),
+                                    e.get("new_string")?.as_str()?.to_string(),
+                                ))
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default();
                 ops.template_batch_edit(&edits)
             }
@@ -667,7 +698,8 @@ impl AssistantPlatformTools {
                 ops.move_resource(
                     args["from_path"].as_str().unwrap_or(""),
                     args["to_path"].as_str().unwrap_or(""),
-                ).await
+                )
+                .await
             }
 
             // ── Project Docs ───────────────────────────────────────────────────
@@ -694,7 +726,8 @@ impl AssistantPlatformTools {
                     args.get("scope").and_then(|v| v.as_str()),
                     args.get("schema").and_then(|v| v.as_str()),
                     args.get("table").and_then(|v| v.as_str()),
-                ).await
+                )
+                .await
             }
             "credential_list" => ops.credential_list(),
 
@@ -704,7 +737,8 @@ impl AssistantPlatformTools {
                     args["subcommand"].as_str().unwrap_or(""),
                     args.get("args").and_then(|v| v.as_str()),
                     args.get("message").and_then(|v| v.as_str()),
-                ).await
+                )
+                .await
             }
 
             // ── UI Catalog ─────────────────────────────────────────────────────
@@ -712,7 +746,11 @@ impl AssistantPlatformTools {
             "install_ui_components" => {
                 let names: Vec<String> = args["names"]
                     .as_array()
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let overwrite = args.get("overwrite").and_then(|v| v.as_bool());
                 ops.install_ui_components(names, overwrite)
@@ -725,7 +763,11 @@ impl AssistantPlatformTools {
         if let Some(url) = result.navigate {
             ToolRunResult::ok_navigate(result.text, url)
         } else {
-            ToolRunResult { text: result.text, interaction: None, navigate: None }
+            ToolRunResult {
+                text: result.text,
+                interaction: None,
+                navigate: None,
+            }
         }
     }
 }

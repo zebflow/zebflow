@@ -81,8 +81,12 @@ impl LibraryService {
             if !asset.path.ends_with("/manifest.json") {
                 continue;
             }
-            let Ok(text) = std::str::from_utf8(asset.bytes) else { continue };
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { continue };
+            let Ok(text) = std::str::from_utf8(asset.bytes) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+                continue;
+            };
 
             let name = json["name"].as_str().unwrap_or("").to_string();
             if name.is_empty() {

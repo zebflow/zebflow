@@ -7,9 +7,11 @@ use std::sync::Arc;
 use serde_json::json;
 
 use super::interface::AutomatonEngine;
-use super::model::{AutomatonContext, AutomatonExecutionOutput, AutomatonError, AutomatonObjective, AutomatonPlan};
-use super::shell_tools;
 use super::llm_interface::{LlmCall, Message, MessageRole, ToolDef};
+use super::model::{
+    AutomatonContext, AutomatonError, AutomatonExecutionOutput, AutomatonObjective, AutomatonPlan,
+};
+use super::shell_tools;
 
 const LOG_PREFIX: &str = "[Zebtune]";
 
@@ -212,11 +214,16 @@ pub fn run_interactive_with_llm(
                         break 'turn;
                     }
                     Ok(crate::automaton::infra::llm_interface::CallResult::ToolCalls(calls)) => {
-                        let tool_calls_json: Vec<serde_json::Value> = calls.iter().map(|tc| json!({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": { "name": tc.name, "arguments": tc.arguments }
-                        })).collect();
+                        let tool_calls_json: Vec<serde_json::Value> = calls
+                            .iter()
+                            .map(|tc| {
+                                json!({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": { "name": tc.name, "arguments": tc.arguments }
+                                })
+                            })
+                            .collect();
                         messages.push(json!({
                             "role": "assistant",
                             "content": null,

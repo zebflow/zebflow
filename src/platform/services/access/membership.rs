@@ -14,8 +14,8 @@ use crate::platform::model::{
     ProjectAccessRolePreset, ProjectMember, ProjectPolicyBinding, ProjectSubjectKind,
     UpsertProjectMemberRequest, now_ts, slug_segment,
 };
-use crate::platform::services::access::roles::managed_role_policies;
 use crate::platform::services::AuthorizationService;
+use crate::platform::services::access::roles::managed_role_policies;
 
 /// Product-facing project membership service.
 pub struct ProjectMembershipService {
@@ -31,7 +31,11 @@ impl ProjectMembershipService {
     }
 
     /// List explicit project members, plus a synthesized owner row if needed.
-    pub fn list_members(&self, owner: &str, project: &str) -> Result<Vec<ProjectMember>, PlatformError> {
+    pub fn list_members(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectMember>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.authz.ensure_project_defaults(&owner, &project)?;
@@ -115,15 +119,16 @@ impl ProjectMembershipService {
             self.data
                 .delete_project_policy_binding(&owner, &project, &user_id)?;
             for policy_id in member_policy_ids(&member) {
-                self.data.put_project_policy_binding(&ProjectPolicyBinding {
-                    owner: owner.clone(),
-                    project: project.clone(),
-                    subject_kind: ProjectSubjectKind::User,
-                    subject_id: user_id.clone(),
-                    policy_id,
-                    created_at: now,
-                    updated_at: now,
-                })?;
+                self.data
+                    .put_project_policy_binding(&ProjectPolicyBinding {
+                        owner: owner.clone(),
+                        project: project.clone(),
+                        subject_kind: ProjectSubjectKind::User,
+                        subject_id: user_id.clone(),
+                        policy_id,
+                        created_at: now,
+                        updated_at: now,
+                    })?;
             }
         }
 
@@ -146,7 +151,8 @@ impl ProjectMembershipService {
                 "project owner cannot be removed from membership",
             ));
         }
-        self.data.delete_project_member(&owner, &project, &user_id)?;
+        self.data
+            .delete_project_member(&owner, &project, &user_id)?;
         self.data
             .delete_project_policy_binding(&owner, &project, &user_id)?;
         Ok(())
@@ -208,6 +214,9 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         });
-        assert_eq!(ids, vec!["custom.debug".to_string(), "developer".to_string()]);
+        assert_eq!(
+            ids,
+            vec!["custom.debug".to_string(), "developer".to_string()]
+        );
     }
 }

@@ -208,14 +208,32 @@ fn mask_heuristic(source: &str) -> (String, Vec<String>) {
         }
         // Skip regex literals: /pattern/flags
         if chars[i] == '/' && i + 1 < len && chars[i + 1] != '/' && chars[i + 1] != '*' {
-            let prev_significant = result.chars().rev()
-                .find(|c| !c.is_ascii_whitespace());
+            let prev_significant = result.chars().rev().find(|c| !c.is_ascii_whitespace());
             let is_regex = match prev_significant {
                 None => true,
-                Some(c) => matches!(c,
-                    '(' | '=' | '[' | '!' | '&' | '|' | '?' | ':' | ','
-                    | ';' | '{' | '}' | '~' | '^' | '%' | '<' | '>' | '+'
-                    | '-' | '*' | '/' | '\n'
+                Some(c) => matches!(
+                    c,
+                    '(' | '='
+                        | '['
+                        | '!'
+                        | '&'
+                        | '|'
+                        | '?'
+                        | ':'
+                        | ','
+                        | ';'
+                        | '{'
+                        | '}'
+                        | '~'
+                        | '^'
+                        | '%'
+                        | '<'
+                        | '>'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '\n'
                 ),
             };
             if is_regex {

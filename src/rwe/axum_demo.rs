@@ -259,7 +259,9 @@ fn render_page(
         )
         .map_err(|e| format!("render failed for '{page}': {e}"))?;
     let render_us = render_started.elapsed().as_micros();
-    Ok(compose_demo_document(out, page, route, compile_us, render_us))
+    Ok(compose_demo_document(
+        out, page, route, compile_us, render_us,
+    ))
 }
 
 fn compose_demo_document(
@@ -395,8 +397,8 @@ async fn route_todo(
             ]
         }),
     )
-        .map(Html)
-        .map_err(internal_error)
+    .map(Html)
+    .map_err(internal_error)
 }
 
 async fn route_showcase(
@@ -570,14 +572,9 @@ async fn route_blog_composed(
 async fn route_rwe_lab(
     State(state): State<DemoAppState>,
 ) -> Result<Html<String>, (StatusCode, String)> {
-    render_page(
-        &state,
-        "rwe-lab",
-        "/rwe/lab",
-        json!({}),
-    )
-    .map(Html)
-    .map_err(internal_error)
+    render_page(&state, "rwe-lab", "/rwe/lab", json!({}))
+        .map(Html)
+        .map_err(internal_error)
 }
 
 fn internal_error(msg: String) -> (StatusCode, String) {
@@ -606,17 +603,14 @@ pub fn build_dx_test_router() -> Result<Router, String> {
 
     // Write original fixture sources (with "rwe" and @/ imports intact).
     fs::write(dir.join("page.tsx"), DX_TEST_PAGE).map_err(|e| e.to_string())?;
-    fs::write(components_dir.join("navbar.tsx"), DX_TEST_NAVBAR)
-        .map_err(|e| e.to_string())?;
-    fs::write(components_dir.join("counter.tsx"), DX_TEST_COUNTER)
-        .map_err(|e| e.to_string())?;
+    fs::write(components_dir.join("navbar.tsx"), DX_TEST_NAVBAR).map_err(|e| e.to_string())?;
+    fs::write(components_dir.join("counter.tsx"), DX_TEST_COUNTER).map_err(|e| e.to_string())?;
 
     // Core magic: write rwe.ts shim + rewrite ALL "rwe" and "@/" imports.
     prepare_template_root(&dir).map_err(|e| e.to_string())?;
 
     // Read the rewritten entry page (imports now point to absolute disk paths).
-    let entry_source =
-        fs::read_to_string(dir.join("page.tsx")).map_err(|e| e.to_string())?;
+    let entry_source = fs::read_to_string(dir.join("page.tsx")).map_err(|e| e.to_string())?;
 
     let rwe: Arc<dyn ReactiveWebEngine> = Arc::new(RweReactiveWebEngine);
     let language: Arc<dyn LanguageEngine> = Arc::new(NoopLanguageEngine);

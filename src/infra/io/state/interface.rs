@@ -240,7 +240,11 @@ pub trait StateBus: Send + Sync {
 /// Shared trait object used by schedulers, workers, and runtime services.
 pub type DynStateBus = Arc<dyn StateBus>;
 
-fn validate_namespace(owner: &str, project: &str, limits: &StateBusLimits) -> Result<(), StateBusError> {
+fn validate_namespace(
+    owner: &str,
+    project: &str,
+    limits: &StateBusLimits,
+) -> Result<(), StateBusError> {
     validate_namespace_segment("owner", owner, limits.max_owner_len)?;
     validate_namespace_segment("project", project, limits.max_project_len)?;
     Ok(())
@@ -324,7 +328,8 @@ mod tests {
     #[test]
     fn validates_keys_and_channels() {
         validate_state_key("session:user@example.com", MAX_STATE_KEY_LEN).expect("valid key");
-        validate_state_channel("events/order.created", MAX_STATE_CHANNEL_LEN).expect("valid channel");
+        validate_state_channel("events/order.created", MAX_STATE_CHANNEL_LEN)
+            .expect("valid channel");
         assert!(validate_state_key("bad key", MAX_STATE_KEY_LEN).is_err());
         assert!(validate_state_channel("bad\tchannel", MAX_STATE_CHANNEL_LEN).is_err());
     }

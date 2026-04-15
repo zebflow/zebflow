@@ -71,7 +71,10 @@ pub fn prepare_template_root(root: &std::path::Path) -> Result<(), EngineError> 
 
     let mut files = Vec::new();
     collect(root, &mut files).map_err(|e| {
-        EngineError::new("RWE_PREPARE_COLLECT", format!("failed collecting template files: {e}"))
+        EngineError::new(
+            "RWE_PREPARE_COLLECT",
+            format!("failed collecting template files: {e}"),
+        )
     })?;
 
     // --- 3. Rewrite imports in each file ------------------------------------

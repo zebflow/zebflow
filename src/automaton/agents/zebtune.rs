@@ -105,9 +105,16 @@ pub struct ZebtuneAgent {
 
 impl ZebtuneAgent {
     pub fn new(config: ZebtuneConfig, llm: Option<Arc<dyn LlmCall>>) -> Self {
-        let step_budget = if config.step_budget == 0 { 10 } else { config.step_budget };
+        let step_budget = if config.step_budget == 0 {
+            10
+        } else {
+            config.step_budget
+        };
         Self {
-            config: ZebtuneConfig { step_budget, ..config },
+            config: ZebtuneConfig {
+                step_budget,
+                ..config
+            },
             llm,
         }
     }
@@ -124,7 +131,9 @@ impl ZebtuneAgent {
     ) -> ZebtuneResult {
         let Some(ref llm) = self.llm else {
             return ZebtuneResult {
-                final_content: "LLM not configured. Set ZEBTUNE_OPENAI_API_KEY or ZEBTUNE_ANTHROPIC_API_KEY.".to_string(),
+                final_content:
+                    "LLM not configured. Set ZEBTUNE_OPENAI_API_KEY or ZEBTUNE_ANTHROPIC_API_KEY."
+                        .to_string(),
                 chain: vec![],
                 budget_exhausted: false,
                 trace: vec!["zebtune_no_llm".to_string()],
@@ -159,8 +168,8 @@ impl ZebtuneAgent {
                 .to_string()
         });
 
-        let work_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+        let work_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
 
         let start = Instant::now();
         let mut trace = vec!["agent=zebtune".to_string()];
@@ -175,7 +184,13 @@ impl ZebtuneAgent {
             json!({ "role": "user",   "content": goal }),
         ];
 
-        self.emit(&mut chain, step_callback, "start", "Starting Zebtune", &format_elapsed(start));
+        self.emit(
+            &mut chain,
+            step_callback,
+            "start",
+            "Starting Zebtune",
+            &format_elapsed(start),
+        );
 
         let final_content = loop {
             if budget == 0 {
@@ -193,7 +208,13 @@ impl ZebtuneAgent {
                 Ok(r) => r,
                 Err(e) => {
                     let msg = format!("LLM error: {}", e);
-                    self.emit(&mut chain, step_callback, "error", &msg, &format_elapsed(start));
+                    self.emit(
+                        &mut chain,
+                        step_callback,
+                        "error",
+                        &msg,
+                        &format_elapsed(start),
+                    );
                     break msg;
                 }
             };
@@ -210,7 +231,13 @@ impl ZebtuneAgent {
                     } else {
                         short
                     };
-                    self.emit(&mut chain, step_callback, "final", &desc, &format_elapsed(start));
+                    self.emit(
+                        &mut chain,
+                        step_callback,
+                        "final",
+                        &desc,
+                        &format_elapsed(start),
+                    );
                     break trimmed;
                 }
 
@@ -247,8 +274,7 @@ impl ZebtuneAgent {
 
                     // Execute each tool and append results
                     for tc in &calls {
-                        let args: Value =
-                            serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
+                        let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
 
                         self.emit(
                             &mut chain,
@@ -266,7 +292,10 @@ impl ZebtuneAgent {
                         };
 
                         let short_out = if tool_out.len() > 200 {
-                            format!("{}...", tool_out.trim().chars().take(197).collect::<String>())
+                            format!(
+                                "{}...",
+                                tool_out.trim().chars().take(197).collect::<String>()
+                            )
                         } else {
                             tool_out.trim().to_string()
                         };

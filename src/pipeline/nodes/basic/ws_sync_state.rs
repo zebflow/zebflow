@@ -76,12 +76,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::infra::transport::ws::{RoomCmd, StateOp, WsHub, interpolate_path};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.ws.sync_state";
 const INPUT_PIN_IN: &str = "in";

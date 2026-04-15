@@ -22,11 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::infra::io::state::DynStateBus;
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.mem.expire";
 const INPUT_PIN_IN: &str = "in";
@@ -72,9 +72,29 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Key to update. Supports {{ expr }}.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "ttl".to_string(), label: "TTL (seconds)".to_string(), field_type: NodeFieldType::Number, help: Some("New TTL in seconds. 0 = remove expiry and persist forever.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "key".to_string(),
+                label: "Key".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Key to update. Supports {{ expr }}.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "ttl".to_string(),
+                label: "TTL (seconds)".to_string(),
+                field_type: NodeFieldType::Number,
+                help: Some(
+                    "New TTL in seconds. 0 = remove expiry and persist forever.".to_string(),
+                ),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
@@ -102,20 +122,37 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        let owner = input.metadata.get("owner").and_then(Value::as_str).unwrap_or_default();
-        let project = input.metadata.get("project").and_then(Value::as_str).unwrap_or_default();
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let key = self.config.key.trim();
 
         if key.is_empty() {
-            return Err(PipelineError::new("MEM_EXPIRE_KEY", "n.mem.expire: --key is required"));
+            return Err(PipelineError::new(
+                "MEM_EXPIRE_KEY",
+                "n.mem.expire: --key is required",
+            ));
         }
 
         let updated = self

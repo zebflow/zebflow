@@ -183,6 +183,7 @@ impl PipelineScheduler {
                             &project,
                             &file_rel_path,
                             &PipelineInvocationEntry {
+                                run_id: ctx.request_id.clone(),
                                 at: fired_at.timestamp(),
                                 duration_ms,
                                 status: "ok".to_string(),
@@ -209,12 +210,13 @@ impl PipelineScheduler {
                             &project,
                             &file_rel_path,
                             &PipelineInvocationEntry {
+                                run_id: ctx.request_id.clone(),
                                 at: fired_at.timestamp(),
                                 duration_ms,
                                 status: "error".to_string(),
                                 trigger: "schedule".to_string(),
                                 error: Some(e.message.clone()),
-                                trace: vec![],
+                                trace: e.node_trace.clone(),
                             },
                             log_max_n,
                         );
@@ -235,10 +237,7 @@ impl PipelineScheduler {
                 }
                 Err(e) => eprintln!("Scheduler: failed to add job {}: {}", job_key, e),
             },
-            Err(e) => eprintln!(
-                "Scheduler: invalid cron '{}' for {}: {}",
-                cron, job_key, e
-            ),
+            Err(e) => eprintln!("Scheduler: invalid cron '{}' for {}: {}", cron, job_key, e),
         }
     }
 }

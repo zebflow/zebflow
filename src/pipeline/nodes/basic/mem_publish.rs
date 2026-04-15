@@ -22,11 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::infra::io::state::DynStateBus;
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.mem.publish";
 const INPUT_PIN_IN: &str = "in";
@@ -101,16 +101,30 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        let owner = input.metadata.get("owner").and_then(Value::as_str).unwrap_or_default();
-        let project = input.metadata.get("project").and_then(Value::as_str).unwrap_or_default();
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let channel = self.config.channel.trim();
 
         if channel.is_empty() {

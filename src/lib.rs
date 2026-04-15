@@ -14,19 +14,18 @@
 
 pub mod automaton;
 pub mod infra;
-pub mod pipeline;
 pub mod language;
+pub mod pipeline;
 pub mod platform;
+pub mod provision;
 pub mod rwe;
 pub mod version;
 
 use std::sync::Arc;
 
 use automaton::{AutomatonEngine, AutomatonEngineRegistry, NoopAutomatonEngine};
-use pipeline::{
-    BasicPipelineEngine, NoopPipelineEngine, PipelineEngine, PipelineEngineRegistry,
-};
 use language::{DenoSandboxEngine, LanguageEngine, LanguageEngineRegistry, NoopLanguageEngine};
+use pipeline::{BasicPipelineEngine, NoopPipelineEngine, PipelineEngine, PipelineEngineRegistry};
 use rwe::{ReactiveWebEngine, ReactiveWebEngineRegistry, RweReactiveWebEngine};
 
 /// Ready-to-use set of engine registries for pipeline/language/rwe modules.

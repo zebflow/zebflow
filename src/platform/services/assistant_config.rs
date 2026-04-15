@@ -70,7 +70,8 @@ impl AssistantConfigService {
             enabled: Some(req.enabled.unwrap_or(DEFAULT_ENABLED)),
             chat_history_pairs: Some(sanitize_chat_history_pairs(req.chat_history_pairs)),
         };
-        self.zebflow_cfg.set_assistant(&owner, &project, assistant.clone())?;
+        self.zebflow_cfg
+            .set_assistant(&owner, &project, assistant.clone())?;
 
         Ok(ProjectAssistantConfig {
             owner,
@@ -80,7 +81,9 @@ impl AssistantConfigService {
             max_steps: assistant.max_steps.unwrap_or(DEFAULT_MAX_STEPS),
             max_replans: assistant.max_replans.unwrap_or(DEFAULT_MAX_REPLANS),
             enabled: assistant.enabled.unwrap_or(DEFAULT_ENABLED),
-            chat_history_pairs: assistant.chat_history_pairs.unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS),
+            chat_history_pairs: assistant
+                .chat_history_pairs
+                .unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS),
             updated_at: now_ts(),
         })
     }
@@ -113,7 +116,8 @@ impl AssistantConfigService {
             enabled: Some(config.enabled),
             chat_history_pairs: Some(chat_history_pairs),
         };
-        self.zebflow_cfg.set_assistant(&owner, &project, assistant)?;
+        self.zebflow_cfg
+            .set_assistant(&owner, &project, assistant)?;
 
         Ok(ProjectAssistantConfig {
             owner,
@@ -124,7 +128,11 @@ impl AssistantConfigService {
             max_replans,
             enabled: config.enabled,
             chat_history_pairs,
-            updated_at: if config.updated_at > 0 { config.updated_at } else { now_ts() },
+            updated_at: if config.updated_at > 0 {
+                config.updated_at
+            } else {
+                now_ts()
+            },
         })
     }
 

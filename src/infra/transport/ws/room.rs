@@ -259,10 +259,7 @@ impl RoomHandle {
     /// Acquires a read lock on the shared state — safe to call from both sync
     /// and async contexts since the lock is never held across an `await`.
     pub fn get_state(&self) -> Value {
-        self.state
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.state.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Register a new session and return a guard that auto-decrements on drop.
@@ -403,9 +400,7 @@ fn json_ptr_set(root: &mut Value, path: &str, value: Value) {
             return;
         }
         if let Value::Object(map) = cur {
-            cur = map
-                .entry(part.to_string())
-                .or_insert_with(|| json!({}));
+            cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
         } else {
             return;
         }
@@ -430,9 +425,7 @@ fn json_ptr_merge(root: &mut Value, path: &str, patch: serde_json::Map<String, V
     let mut cur = root;
     for part in &parts {
         if let Value::Object(map) = cur {
-            cur = map
-                .entry(part.to_string())
-                .or_insert_with(|| json!({}));
+            cur = map.entry(part.to_string()).or_insert_with(|| json!({}));
         } else {
             return;
         }

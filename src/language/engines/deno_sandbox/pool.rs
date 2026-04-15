@@ -35,10 +35,7 @@ fn op_read_local_file(#[string] path: String) -> Result<String, JsErrorBox> {
         .map_err(|e| JsErrorBox::generic(format!("local file read failed: {e}")))
 }
 
-deno_core::extension!(
-    script_ops,
-    ops = [op_script_result, op_read_local_file],
-);
+deno_core::extension!(script_ops, ops = [op_script_result, op_read_local_file],);
 
 // ---------------------------------------------------------------------------
 // Embedded JS installed once per worker at startup.
@@ -205,7 +202,7 @@ pub(crate) struct ScriptWork {
 }
 
 struct WorkItem {
-    work:  ScriptWork,
+    work: ScriptWork,
     reply: std::sync::mpsc::SyncSender<Result<Value, String>>,
 }
 
@@ -287,8 +284,8 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
     .to_string();
 
     let timeout_ms = cfg.timeout_ms;
-    let max_ops    = cfg.max_ops;
-    let caps_expr  = build_capabilities_expr(cfg);
+    let max_ops = cfg.max_ops;
+    let caps_expr = build_capabilities_expr(cfg);
 
     let ctx_json = serde_json::to_string(&work.ctx)
         .map_err(|e| format!("DenoSandboxError: serialize ctx: {e}"))?;
@@ -367,10 +364,8 @@ fn build_capabilities_expr(cfg: &DenoSandboxConfig) -> String {
         cfg.capabilities.iter().map(String::as_str).collect();
     let mut parts: Vec<&str> = vec![];
 
-    let time_part =
-        r#"time: Object.freeze({ now: function () { return Date.now(); } })"#;
-    let math_part =
-        r#"math: Object.freeze({ imul: function (a, b) { return Math.imul(a|0, b|0); }, u32: function (v) { return Number(v) >>> 0; } })"#;
+    let time_part = r#"time: Object.freeze({ now: function () { return Date.now(); } })"#;
+    let math_part = r#"math: Object.freeze({ imul: function (a, b) { return Math.imul(a|0, b|0); }, u32: function (v) { return Number(v) >>> 0; } })"#;
 
     if caps.contains("time.now") {
         parts.push(time_part);
@@ -394,7 +389,10 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
     let idx = POOL_COUNTER.fetch_add(1, Ordering::Relaxed) % pool.len();
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<Result<Value, String>>(1);
     pool[idx]
-        .send(WorkItem { work, reply: reply_tx })
+        .send(WorkItem {
+            work,
+            reply: reply_tx,
+        })
         .map_err(|_| "DenoSandboxError: worker channel disconnected".to_string())?;
     reply_rx
         .recv()

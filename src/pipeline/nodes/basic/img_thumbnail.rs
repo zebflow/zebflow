@@ -23,13 +23,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
+use super::util::metadata_scope;
 use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-    model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType, LayoutItem, SelectOptionDef},
+    NodeDefinition, PipelineError,
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use super::util::metadata_scope;
 
 pub const NODE_KIND: &str = "n.img.thumbnail";
 const INPUT_PIN_IN: &str = "in";
@@ -40,15 +40,33 @@ const MAX_DIM: u32 = 16_000;
 /// Max memory allocated for image decode (128 MB).
 const MAX_ALLOC: u64 = 128 * 1024 * 1024;
 
-fn default_width()      -> u32    { 256 }
-fn default_height()     -> u32    { 256 }
-fn default_fit()        -> String { "cover".to_string() }
-fn default_format()     -> String { "jpg".to_string() }
-fn default_quality()    -> u8     { 82 }
-fn default_folder()     -> String { "thumbnails".to_string() }
-fn default_access()     -> String { "public".to_string() }
-fn default_source_key()    -> String { "saved.path".to_string() }
-fn default_delete_source() -> bool   { false }
+fn default_width() -> u32 {
+    256
+}
+fn default_height() -> u32 {
+    256
+}
+fn default_fit() -> String {
+    "cover".to_string()
+}
+fn default_format() -> String {
+    "jpg".to_string()
+}
+fn default_quality() -> u8 {
+    82
+}
+fn default_folder() -> String {
+    "thumbnails".to_string()
+}
+fn default_access() -> String {
+    "public".to_string()
+}
+fn default_source_key() -> String {
+    "saved.path".to_string()
+}
+fn default_delete_source() -> bool {
+    false
+}
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -102,16 +120,16 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            width:         default_width(),
-            height:        default_height(),
-            fit:           default_fit(),
-            format:        default_format(),
-            quality:       default_quality(),
-            folder:        default_folder(),
-            access:        default_access(),
-            source_key:    default_source_key(),
+            width: default_width(),
+            height: default_height(),
+            fit: default_fit(),
+            format: default_format(),
+            quality: default_quality(),
+            folder: default_folder(),
+            access: default_access(),
+            source_key: default_source_key(),
             delete_source: default_delete_source(),
-            filename:      None,
+            filename: None,
         }
     }
 }
@@ -358,9 +376,15 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self)  -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,
@@ -382,7 +406,9 @@ impl NodeHandler for Node {
             ))?;
 
         // ── Resolve absolute path ─────────────────────────────────────────
-        let layout = self.platform.file
+        let layout = self
+            .platform
+            .file
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("IMG_THUMBNAIL", e.to_string()))?;
 
@@ -403,7 +429,9 @@ impl NodeHandler for Node {
         if matches!(ext.as_str(), "svg" | "heic" | "heif") {
             return Err(PipelineError::new(
                 "IMG_THUMBNAIL",
-                format!("unsupported format for thumbnailing: .{ext} — convert to jpg/png/webp first"),
+                format!(
+                    "unsupported format for thumbnailing: .{ext} — convert to jpg/png/webp first"
+                ),
             ));
         }
 
@@ -418,20 +446,21 @@ impl NodeHandler for Node {
         let target_h = self.config.height.max(1);
         let resized = match self.config.fit.trim() {
             "contain" => resize_contain(&img, target_w, target_h),
-            "fill"    => resize_fill(&img, target_w, target_h),
-            _         => resize_cover(&img, target_w, target_h),  // default: cover
+            "fill" => resize_fill(&img, target_w, target_h),
+            _ => resize_cover(&img, target_w, target_h), // default: cover
         };
 
         let (actual_w, actual_h) = resized.dimensions();
 
         // ── Encode ────────────────────────────────────────────────────────
         let quality = self.config.quality.clamp(1, 100);
-        let (encoded, ext_out, format_label) = encode_image(&resized, &self.config.format, quality)?;
+        let (encoded, ext_out, format_label) =
+            encode_image(&resized, &self.config.format, quality)?;
 
         // ── Write to disk ─────────────────────────────────────────────────
         let access = match self.config.access.trim() {
             "private" => "private",
-            _         => "public",
+            _ => "public",
         };
         let folder = sanitize_folder(if self.config.folder.trim().is_empty() {
             "thumbnails"
@@ -440,12 +469,15 @@ impl NodeHandler for Node {
         });
 
         let storage_name = {
-            let custom = self.config.filename.as_deref()
+            let custom = self
+                .config
+                .filename
+                .as_deref()
                 .map(|f| sanitize_filename(f.trim()))
                 .filter(|s| !s.is_empty());
             match custom {
                 Some(name) => format!("{name}.{ext_out}"),
-                None       => format!("{}.{ext_out}", Uuid::new_v4()),
+                None => format!("{}.{ext_out}", Uuid::new_v4()),
             }
         };
         let thumb_rel = format!("{access}/{folder}/{storage_name}");
@@ -620,8 +652,15 @@ fn sanitize_filename(name: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(name);
-    let sanitized: String = stem.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let trimmed = sanitized.trim_matches('_');
     trimmed.chars().take(200).collect()

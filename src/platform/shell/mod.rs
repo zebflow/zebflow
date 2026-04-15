@@ -26,23 +26,38 @@ pub struct DslLine {
 
 impl DslLine {
     pub fn success(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cls: "cli-success".to_string() }
+        Self {
+            text: text.into(),
+            cls: "cli-success".to_string(),
+        }
     }
 
     pub fn muted(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cls: "cli-muted".to_string() }
+        Self {
+            text: text.into(),
+            cls: "cli-muted".to_string(),
+        }
     }
 
     pub fn error(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cls: "cli-error".to_string() }
+        Self {
+            text: text.into(),
+            cls: "cli-error".to_string(),
+        }
     }
 
     pub fn info(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cls: "cli-info".to_string() }
+        Self {
+            text: text.into(),
+            cls: "cli-info".to_string(),
+        }
     }
 
     pub fn blank() -> Self {
-        Self { text: String::new(), cls: "cli-blank".to_string() }
+        Self {
+            text: String::new(),
+            cls: "cli-blank".to_string(),
+        }
     }
 }
 
@@ -55,11 +70,17 @@ pub struct DslOutput {
 
 impl DslOutput {
     pub fn new_ok() -> Self {
-        Self { ok: true, lines: Vec::new() }
+        Self {
+            ok: true,
+            lines: Vec::new(),
+        }
     }
 
     pub fn new_err(msg: impl Into<String>) -> Self {
-        Self { ok: false, lines: vec![DslLine::error(msg)] }
+        Self {
+            ok: false,
+            lines: vec![DslLine::error(msg)],
+        }
     }
 
     pub fn push(&mut self, line: DslLine) {

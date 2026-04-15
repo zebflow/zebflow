@@ -66,11 +66,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef,
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.trigger.weberror";
 const INPUT_PIN_IN: &str = "in";
@@ -110,21 +112,55 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
-        dsl_flags: vec![
-            DslFlag { flag: "--code".to_string(), config_key: "code".to_string(), description: "Error code pattern: exact code (404), range (4xx/5xx), or empty for catch-all.".to_string(), kind: DslFlagKind::Scalar, required: false },
-        ],
+        dsl_flags: vec![DslFlag {
+            flag: "--code".to_string(),
+            config_key: "code".to_string(),
+            description:
+                "Error code pattern: exact code (404), range (4xx/5xx), or empty for catch-all."
+                    .to_string(),
+            kind: DslFlagKind::Scalar,
+            required: false,
+        }],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "code".to_string(), label: "Error Code Pattern".to_string(), field_type: NodeFieldType::Select, options: vec![
-                SelectOptionDef { value: "404".to_string(), label: "404 — Not Found".to_string() },
-                SelectOptionDef { value: "4xx".to_string(), label: "4xx — Any Client Error".to_string() },
-                SelectOptionDef { value: "5xx".to_string(), label: "5xx — Any Server Error".to_string() },
-                SelectOptionDef { value: "*".to_string(), label: "* — All errors (catch-all)".to_string() },
-            ], help: Some("Which HTTP error code(s) this pipeline handles.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title for this node.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "code".to_string(),
+                label: "Error Code Pattern".to_string(),
+                field_type: NodeFieldType::Select,
+                options: vec![
+                    SelectOptionDef {
+                        value: "404".to_string(),
+                        label: "404 — Not Found".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "4xx".to_string(),
+                        label: "4xx — Any Client Error".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "5xx".to_string(),
+                        label: "5xx — Any Server Error".to_string(),
+                    },
+                    SelectOptionDef {
+                        value: "*".to_string(),
+                        label: "* — All errors (catch-all)".to_string(),
+                    },
+                ],
+                help: Some("Which HTTP error code(s) this pipeline handles.".to_string()),
+                ..Default::default()
+            },
         ],
-        layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("code".to_string())] },
-        ],
+        layout: vec![LayoutItem::Row {
+            row: vec![
+                LayoutItem::Field("title".to_string()),
+                LayoutItem::Field("code".to_string()),
+            ],
+        }],
         ai_tool: Default::default(),
     }
 }

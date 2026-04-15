@@ -189,9 +189,7 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     },
     EmbeddedAsset {
         path: "zeb/markdown/0.1/runtime/markdown.bundle.mjs",
-        bytes: include_bytes!(
-            "../../../libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"
-        ),
+        bytes: include_bytes!("../../../libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/markdown/0.1/wrappers/Markdown.tsx",
@@ -257,9 +255,7 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     },
     EmbeddedAsset {
         path: "zeb/prosemirror/0.1/wrappers/ProseEditor.tsx",
-        bytes: include_bytes!(
-            "../../../libraries/zeb/prosemirror/0.1/wrappers/ProseEditor.tsx"
-        ),
+        bytes: include_bytes!("../../../libraries/zeb/prosemirror/0.1/wrappers/ProseEditor.tsx"),
     },
     EmbeddedAsset {
         path: "zeb/preact/0.1/library.json",
@@ -267,9 +263,7 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     },
     EmbeddedAsset {
         path: "zeb/preact/0.1/runtime/preact.bundle.mjs",
-        bytes: include_bytes!(
-            "../../../libraries/zeb/preact/0.1/runtime/preact.bundle.mjs"
-        ),
+        bytes: include_bytes!("../../../libraries/zeb/preact/0.1/runtime/preact.bundle.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/pdf/manifest.json",

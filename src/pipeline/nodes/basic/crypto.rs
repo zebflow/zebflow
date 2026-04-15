@@ -91,11 +91,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.crypto";
 const INPUT_PIN_IN: &str = "in";
@@ -287,9 +287,15 @@ fn extract_str<'a>(payload: &'a Value, path: &str, fallback_key: &str) -> &'a st
         } else {
             format!("/{}", path)
         };
-        return payload.pointer(&ptr).and_then(Value::as_str).unwrap_or_default();
+        return payload
+            .pointer(&ptr)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
     }
-    payload.get(fallback_key).and_then(Value::as_str).unwrap_or_default()
+    payload
+        .get(fallback_key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 /// Build a fresh output payload with only the `result` field (replace, not merge).
@@ -320,8 +326,7 @@ impl NodeHandler for Node {
         match self.config.op.as_str() {
             // ── sha256 ────────────────────────────────────────────────────────
             "sha256" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
                 let mut h = Sha256::new();
                 h.update(input_val.as_bytes());
                 let result = hex::encode(h.finalize());
@@ -334,8 +339,7 @@ impl NodeHandler for Node {
 
             // ── sha512 ────────────────────────────────────────────────────────
             "sha512" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
                 let mut h = Sha512::new();
                 h.update(input_val.as_bytes());
                 let result = hex::encode(h.finalize());
@@ -348,8 +352,7 @@ impl NodeHandler for Node {
 
             // ── bcrypt_hash ───────────────────────────────────────────────────
             "bcrypt_hash" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
                 let cost = self.config.cost.unwrap_or(12);
                 let result = tokio::task::spawn_blocking(move || {
                     bcrypt::hash(&input_val, cost).map_err(|e| e.to_string())
@@ -366,16 +369,18 @@ impl NodeHandler for Node {
 
             // ── bcrypt_verify ─────────────────────────────────────────────────
             "bcrypt_verify" => {
-                let plaintext =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
-                let stored =
-                    extract_str(&payload, &self.config.hash_path, "hash").to_string();
+                let plaintext = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let stored = extract_str(&payload, &self.config.hash_path, "hash").to_string();
                 let is_valid = tokio::task::spawn_blocking(move || {
                     bcrypt::verify(&plaintext, &stored).unwrap_or(false)
                 })
                 .await
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
-                let pin = if is_valid { OUTPUT_PIN_TRUE } else { OUTPUT_PIN_FALSE };
+                let pin = if is_valid {
+                    OUTPUT_PIN_TRUE
+                } else {
+                    OUTPUT_PIN_FALSE
+                };
                 Ok(NodeExecutionOutput {
                     output_pins: vec![pin.to_string()],
                     payload,
@@ -385,8 +390,7 @@ impl NodeHandler for Node {
 
             // ── argon2_hash ───────────────────────────────────────────────────
             "argon2_hash" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
                 let result = tokio::task::spawn_blocking(move || {
                     use argon2::{
                         Argon2,
@@ -410,22 +414,28 @@ impl NodeHandler for Node {
 
             // ── argon2_verify ─────────────────────────────────────────────────
             "argon2_verify" => {
-                let plaintext =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
-                let stored =
-                    extract_str(&payload, &self.config.hash_path, "hash").to_string();
+                let plaintext = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let stored = extract_str(&payload, &self.config.hash_path, "hash").to_string();
                 let is_valid = tokio::task::spawn_blocking(move || {
                     use argon2::{
                         Argon2,
                         password_hash::{PasswordHash, PasswordVerifier},
                     };
                     PasswordHash::new(&stored)
-                        .map(|h| Argon2::default().verify_password(plaintext.as_bytes(), &h).is_ok())
+                        .map(|h| {
+                            Argon2::default()
+                                .verify_password(plaintext.as_bytes(), &h)
+                                .is_ok()
+                        })
                         .unwrap_or(false)
                 })
                 .await
                 .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_SPAWN", e.to_string()))?;
-                let pin = if is_valid { OUTPUT_PIN_TRUE } else { OUTPUT_PIN_FALSE };
+                let pin = if is_valid {
+                    OUTPUT_PIN_TRUE
+                } else {
+                    OUTPUT_PIN_FALSE
+                };
                 Ok(NodeExecutionOutput {
                     output_pins: vec![pin.to_string()],
                     payload,
@@ -435,10 +445,8 @@ impl NodeHandler for Node {
 
             // ── hmac_sha256 ───────────────────────────────────────────────────
             "hmac_sha256" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
-                let key_val =
-                    extract_str(&payload, &self.config.key_path, "key").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let key_val = extract_str(&payload, &self.config.key_path, "key").to_string();
                 type HmacSha256 = Hmac<Sha256>;
                 let mut mac = HmacSha256::new_from_slice(key_val.as_bytes())
                     .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_HMAC_KEY", e.to_string()))?;
@@ -453,8 +461,7 @@ impl NodeHandler for Node {
 
             // ── base64_encode ─────────────────────────────────────────────────
             "base64_encode" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
                 let result = general_purpose::STANDARD.encode(input_val.as_bytes());
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -465,14 +472,14 @@ impl NodeHandler for Node {
 
             // ── base64_decode ─────────────────────────────────────────────────
             "base64_decode" => {
-                let input_val =
-                    extract_str(&payload, &self.config.input_path, "input").to_string();
-                let bytes = general_purpose::STANDARD.decode(input_val.as_bytes()).map_err(|e| {
-                    PipelineError::new("FW_NODE_CRYPTO_BASE64_DECODE", e.to_string())
-                })?;
-                let result = String::from_utf8(bytes).map_err(|e| {
-                    PipelineError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string())
-                })?;
+                let input_val = extract_str(&payload, &self.config.input_path, "input").to_string();
+                let bytes = general_purpose::STANDARD
+                    .decode(input_val.as_bytes())
+                    .map_err(|e| {
+                        PipelineError::new("FW_NODE_CRYPTO_BASE64_DECODE", e.to_string())
+                    })?;
+                let result = String::from_utf8(bytes)
+                    .map_err(|e| PipelineError::new("FW_NODE_CRYPTO_BASE64_UTF8", e.to_string()))?;
                 Ok(NodeExecutionOutput {
                     output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                     payload: with_result(result),

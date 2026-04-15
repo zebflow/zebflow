@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use axum::http;
-use rmcp::handler::server::{ServerHandler, tool::Extension};
 use rmcp::handler::server::wrapper::Parameters;
+use rmcp::handler::server::{ServerHandler, tool::Extension};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
 use rmcp::{ErrorData as McpError, schemars, tool, tool_handler, tool_router};
@@ -24,62 +24,12 @@ use crate::platform::services::{PlatformOps, PlatformService};
 struct PipelineGetParams {
     /// File-relative path of the pipeline (e.g. "pipelines/my-pipeline.zf.json").
     file_rel_path: String,
-    /// Optional node ID to return just one node instead of the full graph.
-    /// Accepts opaque ID (e.g. "n0"), kind (e.g. "trigger.webhook"), or kind+index (e.g. "pg.query[1]").
-    #[serde(default)]
-    #[schemars(with = "String")]
-    node_id: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
 struct TemplateGetParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
-    /// 1-based starting line number. When set with limit, returns a line-numbered slice instead of the full file.
-    #[serde(default)]
-    #[schemars(with = "u32")]
-    offset: Option<u32>,
-    /// Number of lines to return. Used with offset to read a range of lines.
-    #[serde(default)]
-    #[schemars(with = "u32")]
-    limit: Option<u32>,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct TemplateOutlineParams {
-    /// Relative path to the template file (e.g. "pages/home.tsx").
-    rel_path: String,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct TemplateDepsParams {
-    /// Relative path to the template file (e.g. "pages/home.tsx").
-    rel_path: String,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct TemplateBatchEditParams {
-    /// Array of edits to apply. Each edit has rel_path, old_string, new_string.
-    edits: Vec<BatchEditItem>,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct BatchEditItem {
-    /// Relative path to the template file.
-    rel_path: String,
-    /// Exact string to find. Must match exactly once.
-    old_string: String,
-    /// Replacement string.
-    new_string: String,
-}
-
-#[derive(serde::Deserialize, JsonSchema)]
-struct TemplateListParams {
-    /// Optional glob pattern to filter files (e.g. "pages/*.tsx", "components/**/*.tsx").
-    /// When set, only files matching the glob are returned. Folders are excluded.
-    #[serde(default)]
-    #[schemars(with = "String")]
-    glob: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -114,14 +64,6 @@ struct TemplateSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
-    /// Limit output to first N entries. Useful for large result sets.
-    #[serde(default)]
-    #[schemars(with = "u32")]
-    head_limit: Option<u32>,
-    /// Output mode: "content" shows matching lines (default), "files_with_matches" shows only file paths.
-    #[serde(default)]
-    #[schemars(with = "String")]
-    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -134,14 +76,6 @@ struct PipelineSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
-    /// Limit output to first N entries. Useful for large result sets.
-    #[serde(default)]
-    #[schemars(with = "u32")]
-    head_limit: Option<u32>,
-    /// Output mode: "content" shows matching lines (default), "files_with_matches" shows only file paths.
-    #[serde(default)]
-    #[schemars(with = "String")]
-    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -385,9 +319,11 @@ impl ZebflowMcpHandler {
 
     // ── Orientation ──────────────────────────────────────────────────────────
 
-    #[tool(description = "Call this first. Returns Zebflow platform overview, project name, \
+    #[tool(
+        description = "Call this first. Returns Zebflow platform overview, project name, \
         project docs list, AGENTS.md content (if exists), DB connections, template tree, \
-        and which help tools to call next. Your orientation before building anything.")]
+        and which help tools to call next. Your orientation before building anything."
+    )]
     async fn start_here(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -402,9 +338,7 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Returns the running platform version string. \
         Use this to verify the deployed binary matches the expected Docker image tag.")]
-    async fn version(
-        &self,
-    ) -> Result<CallToolResult, McpError> {
+    async fn version(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![Content::text(
             crate::version::APP_VERSION.to_string(),
         )]))
@@ -436,9 +370,11 @@ impl ZebflowMcpHandler {
         }
     }
 
-    #[tool(description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
+    #[tool(
+        description = "Search Zebflow docs. Returns matching chunks from pipeline docs, \
         web template docs, node catalog, and all help files. Use for any concept, node name, DSL flag, \
-        or syntax question. Example: query='jwt', query='sqlite query', query='web.response'.")]
+        or syntax question. Example: query='jwt', query='sqlite query', query='web.response'."
+    )]
     async fn help_search(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -482,14 +418,12 @@ impl ZebflowMcpHandler {
             &params.pattern,
             params.glob.as_deref(),
             params.context.unwrap_or(0) as usize,
-            params.head_limit,
-            params.output_mode.as_deref(),
+            None,
+            None,
         ))
     }
 
-    #[tool(description = "Get a specific pipeline by file-relative path. \
-        Use node_id to return just one node instead of the full graph \
-        (accepts opaque ID, kind, or kind[index]).")]
+    #[tool(description = "Get a specific pipeline by file-relative path")]
     async fn pipeline_get(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -504,7 +438,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_get(&params.file_rel_path, params.node_id.as_deref());
+        let result = ops.pipeline_get(&params.file_rel_path, None);
         ok_or_err(result)
     }
 
@@ -532,14 +466,16 @@ impl ZebflowMcpHandler {
             }
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_register(
-            &params.body,
-            params.file_rel_path.as_deref(),
-            params.name.as_deref(),
-            params.path.as_deref(),
-            params.title.as_deref(),
-            params.description.as_deref(),
-        ).await;
+        let result = ops
+            .pipeline_register(
+                &params.body,
+                params.file_rel_path.as_deref(),
+                params.name.as_deref(),
+                params.path.as_deref(),
+                params.title.as_deref(),
+                params.description.as_deref(),
+            )
+            .await;
         // navigate is ignored for MCP
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
@@ -564,7 +500,9 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_describe(&params.file_rel_path, params.compact).await;
+        let result = ops
+            .pipeline_describe(&params.file_rel_path, params.compact)
+            .await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
@@ -588,12 +526,14 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.pipeline_patch(
-            &params.file_rel_path,
-            &params.node_id,
-            params.flags.as_deref(),
-            params.body.as_deref(),
-        ).await;
+        let result = ops
+            .pipeline_patch(
+                &params.file_rel_path,
+                &params.node_id,
+                params.flags.as_deref(),
+                params.body.as_deref(),
+            )
+            .await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
@@ -674,7 +614,9 @@ impl ZebflowMcpHandler {
             serde_json::Value::Null => None,
             other => serde_json::to_string(other).ok(),
         });
-        let result = ops.pipeline_execute(&params.file_rel_path, input_str.as_deref()).await;
+        let result = ops
+            .pipeline_execute(&params.file_rel_path, input_str.as_deref())
+            .await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
@@ -701,10 +643,12 @@ impl ZebflowMcpHandler {
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
-    #[tool(description = "Get recent execution history for a pipeline. Returns stored invocations \
+    #[tool(
+        description = "Get recent execution history for a pipeline. Returns stored invocations \
                            with timestamp, duration, status (ok/error), trigger source, error message, \
                            and per-node trace. Use this to inspect past runs, debug failures on scheduled \
-                           pipelines, or verify that a pipeline is executing correctly.")]
+                           pipelines, or verify that a pipeline is executing correctly."
+    )]
     async fn pipeline_get_invocations(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -718,22 +662,19 @@ impl ZebflowMcpHandler {
 
     // ── Templates ────────────────────────────────────────────────────────────
 
-    #[tool(description = "List all templates in the project workspace. \
-        Use glob to filter (e.g. glob=\"pages/*.tsx\").")]
+    #[tool(description = "List all templates in the project workspace")]
     async fn template_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateListParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_list")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_list(params.glob.as_deref());
+        let result = ops.template_list(None);
         ok_or_err(result)
     }
 
-    #[tool(description = "Get a specific template by relative path. \
-        Use offset and limit to read a range of lines (1-based) instead of the full file.")]
+    #[tool(description = "Get a specific template by relative path")]
     async fn template_get(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -748,16 +689,14 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_get(&params.rel_path, params.offset, params.limit);
+        let result = ops.template_get(&params.rel_path, None, None);
         ok_or_err(result)
     }
 
-    #[tool(
-        description = "Create a new template file with scaffolding. \
+    #[tool(description = "Create a new template file with scaffolding. \
                        Kind must be one of: page (pages/*.tsx), component (components/*.tsx), \
                        script (scripts/*.ts), folder. \
-                       Returns the scaffolded content — use template_write to customise it after."
-    )]
+                       Returns the scaffolded content — use template_write to customise it after.")]
     async fn template_create(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -775,17 +714,19 @@ impl ZebflowMcpHandler {
             }
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_create(&params.kind, &params.name, params.parent_rel_path.as_deref());
+        let result = ops.template_create(
+            &params.kind,
+            &params.name,
+            params.parent_rel_path.as_deref(),
+        );
         // navigate is ignored for MCP
         ok_or_err(result)
     }
 
-    #[tool(
-        description = "Write (create or overwrite) a template file. \
+    #[tool(description = "Write (create or overwrite) a template file. \
                        Use template_create first to scaffold with boilerplate, then template_write to fill in content. \
                        Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx'). \
-                       Use help(\"web\") for TSX conventions before writing."
-    )]
+                       Use help(\"web\") for TSX conventions before writing.")]
     async fn template_write(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -803,7 +744,9 @@ impl ZebflowMcpHandler {
         let result = ops.template_write(&params.rel_path, &params.content);
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
-                &session.owner, &session.project, &params.rel_path,
+                &session.owner,
+                &session.project,
+                &params.rel_path,
             ) {
                 crate::pipeline::engines::basic::evict_template_cache_by_path(
                     &self.template_cache,
@@ -832,17 +775,15 @@ impl ZebflowMcpHandler {
             &params.pattern,
             params.glob.as_deref(),
             params.context.unwrap_or(0) as usize,
-            params.head_limit,
-            params.output_mode.as_deref(),
+            None,
+            None,
         ))
     }
 
-    #[tool(
-        description = "Surgical string replacement in a template file. \
+    #[tool(description = "Surgical string replacement in a template file. \
                        Equivalent to Edit — no need to read the full file first. \
                        Fails if old_string is not found or matches more than once (provide more context). \
-                       Returns the line number of the replacement."
-    )]
+                       Returns the line number of the replacement.")]
     async fn template_edit(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -854,7 +795,9 @@ impl ZebflowMcpHandler {
         let result = ops.template_edit(&params.rel_path, &params.old_string, &params.new_string);
         if !result.text.starts_with("Error:") {
             if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
-                &session.owner, &session.project, &params.rel_path,
+                &session.owner,
+                &session.project,
+                &params.rel_path,
             ) {
                 crate::pipeline::engines::basic::evict_template_cache_by_path(
                     &self.template_cache,
@@ -865,107 +808,11 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    // ── Template Intelligence ─────────────────────────────────────────────────
-
-    #[tool(
-        description = "Parse a template file and return its structural outline: imports, exports, \
-                       functions, classes, types, interfaces — with line numbers. \
-                       Much cheaper than template_get for understanding file structure."
-    )]
-    async fn template_outline(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateOutlineParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_outline")?;
-        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
-            return Err(McpError::invalid_params(
-                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
-                None,
-            ));
-        }
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.template_outline(&params.rel_path))
-    }
-
-    #[tool(
-        description = "Show a template's dependency graph: what it imports (forward deps) and \
-                       which other templates import it (reverse deps). \
-                       Use to understand component relationships before refactoring."
-    )]
-    async fn template_deps(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateDepsParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_deps")?;
-        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
-            return Err(McpError::invalid_params(
-                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
-                None,
-            ));
-        }
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        ok_or_err(ops.template_deps(&params.rel_path))
-    }
-
-    #[tool(
-        description = "Apply multiple edits across one or more template files in a single call. \
-                       Each edit is { rel_path, old_string, new_string }. \
-                       Fails fast on first error and reports which edits succeeded."
-    )]
-    async fn template_batch_edit(
-        &self,
-        Extension(parts): Extension<http::request::Parts>,
-        Parameters(params): Parameters<TemplateBatchEditParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let session = self.get_session_from_http_parts(&parts)?;
-        self.check_tool_capability(&session, "template_batch_edit")?;
-
-        // Check locks for all unique paths.
-        for edit in &params.edits {
-            if self.template_locked(&session.owner, &session.project, &edit.rel_path) {
-                return Err(McpError::invalid_params(
-                    format!(
-                        "Template '{}' is locked by the project owner and cannot be accessed by agents.",
-                        edit.rel_path
-                    ),
-                    None,
-                ));
-            }
-        }
-
-        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let edits: Vec<(String, String, String)> = params.edits.iter()
-            .map(|e| (e.rel_path.clone(), e.old_string.clone(), e.new_string.clone()))
-            .collect();
-        let result = ops.template_batch_edit(&edits);
-
-        // Evict cache for all touched files.
-        if !result.text.starts_with("Error:") {
-            let mut evicted = std::collections::HashSet::new();
-            for edit in &params.edits {
-                if evicted.insert(&edit.rel_path) {
-                    if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
-                        &session.owner, &session.project, &edit.rel_path,
-                    ) {
-                        crate::pipeline::engines::basic::evict_template_cache_by_path(
-                            &self.template_cache,
-                            &abs.to_string_lossy(),
-                        );
-                    }
-                }
-            }
-        }
-
-        ok_or_err(result)
-    }
-
     // ── Project Docs ─────────────────────────────────────────────────────────
 
-    #[tool(description = "List project doc files (ERD, README.md, architecture docs, use cases) under repo/docs")]
+    #[tool(
+        description = "List project doc files (ERD, README.md, architecture docs, use cases) under repo/docs"
+    )]
     async fn docs_project_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -977,7 +824,9 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    #[tool(description = "Read one project doc by path (e.g. README.md, AGENTS.md, architecture.md)")]
+    #[tool(
+        description = "Read one project doc by path (e.g. README.md, AGENTS.md, architecture.md)"
+    )]
     async fn docs_project_read(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1025,11 +874,9 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    #[tool(
-        description = "Read one agent doc: AGENTS.md (project instructions), \
+    #[tool(description = "Read one agent doc: AGENTS.md (project instructions), \
                        SOUL.md (agent personality), or MEMORY.md (persistent memory). \
-                       Read AGENTS.md at the start of every session to understand the project."
-    )]
+                       Read AGENTS.md at the start of every session to understand the project.")]
     async fn docs_agent_read(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1062,7 +909,9 @@ impl ZebflowMcpHandler {
 
     // ── Connections & Credentials ─────────────────────────────────────────────
 
-    #[tool(description = "List all DB connections for this project — returns slug, label, and kind (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags.")]
+    #[tool(
+        description = "List all DB connections for this project — returns slug, label, and kind (postgres, mysql, sqlite). Use the slug with connection_describe and in --credential flags."
+    )]
     async fn connection_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1074,7 +923,9 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    #[tool(description = "Describe a DB connection's schema — tables, columns, types, constraints. Use scope='tables' for a quick overview, scope='schemas' to list schemas, or omit scope for the full tree. Always run this before writing SQL queries. Use table='schema.table' (e.g. table='academic.staff') to get column detail for a specific table.")]
+    #[tool(
+        description = "Describe a DB connection's schema — tables, columns, types, constraints. Use scope='tables' for a quick overview, scope='schemas' to list schemas, or omit scope for the full tree. Always run this before writing SQL queries. Use table='schema.table' (e.g. table='academic.staff') to get column detail for a specific table."
+    )]
     async fn connection_describe(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1083,16 +934,20 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "connection_describe")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.connection_describe(
-            &params.slug,
-            params.scope.as_deref(),
-            params.schema.as_deref(),
-            params.table.as_deref(),
-        ).await;
+        let result = ops
+            .connection_describe(
+                &params.slug,
+                params.scope.as_deref(),
+                params.schema.as_deref(),
+                params.table.as_deref(),
+            )
+            .await;
         ok_or_err(result)
     }
 
-    #[tool(description = "List credentials for this project — returns id, title, and kind only. Values are never exposed. Use the id in pipeline nodes that require authentication.")]
+    #[tool(
+        description = "List credentials for this project — returns id, title, and kind only. Values are never exposed. Use the id in pipeline nodes that require authentication."
+    )]
     async fn credential_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1106,12 +961,10 @@ impl ZebflowMcpHandler {
 
     // ── Git ──────────────────────────────────────────────────────────────────
 
-    #[tool(
-        description = "Run a git command on the project repository. \
+    #[tool(description = "Run a git command on the project repository. \
                        Allowed subcommands: status, log, diff, add, commit. \
                        Destructive operations (reset, rebase, force, checkout) are blocked. \
-                       Always commit after registering or patching pipelines."
-    )]
+                       Always commit after registering or patching pipelines.")]
     async fn git_command(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1120,19 +973,23 @@ impl ZebflowMcpHandler {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "git_command")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.git_command(
-            &params.subcommand,
-            params.args.as_deref(),
-            params.message.as_deref(),
-        ).await;
+        let result = ops
+            .git_command(
+                &params.subcommand,
+                params.args.as_deref(),
+                params.message.as_deref(),
+            )
+            .await;
         Ok(CallToolResult::success(vec![Content::text(result.text)]))
     }
 
     // ── UI Catalog ───────────────────────────────────────────────────────────
 
-    #[tool(description = "List all available shadcn-compatible Zeb React UI components \
+    #[tool(
+        description = "List all available shadcn-compatible Zeb React UI components \
         that can be installed into shared/ui/. Returns name, category, description, \
-        filename, and whether each component is already installed in this project.")]
+        filename, and whether each component is already installed in this project."
+    )]
     async fn list_ui_catalog(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1144,10 +1001,12 @@ impl ZebflowMcpHandler {
         ok_or_err(result)
     }
 
-    #[tool(description = "Install shadcn-compatible UI components into shared/ui/. \
+    #[tool(
+        description = "Install shadcn-compatible UI components into shared/ui/. \
         Pass names like [\"button\",\"card\",\"dialog\"]. \
         Set overwrite=true to replace existing files. \
-        Returns installed and skipped lists.")]
+        Returns installed and skipped lists."
+    )]
     async fn install_ui_components(
         &self,
         Parameters(params): Parameters<InstallUiComponentsParams>,
@@ -1162,13 +1021,11 @@ impl ZebflowMcpHandler {
 
     // ── Move Resource ─────────────────────────────────────────────────────────
 
-    #[tool(
-        description = "Rename or reorganize a pipeline or template file. \
+    #[tool(description = "Rename or reorganize a pipeline or template file. \
             Domain detected automatically from path: .zf.json = pipeline, anything else = template. \
             For pipelines: deactivate → move → re-activate lifecycle handled automatically. \
             Parent folders created automatically. No cross-domain moves (pipeline ↔ template). \
-            node_id can be: opaque ID (e.g. n0), kind (e.g. trigger.webhook), or kind+index (e.g. pg.query[1])."
-    )]
+            node_id can be: opaque ID (e.g. n0), kind (e.g. trigger.webhook), or kind+index (e.g. pg.query[1]).")]
     async fn move_resource(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -1229,9 +1086,8 @@ impl ZebflowMcpHandler {
     }
 
     fn check_tool_capability(&self, session: &McpSession, tool_name: &str) -> Result<(), McpError> {
-        let required_capability = mcp_tool_capability(tool_name).ok_or_else(|| {
-            McpError::invalid_params(format!("Unknown tool '{tool_name}'"), None)
-        })?;
+        let required_capability = mcp_tool_capability(tool_name)
+            .ok_or_else(|| McpError::invalid_params(format!("Unknown tool '{tool_name}'"), None))?;
 
         let subject = ProjectAccessSubject::mcp_session(&session.token);
         match self.platform.authz.ensure_project_capability(
@@ -1273,7 +1129,9 @@ impl ServerHandler for ZebflowMcpHandler {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Convert an `OpsResult` to `CallToolResult`, treating "Error: ..." text as an MCP error.
-fn ok_or_err(result: crate::platform::services::ops::OpsResult) -> Result<CallToolResult, McpError> {
+fn ok_or_err(
+    result: crate::platform::services::ops::OpsResult,
+) -> Result<CallToolResult, McpError> {
     if result.text.starts_with("Error:") {
         Err(McpError::internal_error(result.text, None))
     } else {

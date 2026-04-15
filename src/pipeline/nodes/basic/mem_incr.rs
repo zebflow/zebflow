@@ -25,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::infra::io::state::DynStateBus;
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.mem.incr";
 const INPUT_PIN_IN: &str = "in";
@@ -39,11 +39,12 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Mem Incr".to_string(),
-        description: "Atomically increment (or decrement with a negative amount) an integer counter \
+        description:
+            "Atomically increment (or decrement with a negative amount) an integer counter \
             in the per-project in-memory store. Counter starts at 0 if the key is missing. \
             Replaces the payload with { [out_key]: new_value }. \
             Use $trigger or $nodes references for upstream data."
-            .to_string(),
+                .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -70,23 +71,51 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--amount".to_string(),
                 config_key: "amount".to_string(),
-                description: "Increment by this amount (default 1, negative to decrement).".to_string(),
+                description: "Increment by this amount (default 1, negative to decrement)."
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
                 flag: "--out-key".to_string(),
                 config_key: "out_key".to_string(),
-                description: "Payload key for new counter value (default = same as --key).".to_string(),
+                description: "Payload key for new counter value (default = same as --key)."
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Counter key. Supports {{ expr }}. Created at 0 if missing.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "amount".to_string(), label: "Amount".to_string(), field_type: NodeFieldType::Number, help: Some("Default 1. Use negative to decrement.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "out_key".to_string(), label: "Output Key".to_string(), field_type: NodeFieldType::Text, help: Some("Payload key for the new value. Defaults to --key.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "key".to_string(),
+                label: "Key".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some(
+                    "Counter key. Supports {{ expr }}. Created at 0 if missing.".to_string(),
+                ),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "amount".to_string(),
+                label: "Amount".to_string(),
+                field_type: NodeFieldType::Number,
+                help: Some("Default 1. Use negative to decrement.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "out_key".to_string(),
+                label: "Output Key".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Payload key for the new value. Defaults to --key.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
@@ -116,20 +145,37 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
-        let owner = input.metadata.get("owner").and_then(Value::as_str).unwrap_or_default();
-        let project = input.metadata.get("project").and_then(Value::as_str).unwrap_or_default();
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let key = self.config.key.trim();
 
         if key.is_empty() {
-            return Err(PipelineError::new("MEM_INCR_KEY", "n.mem.incr: --key is required"));
+            return Err(PipelineError::new(
+                "MEM_INCR_KEY",
+                "n.mem.incr: --key is required",
+            ));
         }
 
         let amount: i64 = match &self.config.amount {

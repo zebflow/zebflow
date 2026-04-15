@@ -26,16 +26,21 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::automaton::agents::tool_caller::{ToolCallerAgent, ToolCallerConfig};
-use crate::automaton::agents::zebtune::{ChainStep, OutputMode as ZebtuneOutputMode, ZebtuneAgent, ZebtuneConfig};
-use crate::automaton::infra::http_client::{client_from_secret_with_model, client_from_env};
+use crate::automaton::agents::zebtune::{
+    ChainStep, OutputMode as ZebtuneOutputMode, ZebtuneAgent, ZebtuneConfig,
+};
+use crate::automaton::infra::http_client::{client_from_env, client_from_secret_with_model};
 use crate::automaton::infra::llm_interface::{LlmCall, ToolDef};
 use crate::automaton::infra::shell_tools::default_registry;
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeAiToolDefinition, NodeFieldDataSource, NodeFieldType, StepEvent};
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, LayoutItem, NodeAiToolDefinition, NodeFieldDataSource, NodeFieldType,
+    StepEvent,
+};
+use crate::pipeline::nodes::basic::builtin_node_definitions;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::nodes::basic::builtin_node_definitions;
 use crate::platform::services::CredentialService;
 use crate::platform::services::platform::PlatformService;
 
@@ -276,21 +281,22 @@ impl Node {
         credentials: Option<Arc<CredentialService>>,
         platform: Option<Arc<PlatformService>>,
     ) -> Self {
-        Self { config, credentials, platform }
+        Self {
+            config,
+            credentials,
+            platform,
+        }
     }
 
-
     /// Resolve LlmCall from credential then env — used by both direct and strategic modes.
-    fn build_llm(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Option<Arc<dyn LlmCall>> {
+    fn build_llm(&self, owner: &str, project: &str) -> Option<Arc<dyn LlmCall>> {
         let model_override = self.config.model.as_deref().filter(|m| !m.is_empty());
         if let (Some(cred_id), Some(creds)) = (&self.config.credential_id, &self.credentials) {
             if !cred_id.is_empty() {
                 if let Ok(Some(cred)) = creds.get_project_credential(owner, project, cred_id) {
-                    if let Some(client) = client_from_secret_with_model(&cred.secret, model_override) {
+                    if let Some(client) =
+                        client_from_secret_with_model(&cred.secret, model_override)
+                    {
                         return Some(client);
                     }
                 }
@@ -308,10 +314,13 @@ impl Node {
         let registry = default_registry();
 
         // 1. Shell tools
-        let mut defs: Vec<ToolDef> = registry.tool_names().into_iter()
+        let mut defs: Vec<ToolDef> = registry
+            .tool_names()
+            .into_iter()
             .filter(|n| enabled(n))
             .map(|name| {
-                let desc = registry.get(&name)
+                let desc = registry
+                    .get(&name)
                     .map(|t| t.description().to_string())
                     .unwrap_or_default();
                 ToolDef {
@@ -346,16 +355,23 @@ impl Node {
             let pipelines = platform.pipeline_runtime.list_project(owner, project);
             for compiled in pipelines {
                 let is_fn = compiled.graph.nodes.iter().any(|n| n.kind == FN_TRIGGER);
-                if !is_fn { continue; }
+                if !is_fn {
+                    continue;
+                }
 
                 let slug = name_from_file_rel_path(&compiled.file_rel_path);
-                if !enabled(&slug) { continue; }
+                if !enabled(&slug) {
+                    continue;
+                }
 
                 // Extract params schema from the trigger node's config.
                 // The `params` value may be stored as a JSON string (from DSL --params flag)
                 // or as a parsed object (from UI editor). Either way, wrap it as a full
                 // JSON Schema: {"type":"object","properties": <params>}.
-                let params_schema = compiled.graph.nodes.iter()
+                let params_schema = compiled
+                    .graph
+                    .nodes
+                    .iter()
                     .find(|n| n.kind == FN_TRIGGER)
                     .and_then(|n| n.config.get("params"))
                     .and_then(|v| {
@@ -368,20 +384,27 @@ impl Node {
                         };
                         props.map(|p| json!({ "type": "object", "properties": p }))
                     })
-                    .unwrap_or_else(|| json!({
-                        "type": "object",
-                        "additionalProperties": true
-                    }));
+                    .unwrap_or_else(|| {
+                        json!({
+                            "type": "object",
+                            "additionalProperties": true
+                        })
+                    });
 
                 let description = format!(
                     "Call the '{}' function pipeline. {}",
                     slug,
-                    compiled.graph.nodes.iter()
+                    compiled
+                        .graph
+                        .nodes
+                        .iter()
                         .find(|n| n.kind == FN_TRIGGER)
                         .and_then(|n| n.config.get("description"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
-                ).trim_end().to_string();
+                )
+                .trim_end()
+                .to_string();
 
                 defs.push(ToolDef {
                     name: slug,
@@ -395,10 +418,16 @@ impl Node {
     }
 
     /// Returns the slugs of all active function pipelines — used by the UI data source.
-    pub fn list_function_pipeline_tool_names(platform: &PlatformService, owner: &str, project: &str) -> Vec<String> {
+    pub fn list_function_pipeline_tool_names(
+        platform: &PlatformService,
+        owner: &str,
+        project: &str,
+    ) -> Vec<String> {
         const FN_TRIGGER: &str = "n.trigger.function";
         use crate::platform::services::project::name_from_file_rel_path;
-        platform.pipeline_runtime.list_project(owner, project)
+        platform
+            .pipeline_runtime
+            .list_project(owner, project)
             .into_iter()
             .filter(|c| c.graph.nodes.iter().any(|n| n.kind == FN_TRIGGER))
             .map(|c| name_from_file_rel_path(&c.file_rel_path))
@@ -408,9 +437,15 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN]
+    }
 
     async fn execute_async(
         &self,
@@ -430,8 +465,16 @@ impl NodeHandler for Node {
             )
         })?;
 
-        let owner = input.metadata.get("owner").and_then(|v| v.as_str()).unwrap_or("");
-        let project = input.metadata.get("project").and_then(|v| v.as_str()).unwrap_or("");
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         match &self.config.mode {
             AgentMode::Direct => self.run_direct(&query, owner, project, &input).await,
@@ -462,10 +505,14 @@ impl Node {
 
         let tools = self.build_tool_defs(owner, project);
         let registry = default_registry();
-        let work_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+        let work_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
 
-        let max_iter = if self.config.max_iterations == 0 { 5 } else { self.config.max_iterations };
+        let max_iter = if self.config.max_iterations == 0 {
+            5
+        } else {
+            self.config.max_iterations
+        };
 
         let agent = ToolCallerAgent::new(
             ToolCallerConfig {
@@ -480,36 +527,43 @@ impl Node {
         let owner_s = owner.to_string();
         let project_s = project.to_string();
 
-        let result = agent.run(query, tools, move |tool_name, args_json| {
-            let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
+        let result = agent
+            .run(query, tools, move |tool_name, args_json| {
+                let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
 
-            // 1. Try shell tools first.
-            if let Some(out) = registry.run_tool(tool_name, &args, &work_dir) {
-                return out;
-            }
+                // 1. Try shell tools first.
+                if let Some(out) = registry.run_tool(tool_name, &args, &work_dir) {
+                    return out;
+                }
 
-            // 2. Try function pipeline tools (async → sync bridge).
-            if let Some(platform) = &platform_clone {
-                let platform = Arc::clone(platform);
-                let slug = tool_name.to_string();
-                let input = args.clone();
-                let owner_s = owner_s.clone();
-                let project_s = project_s.clone();
+                // 2. Try function pipeline tools (async → sync bridge).
+                if let Some(platform) = &platform_clone {
+                    let platform = Arc::clone(platform);
+                    let slug = tool_name.to_string();
+                    let input = args.clone();
+                    let owner_s = owner_s.clone();
+                    let project_s = project_s.clone();
 
-                let result = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async move {
-                        platform.execute_function_pipeline(&owner_s, &project_s, &slug, input).await
-                    })
-                });
+                    let result = tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(async move {
+                            platform
+                                .execute_function_pipeline(&owner_s, &project_s, &slug, input)
+                                .await
+                        })
+                    });
 
-                return match result {
-                    Ok(v) => Ok(serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())),
-                    Err(e) => Err(e.to_string()),
-                };
-            }
+                    return match result {
+                        Ok(v) => {
+                            Ok(serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
+                }
 
-            Err(format!("tool '{}' not found", tool_name))
-        }).await.map_err(|e| PipelineError::new("FW_NODE_AGENT_DIRECT_RUN", e))?;
+                Err(format!("tool '{}' not found", tool_name))
+            })
+            .await
+            .map_err(|e| PipelineError::new("FW_NODE_AGENT_DIRECT_RUN", e))?;
 
         let payload = match &self.config.output_mode {
             OutputMode::Full => json!({
@@ -546,7 +600,7 @@ impl Node {
         };
 
         let zebtune_output_mode = match &self.config.output_mode {
-            OutputMode::Full      => ZebtuneOutputMode::Full,
+            OutputMode::Full => ZebtuneOutputMode::Full,
             OutputMode::FinalOnly => ZebtuneOutputMode::FinalOnly,
         };
 

@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 
-use super::model::{
-    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, PipelineGraph,
-};
+use super::model::{ExecuteOptions, PipelineContext, PipelineError, PipelineGraph, PipelineOutput};
 
 /// Framework-level execution interface.
 ///

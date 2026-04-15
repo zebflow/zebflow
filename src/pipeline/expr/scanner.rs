@@ -64,9 +64,12 @@ fn scan_value(val: &Value, ptr: &str, out: &mut Vec<ExprField>) {
         }
         Value::String(s) => {
             if let Some(segments) = parse_template(s) {
-                let is_whole =
-                    segments.len() == 1 && matches!(&segments[0], Segment::Expr(_));
-                out.push(ExprField { ptr: ptr.to_string(), segments, is_whole });
+                let is_whole = segments.len() == 1 && matches!(&segments[0], Segment::Expr(_));
+                out.push(ExprField {
+                    ptr: ptr.to_string(),
+                    segments,
+                    is_whole,
+                });
             }
         }
         _ => {}

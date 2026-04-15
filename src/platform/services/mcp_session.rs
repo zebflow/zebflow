@@ -36,8 +36,7 @@ impl McpSessionService {
         if let Ok(persisted) = data.list_all_mcp_sessions() {
             let now = now_ts() as u64;
             let mut sessions = sessions_map.lock().unwrap_or_else(|e| e.into_inner());
-            let mut project_tokens =
-                project_tokens_map.lock().unwrap_or_else(|e| e.into_inner());
+            let mut project_tokens = project_tokens_map.lock().unwrap_or_else(|e| e.into_inner());
             for session in persisted {
                 // Skip expired sessions
                 if let Some(secs) = session.auto_reset_seconds {
@@ -76,7 +75,10 @@ impl McpSessionService {
         let key = (owner.to_string(), project.to_string());
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let mut project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let mut project_tokens = self
+            .project_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // If a session already exists, keep the token but update capabilities + enable it.
         if let Some(existing_token) = project_tokens.get(&key).cloned() {
@@ -142,7 +144,10 @@ impl McpSessionService {
     ) -> Result<(), PlatformError> {
         let key = (owner.to_string(), project.to_string());
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let project_tokens = self
+            .project_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(token) = project_tokens.get(&key) {
             if let Some(session) = sessions.get_mut(token) {
                 session.enabled = enabled;
@@ -153,7 +158,10 @@ impl McpSessionService {
                 return Ok(());
             }
         }
-        Err(PlatformError::new("MCP_SESSION_NOT_FOUND", "No MCP session found for this project"))
+        Err(PlatformError::new(
+            "MCP_SESSION_NOT_FOUND",
+            "No MCP session found for this project",
+        ))
     }
 
     /// Generate a fresh token for the existing session, revoking the old one.
@@ -168,12 +176,17 @@ impl McpSessionService {
         let new_token = Self::generate_token();
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let mut project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let mut project_tokens = self
+            .project_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
-        let old_token = project_tokens
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| PlatformError::new("MCP_SESSION_NOT_FOUND", "No MCP session found for this project"))?;
+        let old_token = project_tokens.get(&key).cloned().ok_or_else(|| {
+            PlatformError::new(
+                "MCP_SESSION_NOT_FOUND",
+                "No MCP session found for this project",
+            )
+        })?;
 
         let old_session = sessions
             .remove(&old_token)
@@ -266,7 +279,10 @@ impl McpSessionService {
     pub fn revoke_by_token(&self, token: &str) -> Result<(), PlatformError> {
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = sessions.remove(token) {
-            let mut project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+            let mut project_tokens = self
+                .project_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let key = (session.owner.clone(), session.project.clone());
             project_tokens.remove(&key);
             drop(sessions);
@@ -280,7 +296,10 @@ impl McpSessionService {
     /// Revoke session for a specific project (if any).
     pub fn revoke_for_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
         let key = (owner.to_string(), project.to_string());
-        let mut project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let mut project_tokens = self
+            .project_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(token) = project_tokens.remove(&key) {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             sessions.remove(&token);
@@ -316,7 +335,10 @@ impl McpSessionService {
     /// Get current session for a project (if any).
     pub fn get_for_project(&self, owner: &str, project: &str) -> Option<McpSession> {
         let key = (owner.to_string(), project.to_string());
-        let project_tokens = self.project_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        let project_tokens = self
+            .project_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let token = project_tokens.get(&key)?;
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions.get(token).cloned()

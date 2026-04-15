@@ -7,11 +7,11 @@
 
 use std::sync::Arc;
 
+use zebflow::automaton::llm;
 use zebflow::automaton::{
     AutomatonEngine, NoopAutomatonEngine, check_llm, log_llm_status, print_running_mechanism,
     run_interactive_with_llm,
 };
-use zebflow::automaton::llm;
 
 fn main() -> std::io::Result<()> {
     let _ = dotenvy::dotenv();

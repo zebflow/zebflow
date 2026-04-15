@@ -95,10 +95,7 @@ pub fn interpolate_path(template: &str, payload: &Value) -> String {
 
         if closed && !key.is_empty() {
             // Look up a top-level string field in the payload.
-            let value = payload
-                .get(&key)
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let value = payload.get(&key).and_then(|v| v.as_str()).unwrap_or("");
             result.push_str(value);
         } else {
             // Malformed placeholder — emit verbatim so it shows up in traces.

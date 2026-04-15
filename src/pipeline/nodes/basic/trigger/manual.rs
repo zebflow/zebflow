@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::pipeline::model::{LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.trigger.manual";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -33,8 +33,23 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: Default::default(),
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "__manual_note".to_string(), label: "Manual Trigger".to_string(), field_type: NodeFieldType::Text, readonly: true, default_value: Some(serde_json::json!("Runs only when pipeline execute trigger=manual.")), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title for this node.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "__manual_note".to_string(),
+                label: "Manual Trigger".to_string(),
+                field_type: NodeFieldType::Text,
+                readonly: true,
+                default_value: Some(serde_json::json!(
+                    "Runs only when pipeline execute trigger=manual."
+                )),
+                ..Default::default()
+            },
         ],
         layout: vec![
             LayoutItem::Field("title".to_string()),

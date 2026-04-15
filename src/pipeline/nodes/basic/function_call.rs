@@ -29,11 +29,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
+};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDataSource, NodeFieldDef, NodeFieldType};
 use crate::platform::services::PlatformService;
 
 pub const NODE_KIND: &str = "n.function.call";
@@ -144,7 +146,10 @@ fn extract_payload_input(input_path: &str, payload: &serde_json::Value) -> serde
     if input_path.is_empty() {
         payload.clone()
     } else {
-        payload.pointer(input_path).cloned().unwrap_or_else(|| payload.clone())
+        payload
+            .pointer(input_path)
+            .cloned()
+            .unwrap_or_else(|| payload.clone())
     }
 }
 
@@ -172,7 +177,7 @@ impl NodeHandler for Node {
                 return Err(PipelineError::new(
                     "FW_NODE_FUNCTION_CALL_NO_PLATFORM",
                     "function.call: platform not injected into engine",
-                ))
+                ));
             }
         };
 
@@ -183,7 +188,7 @@ impl NodeHandler for Node {
                     output_pins: vec!["error".to_string()],
                     payload: serde_json::json!({"error": "no function slug configured"}),
                     trace: vec!["function.call: no slug configured".to_string()],
-                })
+                });
             }
         };
 
@@ -224,7 +229,10 @@ impl NodeHandler for Node {
             Err(e) => Ok(NodeExecutionOutput {
                 output_pins: vec!["error".to_string()],
                 payload: serde_json::json!({"error": format!("{}: {}", e.code, e.message)}),
-                trace: vec![format!("function.call: '{}' error: {} — {}", slug, e.code, e.message)],
+                trace: vec![format!(
+                    "function.call: '{}' error: {} — {}",
+                    slug, e.code, e.message
+                )],
             }),
         }
     }

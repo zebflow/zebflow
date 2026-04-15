@@ -18,11 +18,11 @@ pub mod registry;
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine};
 pub use interface::PipelineEngine;
 pub use model::{
-    ExecuteOptions, PipelineContext, PipelineError, PipelineOutput, NodeAiToolDefinition,
-    NodeContractDocument, NodeContractItem, NodeDefinition, NodeScriptBridge,
-    NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix, PipelineEdge, PipelineGraph,
-    PipelineNode, StepEvent,
-    NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef, SidebarSection, SidebarItem,
+    ExecuteOptions, NodeAiToolDefinition, NodeContractDocument, NodeContractItem, NodeDefinition,
+    NodeFieldDataSource, NodeFieldDef, NodeFieldType, NodeScriptBridge, NodeScriptUsageContract,
+    NodeToolUsageContract, NodeUsageMatrix, PipelineContext, PipelineEdge, PipelineError,
+    PipelineGraph, PipelineNode, PipelineOutput, SelectOptionDef, SidebarItem, SidebarSection,
+    StepEvent,
 };
-pub use nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
+pub use nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 pub use registry::PipelineEngineRegistry;

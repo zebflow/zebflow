@@ -147,12 +147,24 @@ mod tests {
     #[tokio::test]
     async fn enforces_validation_and_exposes_stats() {
         let bus = MemStateBus::new();
-        bus.set("superadmin", "default", "session:user@example.com", json!({"ok": true}), Some(60))
-            .expect("set");
+        bus.set(
+            "superadmin",
+            "default",
+            "session:user@example.com",
+            json!({"ok": true}),
+            Some(60),
+        )
+        .expect("set");
         let stats = bus.stats().expect("stats");
         assert_eq!(stats.entry_count, 1);
-        assert!(bus.set("bad owner", "default", "safe", json!(1), None).is_err());
-        assert!(bus.publish("superadmin", "default", "bad channel", json!(1)).is_err());
+        assert!(
+            bus.set("bad owner", "default", "safe", json!(1), None)
+                .is_err()
+        );
+        assert!(
+            bus.publish("superadmin", "default", "bad channel", json!(1))
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -164,14 +176,24 @@ mod tests {
             bus.get("superadmin", "default", "counter").expect("get"),
             Some(json!(1))
         );
-        assert!(bus.exists("superadmin", "default", "counter").expect("exists"));
+        assert!(
+            bus.exists("superadmin", "default", "counter")
+                .expect("exists")
+        );
         assert_eq!(
-            bus.incr("superadmin", "default", "counter", 2).expect("incr"),
+            bus.incr("superadmin", "default", "counter", 2)
+                .expect("incr"),
             3
         );
-        assert!(bus.expire("superadmin", "default", "counter", None).expect("expire"));
+        assert!(
+            bus.expire("superadmin", "default", "counter", None)
+                .expect("expire")
+        );
         assert!(bus.del("superadmin", "default", "counter").expect("del"));
-        assert!(!bus.exists("superadmin", "default", "counter").expect("exists after del"));
+        assert!(
+            !bus.exists("superadmin", "default", "counter")
+                .expect("exists after del")
+        );
     }
 
     #[tokio::test]
@@ -193,6 +215,9 @@ mod tests {
             .expect("publish again");
         let message = rx.recv().await.expect("second message");
         assert_eq!(message, json!({"id": 43}));
-        assert!(other.try_recv().is_err(), "other project must not receive the message");
+        assert!(
+            other.try_recv().is_err(),
+            "other project must not receive the message"
+        );
     }
 }

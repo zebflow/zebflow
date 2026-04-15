@@ -30,11 +30,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 
 pub const NODE_KIND: &str = "n.trigger.memsubscribe";
 const OUTPUT_PIN_OUT: &str = "out";
@@ -68,18 +68,28 @@ pub fn definition() -> NodeDefinition {
                 "channel": { "type": "string", "description": "Channel to subscribe to." },
             }
         }),
-        dsl_flags: vec![
-            DslFlag {
-                flag: "--channel".to_string(),
-                config_key: "channel".to_string(),
-                description: "Channel name to subscribe to.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: true,
-            },
-        ],
+        dsl_flags: vec![DslFlag {
+            flag: "--channel".to_string(),
+            config_key: "channel".to_string(),
+            description: "Channel name to subscribe to.".to_string(),
+            kind: DslFlagKind::Scalar,
+            required: true,
+        }],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "channel".to_string(), label: "Channel".to_string(), field_type: NodeFieldType::Text, help: Some("Channel name to subscribe to.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "channel".to_string(),
+                label: "Channel".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Channel name to subscribe to.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
@@ -105,9 +115,15 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,

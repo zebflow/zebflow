@@ -52,49 +52,224 @@ macro_rules! ui_sources {
 /// `(name, source, filename, category, description)`
 static UI_SOURCES: &[(&str, &str, &str, &str, &str)] = ui_sources![
     // Primitives
-    ("button",      "button.tsx",      "primitives", "Accessible button with variant and size props"),
-    ("input",       "input.tsx",       "primitives", "Text input with consistent styling"),
-    ("textarea",    "textarea.tsx",    "primitives", "Multi-line text input"),
-    ("label",       "label.tsx",       "primitives", "Form label with peer-disabled support"),
-    ("checkbox",    "checkbox.tsx",    "primitives", "Checkbox with onCheckedChange API"),
-    ("radio-group", "radio-group.tsx", "primitives", "Radio group with single selection"),
-    ("switch",      "switch.tsx",      "primitives", "Toggle switch with checked/onCheckedChange"),
-    ("slider",      "slider.tsx",      "primitives", "Range slider with onValueChange"),
+    (
+        "button",
+        "button.tsx",
+        "primitives",
+        "Accessible button with variant and size props"
+    ),
+    (
+        "input",
+        "input.tsx",
+        "primitives",
+        "Text input with consistent styling"
+    ),
+    (
+        "textarea",
+        "textarea.tsx",
+        "primitives",
+        "Multi-line text input"
+    ),
+    (
+        "label",
+        "label.tsx",
+        "primitives",
+        "Form label with peer-disabled support"
+    ),
+    (
+        "checkbox",
+        "checkbox.tsx",
+        "primitives",
+        "Checkbox with onCheckedChange API"
+    ),
+    (
+        "radio-group",
+        "radio-group.tsx",
+        "primitives",
+        "Radio group with single selection"
+    ),
+    (
+        "switch",
+        "switch.tsx",
+        "primitives",
+        "Toggle switch with checked/onCheckedChange"
+    ),
+    (
+        "slider",
+        "slider.tsx",
+        "primitives",
+        "Range slider with onValueChange"
+    ),
     // Display
-    ("badge",      "badge.tsx",      "display", "Inline status badge with variants"),
-    ("avatar",     "avatar.tsx",     "display", "Avatar with image and fallback"),
-    ("progress",   "progress.tsx",   "display", "Progress bar 0–100"),
-    ("skeleton",   "skeleton.tsx",   "display", "Loading skeleton placeholder"),
-    ("separator",  "separator.tsx",  "display", "Horizontal or vertical divider"),
-    ("kbd",        "kbd.tsx",        "display", "Keyboard shortcut display"),
-    ("alert",      "alert.tsx",      "display", "Alert banner with title and description"),
+    (
+        "badge",
+        "badge.tsx",
+        "display",
+        "Inline status badge with variants"
+    ),
+    (
+        "avatar",
+        "avatar.tsx",
+        "display",
+        "Avatar with image and fallback"
+    ),
+    ("progress", "progress.tsx", "display", "Progress bar 0–100"),
+    (
+        "skeleton",
+        "skeleton.tsx",
+        "display",
+        "Loading skeleton placeholder"
+    ),
+    (
+        "separator",
+        "separator.tsx",
+        "display",
+        "Horizontal or vertical divider"
+    ),
+    ("kbd", "kbd.tsx", "display", "Keyboard shortcut display"),
+    (
+        "alert",
+        "alert.tsx",
+        "display",
+        "Alert banner with title and description"
+    ),
     // Layout
-    ("card",        "card.tsx",        "layout", "Card with header, content, and footer"),
-    ("table",       "table.tsx",       "layout", "Styled HTML table with all sub-parts"),
-    ("tabs",        "tabs.tsx",        "layout", "Tab panels with internal active state"),
-    ("accordion",   "accordion.tsx",   "layout", "Collapsible accordion, single or multiple"),
-    ("collapsible", "collapsible.tsx", "layout", "Simple open/close collapsible container"),
-    ("scroll-area", "scroll-area.tsx", "layout", "Styled scrollable container"),
+    (
+        "card",
+        "card.tsx",
+        "layout",
+        "Card with header, content, and footer"
+    ),
+    (
+        "table",
+        "table.tsx",
+        "layout",
+        "Styled HTML table with all sub-parts"
+    ),
+    (
+        "tabs",
+        "tabs.tsx",
+        "layout",
+        "Tab panels with internal active state"
+    ),
+    (
+        "accordion",
+        "accordion.tsx",
+        "layout",
+        "Collapsible accordion, single or multiple"
+    ),
+    (
+        "collapsible",
+        "collapsible.tsx",
+        "layout",
+        "Simple open/close collapsible container"
+    ),
+    (
+        "scroll-area",
+        "scroll-area.tsx",
+        "layout",
+        "Styled scrollable container"
+    ),
     // Navigation
-    ("breadcrumb",    "breadcrumb.tsx",    "navigation", "Breadcrumb nav with all sub-parts"),
-    ("pagination",    "pagination.tsx",    "navigation", "Page pagination with previous/next"),
-    ("toggle",        "toggle.tsx",        "navigation", "Pressable toggle button"),
-    ("toggle-group",  "toggle-group.tsx",  "navigation", "Toggle group with single or multiple selection"),
+    (
+        "breadcrumb",
+        "breadcrumb.tsx",
+        "navigation",
+        "Breadcrumb nav with all sub-parts"
+    ),
+    (
+        "pagination",
+        "pagination.tsx",
+        "navigation",
+        "Page pagination with previous/next"
+    ),
+    (
+        "toggle",
+        "toggle.tsx",
+        "navigation",
+        "Pressable toggle button"
+    ),
+    (
+        "toggle-group",
+        "toggle-group.tsx",
+        "navigation",
+        "Toggle group with single or multiple selection"
+    ),
     // Overlay
-    ("dialog",        "dialog.tsx",        "overlay", "Modal dialog with backdrop and close button"),
-    ("alert-dialog",  "alert-dialog.tsx",  "overlay", "Confirmation dialog, no outside-click dismiss"),
-    ("sheet",         "sheet.tsx",         "overlay", "Slide-in panel from any edge"),
-    ("drawer",        "drawer.tsx",        "overlay", "Bottom drawer sheet"),
-    ("popover",       "popover.tsx",       "overlay", "Anchored popover panel"),
-    ("hover-card",    "hover-card.tsx",    "overlay", "Content card shown on hover"),
-    ("tooltip",       "tooltip.tsx",       "overlay", "Tooltip shown on hover/focus"),
-    ("dropdown-menu", "dropdown-menu.tsx", "overlay", "Dropdown menu with items, checkboxes, radios"),
+    (
+        "dialog",
+        "dialog.tsx",
+        "overlay",
+        "Modal dialog with backdrop and close button"
+    ),
+    (
+        "alert-dialog",
+        "alert-dialog.tsx",
+        "overlay",
+        "Confirmation dialog, no outside-click dismiss"
+    ),
+    (
+        "sheet",
+        "sheet.tsx",
+        "overlay",
+        "Slide-in panel from any edge"
+    ),
+    ("drawer", "drawer.tsx", "overlay", "Bottom drawer sheet"),
+    (
+        "popover",
+        "popover.tsx",
+        "overlay",
+        "Anchored popover panel"
+    ),
+    (
+        "hover-card",
+        "hover-card.tsx",
+        "overlay",
+        "Content card shown on hover"
+    ),
+    (
+        "tooltip",
+        "tooltip.tsx",
+        "overlay",
+        "Tooltip shown on hover/focus"
+    ),
+    (
+        "dropdown-menu",
+        "dropdown-menu.tsx",
+        "overlay",
+        "Dropdown menu with items, checkboxes, radios"
+    ),
     // Complex
-    ("select",     "select.tsx",     "complex", "Custom select with item list"),
-    ("sonner",     "sonner.tsx",     "complex", "Toast notifications with queue"),
-    ("input-otp",  "input-otp.tsx",  "complex", "OTP input with auto-advance slots"),
-    ("calendar",   "calendar.tsx",   "complex", "Month calendar with date selection"),
-    ("data-table", "data-table.tsx", "complex", "Table with sorting, filtering, pagination"),
+    (
+        "select",
+        "select.tsx",
+        "complex",
+        "Custom select with item list"
+    ),
+    (
+        "sonner",
+        "sonner.tsx",
+        "complex",
+        "Toast notifications with queue"
+    ),
+    (
+        "input-otp",
+        "input-otp.tsx",
+        "complex",
+        "OTP input with auto-advance slots"
+    ),
+    (
+        "calendar",
+        "calendar.tsx",
+        "complex",
+        "Month calendar with date selection"
+    ),
+    (
+        "data-table",
+        "data-table.tsx",
+        "complex",
+        "Table with sorting, filtering, pagination"
+    ),
 ];
 
 // ── CatalogService ─────────────────────────────────────────────────────────────
@@ -170,8 +345,7 @@ impl CatalogService {
                 report.skipped.push(name.clone());
                 continue;
             }
-            std::fs::write(&dest, src)
-                .map_err(|e| format!("Failed to write {filename}: {e}"))?;
+            std::fs::write(&dest, src).map_err(|e| format!("Failed to write {filename}: {e}"))?;
             report.installed.push(name.clone());
         }
 

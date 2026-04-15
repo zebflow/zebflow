@@ -6,15 +6,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sqlx::{Column, Row, postgres::PgConnectOptions, postgres::PgRow};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::language::LanguageEngine;
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 use crate::platform::services::CredentialService;
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.pg.query";
 pub const INPUT_PIN_IN: &str = "in";
@@ -338,9 +338,8 @@ fn build_postgres_connect_options(secret: &Value) -> Result<PgConnectOptions, Pi
             })
         })
         .unwrap_or(5432);
-    let port = u16::try_from(port).map_err(|_| {
-        PipelineError::new("FW_NODE_PG_SECRET", "secret.port must be in 0..=65535")
-    })?;
+    let port = u16::try_from(port)
+        .map_err(|_| PipelineError::new("FW_NODE_PG_SECRET", "secret.port must be in 0..=65535"))?;
     let database = secret
         .get("database")
         .and_then(Value::as_str)

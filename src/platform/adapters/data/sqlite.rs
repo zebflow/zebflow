@@ -9,16 +9,17 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
-use crate::platform::adapters::data::DataAdapter;
-use crate::platform::error::PlatformError;
 use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::{
     ProjectRuntimeMode, ProjectRuntimePlacement, ProjectRuntimePlacementTarget,
 };
+use crate::platform::adapters::data::DataAdapter;
+use crate::platform::error::PlatformError;
 use crate::platform::model::{
     McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject, PlatformUser,
     ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
-    ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectPolicy, ProjectPolicyBinding,
+    ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectOperationKind,
+    ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding,
     ProjectSubjectKind, StoredUser,
 };
 
@@ -148,6 +149,27 @@ CREATE TABLE IF NOT EXISTS project_runtime_placements (
     updated_at          INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project)
 );
+CREATE TABLE IF NOT EXISTS project_operations (
+    owner               TEXT NOT NULL,
+    project             TEXT NOT NULL,
+    operation_id        TEXT NOT NULL,
+    kind                TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    current_step        TEXT NOT NULL DEFAULT '',
+    source_office_id    TEXT,
+    target_office_id    TEXT,
+    artifact_rel_path   TEXT,
+    artifact_sha256     TEXT,
+    artifact_bytes      INTEGER,
+    error_message       TEXT,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0,
+    completed_at        INTEGER,
+    PRIMARY KEY (owner, project, operation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_operations_project
+    ON project_operations (owner, project, updated_at DESC, operation_id ASC);
 CREATE TABLE IF NOT EXISTS mcp_sessions (
     token              TEXT PRIMARY KEY,
     owner              TEXT NOT NULL DEFAULT '',
@@ -162,6 +184,7 @@ CREATE TABLE IF NOT EXISTS pipeline_invocations (
     owner         TEXT NOT NULL,
     project       TEXT NOT NULL,
     file_rel_path TEXT NOT NULL,
+    run_id        TEXT NOT NULL DEFAULT '',
     at            INTEGER NOT NULL DEFAULT 0,
     duration_ms   INTEGER NOT NULL DEFAULT 0,
     status        TEXT NOT NULL DEFAULT '',
@@ -190,6 +213,7 @@ impl SqliteDataAdapter {
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
         conn.execute_batch(SCHEMA_SQL)
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+        Self::ensure_pipeline_invocation_schema(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -197,6 +221,65 @@ impl SqliteDataAdapter {
 
     fn qe(e: rusqlite::Error) -> PlatformError {
         PlatformError::new("PLATFORM_SQLITE", e.to_string())
+    }
+
+    fn ensure_table_column(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), PlatformError> {
+        let pragma_sql = format!("PRAGMA table_info({table})");
+        let mut stmt = conn.prepare(&pragma_sql).map_err(Self::qe)?;
+        let exists = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .any(|name| name == column);
+        if exists {
+            return Ok(());
+        }
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn ensure_pipeline_invocation_schema(conn: &Connection) -> Result<(), PlatformError> {
+        Self::ensure_table_column(
+            conn,
+            "pipeline_invocations",
+            "run_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+    }
+
+    fn decode_project_operation_kind(raw: &str) -> Result<ProjectOperationKind, PlatformError> {
+        match raw {
+            "export_bundle" => Ok(ProjectOperationKind::ExportBundle),
+            "export_files" => Ok(ProjectOperationKind::ExportFiles),
+            "import_bundle" => Ok(ProjectOperationKind::ImportBundle),
+            "import_files" => Ok(ProjectOperationKind::ImportFiles),
+            other => Err(PlatformError::new(
+                "PLATFORM_SQLITE_DECODE",
+                format!("unknown project operation kind '{other}'"),
+            )),
+        }
+    }
+
+    fn decode_project_operation_status(raw: &str) -> Result<ProjectOperationStatus, PlatformError> {
+        match raw {
+            "pending" => Ok(ProjectOperationStatus::Pending),
+            "running" => Ok(ProjectOperationStatus::Running),
+            "failed" => Ok(ProjectOperationStatus::Failed),
+            "completed" => Ok(ProjectOperationStatus::Completed),
+            other => Err(PlatformError::new(
+                "PLATFORM_SQLITE_DECODE",
+                format!("unknown project operation status '{other}'"),
+            )),
+        }
     }
 }
 
@@ -386,7 +469,17 @@ impl DataAdapter for SqliteDataAdapter {
             },
         );
         match result {
-            Ok((owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at)) => {
+            Ok((
+                owner,
+                project,
+                credential_id,
+                title,
+                kind,
+                secret_json,
+                notes,
+                created_at,
+                updated_at,
+            )) => {
                 let secret = serde_json::from_str::<Value>(&secret_json).unwrap_or(Value::Null);
                 Ok(Some(ProjectCredential {
                     owner,
@@ -458,7 +551,17 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .map(
-                |(owner, project, credential_id, title, kind, secret_json, notes, created_at, updated_at)| {
+                |(
+                    owner,
+                    project,
+                    credential_id,
+                    title,
+                    kind,
+                    secret_json,
+                    notes,
+                    created_at,
+                    updated_at,
+                )| {
                     let secret = serde_json::from_str::<Value>(&secret_json).unwrap_or(Value::Null);
                     ProjectCredential {
                         owner,
@@ -882,7 +985,15 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(owner, project, subject_kind_str, subject_id, policy_id, created_at, updated_at)| {
+                |(
+                    owner,
+                    project,
+                    subject_kind_str,
+                    subject_id,
+                    policy_id,
+                    created_at,
+                    updated_at,
+                )| {
                     let subject_kind: ProjectSubjectKind =
                         serde_json::from_value(Value::String(subject_kind_str)).ok()?;
                     Some(ProjectPolicyBinding {
@@ -942,7 +1053,17 @@ impl DataAdapter for SqliteDataAdapter {
             },
         );
         match result {
-            Ok((owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)) => {
+            Ok((
+                owner,
+                project,
+                user_id,
+                role_preset,
+                custom_policy_ids_json,
+                mcp_capabilities_json,
+                created_by,
+                created_at,
+                updated_at,
+            )) => {
                 let role_preset: ProjectAccessRolePreset =
                     serde_json::from_value(Value::String(role_preset)).unwrap_or_default();
                 let custom_policy_ids: Vec<String> =
@@ -1019,7 +1140,17 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)| {
+                |(
+                    owner,
+                    project,
+                    user_id,
+                    role_preset,
+                    custom_policy_ids_json,
+                    mcp_capabilities_json,
+                    created_by,
+                    created_at,
+                    updated_at,
+                )| {
                     let role_preset: ProjectAccessRolePreset =
                         serde_json::from_value(Value::String(role_preset)).ok()?;
                     let custom_policy_ids: Vec<String> =
@@ -1088,11 +1219,24 @@ impl DataAdapter for SqliteDataAdapter {
             },
         );
         match result {
-            Ok((owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at)) => {
+            Ok((
+                owner,
+                project,
+                invite_id,
+                target_user,
+                role_preset,
+                custom_policy_ids_json,
+                mcp_capabilities_json,
+                note,
+                invited_by,
+                status,
+                expires_at,
+                created_at,
+                updated_at,
+            )) => {
                 let role_preset: ProjectAccessRolePreset =
                     serde_json::from_value(Value::String(role_preset)).unwrap_or_default();
-                let status: ProjectInviteStatus =
-                    serde_json::from_str(&status).unwrap_or_default();
+                let status: ProjectInviteStatus = serde_json::from_str(&status).unwrap_or_default();
                 let custom_policy_ids: Vec<String> =
                     serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
                 let mcp_capability_ceiling: Vec<ProjectCapability> =
@@ -1179,11 +1323,24 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(owner, project, invite_id, target_user, role_preset, custom_policy_ids_json, mcp_capabilities_json, note, invited_by, status, expires_at, created_at, updated_at)| {
+                |(
+                    owner,
+                    project,
+                    invite_id,
+                    target_user,
+                    role_preset,
+                    custom_policy_ids_json,
+                    mcp_capabilities_json,
+                    note,
+                    invited_by,
+                    status,
+                    expires_at,
+                    created_at,
+                    updated_at,
+                )| {
                     let role_preset: ProjectAccessRolePreset =
                         serde_json::from_value(Value::String(role_preset)).ok()?;
-                    let status: ProjectInviteStatus =
-                        serde_json::from_str(&status).ok()?;
+                    let status: ProjectInviteStatus = serde_json::from_str(&status).ok()?;
                     let custom_policy_ids: Vec<String> =
                         serde_json::from_str(&custom_policy_ids_json).unwrap_or_default();
                     let mcp_capability_ceiling: Vec<ProjectCapability> =
@@ -1255,7 +1412,10 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn put_worker_registry_record(&self, record: &WorkerRegistryRecord) -> Result<(), PlatformError> {
+    fn put_worker_registry_record(
+        &self,
+        record: &WorkerRegistryRecord,
+    ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let capabilities_json =
             serde_json::to_string(&record.capabilities).unwrap_or_else(|_| "{}".to_string());
@@ -1308,8 +1468,11 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn delete_worker_registry_record(&self, node_id: &str) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute("DELETE FROM worker_registry WHERE node_id = ?1", params![node_id])
-            .map_err(Self::qe)?;
+        conn.execute(
+            "DELETE FROM worker_registry WHERE node_id = ?1",
+            params![node_id],
+        )
+        .map_err(Self::qe)?;
         Ok(())
     }
 
@@ -1378,7 +1541,9 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
+    fn list_project_runtime_placements(
+        &self,
+    ) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
@@ -1421,6 +1586,191 @@ impl DataAdapter for SqliteDataAdapter {
         )
         .map_err(Self::qe)?;
         Ok(())
+    }
+
+    fn get_project_operation(
+        &self,
+        owner: &str,
+        project: &str,
+        operation_id: &str,
+    ) -> Result<Option<ProjectOperationRecord>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
+             FROM project_operations
+             WHERE owner = ?1 AND project = ?2 AND operation_id = ?3",
+            params![owner, project, operation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<u64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, u32>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                    row.get::<_, Option<i64>>(15)?,
+                ))
+            },
+        );
+        match result {
+            Ok((
+                owner,
+                project,
+                operation_id,
+                kind,
+                status,
+                current_step,
+                source_office_id,
+                target_office_id,
+                artifact_rel_path,
+                artifact_sha256,
+                artifact_bytes,
+                error_message,
+                retry_count,
+                created_at,
+                updated_at,
+                completed_at,
+            )) => Ok(Some(ProjectOperationRecord {
+                owner,
+                project,
+                operation_id,
+                kind: Self::decode_project_operation_kind(&kind)?,
+                status: Self::decode_project_operation_status(&status)?,
+                current_step,
+                source_office_id,
+                target_office_id,
+                artifact_rel_path,
+                artifact_sha256,
+                artifact_bytes,
+                error_message,
+                retry_count,
+                created_at,
+                updated_at,
+                completed_at,
+            })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_project_operation(&self, record: &ProjectOperationRecord) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO project_operations
+             (owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                &record.owner,
+                &record.project,
+                &record.operation_id,
+                record.kind.key(),
+                record.status.key(),
+                &record.current_step,
+                &record.source_office_id,
+                &record.target_office_id,
+                &record.artifact_rel_path,
+                &record.artifact_sha256,
+                record.artifact_bytes,
+                &record.error_message,
+                record.retry_count,
+                record.created_at,
+                record.updated_at,
+                record.completed_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_project_operations(
+        &self,
+        owner: &str,
+        project: &str,
+        limit: usize,
+    ) -> Result<Vec<ProjectOperationRecord>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
+                 FROM project_operations
+                 WHERE owner = ?1 AND project = ?2
+                 ORDER BY updated_at DESC, operation_id DESC
+                 LIMIT ?3",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project, limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<u64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, u32>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                    row.get::<_, Option<i64>>(15)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Self::qe)?;
+        let mut out = Vec::with_capacity(items.len());
+        for (
+            owner,
+            project,
+            operation_id,
+            kind,
+            status,
+            current_step,
+            source_office_id,
+            target_office_id,
+            artifact_rel_path,
+            artifact_sha256,
+            artifact_bytes,
+            error_message,
+            retry_count,
+            created_at,
+            updated_at,
+            completed_at,
+        ) in items
+        {
+            out.push(ProjectOperationRecord {
+                owner,
+                project,
+                operation_id,
+                kind: Self::decode_project_operation_kind(&kind)?,
+                status: Self::decode_project_operation_status(&status)?,
+                current_step,
+                source_office_id,
+                target_office_id,
+                artifact_rel_path,
+                artifact_sha256,
+                artifact_bytes,
+                error_message,
+                retry_count,
+                created_at,
+                updated_at,
+                completed_at,
+            });
+        }
+        Ok(out)
     }
 
     // ──────────────────────── MCP Sessions ────────────────────────
@@ -1489,11 +1839,8 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn delete_mcp_session(&self, token: &str) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "DELETE FROM mcp_sessions WHERE token = ?1",
-            params![token],
-        )
-        .map_err(Self::qe)?;
+        conn.execute("DELETE FROM mcp_sessions WHERE token = ?1", params![token])
+            .map_err(Self::qe)?;
         Ok(())
     }
 
@@ -1538,12 +1885,13 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO pipeline_invocations
-             (owner, project, file_rel_path, at, duration_ms, status, trigger, error, trace_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (owner, project, file_rel_path, run_id, at, duration_ms, status, trigger, error, trace_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 owner,
                 project,
                 file_rel_path,
+                &entry.run_id,
                 entry.at,
                 entry.duration_ms as i64,
                 &entry.status,
@@ -1577,7 +1925,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT at, duration_ms, status, trigger, error, trace_json
+                "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
                  FROM pipeline_invocations
                  WHERE owner = ?1 AND project = ?2 AND file_rel_path = ?3
                  ORDER BY at DESC",
@@ -1586,27 +1934,31 @@ impl DataAdapter for SqliteDataAdapter {
         let items = stmt
             .query_map(params![owner, project, file_rel_path], |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
-            .map(|(at, duration_ms, status, trigger, error, trace_json)| {
-                let trace = serde_json::from_str(&trace_json).unwrap_or_default();
-                PipelineInvocationEntry {
-                    at,
-                    duration_ms: duration_ms as u64,
-                    status,
-                    trigger,
-                    error,
-                    trace,
-                }
-            })
+            .map(
+                |(run_id, at, duration_ms, status, trigger, error, trace_json)| {
+                    let trace = serde_json::from_str(&trace_json).unwrap_or_default();
+                    PipelineInvocationEntry {
+                        run_id,
+                        at,
+                        duration_ms: duration_ms as u64,
+                        status,
+                        trigger,
+                        error,
+                        trace,
+                    }
+                },
+            )
             .collect();
         Ok(items)
     }

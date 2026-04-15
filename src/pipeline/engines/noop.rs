@@ -8,7 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 
 use crate::pipeline::interface::PipelineEngine;
-use crate::pipeline::model::{PipelineContext, PipelineError, PipelineOutput, PipelineGraph};
+use crate::pipeline::model::{PipelineContext, PipelineError, PipelineGraph, PipelineOutput};
 
 /// Reference framework engine with strict pin validation and mock execution.
 #[derive(Default)]

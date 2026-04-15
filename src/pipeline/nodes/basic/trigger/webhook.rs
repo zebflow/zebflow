@@ -12,11 +12,14 @@
 //! | n.web.response --template pages/blog-home
 //! ```
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, LayoutItem, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
+    SelectOptionDef,
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -196,7 +199,10 @@ fn collect_trace_private_tokens(payload: &Value) -> Vec<String> {
     };
     let mut out = Vec::new();
     for (key, value) in map {
-        if !SENSITIVE_KEYS.iter().any(|candidate| key.eq_ignore_ascii_case(candidate)) {
+        if !SENSITIVE_KEYS
+            .iter()
+            .any(|candidate| key.eq_ignore_ascii_case(candidate))
+        {
             continue;
         }
         let Some(text) = value.as_str() else {

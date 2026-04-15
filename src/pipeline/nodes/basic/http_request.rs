@@ -8,15 +8,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::platform::services::CredentialService;
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::language::LanguageEngine;
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
+use crate::platform::services::CredentialService;
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use super::util::{eval_deno_expr, metadata_scope, resolve_path_cloned};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 
 pub const NODE_KIND: &str = "n.http.request";
 pub const INPUT_PIN_IN: &str = "in";
@@ -540,14 +540,13 @@ fn build_request_from_secure_credential(
     input: &Value,
     metadata: &Value,
 ) -> Result<PreparedRequest, PipelineError> {
-    let secret: SecureRequestSecret = serde_json::from_value(credential_secret.clone()).map_err(
-        |err| {
+    let secret: SecureRequestSecret =
+        serde_json::from_value(credential_secret.clone()).map_err(|err| {
             PipelineError::new(
                 "FW_NODE_HTTP_REQUEST_SECURE_REQUEST",
                 format!("invalid secure_request secret: {err}"),
             )
-        },
-    )?;
+        })?;
 
     if secret.request.url.trim().is_empty() {
         return Err(PipelineError::new(
@@ -640,7 +639,10 @@ fn resolve_secure_request_bindings(
             }
             continue;
         };
-        out.insert(item.name.clone(), eval_binding_to_string(language, &expr, input, metadata)?);
+        out.insert(
+            item.name.clone(),
+            eval_binding_to_string(language, &expr, input, metadata)?,
+        );
     }
     for (key, expr) in &config.request_bindings {
         if out.contains_key(key) {
@@ -721,7 +723,9 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn self_call_succeeds_from_same_server_request_handler() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind test server");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
         let addr = listener.local_addr().expect("resolve test server addr");
         let echo_url = format!("http://{addr}/echo");
 
@@ -812,7 +816,10 @@ mod tests {
 
         assert_eq!(prepared.visible_url, "••••••");
         assert_eq!(prepared.visible_method, "••••••");
-        assert_eq!(prepared.credential_id.as_deref(), Some("salam-login-request"));
+        assert_eq!(
+            prepared.credential_id.as_deref(),
+            Some("salam-login-request")
+        );
         assert_eq!(
             prepared.url,
             "https://api.uinsgd.ac.id/salam/v1/index.php/auth/login"
