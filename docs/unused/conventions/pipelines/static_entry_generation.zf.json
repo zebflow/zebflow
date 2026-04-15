@@ -1,0 +1,60 @@
+{
+  "kind": "zebflow.pipeline",
+  "version": "0.1",
+  "id": "static-entry-generation",
+  "description": "Generate one static catalog entry page into files/public from a callable function pipeline.",
+  "entry_nodes": ["function_in"],
+  "nodes": [
+    {
+      "id": "function_in",
+      "kind": "n.trigger.function",
+      "input_pins": [],
+      "output_pins": ["out"],
+      "config": {
+        "params": {
+          "entry_slug": {
+            "type": "string",
+            "description": "Slug of the entry to generate"
+          }
+        }
+      }
+    },
+    {
+      "id": "seed_payload",
+      "kind": "n.script",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "language": "js",
+        "source": "const requestedEntrySlug = input?.entry_slug || 'city-garden';\nconst collection = {\n  name: 'Field Notes',\n  slug: 'field-notes'\n};\nconst entry = {\n  title: requestedEntrySlug === 'city-garden' ? 'City Garden' : requestedEntrySlug,\n  slug: requestedEntrySlug,\n  summary: 'A compact example of one generated static content page.',\n  body: `A small archive can still feel deliberate.\\n\\nThis example shows how one payload becomes one persisted HTML artifact.`\n};\nreturn {\n  collection,\n  entry,\n  related_labels: [\n    { slug: 'example', label: 'Example' },\n    { slug: 'static', label: 'Static' }\n  ],\n  generated_at: new Date().toISOString()\n};"
+      }
+    },
+    {
+      "id": "write_static_file",
+      "kind": "n.web.static.generate",
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "config": {
+        "template": "pages/static-entry-page.tsx",
+        "scope": "public",
+        "output_path": "collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}/index.html",
+        "route": "/collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}",
+        "on_conflict": "overwrite"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from_node": "function_in",
+      "from_pin": "out",
+      "to_node": "seed_payload",
+      "to_pin": "in"
+    },
+    {
+      "from_node": "seed_payload",
+      "from_pin": "out",
+      "to_node": "write_static_file",
+      "to_pin": "in"
+    }
+  ]
+}

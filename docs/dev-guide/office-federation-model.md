@@ -1,5 +1,8 @@
 # Office Federation Model
 
+> Companion to the normative [Office Federation Contract](./office-federation-contract.md).
+> This document focuses on the formal governance model and invariants.
+
 > Formal governance model for Zebflow offices.
 > This document defines the intended contract. It is normative for terminology and invariants.
 > Implementation may lag the model, but should not contradict it without explicit revision here.
