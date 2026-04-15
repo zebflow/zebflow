@@ -11,13 +11,14 @@ pub mod adapters;
 pub mod catalog;
 pub mod db;
 pub mod error;
+pub mod help;
 pub mod interaction;
 pub mod mcp;
 pub mod model;
 pub mod operations;
+pub mod sekejap;
 pub mod services;
 pub mod shell;
-pub mod help;
 pub mod web;
 
 use std::sync::Arc;

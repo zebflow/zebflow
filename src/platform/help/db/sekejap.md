@@ -1,109 +1,118 @@
 # SekejapQL — Sekejap Query & Write Guide
 
 Sekejap is Zebflow's embedded multi-model database — graph, vector, spatial, full-text, and vague
-temporal. Each "table" is a named collection with optional indexed fields.
+temporal. In Zebflow, project queries should be written as SQL-like SekejapQL.
 
-## Query Format — SekejapQL text DSL
+## Query Shape
 
-One operation per line, or pipe-separated on one line.
+Read queries start with `SELECT`.
 
+Basic table query:
+
+```sql
+SELECT _key, name, status
+FROM contacts
+WHERE status = 'active'
+ORDER BY name ASC
+LIMIT 50
 ```
-collection "sjtable__contacts"
-where_eq "status" "active"
-take 50
+
+Graph query:
+
+```sql
+SELECT friend._key AS friend_key, friend.name AS friend_name
+FROM MATCH (u:users)-[:follows]->(friend:users)
+WHERE u._key = 'alice'
+LIMIT 50
 ```
 
-Pipe style:
+The `SELECT` list now acts like the return clause from the older graph form.
+If you are used to:
+
+```sql
+MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = 'alice' RETURN friend
 ```
-collection "sjtable__contacts" | where_eq "status" "active" | take 50
+
+write this instead:
+
+```sql
+SELECT friend._key AS friend_key, friend.name AS friend_name
+FROM MATCH (u:users)-[:follows]->(friend:users)
+WHERE u._key = 'alice'
 ```
-
-**Collection name**: always `sjtable__` + table slug. Table named `contacts` → collection `sjtable__contacts`.
-
-## All Operators
-
-| Op | Syntax | Notes |
-|---|---|---|
-| `collection` | `collection "sjtable__name"` | Required starting op |
-| `one` | `one "sjtable__name/row-id"` | Single row by slug |
-| `where_eq` | `where_eq "field" "value"` | Exact match (O(1) if hash-indexed) |
-| `where_gt` | `where_gt "field" 80` | Greater than |
-| `where_lt` | `where_lt "field" 80` | Less than |
-| `where_gte` | `where_gte "field" 80` | Greater or equal |
-| `where_lte` | `where_lte "field" 80` | Less or equal |
-| `where_between` | `where_between "field" 10 90` | Range inclusive |
-| `where_in` | `where_in "field" "a" "b" "c"` | IN list |
-| `sort` | `sort "field" desc` | asc (default) or desc |
-| `skip` | `skip 20` | Pagination offset |
-| `take` | `take 50` | Limit (default 100, max 500) |
-| `select` | `select "name" "email"` | Return only these fields |
-| `matching` | `matching "search terms"` | Full-text search (if fulltext_fields defined) |
 
 ## Querying via `run_db_query`
 
-Pass SekejapQL text directly as the `sql` param. Both text DSL and JSON pipeline formats are accepted. Text DSL is preferred.
+Pass SekejapQL text directly as the `sql` param.
 
-List all rows:
-```
-collection "sjtable__contacts"
-take 100
+List rows:
+
+```sql
+SELECT _key, title, created_at
+FROM posts
+ORDER BY created_at DESC
+LIMIT 100
 ```
 
 Filter by field:
-```
-collection "sjtable__contacts"
-where_eq "status" "active"
-take 50
+
+```sql
+SELECT _key, email, status
+FROM contacts
+WHERE status = 'active'
+LIMIT 50
 ```
 
 Range + sort:
-```
-collection "sjtable__contacts"
-where_gte "score" 80
-sort "score" desc
-take 20
+
+```sql
+SELECT _key, score
+FROM contacts
+WHERE score >= 80
+ORDER BY score DESC
+LIMIT 20
 ```
 
-Multiple filters + projection:
-```
-collection "sjtable__orders"
-where_eq "status" "pending"
-where_gte "amount" 100
-sort "created_at" desc
-select "order_id" "customer" "amount" "status"
-take 25
+Full-text search:
+
+```sql
+SELECT _key, title
+FROM articles
+WHERE title ILIKE '%quarterly report%'
+LIMIT 10
 ```
 
-Get single row by id:
-```
-one "sjtable__contacts/alice-001"
+Graph traversal:
+
+```sql
+SELECT cause._key AS cause_key
+FROM MATCH (event:events)-[:caused_by*1..5]->(cause:events)
+WHERE event._key = 'maribyrnong-flood'
+LIMIT 20
 ```
 
-Full-text search (requires `fulltext_fields` defined on table):
-```
-collection "sjtable__articles"
-matching "quarterly report 2024"
-take 10
-```
+## Creating a Table — DSL
 
-## Creating a Table — DSL (preferred for agent)
-
-```
+```text
 create table contacts --title "Contacts" --fields "name:Text,email:Text,status:Text,score:Number,created_at:Number" --hash "email,status" --range "score,created_at"
 ```
 
 - `--fields "f1:Kind,f2:Kind"` — comma-separated `name:Kind` pairs. Kinds: `Text`, `Number`, `Boolean`, `Json`
-- `--hash "f1,f2"` — O(1) equality lookup fields
-- `--range "f1,f2"` — O(log N) range query fields
+- `--hash "f1,f2"` — exact-match index fields
+- `--range "f1,f2"` — range index fields
 
 After creation you can immediately query:
-```
-collection "sjtable__contacts" | take 50
+
+```sql
+SELECT _key, name
+FROM contacts
+LIMIT 50
 ```
 
 List all tables:
-```
-get tables
+
+```sql
+SHOW TABLES
 ```
 
 ## Creating a Table — HTTP API
@@ -126,58 +135,46 @@ get tables
 }
 ```
 
-## Inserting / Updating a Row — DSL (preferred for agent)
+## Writing Rows
 
-Use `run` with a `n.sekejap.query` node (operation=upsert):
+Use SQL directly:
 
+```sql
+INSERT INTO contacts (_key, name, email, status, score, created_at)
+VALUES ('alice-001', 'Alice', 'alice@example.com', 'active', 95, 1741300000000)
 ```
-run | trigger.manual | n.sekejap.query --table contacts --op upsert --row-id alice-001 -- {"name":"Alice","email":"alice@example.com","status":"active","score":95,"created_at":1741300000000}
-```
-
-The `row-id` is the row's unique key. Upserting the same id overwrites the row.
 
 ## Full Example: Create + Insert + Query
 
-```
-# 1. Create table
-create table products --fields "name:Text,price:Number,category:Text,in_stock:Boolean" --hash "category" --range "price"
+```sql
+-- 1. Create table
+CREATE TABLE products (_key TEXT PRIMARY KEY, name TEXT, price REAL, category TEXT, in_stock JSON)
 
-# 2. Insert rows
-run | trigger.manual | n.sekejap.query --table products --op upsert --row-id prod-001 -- {"name":"Widget A","price":29.99,"category":"widgets","in_stock":true}
-run | trigger.manual | n.sekejap.query --table products --op upsert --row-id prod-002 -- {"name":"Widget B","price":49.99,"category":"widgets","in_stock":false}
+-- 2. Insert rows
+INSERT INTO products (_key, name, price, category, in_stock) VALUES ('prod-001', 'Widget A', 29.99, 'widgets', true)
+INSERT INTO products (_key, name, price, category, in_stock) VALUES ('prod-002', 'Widget B', 49.99, 'widgets', false)
 
-# 3. Query rows
-collection "sjtable__products"
-where_eq "category" "widgets"
-where_gte "price" 30
-sort "price" asc
-take 20
+-- 3. Query rows
+SELECT _key, name, price
+FROM products
+WHERE category = 'widgets' AND price >= 30
+ORDER BY price ASC
+LIMIT 20
 ```
 
 ## `n.sekejap.query` Pipeline Node Config
 
-```
-n.sekejap.query
-  --table <name>                     Table slug (e.g. contacts)
-  --op query|upsert                  Default: query
-  --where-field <field>              (query) equality filter field
-  --where-value-path <jsonpath>      (query) value from pipeline payload
-  --limit <n>                        (query) max rows, default 100
-  --row-id <id>                      (upsert) row unique key
-  --row-id-path <jsonpath>           (upsert) row id from pipeline payload
-  --data-path <jsonpath>             (upsert) row data from pipeline payload
-  -- <json>                          (upsert) inline row data as JSON body
+```zf
+| n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
+| n.sekejap.query -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = '{{ $trigger.params.id }}'"
 ```
 
-All flags have `_expr` variants for Deno expression evaluation:
-`--table-expr 'ctx.input.table_name'`
+Optional flags:
 
-## Platform Collections (metadata DB, read-only)
+- `--limit <n>` — maximum rows returned for read queries
+- `--read-only true|false` — reject writes when enabled
 
-The platform catalog (internal metadata DB) has these collections — use the admin DB API, NOT the project Sekejap connection:
-- `user` — user accounts
-- `project` — project records
-- `project_credential` — credentials
-- `project_db_connection` — DB connections
-- `pipeline_meta` — pipeline registry
-- `mcp_session` — MCP sessions
+## Platform Collections
+
+The platform catalog is separate from the project Sekejap store. Use the admin DB API for platform
+metadata, not the project Sekejap connection.
