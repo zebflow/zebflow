@@ -14,16 +14,16 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 
 ### Workflow
 
-1. Create a table in the Studio UI (Tables page) OR use the sekejap node directly with a collection name
-2. Use `n.sekejap.query` in pipelines
+1. Create a table in the Studio UI (Tables page)
+2. Use `n.sekejap.query` in pipelines with raw SQL
+3. For graph reads, use `SELECT ... FROM MATCH ...`
 
 ### Node
 
+```zf
+| n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
+| n.sekejap.query -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = '{{ $trigger.params.id }}'"
 ```
-n.sekejap.query --table <name> --op query|upsert|remove
-```
-
-Collections use internal prefix `sjtable__` (e.g. table "posts" → collection "sjtable__posts").
 
 ### Reference
 

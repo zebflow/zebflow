@@ -183,18 +183,18 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 
 **Workflow:**
 1. Create a table in the UI (Tables page) — give it a slug and field definitions
-2. Use `n.sekejap.query` in pipelines to query or upsert rows
+2. Use `n.sekejap.query` in pipelines with raw SQL
 
 **Pipeline node (DSL):**
 ```
-| n.sekejap.query --table posts --op query
-| n.sekejap.query --table posts --op upsert
+| n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
+| n.sekejap.query -- "INSERT INTO posts (_key, title) VALUES ('hello', 'Hello')"
 ```
 
 **Direct query (run_db_query / connection_describe):**
 - Connection kind: `sekejap` (already available in every project, no config needed)
-- Query language: SekejapQL text DSL — `collection "sjtable__posts" | take 50`
-- Collections use internal prefix `sjtable__`: table `posts` → collection `sjtable__posts`
+- Query language: SQL-like SekejapQL
+- Graph reads use `SELECT ... FROM MATCH ...`; the `SELECT` list replaces the older `MATCH ... RETURN ...` return clause
 
 See `help(topic="db/sekejap")` for the full query language reference.
 
