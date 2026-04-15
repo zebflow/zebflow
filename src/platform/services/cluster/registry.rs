@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use crate::infra::cluster::registry::{WorkerHeartbeat, WorkerRegistryRecord, WorkerRegistrySnapshot};
+use crate::infra::cluster::registry::{
+    WorkerHeartbeat, WorkerRegistryRecord, WorkerRegistrySnapshot,
+};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -47,7 +49,10 @@ impl ClusterRegistryService {
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "online".to_string()),
             capabilities: request.capabilities.clone(),
-            registered_at: existing.as_ref().map(|value| value.registered_at).unwrap_or(now),
+            registered_at: existing
+                .as_ref()
+                .map(|value| value.registered_at)
+                .unwrap_or(now),
             last_heartbeat_at: now,
         };
         self.data.put_worker_registry_record(&record)?;
@@ -109,7 +114,9 @@ impl ClusterRegistryService {
     }
 
     /// Build runtime target options for project create/clone UI.
-    pub fn runtime_target_options(&self) -> Result<Vec<crate::platform::model::ClusterRuntimeTargetOption>, PlatformError> {
+    pub fn runtime_target_options(
+        &self,
+    ) -> Result<Vec<crate::platform::model::ClusterRuntimeTargetOption>, PlatformError> {
         let mut options = vec![crate::platform::model::ClusterRuntimeTargetOption {
             value: "local".to_string(),
             label: "Local office".to_string(),

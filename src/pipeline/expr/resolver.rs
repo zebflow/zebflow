@@ -28,14 +28,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::scanner::{ExprField, Segment, scan};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
     SourceKind,
 };
 use crate::pipeline::PipelineError;
-use super::scanner::{scan, ExprField, Segment};
 
 /// Resolve all `{{ expr }}` expressions in `config` and return the mutated copy.
 ///
@@ -95,11 +95,14 @@ pub fn resolve_config_expressions(
         .parse(&module)
         .map_err(|e| PipelineError::new("FW_EXPR_PARSE", e.to_string()))?;
     let compiled = language
-        .compile(&ir, &CompileOptions {
-            target: COMPILE_TARGET_BACKEND.to_string(),
-            optimize_level: 1,
-            emit_trace_hints: false,
-        })
+        .compile(
+            &ir,
+            &CompileOptions {
+                target: COMPILE_TARGET_BACKEND.to_string(),
+                optimize_level: 1,
+                emit_trace_hints: false,
+            },
+        )
         .map_err(|e| PipelineError::new("FW_EXPR_COMPILE", e.to_string()))?;
 
     // Build the scope input: all variables are namespaced under `$` keys so
@@ -176,7 +179,10 @@ fn build_replacement(
             return Value::Null;
         };
         let idx = exprs.iter().position(|e| e == expr).unwrap_or(0);
-        results.get(&format!("e{idx}")).cloned().unwrap_or(Value::Null)
+        results
+            .get(&format!("e{idx}"))
+            .cloned()
+            .unwrap_or(Value::Null)
     } else {
         // Interpolated — concatenate all parts as strings.
         let mut s = String::new();
@@ -217,17 +223,23 @@ fn apply_json_ptr(root: &mut Value, ptr: &str, value: Value) {
     if tokens.is_empty() {
         return;
     }
-    let Some((last, parents)) = tokens.split_last() else { return; };
+    let Some((last, parents)) = tokens.split_last() else {
+        return;
+    };
 
     // Thread a mutable reference through the parent path (same pattern as serde_json's
     // `pointer_mut`).
-    let parent = parents.iter().try_fold(root as &mut Value, |node, tok| match node {
-        Value::Object(map) => Some(map.entry(tok.clone()).or_insert(Value::Null)),
-        Value::Array(arr) => tok.parse::<usize>().ok().and_then(|i| arr.get_mut(i)),
-        _ => None,
-    });
+    let parent = parents
+        .iter()
+        .try_fold(root as &mut Value, |node, tok| match node {
+            Value::Object(map) => Some(map.entry(tok.clone()).or_insert(Value::Null)),
+            Value::Array(arr) => tok.parse::<usize>().ok().and_then(|i| arr.get_mut(i)),
+            _ => None,
+        });
 
-    let Some(parent) = parent else { return; };
+    let Some(parent) = parent else {
+        return;
+    };
 
     match parent {
         Value::Object(map) => {

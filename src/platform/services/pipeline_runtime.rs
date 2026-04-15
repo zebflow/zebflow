@@ -121,8 +121,13 @@ impl CompiledPipeline {
                 .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
                 .unwrap_or_default();
             for field in required {
-                let present = node.config.get(field).map(|v| !v.is_null()).unwrap_or(false);
-                let non_empty = node.config
+                let present = node
+                    .config
+                    .get(field)
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false);
+                let non_empty = node
+                    .config
                     .get(field)
                     .and_then(|v| v.as_str())
                     .map(|s| !s.trim().is_empty())
@@ -317,9 +322,9 @@ impl PipelineRuntimeService {
     ) -> Result<(), PlatformError> {
         let owner = crate::platform::model::slug_segment(owner);
         let project = crate::platform::model::slug_segment(project);
-        let Some(meta) = self
-            .projects
-            .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
+        let Some(meta) =
+            self.projects
+                .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
         else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",

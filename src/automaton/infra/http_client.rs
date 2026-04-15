@@ -155,12 +155,13 @@ impl LlmCall for OpenAiHttpClient {
                         .filter_map(|tc| {
                             let id = tc.get("id")?.as_str()?.to_string();
                             let name = tc.get("function")?.get("name")?.as_str()?.to_string();
-                            let arguments = tc
-                                .get("function")?
-                                .get("arguments")?
-                                .as_str()?
-                                .to_string();
-                            Some(ToolCall { id, name, arguments })
+                            let arguments =
+                                tc.get("function")?.get("arguments")?.as_str()?.to_string();
+                            Some(ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            })
                         })
                         .collect()
                 })
@@ -190,7 +191,11 @@ pub struct AnthropicClient {
 
 impl AnthropicClient {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model, client: reqwest::Client::new() }
+        Self {
+            api_key,
+            model,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
@@ -257,7 +262,11 @@ impl LlmCall for AnthropicClient {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                if parts.is_empty() { None } else { Some(parts.join("\n")) }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join("\n"))
+                }
             })
             .ok_or_else(|| "anthropic empty content".to_string())
     }
@@ -300,7 +309,6 @@ pub fn client_from_env() -> Option<Arc<dyn LlmCall>> {
     let api_key = std::env::var("ZEBTUNE_OPENAI_API_KEY").ok()?;
     let base_url = std::env::var("ZEBTUNE_OPENAI_BASE_URL")
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-    let model = std::env::var("ZEBTUNE_OPENAI_MODEL")
-        .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+    let model = std::env::var("ZEBTUNE_OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     Some(Arc::new(OpenAiHttpClient::new(base_url, api_key, model)))
 }

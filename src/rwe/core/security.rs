@@ -52,10 +52,7 @@ pub fn analyze(source: &str, policy: &SecurityPolicy) -> Result<Vec<Diagnostic>,
 ///
 /// Dynamic `fetch()` calls (e.g. `fetch(url)`) cannot be checked at compile
 /// time and are not flagged — runtime enforcement must complement this.
-fn check_fetch_domain_allowlist(
-    source: &str,
-    policy: &SecurityPolicy,
-) -> Result<(), EngineError> {
+fn check_fetch_domain_allowlist(source: &str, policy: &SecurityPolicy) -> Result<(), EngineError> {
     if policy.network_allowlist.is_empty() {
         return Ok(()); // empty = no restriction
     }
@@ -82,16 +79,14 @@ fn check_fetch_domain_allowlist(
                 let url = std::str::from_utf8(&bytes[url_start..j]).unwrap_or("");
                 if url.starts_with("http://") || url.starts_with("https://") {
                     let domain = extract_fetch_domain(url);
-                    let allowed = policy.network_allowlist.iter().any(|a| {
-                        domain == a.as_str()
-                            || domain.ends_with(&format!(".{a}"))
-                    });
+                    let allowed = policy
+                        .network_allowlist
+                        .iter()
+                        .any(|a| domain == a.as_str() || domain.ends_with(&format!(".{a}")));
                     if !allowed {
                         return Err(EngineError::new(
                             "RWE_SECURITY_FETCH",
-                            format!(
-                                "fetch() to '{domain}' is not in network_allowlist"
-                            ),
+                            format!("fetch() to '{domain}' is not in network_allowlist"),
                         ));
                     }
                 }

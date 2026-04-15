@@ -59,12 +59,13 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
             deno_timeout_ms: 3_000,
         };
 
-        let compiled = crate::rwe::core::compile(&template.markup, compile_options).map_err(|err| {
-            ReactiveWebError::new(
-                "RWE_COMPILE",
-                format!("rwe compile failed for '{}': {}", template.id, err.message),
-            )
-        })?;
+        let compiled =
+            crate::rwe::core::compile(&template.markup, compile_options).map_err(|err| {
+                ReactiveWebError::new(
+                    "RWE_COMPILE",
+                    format!("rwe compile failed for '{}': {}", template.id, err.message),
+                )
+            })?;
 
         // Best-effort warmup so post-save first request does not pay cold Deno path.
         let warmup_enabled = std::env::var("ZEBFLOW_RWE_PREWARM")
@@ -143,17 +144,19 @@ impl ReactiveWebEngine for RweReactiveWebEngine {
                 )
             })?;
 
-        let rendered = crate::rwe::core::render(&rwe_compiled, &state, &ctx.enabled_libraries).map_err(|err| {
-            ReactiveWebError::new(
-                "RWE_RENDER",
-                format!("rwe render failed: {}", err.message),
-            )
-        })?;
+        let rendered = crate::rwe::core::render(&rwe_compiled, &state, &ctx.enabled_libraries)
+            .map_err(|err| {
+                ReactiveWebError::new("RWE_RENDER", format!("rwe render failed: {}", err.message))
+            })?;
 
         // Tailwind stays on Zebflow processor pipeline.
         let mut processor_diags: Vec<ReactiveWebDiagnostic> = Vec::new();
-        let processed_html =
-            processors::apply_compile_processors(&rendered.html, &rwe_compiled.server_module_source, &compiled.options, &mut processor_diags);
+        let processed_html = processors::apply_compile_processors(
+            &rendered.html,
+            &rwe_compiled.server_module_source,
+            &compiled.options,
+            &mut processor_diags,
+        );
         let (clean_html, extracted_css) = extract_generated_tailwind_style(&processed_html);
 
         let mut scripts = Vec::new();

@@ -10,17 +10,17 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
+use crate::platform::model::ZebLock;
 use crate::platform::model::{
     AgentDocItem, CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
     PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
-    ProjectFileLayout, RegistryFileItem, TemplateCreateKind, TemplateCreateRequest,
-    TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest, TemplateSaveRequest,
-    TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path, now_ts, slug_segment,
+    ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem, TemplateCreateKind,
+    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
+    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
+    now_ts, slug_segment,
 };
-use crate::platform::model::ZebLock;
 use crate::platform::services::project_config::ZebflowJsonService;
 use crate::platform::services::zeb_lock::ZebLockService;
-
 
 /// Project service backed by swappable data + file adapters.
 pub struct ProjectService {
@@ -95,12 +95,7 @@ impl ProjectService {
         let now = now_ts();
         let existing = self.data.get_project(&owner, &project)?;
         let created_at = existing.as_ref().map(|p| p.created_at).unwrap_or(now);
-        let title = req
-            .title
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let title = req.title.as_deref().unwrap_or("").trim().to_string();
         let title = if title.is_empty() {
             project.replace('-', " ")
         } else {
@@ -122,18 +117,27 @@ impl ProjectService {
             let branch = branch.trim();
             if !branch.is_empty() && branch != "main" {
                 let _ = Command::new("git")
-                    .arg("-C").arg(&layout.repo_dir)
-                    .arg("branch").arg("-m").arg("main").arg(branch)
+                    .arg("-C")
+                    .arg(&layout.repo_dir)
+                    .arg("branch")
+                    .arg("-m")
+                    .arg("main")
+                    .arg(branch)
                     .output();
             }
         }
         // Write title to zebflow.json (Layer 2)
-        self.zebflow_cfg.ensure_initialized(&owner, &project, &title)?;
+        self.zebflow_cfg
+            .ensure_initialized(&owner, &project, &title)?;
         // Write zeb.lock if it doesn't exist yet
-        self.zeb_lock.write_if_missing(&owner, &project, &ZebLock {
-            version: 1,
-            ..Default::default()
-        })?;
+        self.zeb_lock.write_if_missing(
+            &owner,
+            &project,
+            &ZebLock {
+                version: 1,
+                ..Default::default()
+            },
+        )?;
         self.project_data.initialize_project(&layout)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -292,7 +296,8 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)? else {
+        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
+        else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
                 format!("pipeline '{}' not found", file_rel_path),
@@ -301,11 +306,8 @@ impl ProjectService {
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
-        let snapshot_path = self.runtime_pipeline_snapshot_path(
-            &layout,
-            &meta.file_rel_path,
-            &current_hash,
-        )?;
+        let snapshot_path =
+            self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
         if let Some(parent) = snapshot_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -328,7 +330,8 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
-        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)? else {
+        let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
+        else {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_MISSING",
                 "pipeline not found",
@@ -379,11 +382,8 @@ impl ProjectService {
                 format!("pipeline '{}' is not active", meta.name),
             )
         })?;
-        let snapshot_path = self.runtime_pipeline_snapshot_path(
-            &layout,
-            &meta.file_rel_path,
-            active_hash,
-        )?;
+        let snapshot_path =
+            self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, active_hash)?;
         if !snapshot_path.is_file() {
             return Err(PlatformError::new(
                 "PLATFORM_PIPELINE_ACTIVE_SNAPSHOT_MISSING",
@@ -415,8 +415,16 @@ impl ProjectService {
             // Derive virtual_path from file_rel_path (source of truth).
             let vp = virtual_path_from_file_rel_path(&m.file_rel_path);
             if vp == current_path {
-                let is_active = m.active_hash.as_deref().map(|h| !h.is_empty() && h == m.hash).unwrap_or(false);
-                let has_draft = m.active_hash.as_deref().map(|h| !h.is_empty() && h != m.hash).unwrap_or(false);
+                let is_active = m
+                    .active_hash
+                    .as_deref()
+                    .map(|h| !h.is_empty() && h == m.hash)
+                    .unwrap_or(false);
+                let has_draft = m
+                    .active_hash
+                    .as_deref()
+                    .map(|h| !h.is_empty() && h != m.hash)
+                    .unwrap_or(false);
                 pipelines.push(PipelineRegistryItem {
                     name: m.name,
                     title: m.title,
@@ -445,7 +453,9 @@ impl ProjectService {
         let phys_dir = if current_path == "/" {
             layout.repo_pipelines_dir.clone()
         } else {
-            layout.repo_pipelines_dir.join(current_path.trim_start_matches('/'))
+            layout
+                .repo_pipelines_dir
+                .join(current_path.trim_start_matches('/'))
         };
 
         let mut files: Vec<RegistryFileItem> = Vec::new();
@@ -453,9 +463,14 @@ impl ProjectService {
         if phys_dir.is_dir() {
             if let Ok(rd) = std::fs::read_dir(&phys_dir) {
                 for entry in rd.flatten() {
-                    let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+                    let ft = match entry.file_type() {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
                     let fname = entry.file_name().to_string_lossy().into_owned();
-                    if fname.starts_with('.') { continue; }
+                    if fname.starts_with('.') {
+                        continue;
+                    }
 
                     if ft.is_dir() {
                         // Add physical subdir if not already derived from pipeline meta
@@ -524,8 +539,14 @@ impl ProjectService {
         }
         normal_folders.sort_by(|a, b| a.name.cmp(&b.name));
         special_folders.sort_by(|a, b| {
-            let ai = SPECIAL_ORDER.iter().position(|&s| s == a.name).unwrap_or(99);
-            let bi = SPECIAL_ORDER.iter().position(|&s| s == b.name).unwrap_or(99);
+            let ai = SPECIAL_ORDER
+                .iter()
+                .position(|&s| s == a.name)
+                .unwrap_or(99);
+            let bi = SPECIAL_ORDER
+                .iter()
+                .position(|&s| s == b.name)
+                .unwrap_or(99);
             ai.cmp(&bi)
         });
         normal_folders.extend(special_folders);
@@ -540,7 +561,9 @@ impl ProjectService {
         if current_path != "/" {
             let mut accum = String::new();
             for seg in current_path.trim_start_matches('/').split('/') {
-                if seg.trim().is_empty() { continue; }
+                if seg.trim().is_empty() {
+                    continue;
+                }
                 accum.push('/');
                 accum.push_str(seg);
                 breadcrumbs.push(PipelineBreadcrumb {
@@ -865,7 +888,10 @@ impl ProjectService {
         if count > 1 {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_EDIT",
-                format!("old_string matches {} times — provide more context to make it unique", count),
+                format!(
+                    "old_string matches {} times — provide more context to make it unique",
+                    count
+                ),
             ));
         }
 
@@ -1196,13 +1222,19 @@ impl ProjectService {
 
     /// Lists all local branch names for the project's git repo.
     /// Returns an empty vec if the repo has no commits yet.
-    pub fn list_repo_git_local_branches(&self, owner: &str, project: &str) -> Result<Vec<String>, PlatformError> {
+    pub fn list_repo_git_local_branches(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<String>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let out = Command::new("git")
-            .arg("-C").arg(&layout.repo_dir)
-            .arg("branch").arg("--list")
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("branch")
+            .arg("--list")
             .arg("--format=%(refname:short)")
             .output()
             .map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
@@ -1220,15 +1252,25 @@ impl ProjectService {
     /// Checks out (or creates) a local git branch.
     /// `create = true` → `git checkout -b <branch>` (fails if branch already exists).
     /// `create = false` → `git checkout <branch>` (fails if branch doesn't exist).
-    pub fn checkout_repo_git_branch(&self, owner: &str, project: &str, branch: &str, create: bool) -> Result<(), PlatformError> {
+    pub fn checkout_repo_git_branch(
+        &self,
+        owner: &str,
+        project: &str,
+        branch: &str,
+        create: bool,
+    ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let mut cmd = Command::new("git");
         cmd.arg("-C").arg(&layout.repo_dir).arg("checkout");
-        if create { cmd.arg("-b"); }
+        if create {
+            cmd.arg("-b");
+        }
         cmd.arg(branch);
-        let out = cmd.output().map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
+        let out = cmd
+            .output()
+            .map_err(|e| PlatformError::new("PLATFORM_REPO_GIT", e.to_string()))?;
         if !out.status.success() {
             return Err(PlatformError::new(
                 "PLATFORM_REPO_GIT_CHECKOUT",
@@ -1260,7 +1302,8 @@ impl ProjectService {
 
         // Remove source file from disk.
         if abs.is_file() {
-            fs::remove_file(&abs).map_err(|e| PlatformError::new("PLATFORM_PIPELINE_DELETE", e.to_string()))?;
+            fs::remove_file(&abs)
+                .map_err(|e| PlatformError::new("PLATFORM_PIPELINE_DELETE", e.to_string()))?;
         }
 
         // Find and remove metadata from platform catalog.
@@ -1270,7 +1313,8 @@ impl ProjectService {
             .into_iter()
             .find(|m| m.file_rel_path.trim().replace('\\', "/") == wanted);
         if let Some(m) = meta {
-            self.data.delete_pipeline_meta(&m.owner, &m.project, &m.file_rel_path)?;
+            self.data
+                .delete_pipeline_meta(&m.owner, &m.project, &m.file_rel_path)?;
         }
 
         Ok(())
@@ -1432,6 +1476,86 @@ impl ProjectService {
         })
     }
 
+    /// Creates one project docs folder under `repo/docs`.
+    pub fn create_project_doc_folder(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<ProjectDocItem, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (rel, abs) = resolve_doc_folder_path(&layout.repo_docs_dir, rel_path, false)?;
+        fs::create_dir_all(&abs)?;
+        let name = abs
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("docs")
+            .to_string();
+        Ok(ProjectDocItem {
+            path: rel,
+            name,
+            kind: "folder".to_string(),
+        })
+    }
+
+    /// Moves one project docs file or folder into another docs folder.
+    pub fn move_project_doc_entry(
+        &self,
+        owner: &str,
+        project: &str,
+        req: &ProjectDocMoveRequest,
+    ) -> Result<String, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+
+        let (from_rel, from_abs) = resolve_doc_path(&layout.repo_docs_dir, &req.from_path)?;
+        if !from_abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MISSING",
+                format!("doc entry '{}' not found", from_rel),
+            ));
+        }
+        let (parent_rel, parent_abs) =
+            resolve_doc_folder_path(&layout.repo_docs_dir, &req.to_parent_path, true)?;
+        if !parent_abs.exists() || !parent_abs.is_dir() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MOVE",
+                format!("target folder '{}' not found", parent_rel),
+            ));
+        }
+        if from_abs.is_dir() && parent_abs.starts_with(&from_abs) {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MOVE",
+                "cannot move a folder into itself",
+            ));
+        }
+        let name = from_abs
+            .file_name()
+            .and_then(|v| v.to_str())
+            .ok_or_else(|| PlatformError::new("PLATFORM_DOC_MOVE", "invalid source filename"))?
+            .to_string();
+        let to_abs = parent_abs.join(&name);
+        let to_rel = if parent_rel.is_empty() {
+            name
+        } else {
+            format!("{parent_rel}/{name}")
+        };
+        if from_abs == to_abs {
+            return Ok(to_rel);
+        }
+        if to_abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MOVE",
+                format!("target '{}' already exists", to_rel),
+            ));
+        }
+        fs::rename(&from_abs, &to_abs)?;
+        Ok(to_rel)
+    }
+
     /// Deletes one project doc file by path under `repo/docs`.
     pub fn delete_project_doc(
         &self,
@@ -1452,6 +1576,31 @@ impl ProjectService {
         fs::remove_file(&abs).map_err(PlatformError::from)
     }
 
+    /// Deletes one project docs file or folder by path under `repo/docs`.
+    pub fn delete_project_doc_entry(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let (_rel, abs) = resolve_doc_path(&layout.repo_docs_dir, rel_path)?;
+        if !abs.exists() {
+            return Err(PlatformError::new(
+                "PLATFORM_DOC_MISSING",
+                format!("doc entry '{}' not found", rel_path),
+            ));
+        }
+        if abs.is_dir() {
+            fs::remove_dir_all(&abs)?;
+        } else {
+            fs::remove_file(&abs)?;
+        }
+        Ok(())
+    }
+
     /// Lists the three agent doc files (AGENTS.md, SOUL.md, MEMORY.md), creating defaults if absent.
     pub fn list_agent_docs(
         &self,
@@ -1460,9 +1609,18 @@ impl ProjectService {
     ) -> Result<Vec<AgentDocItem>, PlatformError> {
         self.ensure_agent_docs_defaults(owner, project)?;
         Ok(vec![
-            AgentDocItem { name: "AGENTS.md".to_string(), user_editable: true },
-            AgentDocItem { name: "SOUL.md".to_string(), user_editable: true },
-            AgentDocItem { name: "MEMORY.md".to_string(), user_editable: false },
+            AgentDocItem {
+                name: "AGENTS.md".to_string(),
+                user_editable: true,
+            },
+            AgentDocItem {
+                name: "SOUL.md".to_string(),
+                user_editable: true,
+            },
+            AgentDocItem {
+                name: "MEMORY.md".to_string(),
+                user_editable: false,
+            },
         ])
     }
 
@@ -1593,6 +1751,14 @@ fn walk_docs_tree(
 }
 
 fn resolve_doc_path(root: &Path, rel_path: &str) -> Result<(String, PathBuf), PlatformError> {
+    resolve_doc_folder_path(root, rel_path, false)
+}
+
+fn resolve_doc_folder_path(
+    root: &Path,
+    rel_path: &str,
+    allow_empty: bool,
+) -> Result<(String, PathBuf), PlatformError> {
     let normalized = rel_path
         .trim()
         .replace('\\', "/")
@@ -1604,7 +1770,7 @@ fn resolve_doc_path(root: &Path, rel_path: &str) -> Result<(String, PathBuf), Pl
             "doc path must not contain ..",
         ));
     }
-    if normalized.is_empty() {
+    if normalized.is_empty() && !allow_empty {
         return Err(PlatformError::new(
             "PLATFORM_DOC_PATH",
             "doc path must not be empty",
@@ -1627,8 +1793,7 @@ fn collect_tsx_files(
     current: &Path,
     items: &mut Vec<TemplateTreeItem>,
 ) -> Result<(), PlatformError> {
-    let mut entries = fs::read_dir(current)?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
@@ -1834,7 +1999,10 @@ fn glob_star_match(pattern: &str, path: &str) -> bool {
     if pat_parts.len() != path_parts.len() {
         return false;
     }
-    pat_parts.iter().zip(path_parts.iter()).all(|(p, s)| glob_segment_matches(p, s))
+    pat_parts
+        .iter()
+        .zip(path_parts.iter())
+        .all(|(p, s)| glob_segment_matches(p, s))
 }
 
 fn glob_segment_matches(pattern: &str, value: &str) -> bool {

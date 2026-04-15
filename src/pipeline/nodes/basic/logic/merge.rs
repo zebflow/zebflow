@@ -8,11 +8,11 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.logic.merge";
 pub const OUTPUT_PIN_OUT: &str = "out";
@@ -56,7 +56,9 @@ pub struct Config {
     pub strategy: String,
 }
 
-fn default_strategy() -> String { "pass_through".to_string() }
+fn default_strategy() -> String {
+    "pass_through".to_string()
+}
 
 pub struct Node {
     config: Config,
@@ -70,11 +72,20 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
-    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,

@@ -33,7 +33,9 @@ struct SsrCache {
 
 impl SsrCache {
     fn new() -> Self {
-        Self { entries: Mutex::new(HashMap::new()) }
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     fn get(&self, key: u64) -> Option<(String, Option<Value>)> {
@@ -57,7 +59,14 @@ impl SsrCache {
                 guard.clear();
             }
         }
-        guard.insert(key, SsrCacheEntry { html, page_config, expires_at: Instant::now() + ttl });
+        guard.insert(
+            key,
+            SsrCacheEntry {
+                html,
+                page_config,
+                expires_at: Instant::now() + ttl,
+            },
+        );
     }
 }
 
@@ -98,10 +107,12 @@ fn circuit_check(template_id: &str) -> Option<String> {
 /// Record a render failure for a template; open the circuit after the threshold.
 fn circuit_record_failure(template_id: &str) {
     let mut guard = CIRCUIT.lock().unwrap_or_else(|e| e.into_inner());
-    let state = guard.entry(template_id.to_string()).or_insert(CircuitState {
-        failures: 0,
-        open_until: None,
-    });
+    let state = guard
+        .entry(template_id.to_string())
+        .or_insert(CircuitState {
+            failures: 0,
+            open_until: None,
+        });
     state.failures += 1;
     if state.failures >= CIRCUIT_FAILURE_THRESHOLD {
         let open_until = Instant::now() + Duration::from_secs(CIRCUIT_OPEN_SECS);
@@ -122,11 +133,19 @@ fn circuit_record_success(template_id: &str) {
 
 pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
     let _ = transpile_client_cached(&compiled.client_module_source, compiled.deno_timeout_ms)?;
-    let _ = deno_worker::render_ssr(&compiled.server_module_source, &json!({}), compiled.deno_timeout_ms)?;
+    let _ = deno_worker::render_ssr(
+        &compiled.server_module_source,
+        &json!({}),
+        compiled.deno_timeout_ms,
+    )?;
     Ok(())
 }
 
-pub fn render(compiled: &CompiledTemplate, vars: &Value, enabled_libraries: &[String]) -> Result<RenderOutput, EngineError> {
+pub fn render(
+    compiled: &CompiledTemplate,
+    vars: &Value,
+    enabled_libraries: &[String],
+) -> Result<RenderOutput, EngineError> {
     let started = Instant::now();
 
     // Template ID for circuit breaker and cache key derivation.
@@ -143,11 +162,14 @@ pub fn render(compiled: &CompiledTemplate, vars: &Value, enabled_libraries: &[St
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(30);
     let vars_json = serde_json::to_string(vars).unwrap_or_default();
-    let ssr_cache_key = stable_hash_u64(&compiled.server_module_source)
-        ^ stable_hash_u64(&vars_json);
+    let ssr_cache_key =
+        stable_hash_u64(&compiled.server_module_source) ^ stable_hash_u64(&vars_json);
 
     let ssr = if let Some((cached_html, cached_config)) = SSR_CACHE.get(ssr_cache_key) {
-        deno_worker::SsrResult { html: cached_html, page_config: cached_config }
+        deno_worker::SsrResult {
+            html: cached_html,
+            page_config: cached_config,
+        }
     } else {
         match deno_worker::render_ssr(
             &compiled.server_module_source,
@@ -235,7 +257,6 @@ fn strip_rwe_client_imports(source: &str) -> String {
         .join("\n")
 }
 
-
 /// Collapse multi-line `import { … } from "…"` statements into a single line each.
 fn join_import_lines(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
@@ -268,17 +289,21 @@ fn join_import_lines(source: &str) -> String {
 /// TODO: resolve version from project `zeb.lock` instead of hardcoding.
 fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
     match lib {
-        "zeb/threejs"     => Some("/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
-        "zeb/threejs-vrm" => Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs"),
-        "zeb/d3"          => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
-        "zeb/deckgl"      => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
-        "zeb/codemirror"  => Some("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
-        "zeb/graphui"     => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
-        "zeb/markdown"    => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
-        "zeb/prosemirror" => Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs"),
-        "zeb/use"         => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
-        "zeb/icons"       => Some("/assets/libraries/zeb/icons/0.1/runtime/icons.bundle.mjs"),
-        "zeb/pdf"         => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
+        "zeb/threejs" => Some("/assets/libraries/zeb/threejs/0.1/runtime/threejs.bundle.mjs"),
+        "zeb/threejs-vrm" => {
+            Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs")
+        }
+        "zeb/d3" => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
+        "zeb/deckgl" => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
+        "zeb/codemirror" => Some("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
+        "zeb/graphui" => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
+        "zeb/markdown" => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),
+        "zeb/prosemirror" => {
+            Some("/assets/libraries/zeb/prosemirror/0.1/runtime/prosemirror.bundle.mjs")
+        }
+        "zeb/use" => Some("/assets/libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
+        "zeb/icons" => Some("/assets/libraries/zeb/icons/0.1/runtime/icons.bundle.mjs"),
+        "zeb/pdf" => Some("/assets/libraries/zeb/pdf/0.1/runtime/pdf.bundle.mjs"),
         _ => None,
     }
 }
@@ -318,8 +343,7 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
 
 fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let tool_js = TOOL_INIT;
-    const PREACT_BUNDLE: &str =
-        "/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs";
+    const PREACT_BUNDLE: &str = "/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs";
     let runtime_ready_source = strip_rwe_client_imports(client_source)
         .replace(
             "from \"npm:preact/jsx-runtime\"",
@@ -337,14 +361,8 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
             "from 'npm:preact/hooks'",
             &format!("from '{PREACT_BUNDLE}'"),
         )
-        .replace(
-            "from \"npm:preact\"",
-            &format!("from \"{PREACT_BUNDLE}\""),
-        )
-        .replace(
-            "from 'npm:preact'",
-            &format!("from '{PREACT_BUNDLE}'"),
-        );
+        .replace("from \"npm:preact\"", &format!("from \"{PREACT_BUNDLE}\""))
+        .replace("from 'npm:preact'", &format!("from '{PREACT_BUNDLE}'"));
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
         "{tool_js}\n\
@@ -692,30 +710,45 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     }
 
     // description
-    if let Some(v) = hd.and_then(|h| h.get("description")).and_then(Value::as_str) {
+    if let Some(v) = hd
+        .and_then(|h| h.get("description"))
+        .and_then(Value::as_str)
+    {
         if !v.is_empty() {
-            head.push_str(&format!("<meta name=\"description\" content=\"{}\">", escape_attr(v)));
+            head.push_str(&format!(
+                "<meta name=\"description\" content=\"{}\">",
+                escape_attr(v)
+            ));
         }
     }
 
     // theme-color
     if let Some(v) = hd.and_then(|h| h.get("themeColor")).and_then(Value::as_str) {
         if !v.is_empty() {
-            head.push_str(&format!("<meta name=\"theme-color\" content=\"{}\">", escape_attr(v)));
+            head.push_str(&format!(
+                "<meta name=\"theme-color\" content=\"{}\">",
+                escape_attr(v)
+            ));
         }
     }
 
     // robots
     if let Some(v) = hd.and_then(|h| h.get("robots")).and_then(Value::as_str) {
         if !v.is_empty() {
-            head.push_str(&format!("<meta name=\"robots\" content=\"{}\">", escape_attr(v)));
+            head.push_str(&format!(
+                "<meta name=\"robots\" content=\"{}\">",
+                escape_attr(v)
+            ));
         }
     }
 
     // canonical
     if let Some(v) = hd.and_then(|h| h.get("canonical")).and_then(Value::as_str) {
         if !v.is_empty() {
-            head.push_str(&format!("<link rel=\"canonical\" href=\"{}\">", escape_attr(v)));
+            head.push_str(&format!(
+                "<link rel=\"canonical\" href=\"{}\">",
+                escape_attr(v)
+            ));
         }
     }
 
@@ -727,12 +760,20 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
                 continue;
             }
             let rel = icon.get("rel").and_then(Value::as_str).unwrap_or("icon");
-            let mut tag = format!("<link rel=\"{}\" href=\"{}\"", escape_attr(rel), escape_attr(href));
+            let mut tag = format!(
+                "<link rel=\"{}\" href=\"{}\"",
+                escape_attr(rel),
+                escape_attr(href)
+            );
             if let Some(t) = icon.get("type").and_then(Value::as_str) {
-                if !t.is_empty() { tag.push_str(&format!(" type=\"{}\"", escape_attr(t))); }
+                if !t.is_empty() {
+                    tag.push_str(&format!(" type=\"{}\"", escape_attr(t)));
+                }
             }
             if let Some(s) = icon.get("sizes").and_then(Value::as_str) {
-                if !s.is_empty() { tag.push_str(&format!(" sizes=\"{}\"", escape_attr(s))); }
+                if !s.is_empty() {
+                    tag.push_str(&format!(" sizes=\"{}\"", escape_attr(s)));
+                }
             }
             tag.push('>');
             head.push_str(&tag);
@@ -742,24 +783,31 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     // manifest
     if let Some(v) = hd.and_then(|h| h.get("manifest")).and_then(Value::as_str) {
         if !v.is_empty() {
-            head.push_str(&format!("<link rel=\"manifest\" href=\"{}\">", escape_attr(v)));
+            head.push_str(&format!(
+                "<link rel=\"manifest\" href=\"{}\">",
+                escape_attr(v)
+            ));
         }
     }
 
     // Open Graph
     if let Some(og) = hd.and_then(|h| h.get("og")) {
         for (prop, key) in &[
-            ("og:title",       "title"),
+            ("og:title", "title"),
             ("og:description", "description"),
-            ("og:image",       "image"),
-            ("og:url",         "url"),
-            ("og:type",        "type"),
-            ("og:site_name",   "siteName"),
-            ("og:locale",      "locale"),
+            ("og:image", "image"),
+            ("og:url", "url"),
+            ("og:type", "type"),
+            ("og:site_name", "siteName"),
+            ("og:locale", "locale"),
         ] {
             if let Some(v) = og.get(*key).and_then(Value::as_str) {
                 if !v.is_empty() {
-                    head.push_str(&format!("<meta property=\"{}\" content=\"{}\">", prop, escape_attr(v)));
+                    head.push_str(&format!(
+                        "<meta property=\"{}\" content=\"{}\">",
+                        prop,
+                        escape_attr(v)
+                    ));
                 }
             }
         }
@@ -768,16 +816,20 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
     // Twitter Card
     if let Some(tw) = hd.and_then(|h| h.get("twitter")) {
         for (name, key) in &[
-            ("twitter:card",        "card"),
-            ("twitter:title",       "title"),
+            ("twitter:card", "card"),
+            ("twitter:title", "title"),
             ("twitter:description", "description"),
-            ("twitter:image",       "image"),
-            ("twitter:site",        "site"),
-            ("twitter:creator",     "creator"),
+            ("twitter:image", "image"),
+            ("twitter:site", "site"),
+            ("twitter:creator", "creator"),
         ] {
             if let Some(v) = tw.get(*key).and_then(Value::as_str) {
                 if !v.is_empty() {
-                    head.push_str(&format!("<meta name=\"{}\" content=\"{}\">", name, escape_attr(v)));
+                    head.push_str(&format!(
+                        "<meta name=\"{}\" content=\"{}\">",
+                        name,
+                        escape_attr(v)
+                    ));
                 }
             }
         }
@@ -802,11 +854,16 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
 }
 
 fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn escape_json_script(input: &str) -> String {

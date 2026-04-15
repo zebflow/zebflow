@@ -17,9 +17,7 @@ pub mod protocol;
 pub mod registry;
 pub mod script_cache;
 
-pub use engines::{
-    RweReactiveWebEngine, instantiate_engine_by_id, resolve_engine_or_default,
-};
+pub use engines::{RweReactiveWebEngine, instantiate_engine_by_id, resolve_engine_or_default};
 pub use interface::ReactiveWebEngine;
 pub use model::{
     CompiledScript, CompiledScriptScope, CompiledTemplate, ComponentOptions, LanguageOptions,

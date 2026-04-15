@@ -5,7 +5,7 @@
 //! - `zebflow` or `zebflow standalone` starts the current all-in-one server
 //! - `zebflow master` or `zebflow controller` starts the control-plane oriented server
 //! - `zebflow worker` or `zebflow office` starts the execution-plane oriented server
-//! - `zebflow k8s ...` is still reserved for future manifest rendering/bootstrap helpers
+//! - `zebflow k8s cluster ...` manages file-based Kubernetes manifest folders
 //!
 //! The goal is one binary that still runs comfortably on a laptop or Raspberry Pi while also
 //! growing into controller/office and Kubernetes deployments.
@@ -15,6 +15,8 @@ use std::net::SocketAddr;
 
 use zebflow::infra::cluster::config::ClusterRole;
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
+use zebflow::provision::k8s as k8s_provision;
+use zebflow::version::APP_VERSION;
 
 /// Resolves when SIGTERM or Ctrl-C arrives, allowing axum's graceful shutdown
 /// to drain in-flight requests.
@@ -70,6 +72,53 @@ fn display_mode(role: ClusterRole) -> &'static str {
     }
 }
 
+fn top_level_help() -> String {
+    format!(
+        "Zebflow {version}
+
+Usage:
+  zebflow [standalone]
+  zebflow controller
+  zebflow office
+  zebflow k8s cluster <command> ...
+  zebflow help
+  zebflow --help
+  zebflow --version
+
+Runtime Modes:
+  standalone   Start the combined controller + office server (default)
+  controller   Start the control-plane oriented server
+  office       Start the execution-plane oriented server
+
+Kubernetes:
+  zebflow k8s cluster init <path>
+  zebflow k8s cluster add-office <path> <office-id>
+  zebflow k8s cluster set-controller <path> <office-id>
+  zebflow k8s cluster set-image <path> <image>
+  zebflow k8s cluster enable-auto-update <path>
+  zebflow k8s cluster disable-auto-update <path>
+  zebflow k8s cluster describe <path>
+  zebflow k8s cluster validate <path>
+
+Environment:
+  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Required for standalone/controller bootstrap
+  ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
+  ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
+  ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+
+Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
+        version = APP_VERSION
+    )
+}
+
+fn print_top_level_help() {
+    println!("{}", top_level_help());
+}
+
+fn print_version() {
+    println!("{APP_VERSION}");
+}
+
 /// Load the platform configuration for the requested runtime role from environment variables.
 fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> {
     let mut config = PlatformConfig::default();
@@ -82,7 +131,8 @@ fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> 
     if let Ok(owner) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_OWNER") {
         config.default_owner = owner;
     }
-    config.default_password = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD").unwrap_or_default();
+    config.default_password =
+        std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD").unwrap_or_default();
     if let Ok(project) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PROJECT") {
         config.default_project = project;
     }
@@ -137,15 +187,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match mode.as_deref() {
         None | Some("standalone") => run_server(ClusterRole::Standalone).await,
+        Some("help") | Some("--help") | Some("-h") => {
+            print_top_level_help();
+            Ok(())
+        }
+        Some("version") | Some("--version") | Some("-V") => {
+            print_version();
+            Ok(())
+        }
         Some("master") | Some("controller") => run_server(ClusterRole::Master).await,
         Some("worker") | Some("office") => run_server(ClusterRole::Worker).await,
-        Some("k8s") => Err(io::Error::other(
-            "k8s subcommands are reserved but not implemented yet",
-        )
-        .into()),
+        Some("k8s") => k8s_provision::run_cli(&args.collect::<Vec<_>>()),
         Some(other) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("unknown zebflow mode '{other}'"),
+            format!("unknown zebflow mode '{other}'\n\n{}", top_level_help()),
         )
         .into()),
     }

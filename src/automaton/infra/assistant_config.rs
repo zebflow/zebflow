@@ -31,8 +31,7 @@ pub fn load_project_assistant_llm(
     owner: &str,
     project: &str,
 ) -> Result<ProjectAssistantLlm, PlatformError> {
-    let config = assistant_configs
-        .get_project_assistant_config(owner, project)?;
+    let config = assistant_configs.get_project_assistant_config(owner, project)?;
 
     if !config.enabled {
         return Err(PlatformError::new(

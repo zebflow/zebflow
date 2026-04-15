@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::CredentialService;
 
-use crate::pipeline::model::LayoutItem;
 use super::util::metadata_scope;
+use crate::pipeline::model::LayoutItem;
 
 pub const NODE_KIND: &str = "n.auth.token.create";
 const INPUT_PIN_IN: &str = "in";
@@ -141,7 +141,10 @@ impl Node {
                 "config.credential_id must not be empty",
             ));
         }
-        Ok(Self { config, credentials })
+        Ok(Self {
+            config,
+            credentials,
+        })
     }
 }
 
@@ -221,7 +224,7 @@ impl NodeHandler for Node {
                 return Err(PipelineError::new(
                     "FW_NODE_AUTH_TOKEN_ALGORITHM",
                     format!("unsupported JWT algorithm '{}'", other),
-                ))
+                ));
             }
         };
 
@@ -233,7 +236,10 @@ impl NodeHandler for Node {
             // as safe to expose in the browser via __rwe_payload.
             let (resolved_val, is_public) = if let Value::String(s) = val {
                 if let Some(stripped) = s.strip_suffix(":public") {
-                    (resolve_claim(&Value::String(stripped.to_string()), &input.payload), true)
+                    (
+                        resolve_claim(&Value::String(stripped.to_string()), &input.payload),
+                        true,
+                    )
                 } else {
                     (resolve_claim(val, &input.payload), false)
                 }
@@ -249,7 +255,12 @@ impl NodeHandler for Node {
         if !public_keys.is_empty() {
             claims_map.insert(
                 "_zf_public".to_string(),
-                Value::Array(public_keys.iter().map(|k| Value::String(k.clone())).collect()),
+                Value::Array(
+                    public_keys
+                        .iter()
+                        .map(|k| Value::String(k.clone()))
+                        .collect(),
+                ),
             );
         }
 
@@ -289,9 +300,7 @@ impl NodeHandler for Node {
                     &claims_val,
                     &EncodingKey::from_secret(secret.as_bytes()),
                 )
-                .map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
-                })?
+                .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string()))?
             }
             Algorithm::RS256 | Algorithm::RS384 | Algorithm::RS512 => {
                 let pem = credential
@@ -307,15 +316,14 @@ impl NodeHandler for Node {
                 let key = EncodingKey::from_rsa_pem(pem.as_bytes()).map_err(|err| {
                     PipelineError::new("FW_NODE_AUTH_TOKEN_KEY_INVALID", err.to_string())
                 })?;
-                jsonwebtoken::encode(&header, &claims_val, &key).map_err(|err| {
-                    PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string())
-                })?
+                jsonwebtoken::encode(&header, &claims_val, &key)
+                    .map_err(|err| PipelineError::new("FW_NODE_AUTH_TOKEN_SIGN", err.to_string()))?
             }
             _ => {
                 return Err(PipelineError::new(
                     "FW_NODE_AUTH_TOKEN_ALGORITHM",
                     "unsupported JWT algorithm variant",
-                ))
+                ));
             }
         };
 

@@ -34,9 +34,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::language::LanguageEngine;
-use crate::pipeline::{NodeDefinition, PipelineError};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
-use crate::pipeline::nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput};
+use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
+use crate::pipeline::{NodeDefinition, PipelineError};
 use crate::rwe::{CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, TemplateSource};
 
 pub const NODE_KIND: &str = "n.web.response";
@@ -317,10 +317,15 @@ impl NodeHandler for Node {
             }
         });
 
-        let status = self.config.status
+        let status = self
+            .config
+            .status
             .or_else(|| if location.is_some() { Some(302) } else { None });
 
-        let cookie = self.config.set_cookie.as_deref()
+        let cookie = self
+            .config
+            .set_cookie
+            .as_deref()
             .and_then(|spec| parse_cookie_spec(spec, &input.payload));
 
         let body = self
@@ -415,8 +420,11 @@ pub fn parse_cookie_spec(spec: &str, payload: &Value) -> Option<Value> {
 
 /// Resolve a `$.field.sub` path against a JSON value, returning a string.
 pub fn resolve_json_path_string(payload: &Value, path: &str) -> Option<String> {
-    resolve_json_path(payload, path)
-        .map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()))
+    resolve_json_path(payload, path).map(|v| {
+        v.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| v.to_string())
+    })
 }
 
 /// Resolve a `$.field.sub` path against a JSON value.

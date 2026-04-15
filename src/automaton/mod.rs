@@ -123,8 +123,8 @@ pub use infra::registry::AutomatonEngineRegistry;
 
 // REPL utilities (used by bin/zebtune.rs)
 pub use infra::repl::{
-    check_llm, log_llm_status, print_running_mechanism, run_interactive,
-    run_interactive_with_llm, run_one_turn, strip_thinking,
+    check_llm, log_llm_status, print_running_mechanism, run_interactive, run_interactive_with_llm,
+    run_one_turn, strip_thinking,
 };
 
 // Shell tool registry (used by zebtune pipeline node)
@@ -136,8 +136,8 @@ pub use infra::shell_tools::{
 pub use agents::engines::NoopAutomatonEngine;
 
 // Agents
-pub use agents::zebtune::ZebtuneAgent;
 pub use agents::tool_caller::ToolCallerAgent;
+pub use agents::zebtune::ZebtuneAgent;
 
 // Re-export llm module so `zebflow::automaton::llm::client_from_env()` keeps working
 pub use infra::llm;

@@ -24,7 +24,11 @@ impl ProjectInviteService {
     }
 
     /// List stored invites for one project.
-    pub fn list_invites(&self, owner: &str, project: &str) -> Result<Vec<ProjectInvite>, PlatformError> {
+    pub fn list_invites(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectInvite>, PlatformError> {
         self.data
             .list_project_invites(&slug_segment(owner), &slug_segment(project))
     }

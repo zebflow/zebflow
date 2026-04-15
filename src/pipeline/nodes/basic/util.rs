@@ -4,11 +4,11 @@ use std::hash::{Hash, Hasher};
 
 use serde_json::Value;
 
-use crate::pipeline::PipelineError;
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
     SourceKind,
 };
+use crate::pipeline::PipelineError;
 
 pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), PipelineError> {
     let owner = metadata

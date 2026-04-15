@@ -112,7 +112,12 @@ impl ClusterRuntimeSyncService {
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let cfg = self.zebflow_cfg.read_or_default(&owner, &project);
-        reindex_project_sources(self.projects.as_ref(), &layout.repo_pipelines_dir, &owner, &project)?;
+        reindex_project_sources(
+            self.projects.as_ref(),
+            &layout.repo_pipelines_dir,
+            &owner,
+            &project,
+        )?;
         activate_bootstrap_plan(
             self.projects.as_ref(),
             self.pipeline_runtime.as_ref(),
@@ -210,7 +215,10 @@ fn collect_repo_files(repo_dir: &Path) -> Result<Vec<ProjectBundleFile>, Platfor
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
             if name == ".git" {
                 continue;
             }
@@ -251,7 +259,10 @@ fn clear_repo_worktree(repo_dir: &Path) -> Result<(), PlatformError> {
     })?;
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         if name == ".git" {
             continue;
         }
@@ -285,7 +296,10 @@ fn reindex_project_sources(
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir)?.flatten() {
             let path = entry.path();
-            let fname = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+            let fname = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
             if fname.starts_with('.') {
                 continue;
             }
@@ -345,8 +359,14 @@ fn activate_bootstrap_plan(
 }
 
 fn path_glob_matches(pattern: &str, candidate: &str) -> bool {
-    let pattern_parts: Vec<&str> = pattern.split('/').filter(|value| !value.is_empty()).collect();
-    let candidate_parts: Vec<&str> = candidate.split('/').filter(|value| !value.is_empty()).collect();
+    let pattern_parts: Vec<&str> = pattern
+        .split('/')
+        .filter(|value| !value.is_empty())
+        .collect();
+    let candidate_parts: Vec<&str> = candidate
+        .split('/')
+        .filter(|value| !value.is_empty())
+        .collect();
     match_path_segments(&pattern_parts, &candidate_parts)
 }
 
@@ -387,20 +407,27 @@ fn match_segment_chars(pattern: &[char], candidate: &[char]) -> bool {
             !candidate.is_empty() && match_segment_chars(pattern, &candidate[1..])
         }
         '?' => !candidate.is_empty() && match_segment_chars(&pattern[1..], &candidate[1..]),
-        ch => !candidate.is_empty() && ch == candidate[0] && match_segment_chars(&pattern[1..], &candidate[1..]),
+        ch => {
+            !candidate.is_empty()
+                && ch == candidate[0]
+                && match_segment_chars(&pattern[1..], &candidate[1..])
+        }
     }
 }
 
 fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
     let graph = serde_json::from_str::<crate::pipeline::PipelineGraph>(source).ok()?;
-    graph.nodes.iter().find_map(|node| match node.kind.as_str() {
-        "n.trigger.webhook" => Some("webhook".to_string()),
-        "n.trigger.schedule" => Some("schedule".to_string()),
-        "n.trigger.ws" => Some("ws".to_string()),
-        "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),
-        "n.trigger.function" => Some("function".to_string()),
-        _ => None,
-    })
+    graph
+        .nodes
+        .iter()
+        .find_map(|node| match node.kind.as_str() {
+            "n.trigger.webhook" => Some("webhook".to_string()),
+            "n.trigger.schedule" => Some("schedule".to_string()),
+            "n.trigger.ws" => Some("ws".to_string()),
+            "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),
+            "n.trigger.function" => Some("function".to_string()),
+            _ => None,
+        })
 }
 
 #[cfg(test)]

@@ -75,7 +75,10 @@ impl ClusterPlacementService {
                 ProjectRuntimePlacementTarget::Local
             },
             worker_id,
-            created_at: existing.as_ref().map(|value| value.created_at).unwrap_or(now),
+            created_at: existing
+                .as_ref()
+                .map(|value| value.created_at)
+                .unwrap_or(now),
             updated_at: now,
         };
         self.data.put_project_runtime_placement(&placement)?;
@@ -85,11 +88,13 @@ impl ClusterPlacementService {
     /// Translate a persisted placement record into a runtime dispatch policy.
     pub fn dispatch_policy(&self, placement: Option<&ProjectRuntimePlacement>) -> PlacementPolicy {
         match placement {
-            Some(record) if record.target == ProjectRuntimePlacementTarget::Worker => PlacementPolicy {
-                kind: PlacementPolicyKind::Pinned,
-                pinned_runner_id: record.worker_id.clone(),
-                required_tags: Vec::new(),
-            },
+            Some(record) if record.target == ProjectRuntimePlacementTarget::Worker => {
+                PlacementPolicy {
+                    kind: PlacementPolicyKind::Pinned,
+                    pinned_runner_id: record.worker_id.clone(),
+                    required_tags: Vec::new(),
+                }
+            }
             _ => PlacementPolicy::local(),
         }
     }

@@ -12,18 +12,18 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use base64::Engine as _;
 use uuid::Uuid;
 
+use super::util::metadata_scope;
 use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-    model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType, LayoutItem, SelectOptionDef},
+    NodeDefinition, PipelineError,
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
-use super::util::metadata_scope;
 
 pub const NODE_KIND: &str = "n.file.save";
 const INPUT_PIN_IN: &str = "in";
@@ -58,8 +58,8 @@ impl AllowedKind {
                 "image/heic",
                 "image/heif",
             ],
-            AllowedKind::Pdf  => &["application/pdf"],
-            AllowedKind::Csv  => &["text/csv", "text/plain"],
+            AllowedKind::Pdf => &["application/pdf"],
+            AllowedKind::Csv => &["text/csv", "text/plain"],
             AllowedKind::Json => &["application/json", "text/json"],
         }
     }
@@ -67,25 +67,33 @@ impl AllowedKind {
     fn label(&self) -> &'static str {
         match self {
             AllowedKind::Images => "Images",
-            AllowedKind::Pdf    => "PDF",
-            AllowedKind::Csv    => "CSV",
-            AllowedKind::Json   => "JSON",
+            AllowedKind::Pdf => "PDF",
+            AllowedKind::Csv => "CSV",
+            AllowedKind::Json => "JSON",
         }
     }
 }
 
 fn kind_accepts_mime(kinds: &[AllowedKind], mime: &str) -> bool {
     let m = mime.split(';').next().unwrap_or("").trim().to_lowercase();
-    kinds.iter().any(|k| k.mime_types().iter().any(|t| *t == m.as_str()))
+    kinds
+        .iter()
+        .any(|k| k.mime_types().iter().any(|t| *t == m.as_str()))
 }
 
 fn default_allowed_kinds() -> Vec<AllowedKind> {
     vec![AllowedKind::Images]
 }
 
-fn default_access() -> String { "private".to_string() }
-fn default_field()  -> String { "file".to_string() }
-fn default_max_size_mb() -> f64 { 10.0 }
+fn default_access() -> String {
+    "private".to_string()
+}
+fn default_field() -> String {
+    "file".to_string()
+}
+fn default_max_size_mb() -> f64 {
+    10.0
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -302,9 +310,15 @@ impl Node {
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[OUTPUT_PIN_OUT] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[OUTPUT_PIN_OUT]
+    }
 
     async fn execute_async(
         &self,
@@ -313,48 +327,72 @@ impl NodeHandler for Node {
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
 
         // ── Locate the file in the payload ────────────────────────────────────
-        let field = if self.config.field.trim().is_empty() { "file" } else { self.config.field.trim() };
+        let field = if self.config.field.trim().is_empty() {
+            "file"
+        } else {
+            self.config.field.trim()
+        };
 
-        let file_obj = input.payload
+        let file_obj = input
+            .payload
             .get("files")
             .and_then(|f| f.get(field))
-            .ok_or_else(|| PipelineError::new(
-                "FW_NODE_FILE_SAVE",
-                format!("input.files.{field} not found — is this triggered by a multipart webhook?"),
-            ))?;
+            .ok_or_else(|| {
+                PipelineError::new(
+                    "FW_NODE_FILE_SAVE",
+                    format!(
+                        "input.files.{field} not found — is this triggered by a multipart webhook?"
+                    ),
+                )
+            })?;
 
         let original_name = file_obj
-            .get("filename").and_then(|v| v.as_str()).unwrap_or("upload");
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("upload");
 
         let browser_mime = file_obj
-            .get("content_type").and_then(|v| v.as_str()).unwrap_or("application/octet-stream");
+            .get("content_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("application/octet-stream");
 
-        let size = file_obj
-            .get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let data_b64 = file_obj
-            .get("data").and_then(|v| v.as_str())
-            .ok_or_else(|| PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing"))?;
+            .get("data")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
+            })?;
 
         // ── Validate size (pre-decode, from reported size) ────────────────────
         let max_bytes = (self.config.max_size_mb * 1024.0 * 1024.0) as usize;
         if size > max_bytes {
             return Err(PipelineError::new(
                 "FW_NODE_FILE_SAVE",
-                format!("file size {} bytes exceeds limit of {} MB", size, self.config.max_size_mb),
+                format!(
+                    "file size {} bytes exceeds limit of {} MB",
+                    size, self.config.max_size_mb
+                ),
             ));
         }
 
         // ── Decode base64 ─────────────────────────────────────────────────────
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_b64)
-            .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {e}")))?;
+            .map_err(|e| {
+                PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {e}"))
+            })?;
 
         // Re-check against actual decoded size
         if bytes.len() > max_bytes {
             return Err(PipelineError::new(
                 "FW_NODE_FILE_SAVE",
-                format!("decoded file size {} bytes exceeds limit of {} MB", bytes.len(), self.config.max_size_mb),
+                format!(
+                    "decoded file size {} bytes exceeds limit of {} MB",
+                    bytes.len(),
+                    self.config.max_size_mb
+                ),
             ));
         }
 
@@ -378,11 +416,18 @@ impl NodeHandler for Node {
             None => {
                 // infer returned None → likely a text format (SVG, JSON, CSV)
                 // Trust browser MIME only for known text types in our allowed set
-                let bm = browser_mime.split(';').next().unwrap_or("").trim().to_lowercase();
+                let bm = browser_mime
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_lowercase();
                 let text_allowed = [
                     "image/svg+xml",
-                    "application/json", "text/json",
-                    "text/csv", "text/plain",
+                    "application/json",
+                    "text/json",
+                    "text/csv",
+                    "text/plain",
                 ];
                 if text_allowed.contains(&bm.as_str()) {
                     browser_mime
@@ -412,7 +457,12 @@ impl NodeHandler for Node {
 
         // Detect MIME mismatch (potential spoofing: browser says image/jpeg, content is application/pdf)
         if let Some(inf) = inferred_mime {
-            let bm = browser_mime.split(';').next().unwrap_or("").trim().to_lowercase();
+            let bm = browser_mime
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
             // Allow image/* sub-type drift (e.g. browser says image/jpg, infer says image/jpeg)
             let same_top_level = inf.split('/').next() == bm.split('/').next();
             if !same_top_level {
@@ -429,7 +479,7 @@ impl NodeHandler for Node {
         // ── Determine access + storage path ───────────────────────────────────
         let access = match self.config.access.trim() {
             "public" => "public",
-            _        => "private",
+            _ => "private",
         };
 
         let folder = sanitize_dest_path(if self.config.folder.trim().is_empty() {
@@ -440,14 +490,17 @@ impl NodeHandler for Node {
 
         let ext = safe_extension(original_name, effective_mime);
         let storage_name = {
-            let custom = self.config.filename.as_deref()
+            let custom = self
+                .config
+                .filename
+                .as_deref()
                 .map(|f| sanitize_filename(f.trim()))
                 .filter(|s| !s.is_empty());
             match (custom, ext.is_empty()) {
-                (Some(name), true)  => name,
+                (Some(name), true) => name,
                 (Some(name), false) => format!("{name}.{ext}"),
-                (None, true)        => Uuid::new_v4().to_string(),
-                (None, false)       => format!("{}.{}", Uuid::new_v4(), ext),
+                (None, true) => Uuid::new_v4().to_string(),
+                (None, false) => format!("{}.{}", Uuid::new_v4(), ext),
             }
         };
 
@@ -455,20 +508,26 @@ impl NodeHandler for Node {
         let rel_path = format!("{access}/{folder}/{storage_name}");
 
         // ── Write to disk ──────────────────────────────────────────────────────
-        let layout = self.platform.file
+        let layout = self
+            .platform
+            .file
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", e.to_string()))?;
 
         let abs_path = layout.files_dir.join(&rel_path);
         if let Some(parent) = abs_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", format!("create dirs: {e}")))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                PipelineError::new("FW_NODE_FILE_SAVE", format!("create dirs: {e}"))
+            })?;
         }
 
         // Atomic write: temp → rename
         let tmp_path = abs_path.with_extension(format!(
             "{}.tmp",
-            abs_path.extension().and_then(|e| e.to_str()).unwrap_or("bin")
+            abs_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("bin")
         ));
         std::fs::write(&tmp_path, &bytes)
             .map_err(|e| PipelineError::new("FW_NODE_FILE_SAVE", format!("write error: {e}")))?;
@@ -502,37 +561,41 @@ impl NodeHandler for Node {
 fn safe_extension(original_name: &str, mime: &str) -> String {
     if let Some(ext) = std::path::Path::new(original_name).extension() {
         if let Some(s) = ext.to_str() {
-            let e: String = s.chars()
+            let e: String = s
+                .chars()
                 .filter(|c| c.is_alphanumeric())
                 .take(10)
                 .collect::<String>()
                 .to_lowercase();
-            if !e.is_empty() { return e; }
+            if !e.is_empty() {
+                return e;
+            }
         }
     }
     // Fallback from MIME
     let ct = mime.split(';').next().unwrap_or("").trim();
     match ct {
-        "image/jpeg"          => "jpg",
-        "image/png"           => "png",
-        "image/webp"          => "webp",
-        "image/gif"           => "gif",
-        "image/bmp"           => "bmp",
-        "image/tiff"          => "tif",
-        "image/svg+xml"       => "svg",
-        "image/avif"          => "avif",
-        "image/heic"          => "heic",
-        "image/heif"          => "heif",
-        "application/pdf"     => "pdf",
-        "text/plain"          => "txt",
-        "text/csv"            => "csv",
-        "application/json"    => "json",
-        "text/json"           => "json",
-        "application/zip"     => "zip",
-        "video/mp4"           => "mp4",
-        "audio/mpeg"          => "mp3",
-        _                     => "",
-    }.to_string()
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tif",
+        "image/svg+xml" => "svg",
+        "image/avif" => "avif",
+        "image/heic" => "heic",
+        "image/heif" => "heif",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "application/json" => "json",
+        "text/json" => "json",
+        "application/zip" => "zip",
+        "video/mp4" => "mp4",
+        "audio/mpeg" => "mp3",
+        _ => "",
+    }
+    .to_string()
 }
 
 /// Sanitize a dest path: strip leading/trailing slashes, reject `..` and `.` components.
@@ -551,8 +614,15 @@ fn sanitize_filename(name: &str) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(name);
-    let sanitized: String = stem.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+    let sanitized: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let trimmed = sanitized.trim_matches('_');
     trimmed.chars().take(200).collect()

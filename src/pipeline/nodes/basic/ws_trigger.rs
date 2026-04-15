@@ -69,11 +69,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
+};
 
 pub const NODE_KIND: &str = "n.trigger.ws";
 const INPUT_PIN_IN: &str = "in";
@@ -140,25 +140,50 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--room".to_string(),
                 config_key: "room".to_string(),
-                description: "Room id to scope this trigger to. Omit to match any room.".to_string(),
+                description: "Room id to scope this trigger to. Omit to match any room."
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
                 flag: "--event".to_string(),
                 config_key: "event".to_string(),
-                description: "Event name to match. Omit to match any event from connected clients.".to_string(),
+                description: "Event name to match. Omit to match any event from connected clients."
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, help: Some("Room name pattern to listen on.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "event".to_string(), label: "Event".to_string(), field_type: NodeFieldType::Text, help: Some("WebSocket event name to listen for.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "title".to_string(),
+                label: "Title".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Override display title for this node.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "room".to_string(),
+                label: "Room".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Room name pattern to listen on.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "event".to_string(),
+                label: "Event".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("WebSocket event name to listen for.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("room".to_string())] },
+            LayoutItem::Row {
+                row: vec![
+                    LayoutItem::Field("title".to_string()),
+                    LayoutItem::Field("room".to_string()),
+                ],
+            },
             LayoutItem::Field("event".to_string()),
         ],
         ai_tool: Default::default(),

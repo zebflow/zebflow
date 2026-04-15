@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use crate::platform::error::PlatformError;
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::sync::ProjectBootstrapPlan;
+use crate::platform::error::PlatformError;
 use crate::platform::model::{
     ZebflowJson, ZebflowJsonAssistant, ZebflowJsonProject, ZebflowJsonRweLibraries,
     ZebflowJsonRweLibraryEntry, slug_segment,
@@ -13,8 +13,7 @@ use crate::platform::model::{
 /// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
 pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
     locked.iter().any(|p| {
-        rel_path == p.as_str()
-            || rel_path.starts_with(&format!("{}/", p.trim_end_matches('/')))
+        rel_path == p.as_str() || rel_path.starts_with(&format!("{}/", p.trim_end_matches('/')))
     })
 }
 
@@ -47,7 +46,12 @@ impl ZebflowJsonService {
     }
 
     /// Writes zebflow.json atomically (best-effort).
-    pub fn write(&self, owner: &str, project: &str, config: &ZebflowJson) -> Result<(), PlatformError> {
+    pub fn write(
+        &self,
+        owner: &str,
+        project: &str,
+        config: &ZebflowJson,
+    ) -> Result<(), PlatformError> {
         let path = self.json_path(owner, project);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

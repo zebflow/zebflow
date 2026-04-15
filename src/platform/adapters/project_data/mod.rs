@@ -2,7 +2,7 @@
 //!
 //! This layer is intentionally separate from platform metadata storage.
 //! Platform metadata lives in one global catalog DB, while each project gets
-//! its own runtime data stores (for nodes such as SQLite).
+//! its own runtime data stores (for nodes such as SQLite and Sekejap).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -62,6 +62,21 @@ impl ProjectDataEngine for ProjectPostgresEngine {
     }
 }
 
+/// Project Sekejap runtime engine — creates the persistent `data/sekejap` directory.
+#[derive(Default)]
+pub struct ProjectSekejapEngine;
+
+impl ProjectDataEngine for ProjectSekejapEngine {
+    fn id(&self) -> &'static str {
+        "project_data.sekejap"
+    }
+
+    fn initialize(&self, layout: &ProjectFileLayout) -> Result<(), PlatformError> {
+        std::fs::create_dir_all(layout.data_dir.join("sekejap"))?;
+        Ok(())
+    }
+}
+
 /// Default factory enabling local project SQLite store.
 pub struct DefaultProjectDataFactory {
     engines: Vec<Arc<dyn ProjectDataEngine>>,
@@ -70,7 +85,10 @@ pub struct DefaultProjectDataFactory {
 impl Default for DefaultProjectDataFactory {
     fn default() -> Self {
         Self {
-            engines: vec![Arc::new(ProjectSqliteEngine)],
+            engines: vec![
+                Arc::new(ProjectSqliteEngine),
+                Arc::new(ProjectSekejapEngine),
+            ],
         }
     }
 }

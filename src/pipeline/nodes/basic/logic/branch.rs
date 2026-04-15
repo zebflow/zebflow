@@ -6,14 +6,14 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::{
-    PipelineError, NodeDefinition,
-    nodes::{NodeHandler, NodeExecutionInput, NodeExecutionOutput},
-};
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
+};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
+use crate::pipeline::{
+    NodeDefinition, PipelineError,
+    nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
 pub const NODE_KIND: &str = "n.logic.branch";
@@ -65,7 +65,9 @@ pub enum BranchMode {
 }
 
 impl Default for BranchMode {
-    fn default() -> Self { Self::Fanout }
+    fn default() -> Self {
+        Self::Fanout
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,44 +102,104 @@ impl Node {
                 code: source,
             };
             let ir = language.parse(&module).map_err(|e| {
-                PipelineError::new("FW_NODE_LOGIC_BRANCH_PARSE", format!("node '{}': {}", node_id, e))
+                PipelineError::new(
+                    "FW_NODE_LOGIC_BRANCH_PARSE",
+                    format!("node '{}': {}", node_id, e),
+                )
             })?;
-            Some(language.compile(&ir, &CompileOptions {
-                target: COMPILE_TARGET_BACKEND.to_string(),
-                optimize_level: 1,
-                emit_trace_hints: false,
-            }).map_err(|e| {
-                PipelineError::new("FW_NODE_LOGIC_BRANCH_COMPILE", format!("node '{}': {}", node_id, e))
-            })?)
+            Some(
+                language
+                    .compile(
+                        &ir,
+                        &CompileOptions {
+                            target: COMPILE_TARGET_BACKEND.to_string(),
+                            optimize_level: 1,
+                            emit_trace_hints: false,
+                        },
+                    )
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_LOGIC_BRANCH_COMPILE",
+                            format!("node '{}': {}", node_id, e),
+                        )
+                    })?,
+            )
         } else {
             None
         };
 
-        Ok(Self { node_id: node_id.to_string(), config, compiled, language })
+        Ok(Self {
+            node_id: node_id.to_string(),
+            config,
+            compiled,
+            language,
+        })
     }
 }
 
 #[async_trait]
 impl NodeHandler for Node {
-    fn kind(&self) -> &'static str { NODE_KIND }
-    fn input_pins(&self) -> &'static [&'static str] { &[INPUT_PIN_IN] }
-    fn output_pins(&self) -> &'static [&'static str] { &[] }
+    fn kind(&self) -> &'static str {
+        NODE_KIND
+    }
+    fn input_pins(&self) -> &'static [&'static str] {
+        &[INPUT_PIN_IN]
+    }
+    fn output_pins(&self) -> &'static [&'static str] {
+        &[]
+    }
 
-    async fn execute_async(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {
+    async fn execute_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<NodeExecutionOutput, PipelineError> {
         let output_pins = match self.config.mode {
             BranchMode::Fanout => self.config.branches.clone(),
             BranchMode::ByExpression => {
                 let compiled = self.compiled.as_ref().ok_or_else(|| {
-                    PipelineError::new("FW_NODE_LOGIC_BRANCH_NO_COMPILED", "by_expression mode requires expression")
+                    PipelineError::new(
+                        "FW_NODE_LOGIC_BRANCH_NO_COMPILED",
+                        "by_expression mode requires expression",
+                    )
                 })?;
-                let out = self.language.run(compiled, input.payload.clone(), &crate::language::ExecutionContext {
-                    project: input.metadata.get("project").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                    pipeline: input.metadata.get("pipeline").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                    request_id: input.metadata.get("request_id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
-                    trigger: input.metadata.get("trigger").cloned().unwrap_or(serde_json::Value::Null),
-                    metadata: input.metadata.clone(),
-                })
-                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_BRANCH_RUN", format!("node '{}': {}", self.node_id, e)))?;
+                let out = self
+                    .language
+                    .run(
+                        compiled,
+                        input.payload.clone(),
+                        &crate::language::ExecutionContext {
+                            project: input
+                                .metadata
+                                .get("project")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            pipeline: input
+                                .metadata
+                                .get("pipeline")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            request_id: input
+                                .metadata
+                                .get("request_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            trigger: input
+                                .metadata
+                                .get("trigger")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            metadata: input.metadata.clone(),
+                        },
+                    )
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_LOGIC_BRANCH_RUN",
+                            format!("node '{}': {}", self.node_id, e),
+                        )
+                    })?;
                 let pin = out.value.as_str().unwrap_or("").to_string();
                 vec![pin]
             }

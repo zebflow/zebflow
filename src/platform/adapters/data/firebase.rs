@@ -1,9 +1,9 @@
 //! Placeholder Firebase adapter.
 
-use crate::platform::adapters::data::DataAdapter;
-use crate::platform::error::PlatformError;
 use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
+use crate::platform::adapters::data::DataAdapter;
+use crate::platform::error::PlatformError;
 use crate::platform::model::{
     PipelineMeta, PlatformProject, PlatformUser, ProjectCredential, ProjectDbConnection,
     ProjectInvite, ProjectMember, ProjectPolicy, ProjectPolicyBinding, StoredUser,
@@ -345,7 +345,10 @@ impl DataAdapter for FirebaseDataAdapter {
         ))
     }
 
-    fn put_worker_registry_record(&self, _record: &WorkerRegistryRecord) -> Result<(), PlatformError> {
+    fn put_worker_registry_record(
+        &self,
+        _record: &WorkerRegistryRecord,
+    ) -> Result<(), PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_FIREBASE_UNIMPLEMENTED",
             "firebase adapter not implemented",
@@ -387,7 +390,9 @@ impl DataAdapter for FirebaseDataAdapter {
         ))
     }
 
-    fn list_project_runtime_placements(&self) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
+    fn list_project_runtime_placements(
+        &self,
+    ) -> Result<Vec<ProjectRuntimePlacement>, PlatformError> {
         Err(PlatformError::new(
             "PLATFORM_FIREBASE_UNIMPLEMENTED",
             "firebase adapter not implemented",

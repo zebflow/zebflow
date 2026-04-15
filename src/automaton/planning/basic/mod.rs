@@ -86,7 +86,11 @@ impl HierarchicalPlan {
     }
 
     pub fn progress(&self) -> (usize, usize) {
-        let completed = self.subgoals.iter().filter(|sg| sg.status == SubGoalStatus::Completed).count();
+        let completed = self
+            .subgoals
+            .iter()
+            .filter(|sg| sg.status == SubGoalStatus::Completed)
+            .count();
         (completed, self.subgoals.len())
     }
 }

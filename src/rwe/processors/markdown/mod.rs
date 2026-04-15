@@ -94,7 +94,9 @@ pub fn process_rwe_md_placeholders(input: &str) -> String {
             format!("prose {extra_class}")
         };
 
-        out.push_str(&format!("<div class=\"{class_attr}\">{rendered_html}</div>"));
+        out.push_str(&format!(
+            "<div class=\"{class_attr}\">{rendered_html}</div>"
+        ));
         cursor = tag_end;
     }
     out.push_str(&input[cursor..]);

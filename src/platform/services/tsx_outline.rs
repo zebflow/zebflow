@@ -94,7 +94,8 @@ pub fn extract_outline(source: &str, _file_path: Option<&str>) -> OutlineResult 
                     .map(|specs| {
                         specs
                             .iter()
-                            .map(|s| match s {
+                            .map(|s| {
+                                match s {
                                 oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(
                                     d,
                                 ) => d.local.name.as_str().to_string(),
@@ -104,6 +105,7 @@ pub fn extract_outline(source: &str, _file_path: Option<&str>) -> OutlineResult 
                                 oxc_ast::ast::ImportDeclarationSpecifier::ImportNamespaceSpecifier(
                                     ns,
                                 ) => format!("* as {}", ns.local.name.as_str()),
+                            }
                             })
                             .collect()
                     })
@@ -138,11 +140,7 @@ pub fn extract_outline(source: &str, _file_path: Option<&str>) -> OutlineResult 
                 }
                 // Re-exports: export { X } from "..."
                 if !ed.specifiers.is_empty() && ed.source.is_some() {
-                    let src = ed
-                        .source
-                        .as_ref()
-                        .map(|s| s.value.as_str())
-                        .unwrap_or("?");
+                    let src = ed.source.as_ref().map(|s| s.value.as_str()).unwrap_or("?");
                     let names: Vec<String> = ed
                         .specifiers
                         .iter()
@@ -179,11 +177,10 @@ pub fn extract_outline(source: &str, _file_path: Option<&str>) -> OutlineResult 
                 let end_line = line_of(source, edd.span.end.saturating_sub(1));
                 match &edd.declaration {
                     ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-                        let name = f
-                            .id
-                            .as_ref()
-                            .map(|id| id.name.as_str().to_string())
-                            .unwrap_or_else(|| "(anonymous)".to_string());
+                        let name =
+                            f.id.as_ref()
+                                .map(|id| id.name.as_str().to_string())
+                                .unwrap_or_else(|| "(anonymous)".to_string());
                         symbols.push(OutlineSymbol {
                             kind: SymbolKind::Function,
                             name,
@@ -195,11 +192,10 @@ pub fn extract_outline(source: &str, _file_path: Option<&str>) -> OutlineResult 
                         });
                     }
                     ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                        let name = c
-                            .id
-                            .as_ref()
-                            .map(|id| id.name.as_str().to_string())
-                            .unwrap_or_else(|| "(anonymous)".to_string());
+                        let name =
+                            c.id.as_ref()
+                                .map(|id| id.name.as_str().to_string())
+                                .unwrap_or_else(|| "(anonymous)".to_string());
                         symbols.push(OutlineSymbol {
                             kind: SymbolKind::Class,
                             name,
@@ -415,10 +411,7 @@ fn line_of(source: &str, byte_offset: u32) -> u32 {
 }
 
 /// Extract symbols from a `Declaration` node (used for both exported and non-exported).
-fn extract_declaration(
-    source: &str,
-    decl: &oxc_ast::ast::Declaration,
-) -> Vec<OutlineSymbol> {
+fn extract_declaration(source: &str, decl: &oxc_ast::ast::Declaration) -> Vec<OutlineSymbol> {
     use oxc_ast::ast::Declaration;
     let mut syms = Vec::new();
 

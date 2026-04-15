@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::{DslLine, DslOutput};
 use super::parser::{DslVerb, build_pipeline_graph, parse_one_command, split_commands};
+use super::{DslLine, DslOutput};
 use crate::platform::services::PlatformService;
 
 /// Executor for Pipeline DSL commands.
@@ -26,7 +26,11 @@ impl DslExecutor {
     }
 
     /// Execute a run body with an optional initial JSON payload.
-    pub async fn execute_run_with_input(&self, body: &str, input: Option<serde_json::Value>) -> DslOutput {
+    pub async fn execute_run_with_input(
+        &self,
+        body: &str,
+        input: Option<serde_json::Value>,
+    ) -> DslOutput {
         self.cmd_run(body, false, input).await
     }
 
@@ -54,30 +58,61 @@ impl DslExecutor {
 
     async fn execute_verb(&self, verb: DslVerb) -> DslOutput {
         match verb {
-            DslVerb::Get { resource, path, filter, status } => {
-                self.cmd_get(&resource, path.as_deref(), filter.as_deref(), status.as_deref()).await
+            DslVerb::Get {
+                resource,
+                path,
+                filter,
+                status,
+            } => {
+                self.cmd_get(
+                    &resource,
+                    path.as_deref(),
+                    filter.as_deref(),
+                    status.as_deref(),
+                )
+                .await
             }
-            DslVerb::Describe { kind, name, compact } => self.cmd_describe(&kind, &name, compact).await,
+            DslVerb::Describe {
+                kind,
+                name,
+                compact,
+            } => self.cmd_describe(&kind, &name, compact).await,
             DslVerb::Read { kind, name } => self.cmd_describe(&kind, &name, false).await,
             DslVerb::Activate { file_rel_path } => self.cmd_activate(&file_rel_path).await,
             DslVerb::Deactivate { file_rel_path } => self.cmd_deactivate(&file_rel_path).await,
-            DslVerb::Execute { file_rel_path, input } => self.cmd_execute(&file_rel_path, input).await,
-            DslVerb::Register { file_rel_path, title, description, as_json, body } => {
-                self.cmd_register(&file_rel_path, &title, &description, as_json, &body).await
+            DslVerb::Execute {
+                file_rel_path,
+                input,
+            } => self.cmd_execute(&file_rel_path, input).await,
+            DslVerb::Register {
+                file_rel_path,
+                title,
+                description,
+                as_json,
+                body,
+            } => {
+                self.cmd_register(&file_rel_path, &title, &description, as_json, &body)
+                    .await
             }
-            DslVerb::Patch { file_rel_path, node_id, flags, body } => {
-                self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref()).await
+            DslVerb::Patch {
+                file_rel_path,
+                node_id,
+                flags,
+                body,
+            } => {
+                self.cmd_patch(&file_rel_path, &node_id, flags, body.as_deref())
+                    .await
             }
             DslVerb::Run { body, dry_run } => self.cmd_run(&body, dry_run, None).await,
             DslVerb::Delete { kind, name } => self.cmd_delete(&kind, &name).await,
-            DslVerb::Git { subcommand, args, body } => {
-                self.cmd_git(&subcommand, args, body.as_deref()).await
-            }
+            DslVerb::Git {
+                subcommand,
+                args,
+                body,
+            } => self.cmd_git(&subcommand, args, body.as_deref()).await,
             DslVerb::NodeHelp { kind } => self.cmd_node_help(&kind),
             DslVerb::CredentialBlocked { reason } => self.cmd_credential_blocked(&reason),
-            DslVerb::Write { .. } => {
-                DslOutput::err("write/create is not yet implemented via DSL")
-            }
+            DslVerb::Write { .. } => DslOutput::err("write/create is not yet implemented via DSL"),
             DslVerb::Unknown { raw } => {
                 let verb_word = raw.split_whitespace().next().unwrap_or("?");
                 DslOutput::err(format!(
@@ -97,7 +132,11 @@ impl DslExecutor {
     ) -> DslOutput {
         match resource {
             "pipelines" | "pipeline" => {
-                match self.platform.projects.list_pipeline_meta_rows(&self.owner, &self.project) {
+                match self
+                    .platform
+                    .projects
+                    .list_pipeline_meta_rows(&self.owner, &self.project)
+                {
                     Ok(rows) => {
                         let mut out = DslOutput::new_ok();
                         if rows.is_empty() {
@@ -115,7 +154,11 @@ impl DslExecutor {
                         for m in &rows {
                             let name = truncate(&m.name, 26);
                             let trigger = truncate(&m.trigger_kind, 12);
-                            let status = if m.active_hash.is_some() { "active" } else { "draft" };
+                            let status = if m.active_hash.is_some() {
+                                "active"
+                            } else {
+                                "draft"
+                            };
                             out.push(DslLine::info(format!(
                                 "{:<26} {:<12} {:<8} {}",
                                 name, trigger, status, m.virtual_path
@@ -141,7 +184,11 @@ impl DslExecutor {
                 out
             }
             "connections" | "connection" => {
-                match self.platform.db_connections.list_project_connections(&self.owner, &self.project) {
+                match self
+                    .platform
+                    .db_connections
+                    .list_project_connections(&self.owner, &self.project)
+                {
                     Ok(conns) => {
                         let mut out = DslOutput::new_ok();
                         if conns.is_empty() {
@@ -164,7 +211,11 @@ impl DslExecutor {
                 }
             }
             "credentials" | "credential" => {
-                match self.platform.credentials.list_project_credentials(&self.owner, &self.project) {
+                match self
+                    .platform
+                    .credentials
+                    .list_project_credentials(&self.owner, &self.project)
+                {
                     Ok(creds) => {
                         let mut out = DslOutput::new_ok();
                         if creds.is_empty() {
@@ -172,10 +223,7 @@ impl DslExecutor {
                             return out;
                         }
                         for c in &creds {
-                            out.push(DslLine::info(format!(
-                                "{} ({})",
-                                c.credential_id, c.kind
-                            )));
+                            out.push(DslLine::info(format!("{} ({})", c.credential_id, c.kind)));
                         }
                         out
                     }
@@ -183,7 +231,11 @@ impl DslExecutor {
                 }
             }
             "templates" | "template" => {
-                match self.platform.projects.list_template_workspace(&self.owner, &self.project) {
+                match self
+                    .platform
+                    .projects
+                    .list_template_workspace(&self.owner, &self.project)
+                {
                     Ok(ws) => {
                         let mut out = DslOutput::new_ok();
                         if ws.items.is_empty() {
@@ -201,7 +253,11 @@ impl DslExecutor {
                 }
             }
             "docs" | "doc" => {
-                match self.platform.projects.list_project_docs(&self.owner, &self.project) {
+                match self
+                    .platform
+                    .projects
+                    .list_project_docs(&self.owner, &self.project)
+                {
                     Ok(docs) => {
                         let mut out = DslOutput::new_ok();
                         if docs.is_empty() {
@@ -237,7 +293,9 @@ impl DslExecutor {
 
     async fn describe_pipeline(&self, file_rel_path: &str, compact: bool) -> DslOutput {
         let Some(meta) = (match self.platform.projects.get_pipeline_meta_by_file_id(
-            &self.owner, &self.project, file_rel_path
+            &self.owner,
+            &self.project,
+            file_rel_path,
         ) {
             Ok(m) => m,
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
@@ -246,18 +304,22 @@ impl DslExecutor {
         };
 
         let mut out = DslOutput::new_ok();
-        let status = if meta.active_hash.as_deref().map(|h| !h.is_empty() && h == meta.hash).unwrap_or(false) {
+        let status = if meta
+            .active_hash
+            .as_deref()
+            .map(|h| !h.is_empty() && h == meta.hash)
+            .unwrap_or(false)
+        {
             "active"
         } else {
             "draft"
         };
         let hash_short = meta.hash.chars().take(8).collect::<String>();
 
-        let hits = self.platform.pipeline_hits.get(
-            &self.owner,
-            &self.project,
-            &meta.file_rel_path,
-        );
+        let hits = self
+            .platform
+            .pipeline_hits
+            .get(&self.owner, &self.project, &meta.file_rel_path);
 
         if compact {
             // Compact header: single line
@@ -284,10 +346,7 @@ impl DslExecutor {
                     // Compact: one line per node, no body content
                     for node in &graph.nodes {
                         let seg = crate::platform::shell::parser::node_to_segment_no_body(node);
-                        out.push(DslLine::info(format!(
-                            "  {:6}  {}",
-                            node.id, seg
-                        )));
+                        out.push(DslLine::info(format!("  {:6}  {}", node.id, seg)));
                     }
                 } else {
                     let dsl = crate::platform::shell::parser::graph_to_dsl(&graph);
@@ -301,7 +360,13 @@ impl DslExecutor {
                         let ids = graph
                             .nodes
                             .iter()
-                            .map(|n| format!("{}({})", n.id, n.kind.strip_prefix("n.").unwrap_or(&n.kind)))
+                            .map(|n| {
+                                format!(
+                                    "{}({})",
+                                    n.id,
+                                    n.kind.strip_prefix("n.").unwrap_or(&n.kind)
+                                )
+                            })
                             .collect::<Vec<_>>()
                             .join("  ");
                         out.push(DslLine::blank());
@@ -315,7 +380,11 @@ impl DslExecutor {
     }
 
     async fn describe_connection(&self, name: &str) -> DslOutput {
-        let conns = match self.platform.db_connections.list_project_connections(&self.owner, &self.project) {
+        let conns = match self
+            .platform
+            .db_connections
+            .list_project_connections(&self.owner, &self.project)
+        {
             Ok(c) => c,
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
         };
@@ -338,11 +407,16 @@ impl DslExecutor {
         let defs = crate::pipeline::nodes::builtin_node_definitions();
         let full_kind = crate::platform::shell::parser::expand_kind(kind).unwrap_or(kind);
         let Some(def) = defs.iter().find(|d| d.kind == full_kind) else {
-            return DslOutput::err(format!("Node kind '{kind}' not found. Use 'get nodes' for list."));
+            return DslOutput::err(format!(
+                "Node kind '{kind}' not found. Use 'get nodes' for list."
+            ));
         };
 
         let mut out = DslOutput::new_ok();
-        out.push(DslLine::info(format!("kind: {}  — {}", def.kind, def.description)));
+        out.push(DslLine::info(format!(
+            "kind: {}  — {}",
+            def.kind, def.description
+        )));
         out.push(DslLine::muted(format!(
             "  inputs: {}  outputs: {}",
             def.input_pins.join(", "),
@@ -360,7 +434,9 @@ impl DslExecutor {
         body: &str,
     ) -> DslOutput {
         if file_rel_path.is_empty() {
-            return DslOutput::err("register: pipeline file_rel_path is required (e.g. pipelines/api/my-pipe)");
+            return DslOutput::err(
+                "register: pipeline file_rel_path is required (e.g. pipelines/api/my-pipe)",
+            );
         }
         if body.is_empty() {
             return DslOutput::err(
@@ -417,12 +493,19 @@ impl DslExecutor {
             ));
         }
 
-        let trigger_kind = graph.nodes.first()
+        let trigger_kind = graph
+            .nodes
+            .first()
             .map(|n| {
-                if n.kind.contains("webhook") { "webhook" }
-                else if n.kind.contains("schedule") { "schedule" }
-                else if n.kind.contains("function") { "function" }
-                else { "manual" }
+                if n.kind.contains("webhook") {
+                    "webhook"
+                } else if n.kind.contains("schedule") {
+                    "schedule"
+                } else if n.kind.contains("function") {
+                    "function"
+                } else {
+                    "manual"
+                }
             })
             .unwrap_or("manual");
 
@@ -475,7 +558,9 @@ impl DslExecutor {
         }
 
         let meta = match self.platform.projects.get_pipeline_meta_by_file_id(
-            &self.owner, &self.project, file_rel_path
+            &self.owner,
+            &self.project,
+            file_rel_path,
         ) {
             Ok(Some(m)) => m,
             Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
@@ -502,23 +587,32 @@ impl DslExecutor {
         } else {
             let (kind_ref, explicit_idx) = parse_node_kind_ref(node_id);
             let norm_ref = kind_ref.strip_prefix("n.").unwrap_or(&kind_ref);
-            let candidates: Vec<usize> = graph.nodes.iter().enumerate()
+            let candidates: Vec<usize> = graph
+                .nodes
+                .iter()
+                .enumerate()
                 .filter(|(_, n)| n.kind.strip_prefix("n.").unwrap_or(&n.kind) == norm_ref)
                 .map(|(i, _)| i)
                 .collect();
             match (candidates.len(), explicit_idx) {
-                (0, _) => return DslOutput::err(format!(
-                    "Node '{node_id}' not found in pipeline '{file_rel_path}'"
-                )),
+                (0, _) => {
+                    return DslOutput::err(format!(
+                        "Node '{node_id}' not found in pipeline '{file_rel_path}'"
+                    ));
+                }
                 (1, None) | (1, Some(0)) => candidates[0],
                 (_, Some(idx)) if idx < candidates.len() => candidates[idx],
-                (_, Some(idx)) => return DslOutput::err(format!(
-                    "Kind '{kind_ref}' has {} node(s) — index {idx} is out of range",
-                    candidates.len()
-                )),
-                (n, None) => return DslOutput::err(format!(
-                    "Kind '{kind_ref}' matches {n} nodes — use {kind_ref}[0], {kind_ref}[1], etc. to specify which"
-                )),
+                (_, Some(idx)) => {
+                    return DslOutput::err(format!(
+                        "Kind '{kind_ref}' has {} node(s) — index {idx} is out of range",
+                        candidates.len()
+                    ));
+                }
+                (n, None) => {
+                    return DslOutput::err(format!(
+                        "Kind '{kind_ref}' matches {n} nodes — use {kind_ref}[0], {kind_ref}[1], etc. to specify which"
+                    ));
+                }
             }
         };
         let node = &mut graph.nodes[node_idx];
@@ -538,29 +632,40 @@ impl DslExecutor {
                 f.flag.trim_start_matches("--").replace('-', "_")
             };
             let kv = node_def
-                .map(|d| d.dsl_flags.iter()
-                    .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::KeyValuePairs)
-                    .map(|f| (flag_key(f), f.config_key.clone()))
-                    .collect()
-                )
+                .map(|d| {
+                    d.dsl_flags
+                        .iter()
+                        .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::KeyValuePairs)
+                        .map(|f| (flag_key(f), f.config_key.clone()))
+                        .collect()
+                })
                 .unwrap_or_default();
             let csv = node_def
-                .map(|d| d.dsl_flags.iter()
-                    .filter(|f| f.kind == crate::pipeline::model::DslFlagKind::CommaSeparatedList)
-                    .map(|f| (flag_key(f), f.config_key.clone()))
-                    .collect()
-                )
+                .map(|d| {
+                    d.dsl_flags
+                        .iter()
+                        .filter(|f| {
+                            f.kind == crate::pipeline::model::DslFlagKind::CommaSeparatedList
+                        })
+                        .map(|f| (flag_key(f), f.config_key.clone()))
+                        .collect()
+                })
                 .unwrap_or_default();
             // Scalar and Bool flags: flag name may differ from config key (e.g. --credential → credential_id).
             let scalar = node_def
-                .map(|d| d.dsl_flags.iter()
-                    .filter(|f| matches!(
-                        f.kind,
-                        crate::pipeline::model::DslFlagKind::Scalar | crate::pipeline::model::DslFlagKind::Bool
-                    ))
-                    .map(|f| (flag_key(f), f.config_key.clone()))
-                    .collect()
-                )
+                .map(|d| {
+                    d.dsl_flags
+                        .iter()
+                        .filter(|f| {
+                            matches!(
+                                f.kind,
+                                crate::pipeline::model::DslFlagKind::Scalar
+                                    | crate::pipeline::model::DslFlagKind::Bool
+                            )
+                        })
+                        .map(|f| (flag_key(f), f.config_key.clone()))
+                        .collect()
+                })
                 .unwrap_or_default();
             (kv, csv, scalar)
         };
@@ -604,14 +709,21 @@ impl DslExecutor {
                 } else {
                     // Scalar/Bool: map flag key → config_key (e.g. "credential" → "credential_id").
                     // Fall back to the raw key for unknown/custom config keys.
-                    let config_key = scalar_config_keys.get(k).cloned().unwrap_or_else(|| k.clone());
+                    let config_key = scalar_config_keys
+                        .get(k)
+                        .cloned()
+                        .unwrap_or_else(|| k.clone());
                     cfg.insert(config_key, v.clone());
                 }
             }
             if let Some(body_val) = body {
-                let body_key = if node.kind.contains("pg.query") { "query" }
-                    else if node.kind.contains("script") { "source" }
-                    else { "body" };
+                let body_key = if node.kind.contains("pg.query") {
+                    "query"
+                } else if node.kind.contains("script") {
+                    "source"
+                } else {
+                    "body"
+                };
                 cfg.insert(body_key.to_string(), json!(body_val));
             }
         }
@@ -621,12 +733,19 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
         };
 
-        let trigger_kind = graph.nodes.first()
+        let trigger_kind = graph
+            .nodes
+            .first()
             .map(|n| {
-                if n.kind.contains("webhook") { "webhook" }
-                else if n.kind.contains("schedule") { "schedule" }
-                else if n.kind.contains("function") { "function" }
-                else { "manual" }
+                if n.kind.contains("webhook") {
+                    "webhook"
+                } else if n.kind.contains("schedule") {
+                    "schedule"
+                } else if n.kind.contains("function") {
+                    "function"
+                } else {
+                    "manual"
+                }
             })
             .unwrap_or("manual");
 
@@ -667,7 +786,10 @@ impl DslExecutor {
                     file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{}' activated.", meta.file_rel_path)));
+                out.push(DslLine::success(format!(
+                    "Pipeline '{}' activated.",
+                    meta.file_rel_path
+                )));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -691,7 +813,10 @@ impl DslExecutor {
                     file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{}' deactivated.", meta.file_rel_path)));
+                out.push(DslLine::success(format!(
+                    "Pipeline '{}' deactivated.",
+                    meta.file_rel_path
+                )));
                 out
             }
             Err(e) => DslOutput::err(format!("Error: {}", e.message)),
@@ -704,7 +829,9 @@ impl DslExecutor {
         }
 
         let meta = match self.platform.projects.get_pipeline_meta_by_file_id(
-            &self.owner, &self.project, file_rel_path
+            &self.owner,
+            &self.project,
+            file_rel_path,
         ) {
             Ok(Some(m)) => m,
             Ok(None) => return DslOutput::err(format!("Pipeline '{file_rel_path}' not found")),
@@ -755,7 +882,10 @@ impl DslExecutor {
         .with_ws_hub(self.platform.ws_hub.clone())
         .with_state_bus(self.platform.state_bus.clone())
         .with_template_root(
-            self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
+            self.platform
+                .projects
+                .get_project_template_root(&self.owner, &self.project)
+                .ok(),
         );
 
         use crate::pipeline::PipelineEngine;
@@ -767,7 +897,10 @@ impl DslExecutor {
                     &meta.file_rel_path,
                 );
                 let mut out = DslOutput::new_ok();
-                out.push(DslLine::success(format!("Pipeline '{}' executed.", meta.file_rel_path)));
+                out.push(DslLine::success(format!(
+                    "Pipeline '{}' executed.",
+                    meta.file_rel_path
+                )));
                 let result_str = serde_json::to_string_pretty(&output.value)
                     .unwrap_or_else(|_| output.value.to_string());
                 for line in result_str.lines().take(20) {
@@ -777,11 +910,14 @@ impl DslExecutor {
                     let total_ms: u64 = output.node_trace.iter().map(|e| e.duration_ms).sum();
                     out.push(DslLine::muted(format!(
                         "--- node trace ({} nodes, {}ms total) ---",
-                        output.node_trace.len(), total_ms
+                        output.node_trace.len(),
+                        total_ms
                     )));
                     for entry in &output.node_trace {
                         let marker = if entry.error.is_none() { "✓" } else { "✗" };
-                        let err_part = entry.error.as_deref()
+                        let err_part = entry
+                            .error
+                            .as_deref()
                             .map(|e| format!("  → {}", e))
                             .unwrap_or_default();
                         out.push(DslLine::info(format!(
@@ -805,12 +941,20 @@ impl DslExecutor {
                     (Some(id), Some(kind)) => format!(" [node {} ({})]", id, kind),
                     _ => String::new(),
                 };
-                DslOutput::err(format!("Execution error: {} — {}{}", e.code, e.message, node_ctx))
+                DslOutput::err(format!(
+                    "Execution error: {} — {}{}",
+                    e.code, e.message, node_ctx
+                ))
             }
         }
     }
 
-    async fn cmd_run(&self, body: &str, dry_run: bool, initial_input: Option<serde_json::Value>) -> DslOutput {
+    async fn cmd_run(
+        &self,
+        body: &str,
+        dry_run: bool,
+        initial_input: Option<serde_json::Value>,
+    ) -> DslOutput {
         if body.is_empty() {
             return DslOutput::err(
                 "run: pipeline body is required. Example: run | trigger.manual | script -- return { ok: true };",
@@ -858,7 +1002,10 @@ impl DslExecutor {
                 .with_ws_hub(self.platform.ws_hub.clone())
                 .with_state_bus(self.platform.state_bus.clone())
                 .with_template_root(
-                    self.platform.projects.get_project_template_root(&self.owner, &self.project).ok()
+                    self.platform
+                        .projects
+                        .get_project_template_root(&self.owner, &self.project)
+                        .ok(),
                 );
 
                 use crate::pipeline::PipelineEngine;
@@ -875,19 +1022,27 @@ impl DslExecutor {
                             out.push(DslLine::info(line.to_string()));
                         }
                         if !output.node_trace.is_empty() {
-                            let total_ms: u64 = output.node_trace.iter().map(|e| e.duration_ms).sum();
+                            let total_ms: u64 =
+                                output.node_trace.iter().map(|e| e.duration_ms).sum();
                             out.push(DslLine::muted(format!(
                                 "--- node trace ({} nodes, {}ms total) ---",
-                                output.node_trace.len(), total_ms
+                                output.node_trace.len(),
+                                total_ms
                             )));
                             for entry in &output.node_trace {
                                 let marker = if entry.error.is_none() { "✓" } else { "✗" };
-                                let err_part = entry.error.as_deref()
+                                let err_part = entry
+                                    .error
+                                    .as_deref()
                                     .map(|e| format!("  → {}", e))
                                     .unwrap_or_default();
                                 out.push(DslLine::info(format!(
                                     "  {}  {}  ({})  {}ms{}",
-                                    marker, entry.node_id, entry.node_kind, entry.duration_ms, err_part
+                                    marker,
+                                    entry.node_id,
+                                    entry.node_kind,
+                                    entry.duration_ms,
+                                    err_part
                                 )));
                             }
                         }
@@ -915,12 +1070,7 @@ impl DslExecutor {
         ))
     }
 
-    async fn cmd_git(
-        &self,
-        subcommand: &str,
-        args: Vec<String>,
-        body: Option<&str>,
-    ) -> DslOutput {
+    async fn cmd_git(&self, subcommand: &str, args: Vec<String>, body: Option<&str>) -> DslOutput {
         let allowed = ["status", "log", "diff", "add", "commit"];
         if !allowed.contains(&subcommand) {
             return DslOutput::err(format!(
@@ -929,7 +1079,11 @@ impl DslExecutor {
             ));
         }
 
-        let layout = match self.platform.file.ensure_project_layout(&self.owner, &self.project) {
+        let layout = match self
+            .platform
+            .file
+            .ensure_project_layout(&self.owner, &self.project)
+        {
             Ok(l) => l,
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
         };
@@ -947,7 +1101,11 @@ impl DslExecutor {
                 .ok()
                 .flatten()
                 .map(|u| {
-                    let name = if u.git_name.is_empty() { u.owner.clone() } else { u.git_name };
+                    let name = if u.git_name.is_empty() {
+                        u.owner.clone()
+                    } else {
+                        u.git_name
+                    };
                     let email = if u.git_email.is_empty() {
                         format!("{}@zebflow.local", u.owner)
                     } else {
@@ -955,9 +1113,7 @@ impl DslExecutor {
                     };
                     (name, email)
                 })
-                .unwrap_or_else(|| {
-                    (self.owner.clone(), format!("{}@zebflow.local", self.owner))
-                });
+                .unwrap_or_else(|| (self.owner.clone(), format!("{}@zebflow.local", self.owner)));
 
             // -c flags before subcommand (git global options).
             cmd.arg("-c").arg(format!("user.name={git_name}"));
@@ -1034,7 +1190,9 @@ impl DslExecutor {
 
     fn cmd_node_help(&self, kind: &str) -> DslOutput {
         if kind.is_empty() {
-            return DslOutput::err("node help: kind is required. Example: node help trigger.webhook");
+            return DslOutput::err(
+                "node help: kind is required. Example: node help trigger.webhook",
+            );
         }
         self.describe_node(kind)
     }
@@ -1075,9 +1233,23 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// Config keys that are valid on any node and should not trigger unknown-key warnings.
 const GLOBAL_CONFIG_KEYS: &[&str] = &[
-    "title", "path", "method", "route", "credential_id", "sql", "query", "source",
-    "body", "markup", "template_path", "template_id", "credential_id_expr",
-    "query_expr", "params_expr", "room", "event",
+    "title",
+    "path",
+    "method",
+    "route",
+    "credential_id",
+    "sql",
+    "query",
+    "source",
+    "body",
+    "markup",
+    "template_path",
+    "template_id",
+    "credential_id_expr",
+    "query_expr",
+    "params_expr",
+    "room",
+    "event",
 ];
 
 /// Validate node config keys against declared DSL flags for each node kind.
@@ -1098,8 +1270,11 @@ fn validate_graph_flags(graph: &crate::pipeline::PipelineGraph) -> Vec<String> {
         if def.dsl_flags.is_empty() {
             continue;
         }
-        let known_keys: HashSet<&str> =
-            def.dsl_flags.iter().map(|f| f.config_key.as_str()).collect();
+        let known_keys: HashSet<&str> = def
+            .dsl_flags
+            .iter()
+            .map(|f| f.config_key.as_str())
+            .collect();
 
         let global_keys: HashSet<&str> = GLOBAL_CONFIG_KEYS.iter().copied().collect();
 

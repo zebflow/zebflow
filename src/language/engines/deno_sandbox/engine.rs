@@ -104,10 +104,8 @@ impl DenoSandboxEngine {
             inject_loop_guards(source)
         };
 
-        let fn_source =
-            format!("async function(input, n, ctx) {{\n{body}\n}}");
-        let module_source =
-            format!("{TOOL_INIT}\nexport default {fn_source}\n");
+        let fn_source = format!("async function(input, n, ctx) {{\n{body}\n}}");
+        let module_source = format!("{TOOL_INIT}\nexport default {fn_source}\n");
 
         let mut hasher = DefaultHasher::new();
         module_source.hash(&mut hasher);
@@ -149,7 +147,6 @@ impl DenoSandboxEngine {
         let compiled = self.compile_script(source, run_patch)?;
         self.run_compiled(&compiled, input, Value::Null)
     }
-
 }
 
 impl LanguageEngine for DenoSandboxEngine {

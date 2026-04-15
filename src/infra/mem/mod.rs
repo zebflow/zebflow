@@ -90,7 +90,11 @@ impl MemHub {
             }
         }
         let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
-        if entries.get(&fk).map(|entry| entry.is_expired()).unwrap_or(false) {
+        if entries
+            .get(&fk)
+            .map(|entry| entry.is_expired())
+            .unwrap_or(false)
+        {
             entries.remove(&fk);
         }
         None
@@ -209,14 +213,13 @@ impl MemHub {
     /// Return lightweight runtime stats and opportunistically purge expired entries.
     pub fn stats(&self) -> MemHubStats {
         self.purge_expired();
-        let entry_count = self
-            .entries
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let entry_count = self.entries.read().unwrap_or_else(|e| e.into_inner()).len();
         let channels = self.channels.read().unwrap_or_else(|e| e.into_inner());
         let channel_count = channels.len();
-        let subscriber_count = channels.values().map(tokio::sync::broadcast::Sender::receiver_count).sum();
+        let subscriber_count = channels
+            .values()
+            .map(tokio::sync::broadcast::Sender::receiver_count)
+            .sum();
         MemHubStats {
             entry_count,
             channel_count,

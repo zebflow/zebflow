@@ -72,12 +72,18 @@ impl ClusterBootstrapService {
 
     /// Cluster join token used for internal control-plane requests.
     pub fn join_token(&self) -> Option<&str> {
-        self.settings.join_token.as_deref().filter(|value| !value.trim().is_empty())
+        self.settings
+            .join_token
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
     }
 
     /// Controller URL used by offices for registration and heartbeats.
     pub fn master_url(&self) -> Option<&str> {
-        self.settings.master_url.as_deref().filter(|value| !value.trim().is_empty())
+        self.settings
+            .master_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
     }
 
     /// Base URL this node advertises to the control plane.

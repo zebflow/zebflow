@@ -185,6 +185,7 @@ impl MemSubscriber {
                                     &project_s,
                                     &file_rel_path_s,
                                     &PipelineInvocationEntry {
+                                        run_id: ctx.request_id.clone(),
                                         at: fired_at.timestamp(),
                                         duration_ms,
                                         status: "ok".to_string(),
@@ -210,12 +211,13 @@ impl MemSubscriber {
                                     &project_s,
                                     &file_rel_path_s,
                                     &PipelineInvocationEntry {
+                                        run_id: ctx.request_id.clone(),
                                         at: fired_at.timestamp(),
                                         duration_ms,
                                         status: "error".to_string(),
                                         trigger: "memsubscribe".to_string(),
                                         error: Some(e.message.clone()),
-                                        trace: vec![],
+                                        trace: e.node_trace.clone(),
                                     },
                                     log_max_n,
                                 );

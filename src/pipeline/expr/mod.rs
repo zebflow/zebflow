@@ -37,7 +37,7 @@
 //! --url "{{ $nodes.userLookup.rows[0].api_endpoint }}"
 //! ```
 
-pub mod scanner;
 pub mod resolver;
+pub mod scanner;
 
 pub use resolver::resolve_config_expressions;

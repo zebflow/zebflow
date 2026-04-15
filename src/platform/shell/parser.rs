@@ -22,11 +22,19 @@ pub enum DslVerb {
         status: Option<String>,
     },
     /// `describe <kind> <name> [--compact]`
-    Describe { kind: String, name: String, compact: bool },
+    Describe {
+        kind: String,
+        name: String,
+        compact: bool,
+    },
     /// `read <kind> <name>`
     Read { kind: String, name: String },
     /// `write <kind> <name> [body after --]`
-    Write { kind: String, name: String, body: Option<String> },
+    Write {
+        kind: String,
+        name: String,
+        body: Option<String>,
+    },
     /// `delete <kind> <name>`
     Delete { kind: String, name: String },
     /// `activate pipeline <file_rel_path>`
@@ -53,7 +61,11 @@ pub enum DslVerb {
     /// `run [--dry-run] [| ...]`
     Run { body: String, dry_run: bool },
     /// `git <subcommand> [args...] [-- <body>]`
-    Git { subcommand: String, args: Vec<String>, body: Option<String> },
+    Git {
+        subcommand: String,
+        args: Vec<String>,
+        body: Option<String>,
+    },
     /// `node help <kind>`
     NodeHelp { kind: String },
     /// Credential write blocked
@@ -112,8 +124,10 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.schedule" | "n.trigger.schedule" => Some("n.trigger.schedule"),
         "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
+        "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
         "script" | "n.script" => Some("n.script"),
         "web.response" | "n.web.response" => Some("n.web.response"),
+        "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
         "http.request" | "n.http.request" => Some("n.http.request"),
         "fanout" | "n.fanout" | "logic.branch" | "n.logic.branch" => Some("n.logic.branch"),
         "zebtune" | "n.zebtune" => Some("n.zebtune"),
@@ -150,20 +164,15 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.script" | "n.http.request"
-        | "n.zebtune" | "n.logic.branch" | "n.logic.merge" => {
-            (vec!["in".to_string()], vec!["out".to_string()])
-        }
+        "n.pg.query" | "n.sekejap.query" | "n.script" | "n.http.request" | "n.zebtune"
+        | "n.logic.branch" | "n.logic.merge" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.if" => (
             vec!["in".to_string()],
             vec!["true".to_string(), "false".to_string()],
         ),
         // n.logic.switch: output pins are dynamic (set per-instance from cases config).
         // Return just ["default"] as the fallback; actual pins are set after config is parsed.
-        "n.logic.switch" => (
-            vec!["in".to_string()],
-            vec!["default".to_string()],
-        ),
+        "n.logic.switch" => (vec!["in".to_string()], vec!["default".to_string()]),
         "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
@@ -194,8 +203,7 @@ fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
 
 fn strip_outer_quotes(s: &str) -> &str {
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
     {
         &s[1..s.len() - 1]
     } else {
@@ -206,10 +214,12 @@ fn strip_outer_quotes(s: &str) -> &str {
 /// Extracts the raw body substring after ` -- ` in a segment string.
 /// Strips outer quotes if the entire body is quoted.
 fn extract_raw_body_from(raw: &str) -> Option<String> {
-    raw.find(" -- ").map(|pos| {
-        let after = raw[pos + 4..].trim();
-        strip_outer_quotes(after).to_string()
-    }).filter(|s| !s.is_empty())
+    raw.find(" -- ")
+        .map(|pos| {
+            let after = raw[pos + 4..].trim();
+            strip_outer_quotes(after).to_string()
+        })
+        .filter(|s| !s.is_empty())
 }
 
 /// Coerce a DSL flag string value to the appropriate JSON type.
@@ -219,9 +229,13 @@ fn coerce_scalar_value(s: &str) -> Value {
         "true" => json!(true),
         "false" => json!(false),
         _ => {
-            if let Ok(n) = s.parse::<i64>() { json!(n) }
-            else if let Ok(f) = s.parse::<f64>() { json!(f) }
-            else { json!(s) }
+            if let Ok(n) = s.parse::<i64>() {
+                json!(n)
+            } else if let Ok(f) = s.parse::<f64>() {
+                json!(f)
+            } else {
+                json!(s)
+            }
         }
     }
 }
@@ -250,11 +264,12 @@ pub fn parse_node_config(
 
         if let Some(key) = t.strip_prefix("--") {
             let flag_str = format!("--{key}");
-            let dsl_flag = dsl_flags.iter().find(|f| f.flag == flag_str).ok_or_else(|| {
-                format!(
-                    "unknown flag `--{key}` — not declared in this node's dsl_flags"
-                )
-            })?;
+            let dsl_flag = dsl_flags
+                .iter()
+                .find(|f| f.flag == flag_str)
+                .ok_or_else(|| {
+                    format!("unknown flag `--{key}` — not declared in this node's dsl_flags")
+                })?;
 
             match dsl_flag.kind {
                 DslFlagKind::Scalar => {
@@ -264,8 +279,7 @@ pub fn parse_node_config(
                 }
                 DslFlagKind::CommaSeparatedList => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
-                    let arr: Vec<Value> =
-                        val.split(',').map(|s| json!(s.trim())).collect();
+                    let arr: Vec<Value> = val.split(',').map(|s| json!(s.trim())).collect();
                     config.insert(dsl_flag.config_key.clone(), Value::Array(arr));
                     i += 2;
                 }
@@ -318,15 +332,13 @@ fn parse_flags_for_patch(tokens: &[String], cmd: &str) -> (HashMap<String, Value
             // Accumulate repeated flags as an array to preserve all occurrences
             // (e.g. --claim sub=$.id --claim name=$.fullname:public)
             match flags.entry(config_key) {
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    match e.get_mut() {
-                        Value::Array(arr) => arr.push(new_val),
-                        existing => {
-                            let prev = existing.clone();
-                            *existing = Value::Array(vec![prev, new_val]);
-                        }
+                std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
+                    Value::Array(arr) => arr.push(new_val),
+                    existing => {
+                        let prev = existing.clone();
+                        *existing = Value::Array(vec![prev, new_val]);
                     }
-                }
+                },
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert(new_val);
                 }
@@ -370,19 +382,37 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
     // Pipe mode bodies start with `|`; graph mode bodies start with `[`.
     let body = match find_first_pipe_in_raw(cmd) {
         Some(pos) => cmd[pos..].to_string(),
-        None => cmd.find('[').map(|pos| cmd[pos..].to_string()).unwrap_or_default(),
+        None => cmd
+            .find('[')
+            .map(|pos| cmd[pos..].to_string())
+            .unwrap_or_default(),
     };
 
-    DslVerb::Register { file_rel_path, title, description, as_json, body }
+    DslVerb::Register {
+        file_rel_path,
+        title,
+        description,
+        as_json,
+        body,
+    }
 }
 
 /// Parse `patch pipeline <file_rel_path> node <id> [flags] [-- body]`
 fn parse_patch(tokens: &[String], cmd: &str) -> DslVerb {
     let file_rel_path = tokens.get(2).cloned().unwrap_or_default();
     let node_id = tokens.get(4).cloned().unwrap_or_default();
-    let flag_tokens = if tokens.len() > 5 { tokens[5..].to_vec() } else { vec![] };
+    let flag_tokens = if tokens.len() > 5 {
+        tokens[5..].to_vec()
+    } else {
+        vec![]
+    };
     let (flags, body) = parse_flags_for_patch(&flag_tokens, cmd);
-    DslVerb::Patch { file_rel_path, node_id, flags, body }
+    DslVerb::Patch {
+        file_rel_path,
+        node_id,
+        flags,
+        body,
+    }
 }
 
 fn extract_flag(tokens: &[String], flag: &str) -> Option<String> {
@@ -400,7 +430,9 @@ fn extract_body(tokens: &[String]) -> Option<String> {
 pub fn parse_one_command(cmd: &str) -> DslVerb {
     let tokens = tokenize(cmd);
     if tokens.is_empty() {
-        return DslVerb::Unknown { raw: cmd.to_string() };
+        return DslVerb::Unknown {
+            raw: cmd.to_string(),
+        };
     }
 
     match tokens[0].to_lowercase().as_str() {
@@ -589,7 +621,9 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
 }
 
 fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
-    let rest = line.strip_prefix('[').ok_or("expected '[' at start of node declaration")?;
+    let rest = line
+        .strip_prefix('[')
+        .ok_or("expected '[' at start of node declaration")?;
     let (label, rest) = rest
         .split_once(']')
         .ok_or("expected ']' in node declaration")?;
@@ -616,6 +650,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
     if let Some(bval) = body_val {
         let body_key = match full_kind {
             "n.pg.query" => "query",
+            "n.sekejap.query" => "query",
             "n.script" => "source",
             "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
             "n.browser.run" => "code",
@@ -628,11 +663,17 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
     // For logic.switch, output pins are dynamic: the declared cases + the default pin.
     if full_kind == "n.logic.switch" {
         if let Value::Object(ref map) = config {
-            let cases: Vec<String> = map.get("cases")
+            let cases: Vec<String> = map
+                .get("cases")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let default_pin = map.get("default")
+            let default_pin = map
+                .get("default")
                 .and_then(|v| v.as_str())
                 .unwrap_or("default")
                 .to_string();
@@ -798,6 +839,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     // Body (SQL / script source / generic body) — stored under a kind-specific key.
     let body_key = match node.kind.as_str() {
         "n.pg.query" => "query",
+        "n.sekejap.query" => "query",
         "n.script" => "source",
         "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
         _ => "body",
@@ -837,6 +879,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         // Skip body-typed flags (their config_key matches the body key for this node kind)
         let body_key = match node.kind.as_str() {
             "n.pg.query" => "query",
+            "n.sekejap.query" => "query",
             "n.script" => "source",
             "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
             _ => "body",
@@ -855,7 +898,11 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             }
             DslFlagKind::CommaSeparatedList => {
                 if let Some(arr) = val.as_array() {
-                    let csv = arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(",");
+                    let csv = arr
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",");
                     if !csv.is_empty() {
                         parts.push(flag.flag.clone());
                         parts.push(csv);
@@ -993,8 +1040,8 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         }
 
         let raw_kind = &seg_tokens[0];
-        let full_kind = expand_kind(raw_kind)
-            .ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
+        let full_kind =
+            expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
 
         let node_id = format!("n{idx}");
         let (input_pins, mut output_pins) = default_pins(full_kind);
@@ -1021,11 +1068,17 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         // For logic.switch, output pins are dynamic: the declared cases + the default pin.
         if full_kind == "n.logic.switch" {
             if let Value::Object(ref map) = config {
-                let cases: Vec<String> = map.get("cases")
+                let cases: Vec<String> = map
+                    .get("cases")
                     .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                let default_pin = map.get("default")
+                let default_pin = map
+                    .get("default")
                     .and_then(|v| v.as_str())
                     .unwrap_or("default")
                     .to_string();
@@ -1069,7 +1122,10 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         });
     }
 
-    let entry_nodes = nodes.first().map(|n| vec![n.id.clone()]).unwrap_or_default();
+    let entry_nodes = nodes
+        .first()
+        .map(|n| vec![n.id.clone()])
+        .unwrap_or_default();
 
     Ok(PipelineGraph {
         kind: "zebflow.pipeline".to_string(),

@@ -328,7 +328,9 @@ async fn describe_tables(
         let default: Option<String> = row.try_get("column_default").ok().flatten();
         let is_pk: bool = row.try_get("is_pk").unwrap_or(false);
 
-        let fk = fk_lookup.get(&(schema.clone(), table.clone(), col_name.clone())).cloned();
+        let fk = fk_lookup
+            .get(&(schema.clone(), table.clone(), col_name.clone()))
+            .cloned();
 
         let mut col = json!({
             "name": col_name,
@@ -345,10 +347,7 @@ async fn describe_tables(
             col["default"] = json!(d);
         }
 
-        cols_lookup
-            .entry((schema, table))
-            .or_default()
-            .push(col);
+        cols_lookup.entry((schema, table)).or_default().push(col);
     }
 
     // ── 6. Assemble final nodes ───────────────────────────────────────────────

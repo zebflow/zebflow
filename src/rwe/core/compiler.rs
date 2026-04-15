@@ -23,7 +23,10 @@ pub fn compile(source: &str, options: CompileOptions) -> Result<CompiledTemplate
         Ok(r) => r,
         Err(_) => {
             let _ = std::fs::write("/tmp/rwe-parse-failed.tsx", source);
-            Err(EngineError::new("RWE_PARSE_PANIC", "oxc compiler panicked — source written to /tmp/rwe-parse-failed.tsx"))
+            Err(EngineError::new(
+                "RWE_PARSE_PANIC",
+                "oxc compiler panicked — source written to /tmp/rwe-parse-failed.tsx",
+            ))
         }
     }
 }
@@ -62,9 +65,17 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let (bundled_server, _, server_deps) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_server, _, server_deps) = bundle_for_client(
+        &normalized_page_source,
+        &imports,
+        options.template_root.as_deref(),
+    )?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
-    let (bundled_client, detected_zeb_libs, client_deps) = bundle_for_client(&normalized_page_source, &imports, options.template_root.as_deref())?;
+    let (bundled_client, detected_zeb_libs, client_deps) = bundle_for_client(
+        &normalized_page_source,
+        &imports,
+        options.template_root.as_deref(),
+    )?;
     let transformed_client = format!("{}{}", JSX_PRELUDE, bundled_client);
     let mut dependency_paths = server_deps;
     dependency_paths.extend(client_deps);
@@ -85,7 +96,6 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         dependency_paths,
     })
 }
-
 
 fn source_type_from_options(options: &CompileOptions) -> SourceType {
     if let Some(path) = &options.file_path {
@@ -132,30 +142,51 @@ fn validate_import_allowlist(
     _options: &CompileOptions,
 ) -> Result<(), EngineError> {
     for import in imports {
-        if import == "zeb" { continue; }
-        if import.starts_with("zeb/") { continue; }
-        if import.starts_with("@/") { continue; }
+        if import == "zeb" {
+            continue;
+        }
+        if import.starts_with("zeb/") {
+            continue;
+        }
+        if import.starts_with("@/") {
+            continue;
+        }
         // Absolute paths are the resolved form of @/ imports written to disk by
         // prepare_template_root() before compile() is called. Never user-authored.
-        if import.starts_with('/') { continue; }
+        if import.starts_with('/') {
+            continue;
+        }
         return Err(EngineError::new(
             "RWE_IMPORT_NOT_ALLOWED",
-            format!("import '{import}' is not allowed; only \"zeb\", \"zeb/*\", and \"@/\" imports are valid"),
+            format!(
+                "import '{import}' is not allowed; only \"zeb\", \"zeb/*\", and \"@/\" imports are valid"
+            ),
         ));
     }
     Ok(())
 }
 
 const ZEB_EXCLUSIVE_SYMBOLS: &[&str] = &[
-    "useState", "useEffect", "useRef", "useMemo", "useCallback",
-    "useContext", "useReducer", "useId", "useLayoutEffect",
-    "usePageState", "useNavigate",
-    "cx", "Link", "forwardRef", "memo", "createContext", "Fragment",
+    "useState",
+    "useEffect",
+    "useRef",
+    "useMemo",
+    "useCallback",
+    "useContext",
+    "useReducer",
+    "useId",
+    "useLayoutEffect",
+    "usePageState",
+    "useNavigate",
+    "cx",
+    "Link",
+    "forwardRef",
+    "memo",
+    "createContext",
+    "Fragment",
 ];
 
-fn validate_zeb_exclusive_symbols(
-    program: &oxc_ast::ast::Program<'_>,
-) -> Result<(), EngineError> {
+fn validate_zeb_exclusive_symbols(program: &oxc_ast::ast::Program<'_>) -> Result<(), EngineError> {
     use oxc_ast::ast::ImportDeclarationSpecifier;
     for stmt in &program.body {
         if let Statement::ImportDeclaration(import) = stmt {
@@ -172,7 +203,9 @@ fn validate_zeb_exclusive_symbols(
                         if ZEB_EXCLUSIVE_SYMBOLS.contains(&name) {
                             return Err(EngineError::new(
                                 "RWE_IMPORT_ZEB_ONLY",
-                                format!("'{name}' must be imported from \"zeb\", not \"{specifier}\""),
+                                format!(
+                                    "'{name}' must be imported from \"zeb\", not \"{specifier}\""
+                                ),
                             ));
                         }
                     }
@@ -287,7 +320,6 @@ fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<Strin
     Ok(None)
 }
 
-
 fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
 
@@ -309,7 +341,10 @@ fn canonical_or_current(path: &Path) -> Result<PathBuf, EngineError> {
         let cwd = std::env::current_dir().map_err(|e| {
             EngineError::new(
                 "RWE_PATH",
-                format!("failed reading current_dir while resolving '{}': {e}", path.display()),
+                format!(
+                    "failed reading current_dir while resolving '{}': {e}",
+                    path.display()
+                ),
             )
         })?;
         Ok(cwd.join(path))
@@ -361,7 +396,11 @@ fn ensure_within_root(path: &Path, root: &Path) -> Result<(), EngineError> {
     } else {
         Err(EngineError::new(
             "RWE_IMPORT_BOUNDARY",
-            format!("resolved import '{}' escapes template_root '{}'", path.display(), root.display()),
+            format!(
+                "resolved import '{}' escapes template_root '{}'",
+                path.display(),
+                root.display()
+            ),
         ))
     }
 }
@@ -371,8 +410,7 @@ fn detect_hydrate_mode(source: &str) -> HydrateMode {
         HydrateMode::Off
     } else if source.contains("hydrate=\"onview\"") || source.contains("hydrate={'onview'}") {
         HydrateMode::Onview
-    } else if source.contains("hydrate=\"oninteract\"")
-        || source.contains("hydrate={'oninteract'}")
+    } else if source.contains("hydrate=\"oninteract\"") || source.contains("hydrate={'oninteract'}")
     {
         HydrateMode::Oninteract
     } else {
@@ -450,12 +488,17 @@ fn bundle_for_client(
 
     // Depth-first: inline all filesystem imports from the page.
     for edge in imports {
-        let path = edge
-            .resolved
-            .as_deref()
-            .unwrap_or(&edge.source);
+        let path = edge.resolved.as_deref().unwrap_or(&edge.source);
         if path.starts_with('/') && !is_rwe_runtime_path(path) {
-            collect_inlined_module(path, &mut inlined_parts, &mut visited, &mut counter, &mut rwe_names, &mut zeb_libs, template_root)?;
+            collect_inlined_module(
+                path,
+                &mut inlined_parts,
+                &mut visited,
+                &mut counter,
+                &mut rwe_names,
+                &mut zeb_libs,
+                template_root,
+            )?;
         }
     }
 
@@ -487,12 +530,8 @@ fn collect_inlined_module(
     }
     visited.insert(path.to_string());
 
-    let raw = fs::read_to_string(path).map_err(|e| {
-        EngineError::new(
-            "RWE_BUNDLE_READ",
-            format!("cannot read '{path}': {e}"),
-        )
-    })?;
+    let raw = fs::read_to_string(path)
+        .map_err(|e| EngineError::new("RWE_BUNDLE_READ", format!("cannot read '{path}': {e}")))?;
 
     // Resolve any remaining @/ alias imports to absolute paths.
     // Component files written via the API may not have been pre-processed by
@@ -513,7 +552,15 @@ fn collect_inlined_module(
     // Recursively inline this file's own filesystem imports first (depth-first)
     let sub_paths = extract_filesystem_import_paths(&content);
     for sub_path in &sub_paths {
-        collect_inlined_module(sub_path, parts, visited, counter, rwe_names, zeb_libs, template_root)?;
+        collect_inlined_module(
+            sub_path,
+            parts,
+            visited,
+            counter,
+            rwe_names,
+            zeb_libs,
+            template_root,
+        )?;
     }
 
     // Collect exported names BEFORE localize_exports strips the export keywords.
@@ -597,21 +644,19 @@ fn collect_top_level_exported_names(source: &str) -> HashSet<String> {
                     exported.insert(name);
                 }
             }
-            Statement::ExportDefaultDeclaration(edd) => {
-                match &edd.declaration {
-                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-                        if let Some(id) = &f.id {
-                            exported.insert(id.name.as_str().to_string());
-                        }
+            Statement::ExportDefaultDeclaration(edd) => match &edd.declaration {
+                ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
+                    if let Some(id) = &f.id {
+                        exported.insert(id.name.as_str().to_string());
                     }
-                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                        if let Some(id) = &c.id {
-                            exported.insert(id.name.as_str().to_string());
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                ExportDefaultDeclarationKind::ClassDeclaration(c) => {
+                    if let Some(id) = &c.id {
+                        exported.insert(id.name.as_str().to_string());
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -681,19 +726,25 @@ fn prefix_module_locals(source: &str, prefix: &str, exported: &HashSet<String>) 
                         Declaration::FunctionDeclaration(f) => {
                             if let Some(id) = &f.id {
                                 let name = id.name.as_str().to_string();
-                                if !exported.contains(&name) { local_names.push(name); }
+                                if !exported.contains(&name) {
+                                    local_names.push(name);
+                                }
                             }
                         }
                         Declaration::ClassDeclaration(c) => {
                             if let Some(id) = &c.id {
                                 let name = id.name.as_str().to_string();
-                                if !exported.contains(&name) { local_names.push(name); }
+                                if !exported.contains(&name) {
+                                    local_names.push(name);
+                                }
                             }
                         }
                         Declaration::VariableDeclaration(vd) => {
                             for d in &vd.declarations {
                                 if let Some(name) = binding_ident_name(&d.id) {
-                                    if !exported.contains(&name) { local_names.push(name); }
+                                    if !exported.contains(&name) {
+                                        local_names.push(name);
+                                    }
                                 }
                             }
                         }
@@ -784,7 +835,9 @@ fn extract_rwe_import_names(source: &str) -> Vec<String> {
                             oxc_ast::ast::ImportDeclarationSpecifier::ImportSpecifier(named) => {
                                 names.push(named.local.name.as_str().to_string());
                             }
-                            oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(def) => {
+                            oxc_ast::ast::ImportDeclarationSpecifier::ImportDefaultSpecifier(
+                                def,
+                            ) => {
                                 names.push(def.local.name.as_str().to_string());
                             }
                             _ => {}
@@ -851,7 +904,6 @@ fn extract_filesystem_import_paths(source: &str) -> Vec<String> {
         .collect()
 }
 
-
 /// Remove all filesystem-path imports AND rwe imports from source using OXC AST.
 /// Handles multi-line imports correctly (OXC knows exact byte spans).
 /// Keeps: npm:, node:, jsr:, https: imports (handled by render.rs later).
@@ -871,9 +923,8 @@ fn strip_local_imports(source: &str) -> String {
     for stmt in &parsed.program.body {
         if let Statement::ImportDeclaration(import) = stmt {
             let specifier = import.source.value.as_str();
-            let should_strip = specifier == "zeb"
-                || specifier.starts_with("zeb/")
-                || specifier.starts_with('/');
+            let should_strip =
+                specifier == "zeb" || specifier.starts_with("zeb/") || specifier.starts_with('/');
             if should_strip {
                 let start = import.span.start as usize;
                 let mut end = import.span.end as usize;
@@ -959,7 +1010,9 @@ fn localize_exports(source: &str) -> String {
     for stmt in &parsed.program.body {
         match stmt {
             Statement::ExportNamedDeclaration(ed) => {
-                let Some(decl) = &ed.declaration else { continue };
+                let Some(decl) = &ed.declaration else {
+                    continue;
+                };
                 let export_start = ed.span.start as usize;
                 match decl {
                     // Type-only: strip the entire statement.
@@ -987,20 +1040,30 @@ fn localize_exports(source: &str) -> String {
             Statement::ExportDefaultDeclaration(ed) => {
                 let export_start = ed.span.start as usize;
                 let inner_start = match &ed.declaration {
-                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-                        f.span.start as usize
-                    }
-                    ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-                        c.span.start as usize
-                    }
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => f.span.start as usize,
+                    ExportDefaultDeclarationKind::ClassDeclaration(c) => c.span.start as usize,
                     _ => {
                         // Covers: expressions, `export default interface X {}`, etc.
                         // Scan past the `export default ` keyword in raw bytes.
                         let mut i = export_start;
-                        while i < src_bytes.len() && src_bytes[i] != b' ' && src_bytes[i] != b'\t' { i += 1; }
-                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t') { i += 1; }
-                        while i < src_bytes.len() && src_bytes[i] != b' ' && src_bytes[i] != b'\t' && src_bytes[i] != b'\n' { i += 1; }
-                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t') { i += 1; }
+                        while i < src_bytes.len() && src_bytes[i] != b' ' && src_bytes[i] != b'\t' {
+                            i += 1;
+                        }
+                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t')
+                        {
+                            i += 1;
+                        }
+                        while i < src_bytes.len()
+                            && src_bytes[i] != b' '
+                            && src_bytes[i] != b'\t'
+                            && src_bytes[i] != b'\n'
+                        {
+                            i += 1;
+                        }
+                        while i < src_bytes.len() && (src_bytes[i] == b' ' || src_bytes[i] == b'\t')
+                        {
+                            i += 1;
+                        }
                         i
                     }
                 };

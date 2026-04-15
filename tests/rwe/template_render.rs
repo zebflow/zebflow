@@ -376,7 +376,9 @@ export default function Page(input) {
         )
         .expect("render boolean visibility template");
 
-    assert!(rendered.html.contains("<section id=\"shown\" z-show=\"input.flags.show && !input.flags.hide\">Shown</section>"));
+    assert!(rendered.html.contains(
+        "<section id=\"shown\" z-show=\"input.flags.show && !input.flags.hide\">Shown</section>"
+    ));
     assert!(rendered.html.contains("<section id=\"hidden\" z-hide=\"input.flags.show || input.flags.hide\" hidden>Hidden</section>"));
 }
 
@@ -918,7 +920,8 @@ fn template_render_supports_j_for_keyed_and_hydration_islands() {
     let template = TemplateSource {
         id: "convention.list_hydration".to_string(),
         source_path: None,
-        markup: include_str!("../../docs/conventions/templates/pages/list-hydration.tsx").to_string(),
+        markup: include_str!("../../docs/conventions/templates/pages/list-hydration.tsx")
+            .to_string(),
     };
 
     let compiled = engine

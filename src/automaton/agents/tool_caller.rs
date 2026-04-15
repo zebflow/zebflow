@@ -36,7 +36,10 @@ pub struct ToolCallerConfig {
 
 impl Default for ToolCallerConfig {
     fn default() -> Self {
-        Self { system_prompt: None, max_iterations: 5 }
+        Self {
+            system_prompt: None,
+            max_iterations: 5,
+        }
     }
 }
 
@@ -68,9 +71,16 @@ pub struct ToolCallerAgent {
 
 impl ToolCallerAgent {
     pub fn new(config: ToolCallerConfig, llm: Arc<dyn LlmCall>) -> Self {
-        let max_iterations = if config.max_iterations == 0 { 5 } else { config.max_iterations };
+        let max_iterations = if config.max_iterations == 0 {
+            5
+        } else {
+            config.max_iterations
+        };
         Self {
-            config: ToolCallerConfig { max_iterations, ..config },
+            config: ToolCallerConfig {
+                max_iterations,
+                ..config
+            },
             llm,
         }
     }
@@ -85,7 +95,10 @@ impl ToolCallerAgent {
         tools: Vec<ToolDef>,
         executor: impl Fn(&str, &str) -> Result<String, String>,
     ) -> Result<ToolCallerResult, String> {
-        let system = self.config.system_prompt.clone()
+        let system = self
+            .config
+            .system_prompt
+            .clone()
             .unwrap_or_else(|| "You are a helpful AI assistant.".to_string());
 
         let mut messages: Vec<Value> = vec![
@@ -119,14 +132,19 @@ impl ToolCallerAgent {
                     }
 
                     // Append assistant message with tool_calls
-                    let tool_calls_json: Vec<Value> = calls.iter().map(|tc| json!({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": tc.arguments,
-                        }
-                    })).collect();
+                    let tool_calls_json: Vec<Value> = calls
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                }
+                            })
+                        })
+                        .collect();
                     messages.push(json!({
                         "role": "assistant",
                         "content": null,

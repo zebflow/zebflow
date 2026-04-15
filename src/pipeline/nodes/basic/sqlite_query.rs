@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use super::util::metadata_scope;
+use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
-use crate::pipeline::model::{DslFlag, DslFlagKind, NodeFieldDef, NodeFieldType};
-use super::util::metadata_scope;
 
 pub const NODE_KIND: &str = "n.sqlite.query";
 pub const INPUT_PIN_IN: &str = "in";
@@ -65,9 +65,10 @@ pub fn definition() -> NodeDefinition {
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "sqlite_query".to_string(),
-            tool_description: "Run a SQL SELECT query against the project's embedded SQLite database. \
+            tool_description:
+                "Run a SQL SELECT query against the project's embedded SQLite database. \
                 Arg: sql (required) — SQL SELECT string."
-                .to_string(),
+                    .to_string(),
             tool_input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -132,15 +133,15 @@ impl NodeHandler for Node {
                 "sql must not be empty — use: -- \"SELECT ...\"",
             ));
         }
-        let db_path = self.data_root
+        let db_path = self
+            .data_root
             .join("users")
             .join(owner)
             .join(project)
             .join("data")
             .join("local.db");
         let rows = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, String> {
-            let conn = rusqlite::Connection::open(&db_path)
-                .map_err(|e| format!("open db: {e}"))?;
+            let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("open db: {e}"))?;
             let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {e}"))?;
             let col_count = stmt.column_count();
             let col_names: Vec<String> = (0..col_count)
