@@ -123,8 +123,11 @@ Tool.geo.distance(lat1, lon1, lat2, lon2)                  // → legacy form, a
 Tool.geo.bbox(pointsOrFeatures)                            // → [minLon, minLat, maxLon, maxLat]
 Tool.geo.center(pointsOrFeatures)                          // → [lon, lat]
 Tool.geo.pointInPolygon([lon, lat], polygonOrMultiPolygon) // → boolean
+Tool.geo.booleanPointInPolygon([lon, lat], polygon)        // → boolean (turf-style alias)
 Tool.geo.centroid(polygonOrMultiPolygon)                   // → [lon, lat]
-Tool.geo.nearestPoint([lon, lat], points)                  // → { index, distance }
+Tool.geo.nearestPoint([lon, lat], points)                  // → { index, distance, point }
+Tool.geo.parseWktLineString("LINESTRING (...)")            // → [[lon, lat], ...]
+Tool.geo.heading([lon1, lat1], [lon2, lat2])              // → degrees
 ```
 
 `pointInPolygon` and `centroid` accept GeoJSON `Polygon` / `MultiPolygon`.

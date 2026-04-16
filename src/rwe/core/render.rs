@@ -294,7 +294,7 @@ fn zeb_bundle_url(lib: &str) -> Option<&'static str> {
             Some("/assets/libraries/zeb/threejs-vrm/0.1/runtime/threejs-vrm.bundle.mjs")
         }
         "zeb/d3" => Some("/assets/libraries/zeb/d3/0.1/runtime/d3.bundle.mjs"),
-        "zeb/deckgl" => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
+        "zeb/deckgl" => Some("/assets/libraries/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
         "zeb/codemirror" => Some("/assets/libraries/zeb/codemirror/0.1/runtime/entry.mjs"),
         "zeb/graphui" => Some("/assets/libraries/zeb/graphui/0.1/runtime/graphui.bundle.mjs"),
         "zeb/markdown" => Some("/assets/libraries/zeb/markdown/0.1/runtime/markdown.bundle.mjs"),

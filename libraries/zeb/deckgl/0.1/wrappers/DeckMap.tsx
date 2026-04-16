@@ -61,24 +61,67 @@
 export const app = {};
 
 export default function DeckMap(props) {
-  const config = JSON.stringify({
-    initialViewState: props.initialViewState,
-    controller:       props.controller !== false,
-    layers:           props.layers || [],
-    stateKey:         props.stateKey || null,
-    layerKey:         props.layerKey || null,
-    tooltip:          props.tooltip || false,
-    background:       props.background || "transparent",
-  });
+  const _h = globalThis.h;
+  const _useRef = globalThis.useRef;
+  const _useEffect = globalThis.useEffect;
 
-  return (
-    <div
-      data-zeb-lib="deckgl"
-      data-zeb-wrapper="DeckMap"
-      data-config={config}
-      id={props.id}
-      className={props.className}
-      style={{ width: "100%", height: props.height || "400px" }}
-    />
-  );
+  if (!_h) return null;
+
+  const config = {
+    initialViewState: props.initialViewState,
+    controller: props.controller !== false,
+    layers: props.layers || [],
+    stateKey: props.stateKey || null,
+    layerKey: props.layerKey || null,
+    tooltip: props.tooltip || false,
+    background: props.background || "transparent",
+  };
+
+  if (_useRef && _useEffect) {
+    const hostRef = _useRef(null);
+    const instanceRef = _useRef(null);
+
+    _useEffect(() => {
+      return () => {
+        instanceRef.current?.destroy?.();
+        instanceRef.current = null;
+      };
+    }, []);
+
+    _useEffect(() => {
+      instanceRef.current?.setOptions?.(config);
+    }, [
+      props.background,
+      props.controller,
+      props.initialViewState,
+      props.layerKey,
+      props.layers,
+      props.stateKey,
+      props.tooltip,
+    ]);
+
+    const attachHost = (node) => {
+      hostRef.current = node;
+      if (!node || instanceRef.current || node._zebDeckPatched) return;
+      if (typeof globalThis.createDeckMapRuntime !== "function") return;
+      instanceRef.current?.destroy?.();
+      instanceRef.current = globalThis.createDeckMapRuntime(node, config);
+    };
+
+    return _h("div", {
+      ref: attachHost,
+      id: props.id,
+      className: props.className,
+      style: { width: "100%", height: props.height || "400px" },
+    });
+  }
+
+  return _h("div", {
+    "data-zeb-lib": "deckgl",
+    "data-zeb-wrapper": "DeckMap",
+    "data-config": JSON.stringify(config),
+    id: props.id,
+    class: props.className,
+    style: { width: "100%", height: props.height || "400px" },
+  });
 }

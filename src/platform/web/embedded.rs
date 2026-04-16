@@ -44,6 +44,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../libraries/zeb/deckgl/0.1/runtime/deckgl.bundle.mjs"),
     },
     EmbeddedAsset {
+        path: "zeb/deckgl/0.1/runtime/deckgl.patched.mjs",
+        bytes: include_bytes!("../../../libraries/zeb/deckgl/0.1/runtime/deckgl.patched.mjs"),
+    },
+    EmbeddedAsset {
         path: "zeb/deckgl/0.1/wrappers/DeckMap.tsx",
         bytes: include_bytes!("../../../libraries/zeb/deckgl/0.1/wrappers/DeckMap.tsx"),
     },

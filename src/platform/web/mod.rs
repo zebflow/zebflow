@@ -14,7 +14,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL,
-    header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
+    header::CONTENT_DISPOSITION, header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -515,6 +515,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/files/mkdir",
             post(api_files_mkdir),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/files/upload",
+            post(api_files_upload),
         )
         .route(
             "/api/projects/{owner}/{project}/files/rm",
@@ -1728,6 +1732,7 @@ async fn project_static_asset(
 async fn project_file_serve(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let valid_segment = |value: &str| {
@@ -1775,8 +1780,13 @@ async fn project_file_serve(
 
     let mut resp = Response::new(Body::from(bytes));
     *resp.status_mut() = StatusCode::OK;
-    if let Ok(v) = HeaderValue::from_str(content_type_for_path(&abs)) {
+    let content_type = content_type_for_path(&abs);
+    if let Ok(v) = HeaderValue::from_str(content_type) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    let download_requested = query_flag_enabled(params.get("download").map(String::as_str));
+    if let Some(disposition) = file_content_disposition(&abs, content_type, download_requested) {
+        resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
     }
     // No caching for dynamic upload files — content can change
     if let Ok(v) = HeaderValue::from_str("no-cache") {
@@ -1793,6 +1803,53 @@ fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
     resp
+}
+
+fn query_flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(str::trim),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES") | Some("on") | Some("ON")
+    )
+}
+
+fn file_content_disposition(
+    path: &FsPath,
+    content_type: &'static str,
+    download_requested: bool,
+) -> Option<HeaderValue> {
+    let file_name = path.file_name()?.to_string_lossy().replace('"', "");
+    let disposition_kind = if download_requested {
+        "attachment"
+    } else if is_inline_file_content_type(content_type) {
+        "inline"
+    } else {
+        return None;
+    };
+    HeaderValue::from_str(&format!("{disposition_kind}; filename=\"{file_name}\"")).ok()
+}
+
+fn is_inline_file_content_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "text/javascript; charset=utf-8"
+            | "application/json; charset=utf-8"
+            | "application/geo+json; charset=utf-8"
+            | "application/xml; charset=utf-8"
+            | "text/css; charset=utf-8"
+            | "image/svg+xml; charset=utf-8"
+            | "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "image/x-icon"
+            | "application/pdf"
+            | "video/mp4"
+            | "audio/mpeg"
+            | "text/plain; charset=utf-8"
+            | "text/csv; charset=utf-8"
+            | "text/markdown; charset=utf-8"
+            | "application/yaml; charset=utf-8"
+    )
 }
 
 async fn login_page(State(state): State<PlatformAppState>) -> Response {
@@ -4686,6 +4743,7 @@ async fn render_files_page(
                 "api": {
                     "list":  format!("/api/projects/{owner}/{project}/files/list"),
                     "mkdir": format!("/api/projects/{owner}/{project}/files/mkdir"),
+                    "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "rm":    format!("/api/projects/{owner}/{project}/files/rm"),
                 },
                 "browser": {
@@ -5304,6 +5362,8 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("mjs") | Some("js") => "text/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
+        Some("geojson") => "application/geo+json; charset=utf-8",
+        Some("xml") => "application/xml; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml; charset=utf-8",
         Some("png") => "image/png",
@@ -5317,6 +5377,9 @@ fn content_type_for_path(path: &FsPath) -> &'static str {
         Some("ttf") => "font/ttf",
         Some("mp4") => "video/mp4",
         Some("mp3") => "audio/mpeg",
+        Some("csv") => "text/csv; charset=utf-8",
+        Some("md") => "text/markdown; charset=utf-8",
+        Some("yaml") | Some("yml") => "application/yaml; charset=utf-8",
         Some("txt") => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
@@ -5382,12 +5445,13 @@ const PROJECT_ASSET_LIBRARY_SPECS: &[ProjectAssetLibrarySpec] = &[
     ProjectAssetLibrarySpec {
         library: "zeb/deckgl",
         version: "0.1",
-        default_entry: "runtime/deckgl.bundle.mjs",
+        default_entry: "runtime/deckgl.patched.mjs",
         vendor_rel_paths: &[
             "library.json",
             "exports.json",
             "keywords.json",
             "runtime/deckgl.bundle.mjs",
+            "runtime/deckgl.patched.mjs",
             "wrappers/DeckMap.tsx",
         ],
         npm_deps: &[
@@ -10223,6 +10287,181 @@ async fn api_files_mkdir(
     }
 }
 
+/// `POST /api/projects/{owner}/{project}/files/upload?path=public/uploads`
+/// Upload a file into project file storage via multipart.
+async fn api_files_upload(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": "no file field in multipart body"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
+        };
+        let raw_filename = field
+            .file_name()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "upload.bin".to_string());
+        let content_type = field.content_type().map(|value| value.to_string());
+        let bytes = match field.bytes().await {
+            Ok(bytes) => bytes,
+            Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
+        };
+        let worker = match state.platform.cluster_registry.get_worker(&worker_id) {
+            Ok(Some(worker)) => worker,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "error": "office not registered"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
+        let token = match cluster_internal_token_value(&state) {
+            Ok(token) => token,
+            Err(err) => return internal_error(err),
+        };
+        let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
+        if let Some(query) = uri.query() {
+            url.push('?');
+            url.push_str(query);
+        }
+        let part = match content_type {
+            Some(content_type) => reqwest::multipart::Part::bytes(bytes.to_vec())
+                .file_name(raw_filename.clone())
+                .mime_str(&content_type)
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(raw_filename)
+                }),
+            None => reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(raw_filename),
+        };
+        let form = reqwest::multipart::Form::new().part("file", part);
+        let response = match state
+            .http_client
+            .post(url)
+            .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
+        };
+        return reqwest_response_to_axum(response).await;
+    }
+
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+
+    let rel = params
+        .get("path")
+        .map(|s| s.trim().trim_start_matches('/'))
+        .unwrap_or("public/uploads")
+        .to_string();
+    let rel = sanitize_file_path(&rel);
+    if rel.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "path is required"})),
+        )
+            .into_response();
+    }
+    let top = rel.split('/').next().unwrap_or("");
+    if top != "public" && top != "private" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "path must begin with public/ or private/"})),
+        )
+            .into_response();
+    }
+
+    let dir = layout.files_dir.join(&rel);
+    if !dir.starts_with(&layout.files_dir) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "invalid path"})),
+        )
+            .into_response();
+    }
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        return internal_error(PlatformError::new("FILES_UPLOAD_DIR", err.to_string()));
+    }
+
+    let field = match multipart.next_field().await {
+        Ok(Some(field)) => field,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "no file field in multipart body"})),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let raw_filename = field
+        .file_name()
+        .map(|s| s.to_string())
+        .or_else(|| field.name().map(|s| s.to_string()))
+        .unwrap_or_else(|| "upload.bin".to_string());
+    let filename = match sanitize_asset_filename(&raw_filename) {
+        Some(name) => name,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid filename"})),
+            )
+                .into_response();
+        }
+    };
+
+    let bytes = match field.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
+    };
+    let dest = dir.join(&filename);
+    if let Err(err) = std::fs::write(&dest, bytes.as_ref()) {
+        return internal_error(PlatformError::new("FILES_UPLOAD_WRITE", err.to_string()));
+    }
+
+    let entry_rel = format!("{rel}/{filename}");
+    Json(json!({
+        "ok": true,
+        "path": entry_rel,
+        "url": format!("/files/{owner}/{project}/{entry_rel}")
+    }))
+    .into_response()
+}
+
 /// POST /api/projects/{owner}/{project}/files/rm  { "path": "public/uploads/abc.jpg" }
 async fn api_files_rm(
     State(state): State<PlatformAppState>,
@@ -11891,7 +12130,10 @@ async fn api_preview_db_connection_table(
             .into_response();
     }
     let limit = query.limit.unwrap_or(120).clamp(1, 5000);
-    let database_kind = match state.platform.db_connections.list_project_connections(&owner, &project)
+    let database_kind = match state
+        .platform
+        .db_connections
+        .list_project_connections(&owner, &project)
     {
         Ok(items) => items
             .into_iter()
@@ -13583,7 +13825,12 @@ fn quote_sql_identifier_path(raw: &str) -> String {
         .join(".")
 }
 
-fn build_table_preview_sql(database_kind: &str, raw_table: &str, bare_table: &str, limit: usize) -> String {
+fn build_table_preview_sql(
+    database_kind: &str,
+    raw_table: &str,
+    bare_table: &str,
+    limit: usize,
+) -> String {
     match database_kind {
         "sekejap" => format!("SELECT * FROM {} LIMIT {}", bare_table.trim(), limit),
         _ => format!(
@@ -13596,7 +13843,12 @@ fn build_table_preview_sql(database_kind: &str, raw_table: &str, bare_table: &st
 
 #[cfg(test)]
 mod preview_sql_tests {
-    use super::build_table_preview_sql;
+    use std::path::Path;
+
+    use super::{
+        build_table_preview_sql, content_type_for_path, file_content_disposition,
+        query_flag_enabled,
+    };
 
     #[test]
     fn builds_unquoted_preview_sql_for_sekejap() {
@@ -13612,6 +13864,33 @@ mod preview_sql_tests {
             build_table_preview_sql("postgresql", "public.posts", "posts", 50),
             "SELECT * FROM \"public\".\"posts\" LIMIT 50"
         );
+    }
+
+    #[test]
+    fn serves_geojson_with_inline_preview_headers_by_default() {
+        let path = Path::new("public/v2x-map/roads.geojson");
+        let content_type = content_type_for_path(path);
+        assert_eq!(content_type, "application/geo+json; charset=utf-8");
+        let disposition =
+            file_content_disposition(path, content_type, false).expect("inline disposition");
+        assert_eq!(disposition.to_str().unwrap(), "inline; filename=\"roads.geojson\"");
+    }
+
+    #[test]
+    fn supports_explicit_download_flag_for_known_file_types() {
+        let path = Path::new("public/v2x-map/roads.geojson");
+        let content_type = content_type_for_path(path);
+        let disposition =
+            file_content_disposition(path, content_type, true).expect("attachment disposition");
+        assert_eq!(
+            disposition.to_str().unwrap(),
+            "attachment; filename=\"roads.geojson\""
+        );
+        assert!(query_flag_enabled(Some("1")));
+        assert!(query_flag_enabled(Some("true")));
+        assert!(query_flag_enabled(Some("yes")));
+        assert!(!query_flag_enabled(Some("0")));
+        assert!(!query_flag_enabled(None));
     }
 }
 
