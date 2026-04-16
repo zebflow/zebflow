@@ -10,7 +10,7 @@
     "package_version": "9.x",
     "packed_version": "full-9.x",
     "packed_kind": "full",
-    "entry": "runtime/deckgl.bundle.mjs"
+    "entry": "runtime/deckgl.patched.mjs"
   },
   "registry": {
     "kind": "github-releases",
@@ -37,7 +37,7 @@
   },
   "runtime": {
     "format": "esm",
-    "entry": "runtime/deckgl.bundle.mjs"
+    "entry": "runtime/deckgl.patched.mjs"
   },
   "editor": {
     "keywords": "keywords.json",

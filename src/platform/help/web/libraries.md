@@ -2,7 +2,10 @@
 
 Bundled add-on libraries for Zebflow templates. Enable under **Settings → Libraries** before use.
 
-Each library provides a pre-built JavaScript bundle served from `/assets/libraries/zeb/{lib}/{version}/`. Load them via dynamic `import()` — **never at module top-level** (breaks SSR).
+Each library provides a pre-built JavaScript bundle served from `/assets/libraries/zeb/{lib}/{version}/`.
+
+Most browser-only libraries should be loaded via dynamic `import()` inside `useEffect()`.
+`zeb/icons` is the exception: import it explicitly at module top-level with `import "zeb/icons";`.
 
 
 ---
@@ -43,10 +46,12 @@ const page = Number(params.get("page") ?? "1");
 
 ## zeb/icons — SVG Icon Components
 
-Lucide icon components. After enabling, all icons are available as globals — no import needed.
+Lucide icon components. After enabling, you must still import the bundle explicitly:
 
 ```tsx
-// Globals — use directly
+import "zeb/icons";
+
+// Then use the icon components directly
 <Search className="w-4 h-4" />
 <Loader2 className="w-4 h-4 animate-spin text-accent" />
 <Trash2 className="w-4 h-4 text-red-400" />
@@ -433,9 +438,11 @@ export default function PdfPage() {
 
 ---
 
-## Critical rule: always load inside `useEffect`
+## Critical rule: load browser-only bundles inside `useEffect`
 
-Never import `zeb/*` bundles at module top-level — they reference browser APIs unavailable during SSR:
+For browser-only bundles like `zeb/d3`, `zeb/codemirror`, `zeb/markdown`, and `zeb/threejs`, never import the raw runtime asset at module top-level — they reference browser APIs unavailable during SSR.
+
+`zeb/icons` does not use this raw runtime-asset pattern. Use `import "zeb/icons";` instead.
 
 ```tsx
 // ✗ WRONG — crashes SSR

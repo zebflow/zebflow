@@ -577,7 +577,35 @@
     return null;
   }
 
+  function geoParseWktLineString(value) {
+    if (!value || typeof value !== "string") return [];
+    var match = value.match(/LINESTRING\s*\((.*)\)/i);
+    if (!match || !match[1]) return [];
+    return match[1]
+      .split(",")
+      .map(function(chunk) {
+        return chunk.trim().split(/\s+/).map(Number);
+      })
+      .filter(function(pair) {
+        return pair.length >= 2 && isFinite(pair[0]) && isFinite(pair[1]);
+      })
+      .map(function(pair) {
+        return [pair[0], pair[1]];
+      });
+  }
+
+  function geoHeading(from, to) {
+    if (!geoIsPoint(from) || !geoIsPoint(to)) return 0;
+    var dx = Number(to[0]) - Number(from[0]);
+    var dy = Number(to[1]) - Number(from[1]);
+    if (!dx && !dy) return 0;
+    return Math.atan2(dy, dx) * 180 / Math.PI;
+  }
+
   var geo = {
+    parseWktLineString: function(value) {
+      return geoParseWktLineString(value);
+    },
 
     centroid: function(geometry) {
       var polygons = geoToPolygons(geometry);
@@ -637,6 +665,10 @@
       return false;
     },
 
+    booleanPointInPolygon: function(point, geometry) {
+      return geo.pointInPolygon(point, geometry);
+    },
+
     bbox: function(features) {
       var minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
       function absorb(c) {
@@ -665,7 +697,7 @@
 
     nearestPoint: function(origin, points) {
       if (!geoIsPoint(origin) || !Array.isArray(points) || !points.length) {
-        return { index: -1, distance: null };
+        return { index: -1, distance: null, point: null };
       }
 
       var bestIndex = -1;
@@ -681,10 +713,18 @@
       }
 
       if (bestIndex === -1) {
-        return { index: -1, distance: null };
+        return { index: -1, distance: null, point: null };
       }
 
-      return { index: bestIndex, distance: bestDistance };
+      return {
+        index: bestIndex,
+        distance: bestDistance,
+        point: geoNormalizePoint(points[bestIndex]),
+      };
+    },
+
+    heading: function(from, to) {
+      return geoHeading(from, to);
     },
   };
 

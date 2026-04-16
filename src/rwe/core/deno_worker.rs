@@ -6,10 +6,11 @@
 ///   • `tokio::sync::mpsc::UnboundedSender`  main → JS  (non-blocking send)
 ///   • `std::sync::mpsc::SyncSender`         JS → main  (blocking reply)
 ///
-/// No V8 handle scopes are needed: the rendered HTML is delivered from JS to
-/// Rust via a synchronous `#[op2]` that stores into a thread-local slot.
-/// The page component function is injected into `globalThis` by post-processing
-/// the transpiled JS before it is loaded as a module.
+/// No V8 handle scopes are needed for the normal result handoff: the rendered
+/// HTML is delivered from JS to Rust via a synchronous `#[op2]` that stores
+/// into a thread-local slot. We do use short-lived V8 scopes to attach the
+/// evaluated module namespace object for the current render so page identity is
+/// local to that render, not ambient shared global state.
 ///
 /// Public surface is identical to the old subprocess implementation.
 use std::cell::RefCell;
@@ -24,6 +25,7 @@ use deno_core::{
     ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
     PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
+use deno_core::v8;
 use deno_error::JsErrorBox;
 use serde_json::Value;
 
@@ -226,6 +228,7 @@ async fn do_render_ssr(
 ) -> Result<JsResponse, EngineError> {
     // Reset result slot from any previous render.
     RENDER_RESULT.with(|r| *r.borrow_mut() = None);
+    reset_render_globals(js_rt)?;
 
     // 1. Transpile TSX → plain JS (strip TypeScript, JSX → h() calls).
     let js = transpile_tsx(tsx_source)?;
@@ -239,12 +242,7 @@ async fn do_render_ssr(
     //     so stripping the lines is safe and correct.
     let js = strip_rwe_imports(&js);
 
-    // 2. Inject globalThis assignments so we can read exports without handle_scope.
-    //    `globalThis.__rwe_page` ← the default-exported component function.
-    //    `globalThis.__rwe_page_config` ← the optional `export const page = { … }`.
-    let js = inject_page_globals(&js);
-
-    // 2b. Inject render vars as globalThis.ctx (primary) and globalThis.input (compat).
+    // 2. Inject render vars as globalThis.ctx (primary) and globalThis.input (compat).
     //     `ctx` is the canonical name — used in `export const page` config and top-level code.
     //     `input` is kept for backward compat (component function parameter convention).
     //     Must run before the module loads so variables are present during top-level eval.
@@ -275,7 +273,6 @@ async fn do_render_ssr(
     let eval_fut = js_rt.mod_evaluate(module_id);
 
     // 6. Drive the event loop until all promises/imports resolve.
-    //    The module's top-level code runs here, setting globalThis.__rwe_page.
     js_rt
         .run_event_loop(PollEventLoopOptions::default())
         .await
@@ -283,6 +280,12 @@ async fn do_render_ssr(
 
     // 7. Await the module evaluation result.
     let _ = eval_fut.await;
+
+    // Resolve the evaluated module's namespace and pin it only for this render.
+    let module_namespace = js_rt
+        .get_module_namespace(module_id)
+        .map_err(|e| EngineError::new("RWE_MODULE_NAMESPACE", e.to_string()))?;
+    set_render_module_namespace(js_rt, &module_namespace)?;
 
     // Clean up temp file (best-effort, before render script runs).
     let _ = std::fs::remove_file(&temp_path);
@@ -294,19 +297,24 @@ async fn do_render_ssr(
         serde_json::to_string(ctx).map_err(|e| EngineError::new("RWE_CTX_JSON", e.to_string()))?;
     let render_code = format!(
         "(function(){{ \
+           var __ns = globalThis.__rwe_module_ns || null; \
+           if (!__ns || typeof __ns.default !== 'function') {{ \
+             throw new Error('RWE render target missing default export'); \
+           }} \
            var __html = globalThis.__rweRenderToString(\
-             globalThis.__rweWrapWithPageState(globalThis.__rwe_page, {ctx_json})\
+             globalThis.__rweWrapWithPageState(__ns.default, {ctx_json})\
            ); \
-           var __cfg = (typeof globalThis.__rwe_page_config !== 'undefined' \
-                        && globalThis.__rwe_page_config !== null) \
-             ? globalThis.__rwe_page_config : null; \
+           var __cfg = (typeof __ns.page !== 'undefined' && __ns.page !== null) \
+             ? __ns.page : null; \
            Deno.core.ops.op_rwe_store_result(JSON.stringify({{html: __html, page_config: __cfg}})); \
          }})()"
     );
 
-    js_rt
+    let render_result = js_rt
         .execute_script("<rwe_render>", render_code)
-        .map_err(|e| EngineError::new("RWE_RENDER_EXEC", e.to_string()))?;
+        .map_err(|e| EngineError::new("RWE_RENDER_EXEC", e.to_string()));
+    reset_render_globals(js_rt)?;
+    render_result?;
 
     // 9. Read the result from the thread-local slot (filled by the op above).
     let result_str = RENDER_RESULT
@@ -330,87 +338,6 @@ async fn do_render_ssr(
     };
 
     Ok(JsResponse::Rendered { html, page_config })
-}
-
-// ---------------------------------------------------------------------------
-// inject_page_globals — post-process transpiled JS so the page component
-// and optional page-config object are exposed on globalThis without needing
-// a V8 handle scope.
-//
-// After oxc TypeScript + JSX transformation the entry module contains:
-//   export default function MyPage(props) { … }
-//   export const page = { title: "…" };          ← optional
-//
-// We scan for the default-export function/class name and append:
-//   globalThis.__rwe_page = MyPage;
-//   globalThis.__rwe_page_config = typeof page !== 'undefined' ? page : undefined;
-//
-// The ES module's `export` statements are left intact so the module is still
-// valid for the loader; the appended assignments are simply side-effects that
-// execute during module evaluation.
-// ---------------------------------------------------------------------------
-fn extract_default_export_name(js: &str) -> Option<String> {
-    for line in js.lines() {
-        let t = line.trim();
-
-        // export default function Name(
-        // export default function Name<T>(
-        if let Some(rest) = t.strip_prefix("export default function ") {
-            let end = rest
-                .find(|c: char| c == '(' || c == '<' || c == '{' || c == ' ')
-                .unwrap_or(rest.len());
-            let name = rest[..end].trim().to_string();
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-
-        // export default class Name
-        if let Some(rest) = t.strip_prefix("export default class ") {
-            let end = rest
-                .find(|c: char| !c.is_alphanumeric() && c != '_')
-                .unwrap_or(rest.len());
-            let name = rest[..end].trim().to_string();
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-
-        // export { Name as default } or export { Name as default, … }
-        if t.starts_with("export {") && t.contains(" as default") {
-            if let Some(pos) = t.find(" as default") {
-                let before = &t[..pos];
-                // Last identifier token before " as default"
-                if let Some(name) = before
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .last()
-                {
-                    let name = name.trim().to_string();
-                    if !name.is_empty() {
-                        return Some(name);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn inject_page_globals(js: &str) -> String {
-    let name = extract_default_export_name(js);
-    let mut out = js.to_string();
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-    if let Some(n) = name {
-        out.push_str(&format!("globalThis.__rwe_page = {n};\n"));
-    }
-    // Inject page_config regardless — JS `typeof` guard handles the absent case.
-    out.push_str(
-        "globalThis.__rwe_page_config = \
-         (typeof page !== 'undefined') ? page : undefined;\n",
-    );
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -617,6 +544,41 @@ fn strip_rwe_imports(js: &str) -> String {
         .join("\n")
 }
 
+fn reset_render_globals(js_rt: &mut JsRuntime) -> Result<(), EngineError> {
+    js_rt
+        .execute_script(
+            "<rwe_reset_render_globals>",
+            "delete globalThis.__rwe_module_ns; \
+             delete globalThis.__rwe_page; \
+             delete globalThis.__rwe_page_config; \
+             delete globalThis.ctx; \
+             delete globalThis.input; \
+             globalThis.__islandCounter = 0;",
+        )
+        .map(|_| ())
+        .map_err(|e| EngineError::new("RWE_RESET_GLOBALS", e.to_string()))
+}
+
+fn set_render_module_namespace(
+    js_rt: &mut JsRuntime,
+    module_namespace: &v8::Global<v8::Object>,
+) -> Result<(), EngineError> {
+    deno_core::scope!(scope, js_rt);
+    let global = scope.get_current_context().global(scope);
+    let key = v8::String::new(scope, "__rwe_module_ns")
+        .ok_or_else(|| EngineError::new("RWE_MODULE_NAMESPACE", "failed creating v8 key"))?;
+    let module_namespace = v8::Local::<v8::Object>::new(scope, module_namespace);
+    global
+        .set(scope, key.into(), module_namespace.into())
+        .ok_or_else(|| {
+            EngineError::new(
+                "RWE_MODULE_NAMESPACE",
+                "failed binding module namespace for render",
+            )
+        })?;
+    Ok(())
+}
+
 /// Delete `/tmp/rwe-module-*.js` files older than 5 minutes.
 /// Called at worker startup and can be triggered periodically to avoid disk exhaustion.
 pub fn cleanup_temp_modules() {
@@ -662,4 +624,35 @@ fn path_to_file_url(path: &std::path::Path) -> Result<ModuleSpecifier, EngineErr
     };
     ModuleSpecifier::parse(&url_str)
         .map_err(|e| EngineError::new("RWE_URL", format!("invalid module URL: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_ssr;
+    use serde_json::json;
+
+    #[test]
+    fn render_ssr_does_not_leak_previous_page_identity_between_renders() {
+        let first = r#"
+            export const page = { title: "First" };
+            export default function FirstPage() {
+                return <section>FIRST_PAGE_ONLY</section>;
+            }
+        "#;
+        let second = r#"
+            export const page = { title: "Second" };
+            export default function SecondPage() {
+                return <main>SECOND_PAGE_ONLY</main>;
+            }
+        "#;
+
+        let first_render = render_ssr(first, &json!({}), 10_000).expect("first render");
+        assert!(first_render.html.contains("FIRST_PAGE_ONLY"));
+        assert_eq!(first_render.page_config, Some(json!({ "title": "First" })));
+
+        let second_render = render_ssr(second, &json!({}), 10_000).expect("second render");
+        assert!(second_render.html.contains("SECOND_PAGE_ONLY"));
+        assert!(!second_render.html.contains("FIRST_PAGE_ONLY"));
+        assert_eq!(second_render.page_config, Some(json!({ "title": "Second" })));
+    }
 }

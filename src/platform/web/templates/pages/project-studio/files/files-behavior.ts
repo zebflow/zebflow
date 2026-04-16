@@ -5,6 +5,7 @@ export function initFilesBehavior() {
     if (!root) return;
 
     const apiMkdir = root.dataset.apiMkdir ?? "";
+    const apiUpload = root.dataset.apiUpload ?? "";
     const apiRm    = root.dataset.apiRm    ?? "";
 
     // Current path comes from the URL ?path= param
@@ -23,6 +24,8 @@ export function initFilesBehavior() {
     const newFolderInput  = root.querySelector<HTMLInputElement>("[data-new-folder-input]");
     const newFolderSubmit = root.querySelector<HTMLButtonElement>("[data-new-folder-submit]");
     const newFolderCancel = root.querySelector<HTMLButtonElement>("[data-new-folder-cancel]");
+    const fileUploadTrigger = root.querySelector<HTMLButtonElement>("[data-file-upload-trigger]");
+    const fileUploadInput = root.querySelector<HTMLInputElement>("[data-file-upload-input]");
 
     newFolderToggle?.addEventListener("click", () => {
       if (newFolderForm) newFolderForm.hidden = false;
@@ -52,6 +55,29 @@ export function initFilesBehavior() {
         const err = await resp.json().catch(() => ({ error: "unknown" }));
         alert(`Failed: ${err.error ?? "unknown"}`);
       }
+    });
+
+    fileUploadTrigger?.addEventListener("click", () => {
+      fileUploadInput?.click();
+    });
+
+    fileUploadInput?.addEventListener("change", async () => {
+      const file = fileUploadInput.files?.[0];
+      if (!file || !apiUpload) return;
+      const currentPath = getCurrentPath() || "public/uploads";
+      const form = new FormData();
+      form.append("file", file);
+      const resp = await fetch(`${apiUpload}?path=${encodeURIComponent(currentPath)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (resp.ok) {
+        window.location.reload();
+      } else {
+        const err = await resp.json().catch(() => ({ error: "unknown" }));
+        alert(`Failed: ${err.error ?? "unknown"}`);
+      }
+      fileUploadInput.value = "";
     });
 
     // ── Click delegation ──────────────────────────────────────────────────────

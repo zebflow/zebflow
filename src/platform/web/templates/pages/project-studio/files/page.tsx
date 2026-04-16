@@ -65,6 +65,7 @@ export default function Page(input) {
               data-project={input.project ?? ""}
               data-api-list={api.list ?? ""}
               data-api-mkdir={api.mkdir ?? ""}
+              data-api-upload={api.upload ?? ""}
               data-api-rm={api.rm ?? ""}
               data-current-path={currentPath}
             >
@@ -93,6 +94,8 @@ export default function Page(input) {
                   ))}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  <input type="file" hidden data-file-upload-input="true" />
+                  <Button variant="outline" size="xs" data-file-upload-trigger="true">Upload</Button>
                   <Button variant="outline" size="xs" data-new-folder-toggle="true">+ Folder</Button>
                 </div>
               </div>
@@ -120,7 +123,7 @@ export default function Page(input) {
                   <p className="px-2 py-6 text-[0.78rem] text-body-muted">
                     {currentPath
                       ? "Empty folder"
-                      : <>No files yet. Upload via a pipeline using <code className="font-mono text-[0.75rem]">n.file.save</code>.</>
+                      : <>No files yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">n.file.save</code>.</>
                     }
                   </p>
                 ) : null}

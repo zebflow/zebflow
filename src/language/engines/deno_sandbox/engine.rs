@@ -380,5 +380,34 @@ return Tool.geo.nearestPoint(
 
         assert_eq!(out["index"].as_i64(), Some(1));
         approx_eq(out["distance"].as_f64().unwrap(), 55.597, 0.5);
+        let point = out["point"].as_array().unwrap();
+        approx_eq(point[0].as_f64().unwrap(), 0.0, 1e-6);
+        approx_eq(point[1].as_f64().unwrap(), 0.5, 1e-6);
+    }
+
+    #[test]
+    fn tool_geo_supports_wkt_parsing_and_heading() {
+        let out = run_tool_script(
+            r#"
+const coords = Tool.geo.parseWktLineString("LINESTRING (145.1 -37.9, 145.2 -37.8, 145.3 -37.85)");
+return {
+  coords,
+  heading: Tool.geo.heading(coords[0], coords[1]),
+  inside: Tool.geo.booleanPointInPolygon([0.5, 0.5], {
+    type: "Polygon",
+    coordinates: [
+      [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+    ]
+  }),
+};
+"#,
+        );
+
+        let coords = out["coords"].as_array().unwrap();
+        assert_eq!(coords.len(), 3);
+        approx_eq(coords[0][0].as_f64().unwrap(), 145.1, 1e-6);
+        approx_eq(coords[0][1].as_f64().unwrap(), -37.9, 1e-6);
+        assert_eq!(out["inside"].as_bool(), Some(true));
+        approx_eq(out["heading"].as_f64().unwrap(), 45.0, 10.0);
     }
 }
