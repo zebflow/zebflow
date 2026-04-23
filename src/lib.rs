@@ -15,6 +15,7 @@
 pub mod automaton;
 pub mod infra;
 pub mod language;
+pub mod mapserver;
 pub mod pipeline;
 pub mod platform;
 pub mod provision;

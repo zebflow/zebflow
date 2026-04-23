@@ -366,7 +366,10 @@ function patchedBuildLayers(specs) {
 function patchRuntimeRegistry() {
   if (typeof window === "undefined") return;
   const runtime = window.__zebDeck || {};
-  const originalGet = typeof runtime.get === "function" ? runtime.get.bind(runtime) : null;
+  if (!runtime.__patchedOriginalGet && typeof runtime.get === "function") {
+    runtime.__patchedOriginalGet = runtime.get.bind(runtime);
+  }
+  const originalGet = runtime.__patchedOriginalGet || null;
   const originalDeck = runtime.deck || deckNamespace;
   runtime.buildLayer = patchedBuildLayer;
   runtime.buildLayers = patchedBuildLayers;
@@ -381,6 +384,7 @@ function patchRuntimeRegistry() {
     },
   };
   window.__zebDeck = runtime;
+  runtime.__patchedRegistry = true;
   ensurePatchedObserver(originalGet);
 }
 

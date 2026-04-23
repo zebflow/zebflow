@@ -2,7 +2,7 @@
 // Pure functions only: no DOM, no state, no side effects.
 // Installed once at JsRuntime startup (SSR) and injected into every client bootstrap.
 //
-// Namespaces: Tool.time  Tool.arr  Tool.stat  Tool.geo
+// Namespaces: Tool.time  Tool.arr  Tool.stat  Tool.csv  Tool.geo
 // Locale:    Tool.time.locale('id')  sets global default; per-call override still works
 
 (function () {
@@ -278,6 +278,110 @@
         if (seen.has(k)) return false;
         seen.add(k); return true;
       });
+    },
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Tool.csv
+  // ──────────────────────────────────────────────────────────────────────────
+  function csvSplitLine(line, delimiter) {
+    var out = [];
+    var current = "";
+    var inQuotes = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === delimiter && !inQuotes) {
+        out.push(current);
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    out.push(current);
+    return out;
+  }
+
+  function csvEscapeCell(value, delimiter) {
+    if (value == null) return "";
+    var text = String(value);
+    if (
+      text.indexOf('"') >= 0 ||
+      text.indexOf("\n") >= 0 ||
+      text.indexOf("\r") >= 0 ||
+      text.indexOf(delimiter) >= 0
+    ) {
+      return '"' + text.replace(/"/g, '""') + '"';
+    }
+    return text;
+  }
+
+  var csv = {
+    parse: function(text, options) {
+      var delimiter = options && options.delimiter ? String(options.delimiter) : ",";
+      var header = !options || options.header !== false;
+      var rows = String(text == null ? "" : text)
+        .replace(/^\uFEFF/, "")
+        .split(/\r?\n/)
+        .filter(function(line) { return line.length > 0; });
+
+      if (!rows.length) return [];
+
+      var columns = csvSplitLine(rows[0], delimiter);
+      var data = rows.slice(header ? 1 : 0).map(function(line, index) {
+        var cells = csvSplitLine(line, delimiter);
+        if (!header) return cells;
+        var row = {};
+        for (var i = 0; i < columns.length; i++) {
+          row[columns[i]] = cells[i] != null ? cells[i] : "";
+        }
+        if (cells.length > columns.length) {
+          row.__extra = cells.slice(columns.length);
+        }
+        row.__row = index;
+        return row;
+      });
+
+      return data;
+    },
+
+    stringify: function(rows, options) {
+      var delimiter = options && options.delimiter ? String(options.delimiter) : ",";
+      if (!Array.isArray(rows) || !rows.length) return "";
+
+      if (Array.isArray(rows[0])) {
+        return rows
+          .map(function(row) {
+            return row.map(function(cell) { return csvEscapeCell(cell, delimiter); }).join(delimiter);
+          })
+          .join("\n");
+      }
+
+      var columns = (options && Array.isArray(options.columns) && options.columns.length)
+        ? options.columns.slice()
+        : Object.keys(rows.reduce(function(acc, row) {
+            Object.keys(row || {}).forEach(function(key) {
+              if (key !== "__row" && key !== "__extra") acc[key] = true;
+            });
+            return acc;
+          }, {}));
+
+      var lines = [];
+      if (!options || options.header !== false) {
+        lines.push(columns.map(function(col) { return csvEscapeCell(col, delimiter); }).join(delimiter));
+      }
+      rows.forEach(function(row) {
+        lines.push(columns.map(function(col) {
+          return csvEscapeCell(row && row[col], delimiter);
+        }).join(delimiter));
+      });
+      return lines.join("\n");
     },
   };
 
@@ -602,6 +706,74 @@
     return Math.atan2(dy, dx) * 180 / Math.PI;
   }
 
+  function geoBearing(from, to) {
+    if (!geoIsPoint(from) || !geoIsPoint(to)) return 0;
+    var lng1 = Number(from[0]) * Math.PI / 180;
+    var lat1 = Number(from[1]) * Math.PI / 180;
+    var lng2 = Number(to[0]) * Math.PI / 180;
+    var lat2 = Number(to[1]) * Math.PI / 180;
+    var y = Math.sin(lng2 - lng1) * Math.cos(lat2);
+    var x =
+      Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(lng2 - lng1);
+    var degrees = Math.atan2(y, x) * 180 / Math.PI;
+    degrees = (degrees + 360) % 360;
+    return degrees;
+  }
+
+  function geoRouteProgress(route) {
+    if (!Array.isArray(route) || route.length === 0) {
+      return { totalDistance: 0, distances: [], segments: [] };
+    }
+    var distances = [0];
+    var segments = [];
+    var totalDistance = 0;
+    for (var i = 1; i < route.length; i++) {
+      var segmentDistance = geo.distance(route[i - 1], route[i]);
+      if (!isFinite(segmentDistance)) segmentDistance = 0;
+      segments.push(segmentDistance);
+      totalDistance += segmentDistance;
+      distances.push(totalDistance);
+    }
+    return {
+      totalDistance: totalDistance,
+      distances: distances,
+      segments: segments,
+    };
+  }
+
+  function geoInterpolateRoute(route, progress, routeState) {
+    if (!Array.isArray(route) || route.length === 0) return [0, 0];
+    if (route.length === 1) return geoNormalizePoint(route[0]);
+
+    var state = routeState && Array.isArray(routeState.distances) ? routeState : geoRouteProgress(route);
+    var totalDistance = Number(state.totalDistance || 0);
+    if (!isFinite(totalDistance) || totalDistance <= 0) {
+      return geoNormalizePoint(route[0]);
+    }
+
+    var p = Number(progress);
+    if (!isFinite(p)) p = 0;
+    if (p < 0) p = 0;
+    if (p > 1) p = 1;
+
+    var targetDistance = totalDistance * p;
+    for (var i = 1; i < state.distances.length; i++) {
+      if (state.distances[i] < targetDistance) continue;
+      var from = geoNormalizePoint(route[i - 1]);
+      var to = geoNormalizePoint(route[i]);
+      var segmentStart = state.distances[i - 1];
+      var segmentDistance = state.distances[i] - segmentStart;
+      var ratio = segmentDistance > 0 ? (targetDistance - segmentStart) / segmentDistance : 0;
+      return [
+        from[0] + (to[0] - from[0]) * ratio,
+        from[1] + (to[1] - from[1]) * ratio,
+      ];
+    }
+
+    return geoNormalizePoint(route[route.length - 1]);
+  }
+
   var geo = {
     parseWktLineString: function(value) {
       return geoParseWktLineString(value);
@@ -726,10 +898,22 @@
     heading: function(from, to) {
       return geoHeading(from, to);
     },
+
+    bearing: function(from, to) {
+      return geoBearing(from, to);
+    },
+
+    routeProgress: function(route) {
+      return geoRouteProgress(route);
+    },
+
+    interpolateRoute: function(route, progress, routeState) {
+      return geoInterpolateRoute(route, progress, routeState);
+    },
   };
 
   // ──────────────────────────────────────────────────────────────────────────
   // Install
   // ──────────────────────────────────────────────────────────────────────────
-  globalThis.Tool = { time: time, arr: arr, stat: stat, geo: geo };
+  globalThis.Tool = { time: time, arr: arr, stat: stat, csv: csv, geo: geo };
 })();

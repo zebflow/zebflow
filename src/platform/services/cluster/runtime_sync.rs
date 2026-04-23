@@ -79,8 +79,8 @@ impl ClusterRuntimeSyncService {
             bundle_id: format!("{}-{}-{}", owner, project, now_ts()),
             identity,
             created_at: now_ts(),
-            runtime_profile: cfg.runtime,
-            bootstrap: cfg.bootstrap,
+            runtime_profile: cfg.configs.runtime,
+            bootstrap: cfg.configs.bootstrap,
             repo_files: collect_repo_files(&layout.repo_dir)?,
             ..Default::default()
         })
@@ -123,7 +123,7 @@ impl ClusterRuntimeSyncService {
             self.pipeline_runtime.as_ref(),
             &owner,
             &project,
-            &cfg.bootstrap,
+            &cfg.configs.bootstrap,
         )?;
         self.pipeline_runtime.refresh_project(&owner, &project)?;
         Ok(())
@@ -163,8 +163,8 @@ impl ClusterRuntimeSyncService {
             fs::write(path, bytes)?;
         }
         self.zebflow_cfg.update(&owner, &project, |cfg| {
-            cfg.runtime = bundle.runtime_profile.clone();
-            cfg.bootstrap = bundle.bootstrap.clone();
+            cfg.configs.runtime = bundle.runtime_profile.clone();
+            cfg.configs.bootstrap = bundle.bootstrap.clone();
         })?;
         self.refresh_local_repo_state(&owner, &project)?;
         Ok(())
@@ -422,6 +422,7 @@ fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
         .iter()
         .find_map(|node| match node.kind.as_str() {
             "n.trigger.webhook" => Some("webhook".to_string()),
+            "n.trigger.mapserver" => Some("mapserver".to_string()),
             "n.trigger.schedule" => Some("schedule".to_string()),
             "n.trigger.ws" => Some("ws".to_string()),
             "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),

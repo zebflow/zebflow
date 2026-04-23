@@ -132,6 +132,21 @@ export default function PlatformSidebar(props) {
           </Link>
 
           <Link
+            href={links.marketplace ?? "#"}
+            aria-label="Marketplace"
+            className={navRowCx(expanded, isLight, classes.marketplace ?? "")}
+          >
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
+              <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5">
+                <path d="M5 8.5h14v10H5z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" />
+                <path d="M8 8.5V6.8a2 2 0 114 0v1.7M12 8.5V6.8a2 2 0 114 0v1.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                <path d="M9 12h6M12 9.5v5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span className={cx("whitespace-nowrap", !expanded && "hidden")}>Marketplace</span>
+          </Link>
+
+          <Link
             href={links.dashboard ?? "#"}
             aria-label="Dashboard"
             className={navRowCx(expanded, isLight, classes.dashboard ?? "")}

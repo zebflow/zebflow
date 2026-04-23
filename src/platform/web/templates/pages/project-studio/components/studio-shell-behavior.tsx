@@ -81,7 +81,16 @@ type ConsoleStore = {
   notify: (() => void) | null;
 };
 
+const ssrConsoleStore: ConsoleStore = {
+  lines: [],
+  counter: 0,
+  notify: null,
+};
+
 function getStore(): ConsoleStore {
+  if (typeof window === "undefined") {
+    return ssrConsoleStore;
+  }
   const w = window as any;
   if (!w.__zf_cli_store) {
     w.__zf_cli_store = { lines: [], counter: 0, notify: null } satisfies ConsoleStore;
@@ -135,7 +144,15 @@ type OverlayStore = {
   notify: (() => void) | null;
 };
 
+const ssrOverlayStore: OverlayStore = {
+  state: { active: false, label: "", cursorX: 0, cursorY: 0, clicking: false },
+  notify: null,
+};
+
 function getOverlayStore(): OverlayStore {
+  if (typeof window === "undefined") {
+    return ssrOverlayStore;
+  }
   const w = window as any;
   if (!w.__zf_overlay_store) {
     w.__zf_overlay_store = {

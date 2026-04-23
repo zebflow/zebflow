@@ -6,17 +6,14 @@
 //! order for `0.2.0`:
 //!
 //! 1. current user profile
-//! 2. project git settings
-//! 3. generated fallback identity
+//! 2. generated fallback identity
 //!
-//! That lets current APIs start attributing commits to the acting user without
-//! breaking project-level defaults.
+//! Project config no longer owns author identity. Commit attribution belongs to
+//! the acting platform user.
 
 use std::sync::Arc;
 
-use crate::platform::model::{
-    GitIdentitySource, ResolvedGitIdentity, ZebflowJsonGit, slug_segment,
-};
+use crate::platform::model::{GitIdentitySource, ResolvedGitIdentity, slug_segment};
 use crate::platform::services::UserService;
 
 /// Resolve git identity for the current actor and project.
@@ -34,7 +31,6 @@ impl GitIdentityService {
     pub fn resolve_for_actor(
         &self,
         actor_user: Option<&str>,
-        project_git: &ZebflowJsonGit,
         project_slug: &str,
     ) -> ResolvedGitIdentity {
         let actor = actor_user.map(slug_segment).unwrap_or_default();
@@ -45,32 +41,16 @@ impl GitIdentityService {
         };
 
         let (name, email, source) = if let Some(user) = user_profile {
-            let name = pick_name(&user.git_name, &project_git.author_name, project_slug);
-            let email = pick_email(&user.git_email, &project_git.author_email, project_slug);
+            let name = pick_name(&user.git_name, project_slug);
+            let email = pick_email(&user.git_email, project_slug);
             let source = if !user.git_name.trim().is_empty() || !user.git_email.trim().is_empty() {
                 GitIdentitySource::UserProfile
-            } else if !project_git.author_name.trim().is_empty()
-                || !project_git.author_email.trim().is_empty()
-            {
-                GitIdentitySource::ProjectSettings
             } else {
                 GitIdentitySource::Fallback
             };
             (name, email, source)
-        } else if !project_git.author_name.trim().is_empty()
-            || !project_git.author_email.trim().is_empty()
-        {
-            (
-                pick_name("", &project_git.author_name, project_slug),
-                pick_email("", &project_git.author_email, project_slug),
-                GitIdentitySource::ProjectSettings,
-            )
         } else {
-            (
-                fallback_name(project_slug),
-                fallback_email(project_slug),
-                GitIdentitySource::Fallback,
-            )
+            (fallback_name(project_slug), fallback_email(project_slug), GitIdentitySource::Fallback)
         };
 
         ResolvedGitIdentity {
@@ -81,21 +61,17 @@ impl GitIdentityService {
     }
 }
 
-fn pick_name(user_name: &str, project_name: &str, project_slug: &str) -> String {
+fn pick_name(user_name: &str, project_slug: &str) -> String {
     if !user_name.trim().is_empty() {
         user_name.trim().to_string()
-    } else if !project_name.trim().is_empty() {
-        project_name.trim().to_string()
     } else {
         fallback_name(project_slug)
     }
 }
 
-fn pick_email(user_email: &str, project_email: &str, project_slug: &str) -> String {
+fn pick_email(user_email: &str, project_slug: &str) -> String {
     if !user_email.trim().is_empty() {
         user_email.trim().to_string()
-    } else if !project_email.trim().is_empty() {
-        project_email.trim().to_string()
     } else {
         fallback_email(project_slug)
     }
@@ -129,25 +105,13 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_project_settings_then_generated_identity() {
+    fn falls_back_to_generated_identity_without_user_profile() {
         let temp_dir = temp_test_dir("git-identity-project");
         let data = build_data_adapter(DataAdapterKind::Sqlite, &temp_dir).unwrap();
         let users = Arc::new(UserService::new(data));
         let svc = GitIdentityService::new(users);
 
-        let resolved = svc.resolve_for_actor(
-            None,
-            &ZebflowJsonGit {
-                author_name: "Project Bot".to_string(),
-                author_email: "bot@example.com".to_string(),
-            },
-            "default",
-        );
-        assert_eq!(resolved.name, "Project Bot");
-        assert_eq!(resolved.email, "bot@example.com");
-        assert_eq!(resolved.source, GitIdentitySource::ProjectSettings);
-
-        let fallback = svc.resolve_for_actor(None, &ZebflowJsonGit::default(), "demo");
+        let fallback = svc.resolve_for_actor(None, "demo");
         assert_eq!(fallback.name, "demo");
         assert_eq!(fallback.email, "demo@zebflow.local");
         assert_eq!(fallback.source, GitIdentitySource::Fallback);
@@ -167,14 +131,7 @@ mod tests {
         });
         let svc = GitIdentityService::new(users);
 
-        let resolved = svc.resolve_for_actor(
-            Some("alice"),
-            &ZebflowJsonGit {
-                author_name: "Project Bot".to_string(),
-                author_email: "bot@example.com".to_string(),
-            },
-            "default",
-        );
+        let resolved = svc.resolve_for_actor(Some("alice"), "default");
         assert_eq!(resolved.name, "Alice Smith");
         assert_eq!(resolved.email, "alice@example.com");
         assert_eq!(resolved.source, GitIdentitySource::UserProfile);

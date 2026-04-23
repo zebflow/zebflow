@@ -134,6 +134,10 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("../../../libraries/zeb/use/manifest.json"),
     },
     EmbeddedAsset {
+        path: "zeb/livegeo/manifest.json",
+        bytes: include_bytes!("../../../libraries/zeb/livegeo/manifest.json"),
+    },
+    EmbeddedAsset {
         path: "zeb/threejs/r183/bundle.min.mjs",
         bytes: include_bytes!("../../../libraries/zeb/threejs/r183/bundle.min.mjs"),
     },
@@ -214,6 +218,22 @@ pub const PLATFORM_LIBRARY_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zeb/use/0.1/runtime/use.bundle.mjs",
         bytes: include_bytes!("../../../libraries/zeb/use/0.1/runtime/use.bundle.mjs"),
+    },
+    EmbeddedAsset {
+        path: "zeb/livegeo/0.1/library.json",
+        bytes: include_bytes!("../../../libraries/zeb/livegeo/0.1/library.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/livegeo/0.1/exports.json",
+        bytes: include_bytes!("../../../libraries/zeb/livegeo/0.1/exports.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/livegeo/0.1/keywords.json",
+        bytes: include_bytes!("../../../libraries/zeb/livegeo/0.1/keywords.json"),
+    },
+    EmbeddedAsset {
+        path: "zeb/livegeo/0.1/runtime/livegeo.bundle.mjs",
+        bytes: include_bytes!("../../../libraries/zeb/livegeo/0.1/runtime/livegeo.bundle.mjs"),
     },
     EmbeddedAsset {
         path: "zeb/icons/0.1/library.json",

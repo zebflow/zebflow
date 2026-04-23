@@ -412,7 +412,11 @@ async function initDbConnections(root) {
       const slug = String(item.connection_slug || "");
       const kind = String(item.database_kind || "sekejap");
       const iconClass = dbKindIconClass(kind);
-      const openPath = `/projects/${encodeURIComponent(owner)}/${encodeURIComponent(project)}/db/${encodeURIComponent(kind)}/${encodeURIComponent(slug)}/tables`;
+      const openPath = String(
+        item.path ||
+          `/projects/${encodeURIComponent(owner)}/${encodeURIComponent(project)}/db/${encodeURIComponent(kind)}/${encodeURIComponent(slug)}/tables`
+      );
+      const isBuiltin = !!item.builtin;
       const tr = document.createElement("tr");
       const credential = state.credentialById.get(String(item.credential_id || ""));
       const credentialLabel = credential
@@ -437,7 +441,7 @@ async function initDbConnections(root) {
         <td>${updatedAtStr}</td>
         <td>
           <a href="${openPath}" class="project-inline-chip">Open</a>
-          <button type="button" class="project-inline-chip" data-edit-slug="${slug}">Edit</button>
+          ${isBuiltin ? "" : `<button type="button" class="project-inline-chip" data-edit-slug="${slug}">Edit</button>`}
         </td>
       `;
       tr.querySelectorAll("td").forEach((cell) => {

@@ -1,0 +1,19 @@
+{
+  "name": "zeb/livegeo",
+  "description": "Frontend hooks for live geospatial interactivity: playback, track playback, smoothing, and map follow.",
+  "exports": [
+    "usePlayback",
+    "useTrackPlayback",
+    "useTrackSmoothing",
+    "useMapFollow"
+  ],
+  "versions": {
+    "full-0.1": {
+      "entry": "0.1/runtime/livegeo.bundle.mjs",
+      "source": "offline",
+      "package_version": "0.1",
+      "size_bytes": 0,
+      "integrity": ""
+    }
+  }
+}

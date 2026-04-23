@@ -410,4 +410,54 @@ return {
         assert_eq!(out["inside"].as_bool(), Some(true));
         approx_eq(out["heading"].as_f64().unwrap(), 45.0, 10.0);
     }
+
+    #[test]
+    fn tool_geo_supports_route_progress_interpolation_and_bearing() {
+        let out = run_tool_script(
+            r#"
+const route = [
+  [145.1, -37.9],
+  [145.2, -37.8],
+  [145.3, -37.85]
+];
+const progress = Tool.geo.routeProgress(route);
+return {
+  total: progress.totalDistance,
+  distances: progress.distances,
+  midpoint: Tool.geo.interpolateRoute(route, 0.5, progress),
+  bearing: Tool.geo.bearing(route[0], route[1]),
+};
+"#,
+        );
+
+        assert!(out["total"].as_f64().unwrap() > 0.0);
+        let distances = out["distances"].as_array().unwrap();
+        assert_eq!(distances.len(), 3);
+        let midpoint = out["midpoint"].as_array().unwrap();
+        assert_eq!(midpoint.len(), 2);
+        assert!(midpoint[0].as_f64().unwrap() > 145.1);
+        assert!(midpoint[0].as_f64().unwrap() < 145.3);
+        let bearing = out["bearing"].as_f64().unwrap();
+        assert!(bearing >= 0.0);
+        assert!(bearing < 360.0);
+    }
+
+    #[test]
+    fn tool_csv_parses_and_stringifies_rows() {
+        let out = run_tool_script(
+            r#"
+const rows = Tool.csv.parse("id,name\n1,Alice\n2,Bob");
+return {
+  rows,
+  csv: Tool.csv.stringify(rows, { columns: ["id", "name"] }),
+};
+"#,
+        );
+
+        let rows = out["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"].as_str(), Some("1"));
+        assert_eq!(rows[1]["name"].as_str(), Some("Bob"));
+        assert!(out["csv"].as_str().unwrap().contains("Alice"));
+    }
 }

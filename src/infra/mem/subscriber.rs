@@ -150,6 +150,8 @@ impl MemSubscriber {
 
                         let log_max_n = zebflow_cfg
                             .read_or_default(&owner_s, &project_s)
+                            .configs
+                            .pipelines
                             .logging
                             .effective_max_invocations();
 

@@ -1,0 +1,11 @@
+{
+  "package": "zeb/livegeo",
+  "version": "0.1",
+  "raw": {
+    "usePlayback": { "kind": "hook", "description": "Playback state with play, pause, reset, seek, and speed." },
+    "useTrackPlayback": { "kind": "hook", "description": "Playback-ready track snapshots with interpolated position and bearing." },
+    "useTrackSmoothing": { "kind": "hook", "description": "Smoothly transitions position and bearing for moving entities." },
+    "useMapFollow": { "kind": "hook", "description": "Keeps a deck/map view state following a moving target." }
+  },
+  "wrappers": {}
+}

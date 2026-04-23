@@ -12,8 +12,10 @@ use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject,
-    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMember,
-    ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    PlatformUser, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplacePublisher, MarketplaceToken,
+    PlatformMarketplaceRepository, ProjectMarketplaceRepository,
+    ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMember, ProjectOperationRecord,
+    ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -85,6 +87,185 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         connection_slug: &str,
     ) -> Result<(), PlatformError>;
+    /// Upsert one marketplace repository source.
+    fn put_project_marketplace_repository(
+        &self,
+        repository: &ProjectMarketplaceRepository,
+    ) -> Result<(), PlatformError> {
+        let _ = repository;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace repositories are not supported by this adapter",
+        ))
+    }
+    /// List marketplace repository sources for one project.
+    fn list_project_marketplace_repositories(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectMarketplaceRepository>, PlatformError> {
+        let _ = (owner, project);
+        Ok(vec![])
+    }
+    /// Delete one marketplace repository source.
+    fn delete_project_marketplace_repository(
+        &self,
+        owner: &str,
+        project: &str,
+        repository_id: &str,
+    ) -> Result<(), PlatformError> {
+        let _ = (owner, project, repository_id);
+        Ok(())
+    }
+    /// Upsert one platform-scoped marketplace repository source.
+    fn put_platform_marketplace_repository(
+        &self,
+        repository: &PlatformMarketplaceRepository,
+    ) -> Result<(), PlatformError> {
+        let _ = repository;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "platform marketplace repositories are not supported by this adapter",
+        ))
+    }
+    /// List platform marketplace repository sources for one owner.
+    fn list_platform_marketplace_repositories(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<PlatformMarketplaceRepository>, PlatformError> {
+        let _ = owner;
+        Ok(vec![])
+    }
+    /// Delete one platform marketplace repository source.
+    fn delete_platform_marketplace_repository(
+        &self,
+        owner: &str,
+        repository_id: &str,
+    ) -> Result<(), PlatformError> {
+        let _ = (owner, repository_id);
+        Ok(())
+    }
+    /// Upsert one marketplace publisher identity.
+    fn put_marketplace_publisher(
+        &self,
+        publisher: &MarketplacePublisher,
+    ) -> Result<(), PlatformError> {
+        let _ = publisher;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace publishers are not supported by this adapter",
+        ))
+    }
+    /// List marketplace publishers for one project authority.
+    fn list_marketplace_publishers(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<MarketplacePublisher>, PlatformError> {
+        let _ = (owner, project);
+        Ok(vec![])
+    }
+    /// Get one marketplace publisher.
+    fn get_marketplace_publisher(
+        &self,
+        owner: &str,
+        project: &str,
+        publisher_id: &str,
+    ) -> Result<Option<MarketplacePublisher>, PlatformError> {
+        let _ = (owner, project, publisher_id);
+        Ok(None)
+    }
+    /// Delete one marketplace publisher.
+    fn delete_marketplace_publisher(
+        &self,
+        owner: &str,
+        project: &str,
+        publisher_id: &str,
+    ) -> Result<(), PlatformError> {
+        let _ = (owner, project, publisher_id);
+        Ok(())
+    }
+    /// Upsert one marketplace asset package.
+    fn put_marketplace_asset_package(
+        &self,
+        package: &MarketplaceAssetPackage,
+    ) -> Result<(), PlatformError> {
+        let _ = package;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace packages are not supported by this adapter",
+        ))
+    }
+    /// List marketplace asset packages.
+    fn list_marketplace_asset_packages(&self) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Get one marketplace asset package.
+    fn get_marketplace_asset_package(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<MarketplaceAssetPackage>, PlatformError> {
+        let _ = package_id;
+        Ok(None)
+    }
+    /// Upsert one marketplace asset version.
+    fn put_marketplace_asset_version(
+        &self,
+        version: &MarketplaceAssetVersion,
+    ) -> Result<(), PlatformError> {
+        let _ = version;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace package versions are not supported by this adapter",
+        ))
+    }
+    /// List versions for one package.
+    fn list_marketplace_asset_versions(
+        &self,
+        package_id: &str,
+    ) -> Result<Vec<MarketplaceAssetVersion>, PlatformError> {
+        let _ = package_id;
+        Ok(vec![])
+    }
+    /// Get one specific marketplace asset version.
+    fn get_marketplace_asset_version(
+        &self,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<MarketplaceAssetVersion>, PlatformError> {
+        let _ = (package_id, version);
+        Ok(None)
+    }
+    /// Upsert one marketplace token.
+    fn put_marketplace_token(&self, token: &MarketplaceToken) -> Result<(), PlatformError> {
+        let _ = token;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace tokens are not supported by this adapter",
+        ))
+    }
+    /// Get one marketplace token by id.
+    fn get_marketplace_token(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<MarketplaceToken>, PlatformError> {
+        let _ = token_id;
+        Ok(None)
+    }
+    /// List marketplace tokens by owner/project authority.
+    fn list_marketplace_tokens(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<MarketplaceToken>, PlatformError> {
+        let _ = (owner, project);
+        Ok(vec![])
+    }
+    /// Delete one marketplace token.
+    fn delete_marketplace_token(&self, token_id: &str) -> Result<(), PlatformError> {
+        let _ = token_id;
+        Ok(())
+    }
     /// Upsert one pipeline metadata row.
     fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError>;
     /// Delete one pipeline metadata row by owner/project/file_rel_path.

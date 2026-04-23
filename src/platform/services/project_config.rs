@@ -6,8 +6,8 @@ use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonProject, ZebflowJsonRweLibraries,
-    ZebflowJsonRweLibraryEntry, slug_segment,
+    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionMarketplace, ZebflowJsonMetadata,
+    ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
 };
 
 /// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
@@ -82,7 +82,7 @@ impl ZebflowJsonService {
         title: &str,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.project.title = title.to_string();
+            cfg.metadata.title = title.to_string();
         })?;
         Ok(())
     }
@@ -90,21 +90,42 @@ impl ZebflowJsonService {
     /// Gets the project title from zebflow.json, falling back to the project slug.
     pub fn get_project_title(&self, owner: &str, project: &str) -> String {
         let cfg = self.read_or_default(owner, project);
-        if cfg.project.title.trim().is_empty() {
+        if cfg.metadata.title.trim().is_empty() {
             project.replace('-', " ")
         } else {
-            cfg.project.title.clone()
+            cfg.metadata.title.clone()
         }
+    }
+
+    /// Returns the marketplace distribution contract for one project.
+    pub fn get_marketplace_distribution(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> ZebflowJsonDistributionMarketplace {
+        self.read_or_default(owner, project).distribution.marketplace
+    }
+
+    pub fn set_marketplace_distribution(
+        &self,
+        owner: &str,
+        project: &str,
+        marketplace: ZebflowJsonDistributionMarketplace,
+    ) -> Result<(), PlatformError> {
+        self.update(owner, project, |cfg| {
+            cfg.distribution.marketplace = marketplace;
+        })?;
+        Ok(())
     }
 
     /// Returns the assistant section of zebflow.json.
     pub fn get_assistant(&self, owner: &str, project: &str) -> ZebflowJsonAssistant {
-        self.read_or_default(owner, project).assistant
+        self.read_or_default(owner, project).configs.assistant
     }
 
     /// Returns the portable runtime profile section of `zebflow.json`.
     pub fn get_runtime_profile(&self, owner: &str, project: &str) -> ProjectRuntimeProfile {
-        self.read_or_default(owner, project).runtime
+        self.read_or_default(owner, project).configs.runtime
     }
 
     /// Sets the portable runtime profile section of `zebflow.json`, preserving other fields.
@@ -115,14 +136,14 @@ impl ZebflowJsonService {
         runtime: ProjectRuntimeProfile,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.runtime = runtime;
+            cfg.configs.runtime = runtime;
         })?;
         Ok(())
     }
 
     /// Returns the bootstrap/activation plan section of `zebflow.json`.
     pub fn get_bootstrap(&self, owner: &str, project: &str) -> ProjectBootstrapPlan {
-        self.read_or_default(owner, project).bootstrap
+        self.read_or_default(owner, project).configs.bootstrap
     }
 
     /// Sets the bootstrap/activation plan section of `zebflow.json`, preserving other fields.
@@ -133,7 +154,7 @@ impl ZebflowJsonService {
         bootstrap: ProjectBootstrapPlan,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.bootstrap = bootstrap;
+            cfg.configs.bootstrap = bootstrap;
         })?;
         Ok(())
     }
@@ -146,7 +167,7 @@ impl ZebflowJsonService {
         assistant: ZebflowJsonAssistant,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.assistant = assistant;
+            cfg.configs.assistant = assistant;
         })?;
         Ok(())
     }
@@ -157,7 +178,7 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJsonRweLibraries, PlatformError> {
-        Ok(self.read_or_default(owner, project).rwe.libraries)
+        Ok(self.read_or_default(owner, project).configs.rwe.libraries)
     }
 
     /// Adds or updates one enabled library entry in `rwe.libraries`.
@@ -170,7 +191,7 @@ impl ZebflowJsonService {
         source: &str,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.rwe.libraries.insert(
+            cfg.configs.rwe.libraries.insert(
                 name.to_string(),
                 ZebflowJsonRweLibraryEntry {
                     version: version.to_string(),
@@ -189,7 +210,7 @@ impl ZebflowJsonService {
         name: &str,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.rwe.libraries.remove(name);
+            cfg.configs.rwe.libraries.remove(name);
         })?;
         Ok(())
     }
@@ -202,7 +223,7 @@ impl ZebflowJsonService {
         rel_path: &str,
     ) -> Result<bool, PlatformError> {
         let cfg = self.read_or_default(owner, project);
-        Ok(is_template_path_locked(&cfg.locks.templates, rel_path))
+        Ok(is_template_path_locked(&cfg.configs.locks.templates, rel_path))
     }
 
     /// Adds or removes `rel_path` from the locked templates list.
@@ -214,7 +235,7 @@ impl ZebflowJsonService {
         locked: bool,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            let templates = &mut cfg.locks.templates;
+            let templates = &mut cfg.configs.locks.templates;
             if locked {
                 if !templates.iter().any(|p| p == rel_path) {
                     templates.push(rel_path.to_string());
@@ -232,7 +253,7 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> Result<Vec<String>, PlatformError> {
-        Ok(self.read_or_default(owner, project).locks.templates)
+        Ok(self.read_or_default(owner, project).configs.locks.templates)
     }
 
     /// Initializes zebflow.json with defaults if it doesn't already exist.
@@ -246,14 +267,14 @@ impl ZebflowJsonService {
         if path.exists() {
             // Only update title if currently blank
             let mut cfg = self.read_or_default(owner, project);
-            if cfg.project.title.trim().is_empty() && !title.trim().is_empty() {
-                cfg.project.title = title.to_string();
+            if cfg.metadata.title.trim().is_empty() && !title.trim().is_empty() {
+                cfg.metadata.title = title.to_string();
                 self.write(owner, project, &cfg)?;
             }
             return Ok(());
         }
         let cfg = ZebflowJson {
-            project: ZebflowJsonProject {
+            metadata: ZebflowJsonMetadata {
                 title: title.to_string(),
                 description: String::new(),
             },

@@ -155,6 +155,8 @@ impl PipelineScheduler {
 
                 let log_max_n = zebflow_cfg
                     .read_or_default(&owner, &project)
+                    .configs
+                    .pipelines
                     .logging
                     .effective_max_invocations();
 

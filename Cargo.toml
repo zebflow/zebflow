@@ -1,6 +1,6 @@
 [package]
 name = "zebflow"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 
@@ -53,7 +53,8 @@ hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
 chrono = { version = "0.4.44", features = ["serde", "clock"] }
 uuid = { version = "1.22.0", features = ["v4"] }
+tempfile = "3"
+flate2 = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-tempfile = "3"

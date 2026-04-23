@@ -13,10 +13,10 @@ use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformCo
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
-    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService, McpSessionService,
-    PipelineHitsService, PipelineRuntimeService, ProjectInviteService, ProjectMembershipService,
-    ProjectOperationService, ProjectService, ProjectTransferService, UserService, ZebLockService,
-    ZebflowJsonService,
+    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService,
+    MarketplaceService, McpSessionService, PipelineHitsService, PipelineRuntimeService,
+    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
+    ProjectTransferService, UserService, ZebLockService, ZebflowJsonService,
 };
 
 /// Main platform service graph, created once per process.
@@ -80,6 +80,8 @@ pub struct PlatformService {
     pub state_bus: DynStateBus,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
+    /// Platform-level asset marketplace service.
+    pub marketplace: Arc<MarketplaceService>,
     /// Read/write service for per-project `repo/zeb.lock`.
     pub zeb_lock: Arc<ZebLockService>,
 }
@@ -118,6 +120,11 @@ impl PlatformService {
         let db_runtime = Arc::new(DbRuntimeService::new(
             db_connections.clone(),
             credentials.clone(),
+            config.data_root.clone(),
+        ));
+        let marketplace = Arc::new(MarketplaceService::new(
+            data.clone(),
+            projects.clone(),
             config.data_root.clone(),
         ));
         let project_operations = Arc::new(ProjectOperationService::new(data.clone()));
@@ -173,6 +180,7 @@ impl PlatformService {
             mem_hub,
             state_bus,
             library,
+            marketplace,
             zeb_lock,
         };
         if !svc.cluster_bootstrap.is_worker() {

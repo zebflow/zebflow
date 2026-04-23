@@ -5523,7 +5523,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -5537,6 +5537,7 @@ dependencies = [
  "deno_error",
  "dirs-next",
  "dotenvy",
+ "flate2",
  "futures",
  "hex",
  "hmac",

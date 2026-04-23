@@ -1,12 +1,25 @@
 import { cx } from "zeb";
 import Button from "@/components/ui/button";
 import Checkbox from "@/components/ui/checkbox";
+import Input from "@/components/ui/input";
 
 const ESSENTIALS = [
   "button", "input", "textarea", "label", "checkbox", "badge", "card", "dialog", "select", "tabs", "separator", "alert",
 ];
 
 type CatalogEntry = { name: string; installed?: boolean; category?: string };
+type MarketplacePackEntry = {
+  package_id: string;
+  asset_kind: string;
+  latest_version?: string;
+  publisher_owner?: string;
+  repository_title?: string;
+  title?: string;
+  description?: string;
+  visibility?: string;
+  source?: string;
+  repository_id?: string;
+};
 
 export function RegistryInstallCatalog({
   onClose,
@@ -18,6 +31,10 @@ export function RegistryInstallCatalog({
   installResult,
   installing,
   onInstallSubmit,
+  marketplacePacks,
+  packSearch,
+  setPackSearch,
+  onAddPack,
 }: {
   onClose: () => void;
   installTab: string;
@@ -28,29 +45,57 @@ export function RegistryInstallCatalog({
   installResult: string | null;
   installing: boolean;
   onInstallSubmit: () => void;
+  marketplacePacks: MarketplacePackEntry[];
+  packSearch: string;
+  setPackSearch: (value: string) => void;
+  onAddPack: (item: MarketplacePackEntry) => void;
 }) {
+  const normalizedQuery = String(packSearch || "").trim().toLowerCase();
+  const filteredPacks = marketplacePacks.filter((item) => {
+    if (installTab === "pipelines" && !String(item.asset_kind || "").includes("pipeline")) return false;
+    if (installTab === "templates" && !String(item.asset_kind || "").includes("template")) return false;
+    if (installTab === "packs" && String(item.asset_kind || "") === "template_bundle") return true;
+    if (installTab === "packs" && String(item.asset_kind || "").includes("pipeline")) return true;
+    if (installTab === "packs" && !["project_bundle", "folder_bundle", "component_pack", "sekejap_pack", "mapserver_pack"].includes(String(item.asset_kind || ""))) {
+      return false;
+    }
+    if (!normalizedQuery) return true;
+    const haystack = [
+      item.package_id,
+      item.asset_kind,
+      item.title,
+      item.description,
+      item.publisher_owner,
+      item.repository_title,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
   return (
     <div className="git-commit-overlay">
       <div className="git-commit-backdrop" onClick={onClose} />
       <div className="git-commit-box git-commit-box--install-catalog">
         <div className="git-commit-header shrink-0">
-          <h3 className="git-commit-title">Install UI Components</h3>
+          <h3 className="git-commit-title">Add+</h3>
           <Button variant="ghost" size="icon" className="git-commit-close" onClick={onClose} aria-label="Close">✕</Button>
         </div>
         <div className="git-install-catalog-stack">
           <div className="git-install-catalog-tabs">
-            {(["ui", "pipelines", "scripts"] as const).map(tab => (
+            {(["packs", "pipelines", "templates", "ui"] as const).map(tab => (
               <button key={tab} type="button"
                 className={cx("pipeline-registry-filter-tab", installTab === tab ? "is-active" : "")}
                 onClick={() => setInstallTab(tab)}>
-                {tab === "ui" ? "UI Kit" : tab === "pipelines" ? "Pipelines" : "Scripts"}
+                {tab === "ui" ? "UI" : tab === "pipelines" ? "Pipelines" : tab === "templates" ? "Templates" : "Packs"}
               </button>
             ))}
           </div>
           {installTab === "ui" ? (
             <div className="install-catalog-tab-panel">
               <p className="text-xs text-body-soft m-0">
-                Select components to install into <code>shared/ui/</code>.
+                Select components to add into <code>shared/ui/</code>.
               </p>
               <div className="flex flex-wrap gap-2 shrink-0">
                 <button type="button" className="pipeline-registry-filter-tab"
@@ -83,14 +128,49 @@ export function RegistryInstallCatalog({
             </div>
           ) : (
             <div className="install-catalog-tab-panel">
-              <p className="text-xs text-body-soft m-0">Coming soon.</p>
+              <div className="space-y-3">
+                <p className="text-xs text-body-soft m-0">
+                  Browse marketplace packs and add them into this project workspace.
+                </p>
+                <Input
+                  value={packSearch}
+                  onInput={(e) => setPackSearch((e?.currentTarget as HTMLInputElement)?.value || "")}
+                  placeholder={`Search ${installTab}...`}
+                />
+                <div className="max-h-[440px] overflow-auto rounded-md border border-ui-border bg-ui-bg-muted/20">
+                  {filteredPacks.length ? filteredPacks.map((item) => (
+                    <div key={`${item.repository_id || "local"}:${item.package_id}:${item.latest_version || ""}`} className="flex items-start gap-3 border-b border-ui-border px-3 py-2 last:border-b-0">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-ui-text">{item.title || item.package_id}</span>
+                          <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-ui-text-soft">{item.asset_kind}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-ui-text-soft">
+                          {item.package_id} · {item.latest_version || "-"} · {item.publisher_owner || "-"} · {item.repository_title || "Local"}
+                        </div>
+                        {item.description ? (
+                          <p className="mt-1 text-xs text-ui-text-soft">{item.description}</p>
+                        ) : null}
+                      </div>
+                      <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item)}>
+                        Add
+                      </Button>
+                    </div>
+                  )) : (
+                    <div className="px-3 py-4 text-xs text-ui-text-soft">No matching packs.</div>
+                  )}
+                </div>
+                {installResult ? <p className="text-xs text-body-soft m-0 shrink-0">{installResult}</p> : null}
+              </div>
             </div>
           )}
         </div>
         <div className="git-commit-actions shrink-0">
+          {installTab === "ui" ? (
           <Button size="xs" onClick={onInstallSubmit} disabled={installing}>
-            {installing ? "Installing…" : "Install Selected"}
+            {installing ? "Adding…" : "Add Selected"}
           </Button>
+          ) : null}
           <Button variant="outline" size="xs" type="button" onClick={onClose}>
             Cancel
           </Button>

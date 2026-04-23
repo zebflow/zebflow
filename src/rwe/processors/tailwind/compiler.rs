@@ -1135,7 +1135,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                     "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                 ),
                 "serif" => ("serif", "ui-serif, Georgia, Cambria, serif"),
-                _ => (v, v),
+                _ => (v, "ui-sans-serif, system-ui, sans-serif"),
             };
             let slug = var_name
                 .chars()
@@ -1149,7 +1149,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                 .collect::<String>();
             return Some(simple_rule(
                 base_selector,
-                &format!("font-family:var(--zebflow-font-{}, {});", slug, fallback),
+                &format!("font-family:var(--font-{}, {});", slug, fallback),
                 important,
             ));
         }
@@ -2609,7 +2609,7 @@ fn format_rem(v: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{minify_css_lossy, process_tailwind};
+    use super::{minify_css_lossy, process_tailwind, token_css_rule};
 
     #[test]
     fn css_minifier_removes_comments_and_compacts_whitespace() {
@@ -2637,5 +2637,13 @@ mod tests {
         );
         assert!(css.contains(".p-4{padding:1rem;}"));
         assert!(css.contains(".text-slate-100{color:#f1f5f9;}"));
+    }
+
+    #[test]
+    fn font_display_utility_uses_global_font_token() {
+        let css = token_css_rule("font-display").expect("font-display rule");
+        assert!(css.contains(".font-display{font-family:var(--font-display, ui-sans-serif, system-ui, sans-serif);}"));
+        assert!(!css.contains("--zebflow-font-display"));
+        assert!(!css.contains(", display)"));
     }
 }
