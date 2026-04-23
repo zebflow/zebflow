@@ -1,0 +1,37 @@
+{
+  "name": "zeb/livegeo",
+  "version": "0.1",
+  "kind": "web-library",
+  "trust": "official",
+  "description": "Live geospatial interaction hooks for templates. Playback, track playback, smoothing, and map follow.",
+  "source": {
+    "provider": "zebflow",
+    "package": "livegeo",
+    "package_version": "bridge",
+    "packed_version": "full-0.1",
+    "packed_kind": "full",
+    "entry": "runtime/livegeo.bundle.mjs"
+  },
+  "registry": {
+    "kind": "github-releases",
+    "repo": "zebflow/libraries",
+    "asset_pattern": "zeb-livegeo-{version}.bundle.mjs"
+  },
+  "exports": {
+    "raw": [
+      "usePlayback",
+      "useTrackPlayback",
+      "useTrackSmoothing",
+      "useMapFollow"
+    ],
+    "wrappers": []
+  },
+  "runtime": {
+    "entry": "runtime/livegeo.bundle.mjs",
+    "format": "esm"
+  },
+  "editor": {
+    "keywords": "keywords.json",
+    "exports": "exports.json"
+  }
+}

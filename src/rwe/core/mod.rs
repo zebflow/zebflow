@@ -32,7 +32,7 @@ pub fn prewarm(compiled: &CompiledTemplate) -> Result<(), EngineError> {
 /// This function must be called once after the template files have been
 /// written to `root`. It:
 ///
-/// 1. Writes the `rwe.ts` shim into the root so component files can
+/// 1. Writes the `rwe.ts` shim into the root so legacy component files can
 ///    `import { useState, useNavigate, Link } from "rwe"`.
 /// 2. Walks every `.tsx / .ts / .jsx / .js` file under `root` and
 ///    rewrites:
@@ -129,7 +129,7 @@ fn rewrite_imports_variant(
         let spec_end = spec_start + end_rel;
         let rel = &out[spec_start..spec_end];
 
-        if rel == "zeb" {
+        if rel == "rwe" {
             let shim = root.join("rwe.ts");
             let resolved = fs::canonicalize(&shim).unwrap_or(shim);
             let resolved_str = resolved.to_string_lossy().to_string();

@@ -7,7 +7,9 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::version::APP_VERSION;
 
@@ -25,6 +27,15 @@ const BLOCK_AUTOUPDATE_RESOURCE_NAMES: &str = "resource-names";
 const BLOCK_AUTOUPDATE_SUSPEND: &str = "suspend";
 const BLOCK_AUTOUPDATE_TARGETS: &str = "target-workloads";
 const BLOCK_AUTOUPDATE_IMAGE_REPO: &str = "image-repo";
+const CLUSTER_LOCK_FILE: &str = ".zebflow.cluster.lock";
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VolumePermissionStrategy {
+    FsGroup,
+    InitChmod,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ClusterConfig {
@@ -35,6 +46,7 @@ struct ClusterConfig {
     managed_offices: Vec<String>,
     managed_workloads: Vec<String>,
     auto_update_enabled: bool,
+    volume_permission_strategy: VolumePermissionStrategy,
 }
 
 pub fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -185,127 +197,121 @@ fn print_cluster_help() {
 
 fn init_cluster(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(root)?;
-    let management_path = root.join(MANAGEMENT_FILE);
-    if management_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", management_path.display()),
-        )
-        .into());
-    }
+    with_cluster_lock(root, || {
+        let management_path = root.join(MANAGEMENT_FILE);
+        if management_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", management_path.display()),
+            )
+            .into());
+        }
 
-    let cluster_name = root
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("zebflow-cluster")
-        .to_string();
+        let cluster_name = root
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("zebflow-cluster")
+            .to_string();
 
-    let cfg = ClusterConfig {
-        cluster_name,
-        namespace: DEFAULT_NAMESPACE.to_string(),
-        controller_office_id: DEFAULT_CONTROLLER_ID.to_string(),
-        managed_image: default_image(),
-        managed_offices: vec![DEFAULT_CONTROLLER_ID.to_string()],
-        managed_workloads: vec![managed_workload_ref(DEFAULT_CONTROLLER_ID)],
-        auto_update_enabled: false,
-    };
+        let cfg = ClusterConfig {
+            cluster_name,
+            namespace: DEFAULT_NAMESPACE.to_string(),
+            controller_office_id: DEFAULT_CONTROLLER_ID.to_string(),
+            managed_image: default_image(),
+            managed_offices: vec![DEFAULT_CONTROLLER_ID.to_string()],
+            managed_workloads: vec![managed_workload_ref(DEFAULT_CONTROLLER_ID)],
+            auto_update_enabled: false,
+            volume_permission_strategy: VolumePermissionStrategy::FsGroup,
+        };
 
-    write_text(&management_path, &render_management_yaml(&cfg))?;
-    write_text(
-        &root.join(DEFAULT_CONTROLLER_ID.to_string() + ".yaml"),
-        &render_office_yaml(&cfg, DEFAULT_CONTROLLER_ID),
-    )?;
-    write_text(&root.join(AUTO_UPDATE_FILE), &render_auto_update_yaml(&cfg))?;
-    Ok(())
+        write_text(&management_path, &render_management_yaml(&cfg))?;
+        write_text(
+            &root.join(DEFAULT_CONTROLLER_ID.to_string() + ".yaml"),
+            &render_office_yaml(&cfg, DEFAULT_CONTROLLER_ID),
+        )?;
+        write_text(&root.join(AUTO_UPDATE_FILE), &render_auto_update_yaml(&cfg))?;
+        Ok(())
+    })
 }
 
 fn add_office(root: &Path, office_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     validate_office_id(office_id)?;
-    let mut cfg = load_cluster_config(root)?;
-    if cfg.managed_offices.iter().any(|value| value == office_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("office '{}' already exists", office_id),
-        )
-        .into());
-    }
+    with_cluster_lock(root, || {
+        let mut cfg = load_cluster_config(root)?;
+        if cfg.managed_offices.iter().any(|value| value == office_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("office '{}' already exists", office_id),
+            )
+            .into());
+        }
 
-    let office_path = root.join(format!("{office_id}.yaml"));
-    if office_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("{} already exists", office_path.display()),
-        )
-        .into());
-    }
+        let office_path = root.join(format!("{office_id}.yaml"));
+        if office_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", office_path.display()),
+            )
+            .into());
+        }
 
-    cfg.managed_offices.push(office_id.to_string());
-    cfg.managed_workloads.push(managed_workload_ref(office_id));
-    cfg.managed_offices.sort();
-    cfg.managed_workloads.sort();
+        cfg.managed_offices.push(office_id.to_string());
+        cfg.managed_workloads.push(managed_workload_ref(office_id));
+        cfg.managed_offices.sort();
+        cfg.managed_workloads.sort();
 
-    write_text(&office_path, &render_office_yaml(&cfg, office_id))?;
-    save_cluster_config(root, &cfg)?;
-    refresh_auto_update(root, &cfg)?;
-    Ok(())
+        write_text(&office_path, &render_office_yaml(&cfg, office_id))?;
+        save_cluster_config(root, &cfg)?;
+        refresh_auto_update(root, &cfg)?;
+        Ok(())
+    })
 }
 
 fn set_controller(root: &Path, office_id: &str) -> Result<(), Box<dyn std::error::Error>> {
     validate_office_id(office_id)?;
-    let mut cfg = load_cluster_config(root)?;
-    if !cfg.managed_offices.iter().any(|value| value == office_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "office '{}' is not managed in this cluster folder",
-                office_id
-            ),
-        )
-        .into());
-    }
-    cfg.controller_office_id = office_id.to_string();
-    save_cluster_config(root, &cfg)?;
-    for item in &cfg.managed_offices {
-        let path = root.join(format!("{item}.yaml"));
-        let content = fs::read_to_string(&path)?;
-        let next = replace_managed_block(
-            &content,
-            BLOCK_OFFICE_CONTAINER,
-            &render_office_container_block(&cfg, item),
-        )?;
-        write_text(&path, &next)?;
-    }
-    Ok(())
+    with_cluster_lock(root, || {
+        let mut cfg = load_cluster_config(root)?;
+        if !cfg.managed_offices.iter().any(|value| value == office_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "office '{}' is not managed in this cluster folder",
+                    office_id
+                ),
+            )
+            .into());
+        }
+        cfg.controller_office_id = office_id.to_string();
+        save_cluster_config(root, &cfg)?;
+        refresh_office_manifests(root, &cfg)?;
+        Ok(())
+    })
 }
 
 fn set_image(root: &Path, image: &str) -> Result<(), Box<dyn std::error::Error>> {
     if image.trim().is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "image cannot be empty").into());
     }
-    let mut cfg = load_cluster_config(root)?;
-    cfg.managed_image = image.trim().to_string();
-    save_cluster_config(root, &cfg)?;
-    for item in &cfg.managed_offices {
-        let path = root.join(format!("{item}.yaml"));
-        let content = fs::read_to_string(&path)?;
-        let next = replace_managed_block(
-            &content,
-            BLOCK_OFFICE_CONTAINER,
-            &render_office_container_block(&cfg, item),
-        )?;
-        write_text(&path, &next)?;
-    }
-    refresh_auto_update(root, &cfg)?;
-    Ok(())
+    with_cluster_lock(root, || {
+        let mut cfg = load_cluster_config(root)?;
+        cfg.managed_image = image.trim().to_string();
+        save_cluster_config(root, &cfg)?;
+        refresh_office_manifests(root, &cfg)?;
+        refresh_auto_update(root, &cfg)?;
+        Ok(())
+    })
 }
 
 fn set_auto_update(root: &Path, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = load_cluster_config(root)?;
-    cfg.auto_update_enabled = enabled;
-    save_cluster_config(root, &cfg)?;
-    refresh_auto_update(root, &cfg)?;
-    Ok(())
+    with_cluster_lock(root, || {
+        let mut cfg = load_cluster_config(root)?;
+        cfg.auto_update_enabled = enabled;
+        save_cluster_config(root, &cfg)?;
+        refresh_office_manifests(root, &cfg)?;
+        refresh_auto_update(root, &cfg)?;
+        Ok(())
+    })
 }
 
 fn describe_cluster(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -449,6 +455,17 @@ fn refresh_auto_update(root: &Path, cfg: &ClusterConfig) -> Result<(), Box<dyn s
     Ok(())
 }
 
+fn refresh_office_manifests(
+    root: &Path,
+    cfg: &ClusterConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for office_id in &cfg.managed_offices {
+        let path = root.join(format!("{office_id}.yaml"));
+        write_text(&path, &render_office_yaml(cfg, office_id))?;
+    }
+    Ok(())
+}
+
 fn load_cluster_config(root: &Path) -> Result<ClusterConfig, Box<dyn std::error::Error>> {
     let management = fs::read_to_string(root.join(MANAGEMENT_FILE))?;
     let block = extract_managed_block(&management, BLOCK_MANAGEMENT_CONFIG)?;
@@ -484,6 +501,11 @@ fn load_cluster_config(root: &Path) -> Result<ClusterConfig, Box<dyn std::error:
         managed_offices,
         managed_workloads,
         auto_update_enabled,
+        volume_permission_strategy: values
+            .get("VOLUME_PERMISSION_STRATEGY")
+            .map(|value| parse_volume_permission_strategy(value))
+            .transpose()?
+            .unwrap_or(VolumePermissionStrategy::FsGroup),
     })
 }
 
@@ -523,6 +545,10 @@ fn render_management_config_block(cfg: &ClusterConfig) -> String {
         "  MANAGED_WORKLOADS: \"{}\"",
         cfg.managed_workloads.join(",")
     ));
+    lines.push(
+        "  MARKETPLACE_DEFAULT_BASE_URL: \"https://marketplace.zebflow.com/api/projects/marketplace/default/marketplace\""
+            .to_string(),
+    );
     lines.push(format!(
         "  AUTO_UPDATE_ENABLED: \"{}\"",
         if cfg.auto_update_enabled {
@@ -531,15 +557,23 @@ fn render_management_config_block(cfg: &ClusterConfig) -> String {
             "false"
         }
     ));
+    lines.push(format!(
+        "  VOLUME_PERMISSION_STRATEGY: \"{}\"",
+        cfg.volume_permission_strategy.as_str()
+    ));
     lines.join("\n") + "\n"
 }
 
 fn render_office_yaml(cfg: &ClusterConfig, office_id: &str) -> String {
+    let pod_security_context = render_office_pod_security_context(cfg);
+    let init_containers = render_office_init_containers(cfg);
     format!(
-        "apiVersion: v1\nkind: Service\nmetadata:\n  name: {office_id}\n  namespace: {namespace}\n  labels:\n    app: {office_id}\n    zebflow.io/managed-by: zebflow\n    zebflow.io/office-id: {office_id}\nspec:\n  selector:\n    app: {office_id}\n  ports:\n    - name: http\n      port: 10610\n      targetPort: http\n---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: {office_id}\n  namespace: {namespace}\n  labels:\n    app: {office_id}\n    zebflow.io/managed-by: zebflow\n    zebflow.io/office-id: {office_id}\nspec:\n  serviceName: {office_id}\n  replicas: 1\n  selector:\n    matchLabels:\n      app: {office_id}\n  template:\n    metadata:\n      labels:\n        app: {office_id}\n        zebflow.io/managed-by: zebflow\n        zebflow.io/office-id: {office_id}\n    spec:\n      automountServiceAccountToken: false\n      tolerations:\n        - key: node-role.kubernetes.io/control-plane\n          operator: Exists\n          effect: NoSchedule\n      initContainers:\n        - name: volume-permissions\n          image: busybox:1.36\n          imagePullPolicy: IfNotPresent\n          command:\n            - sh\n            - -c\n            - mkdir -p /var/lib/zebflow/data && chmod -R 0777 /var/lib/zebflow/data\n          securityContext:\n            runAsUser: 0\n          volumeMounts:\n            - name: data\n              mountPath: /var/lib/zebflow/data\n      containers:\n        - name: zebflow\n          # zebflow:managed-begin {block}\n{container_block}          # zebflow:managed-end {block}\n          ports:\n            - name: http\n              containerPort: 10610\n              protocol: TCP\n          readinessProbe:\n            httpGet:\n              path: /login\n              port: http\n            initialDelaySeconds: 10\n            periodSeconds: 5\n            timeoutSeconds: 3\n            failureThreshold: 6\n          livenessProbe:\n            httpGet:\n              path: /login\n              port: http\n            initialDelaySeconds: 30\n            periodSeconds: 10\n            timeoutSeconds: 5\n            failureThreshold: 6\n          resources:\n            requests:\n              cpu: \"100m\"\n              memory: \"256Mi\"\n            limits:\n              cpu: \"1000m\"\n              memory: \"1Gi\"\n          securityContext:\n            allowPrivilegeEscalation: false\n            capabilities:\n              drop:\n                - ALL\n            readOnlyRootFilesystem: false\n            seccompProfile:\n              type: RuntimeDefault\n          volumeMounts:\n            - name: data\n              mountPath: /var/lib/zebflow/data\n  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes:\n          - ReadWriteOnce\n        storageClassName: local-path\n        resources:\n          requests:\n            storage: {storage}\n",
+        "apiVersion: v1\nkind: Service\nmetadata:\n  name: {office_id}\n  namespace: {namespace}\n  labels:\n    app: {office_id}\n    zebflow.io/managed-by: zebflow\n    zebflow.io/office-id: {office_id}\nspec:\n  selector:\n    app: {office_id}\n  ports:\n    - name: http\n      port: 10610\n      targetPort: http\n---\napiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: {office_id}\n  namespace: {namespace}\n  labels:\n    app: {office_id}\n    zebflow.io/managed-by: zebflow\n    zebflow.io/office-id: {office_id}\nspec:\n  serviceName: {office_id}\n  replicas: 1\n  selector:\n    matchLabels:\n      app: {office_id}\n  template:\n    metadata:\n      labels:\n        app: {office_id}\n        zebflow.io/managed-by: zebflow\n        zebflow.io/office-id: {office_id}\n    spec:\n      automountServiceAccountToken: false\n      securityContext:\n{pod_security_context}      tolerations:\n        - key: node-role.kubernetes.io/control-plane\n          operator: Exists\n          effect: NoSchedule\n{init_containers}      containers:\n        - name: zebflow\n          # zebflow:managed-begin {block}\n{container_block}          # zebflow:managed-end {block}\n          ports:\n            - name: http\n              containerPort: 10610\n              protocol: TCP\n          readinessProbe:\n            httpGet:\n              path: /ready\n              port: http\n            initialDelaySeconds: 10\n            periodSeconds: 5\n            timeoutSeconds: 3\n            failureThreshold: 6\n          livenessProbe:\n            httpGet:\n              path: /health\n              port: http\n            initialDelaySeconds: 30\n            periodSeconds: 10\n            timeoutSeconds: 5\n            failureThreshold: 6\n          resources:\n            requests:\n              cpu: \"100m\"\n              memory: \"256Mi\"\n            limits:\n              cpu: \"1000m\"\n              memory: \"1Gi\"\n          securityContext:\n            allowPrivilegeEscalation: false\n            capabilities:\n              drop:\n                - ALL\n            readOnlyRootFilesystem: false\n            seccompProfile:\n              type: RuntimeDefault\n          volumeMounts:\n            - name: data\n              mountPath: /var/lib/zebflow/data\n  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes:\n          - ReadWriteOnce\n        storageClassName: local-path\n        resources:\n          requests:\n            storage: {storage}\n",
         namespace = cfg.namespace,
         office_id = office_id,
         block = BLOCK_OFFICE_CONTAINER,
+        pod_security_context = pod_security_context,
+        init_containers = init_containers,
         container_block = render_office_container_block(cfg, office_id),
         storage = if office_id == DEFAULT_CONTROLLER_ID {
             "50Gi"
@@ -547,6 +581,22 @@ fn render_office_yaml(cfg: &ClusterConfig, office_id: &str) -> String {
             "10Gi"
         }
     )
+}
+
+fn render_office_pod_security_context(cfg: &ClusterConfig) -> String {
+    match cfg.volume_permission_strategy {
+        VolumePermissionStrategy::FsGroup => {
+            "        fsGroup: 1000\n        fsGroupChangePolicy: OnRootMismatch\n".to_string()
+        }
+        VolumePermissionStrategy::InitChmod => String::new(),
+    }
+}
+
+fn render_office_init_containers(cfg: &ClusterConfig) -> String {
+    match cfg.volume_permission_strategy {
+        VolumePermissionStrategy::FsGroup => String::new(),
+        VolumePermissionStrategy::InitChmod => "      initContainers:\n        - name: volume-permissions\n          image: busybox:1.36\n          imagePullPolicy: IfNotPresent\n          command:\n            - sh\n            - -c\n            - mkdir -p /var/lib/zebflow/data && chmod -R 0777 /var/lib/zebflow/data\n          securityContext:\n            runAsUser: 0\n          volumeMounts:\n            - name: data\n              mountPath: /var/lib/zebflow/data\n".to_string(),
+    }
 }
 
 fn render_office_container_block(cfg: &ClusterConfig, office_id: &str) -> String {
@@ -569,6 +619,11 @@ fn render_office_container_block(cfg: &ClusterConfig, office_id: &str) -> String
         "              value: \"10610\"".to_string(),
         "            - name: ZEBFLOW_PLATFORM_DATA_DIR".to_string(),
         "              value: /var/lib/zebflow/data".to_string(),
+        "            - name: ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL".to_string(),
+        "              valueFrom:".to_string(),
+        "                configMapKeyRef:".to_string(),
+        format!("                  name: {}", MANAGEMENT_CONFIGMAP_NAME),
+        "                  key: MARKETPLACE_DEFAULT_BASE_URL".to_string(),
         "            - name: ZEBFLOW_PLATFORM_DEFAULT_PASSWORD".to_string(),
         "              valueFrom:".to_string(),
         "                secretKeyRef:".to_string(),
@@ -652,7 +707,20 @@ fn render_auto_update_image_repo_block(cfg: &ClusterConfig) -> String {
 }
 
 fn write_text(path: &Path, content: &str) -> Result<(), io::Error> {
-    fs::write(path, content)
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", path.display()),
+        )
+    })?;
+    let temp_path = parent.join(format!(".{file_name}.tmp"));
+    fs::write(&temp_path, content)?;
+    fs::rename(&temp_path, path)?;
+    Ok(())
 }
 
 fn default_image() -> String {
@@ -715,6 +783,75 @@ fn office_label(office_id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn parse_volume_permission_strategy(
+    value: &str,
+) -> Result<VolumePermissionStrategy, Box<dyn std::error::Error>> {
+    match value.trim() {
+        "fs-group" => Ok(VolumePermissionStrategy::FsGroup),
+        "init-chmod" => Ok(VolumePermissionStrategy::InitChmod),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("unsupported volume permission strategy '{}'", other),
+        )
+        .into()),
+    }
+}
+
+impl VolumePermissionStrategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            VolumePermissionStrategy::FsGroup => "fs-group",
+            VolumePermissionStrategy::InitChmod => "init-chmod",
+        }
+    }
+}
+
+struct ClusterLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for ClusterLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn with_cluster_lock<T, F>(root: &Path, action: F) -> Result<T, Box<dyn std::error::Error>>
+where
+    F: FnOnce() -> Result<T, Box<dyn std::error::Error>>,
+{
+    let _guard = acquire_cluster_lock(root)?;
+    action()
+}
+
+fn acquire_cluster_lock(root: &Path) -> Result<ClusterLockGuard, Box<dyn std::error::Error>> {
+    let lock_path = root.join(CLUSTER_LOCK_FILE);
+    let deadline = Instant::now() + LOCK_WAIT_TIMEOUT;
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+        {
+            Ok(_) => return Ok(ClusterLockGuard { path: lock_path }),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out waiting for cluster lock {}",
+                            lock_path.display()
+                        ),
+                    )
+                    .into());
+                }
+                thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 fn validate_office_id(office_id: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -965,5 +1102,55 @@ mod tests {
         let auto_update = fs::read_to_string(root.join(AUTO_UPDATE_FILE)).expect("auto-update");
         assert!(auto_update.contains("value: \"statefulsets/office-main\""));
         assert!(!auto_update.contains("value: \"statefulset/office-main\""));
+    }
+
+    #[test]
+    fn office_manifests_use_health_and_ready_probes() {
+        let root = temp_cluster_dir();
+        init_cluster(&root).expect("init");
+
+        let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
+        assert!(office.contains("path: /ready"));
+        assert!(office.contains("path: /health"));
+        assert!(!office.contains("path: /login"));
+    }
+
+    #[test]
+    fn office_manifests_default_to_fs_group_without_root_chmod_init() {
+        let root = temp_cluster_dir();
+        init_cluster(&root).expect("init");
+
+        let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
+        assert!(office.contains("fsGroup: 1000"));
+        assert!(office.contains("fsGroupChangePolicy: OnRootMismatch"));
+        assert!(!office.contains("name: volume-permissions"));
+        assert!(!office.contains("chmod -R 0777"));
+
+        let management = fs::read_to_string(root.join(MANAGEMENT_FILE)).expect("management");
+        assert!(management.contains("VOLUME_PERMISSION_STRATEGY: \"fs-group\""));
+    }
+
+    #[test]
+    fn legacy_init_chmod_strategy_is_preserved_when_present() {
+        let root = temp_cluster_dir();
+        init_cluster(&root).expect("init");
+
+        let management_path = root.join(MANAGEMENT_FILE);
+        let management = fs::read_to_string(&management_path).expect("management");
+        fs::write(
+            &management_path,
+            management.replace(
+                "VOLUME_PERMISSION_STRATEGY: \"fs-group\"",
+                "VOLUME_PERMISSION_STRATEGY: \"init-chmod\"",
+            ),
+        )
+        .expect("rewrite strategy");
+
+        set_auto_update(&root, true).expect("rewrite manifests");
+
+        let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
+        assert!(office.contains("name: volume-permissions"));
+        assert!(office.contains("chmod -R 0777"));
+        assert!(!office.contains("fsGroupChangePolicy: OnRootMismatch"));
     }
 }

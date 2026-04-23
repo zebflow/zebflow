@@ -1415,36 +1415,42 @@ export const PipelineGraph = (() => {
   function _pgAttachEditButtons(app, onNodeEdit) {
     const root = app.root;
     if (!root) return;
+    const readOnly = !!(app.ui && app.ui.readOnly);
     const nodeMap = new Map(app.graph.nodes.map((n) => [String(n.id), n]));
     root.querySelectorAll(".zgu-node").forEach((el) => {
-      if (el.querySelector(".zf-node-edit")) return;
       const nodeData = nodeMap.get(el.getAttribute("data-id") || "");
       if (!nodeData) return;
 
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "zf-node-edit";
-      btn.setAttribute("data-zgu-nodrag", "true");
-      btn.textContent = "E";
-      btn.title = "Edit Node";
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (onNodeEdit)
-          onNodeEdit({
-            graphNodeId: nodeData.id,
-            zfKind: nodeData.zfKind || "",
-            zfPipelineNodeId: nodeData.zfPipelineNodeId || "",
-            zfConfig: nodeData.zfConfig || {},
-            title: nodeData.title,
-            x: nodeData.x,
-            y: nodeData.y,
-            inputs: nodeData.inputs || [],
-            outputs: nodeData.outputs || [],
-            _raw: nodeData,
-          });
-      });
-      el.appendChild(btn);
+      const existingButton = el.querySelector(".zf-node-edit");
+      if (readOnly || !onNodeEdit) {
+        if (existingButton)
+          existingButton.remove();
+      } else if (!existingButton) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "zf-node-edit";
+        btn.setAttribute("data-zgu-nodrag", "true");
+        btn.textContent = "E";
+        btn.title = "Edit Node";
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (onNodeEdit)
+            onNodeEdit({
+              graphNodeId: nodeData.id,
+              zfKind: nodeData.zfKind || "",
+              zfPipelineNodeId: nodeData.zfPipelineNodeId || "",
+              zfConfig: nodeData.zfConfig || {},
+              title: nodeData.title,
+              x: nodeData.x,
+              y: nodeData.y,
+              inputs: nodeData.inputs || [],
+              outputs: nodeData.outputs || [],
+              _raw: nodeData,
+            });
+        });
+        el.appendChild(btn);
+      }
 
       let badge = el.querySelector(".zf-node-slug");
       if (!badge) {
@@ -1453,7 +1459,9 @@ export const PipelineGraph = (() => {
         el.appendChild(badge);
       }
       const slug = nodeData.zfPipelineNodeId || "";
-      badge.textContent = slug || "node";
+      const nextText = slug || "node";
+      if (badge.textContent !== nextText)
+        badge.textContent = nextText;
     });
   }
 

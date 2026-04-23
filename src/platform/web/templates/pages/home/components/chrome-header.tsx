@@ -2,8 +2,8 @@ import { Link } from "zeb";
 import Button from "@/components/ui/button";
 
 /**
- * Fixed top bar for authenticated platform pages outside the project studio
- * (this home area: `/home`, `/home/project-templates`, …). Logo links to `/home`.
+ * Fixed top bar for authenticated platform pages outside the project studio.
+ * Home uses the marketplace dialog directly on `/home`.
  *
  * Why “chrome”: in UI jargon, *chrome* is the framing around the content window
  * (nav, toolbars, system trim) — the same sense as in “browser chrome”, not “Google Chrome”.

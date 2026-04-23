@@ -34,19 +34,21 @@ use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateProjectDocFolderRequest,
-    CreateProjectRequest, CreateSimpleTableRequest, CreateUserRequest, DeletePipelineRequest,
-    DescribeProjectDbConnectionRequest, ExecutePipelineRequest, GitCommitRequest, LoginRequest,
-    McpSessionCreateRequest, McpSessionToggleRequest, PipelineExecuteTrigger,
-    PipelineInvocationEntry, PipelineLocateRequest, ProjectAccessSubject, ProjectCapability,
-    ProjectDocMoveRequest, ProjectOperationKind, ProjectRuntimeMaterializationRequest,
-    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
-    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
-    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
+    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateMarketplaceTokenRequest,
+    CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
+    CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
+    ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
+    McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
+    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocMoveRequest,
+    ProjectOperationKind, ProjectRuntimeMaterializationRequest, ProjectTransferArtifactKind,
+    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
+    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
+    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
     UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
     UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
 };
 use crate::platform::sekejap;
+use crate::platform::services::marketplace::RemoteMarketplacePublishRequest;
 use crate::platform::services::PlatformService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
@@ -91,11 +93,6 @@ const TEMPLATE_SOURCE_DIR: &str =
 const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ("platform-login", "platform.login", "pages/login/page.tsx"),
     ("platform-home", "platform.home", "pages/home/page.tsx"),
-    (
-        "platform-home-project-templates",
-        "platform.home.project.templates",
-        "pages/home/project-templates/page.tsx",
-    ),
     (
         "platform-project-pipelines",
         "platform.project.pipelines",
@@ -150,6 +147,16 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "platform-project-table-connection-sekejap",
         "platform.project.table_connection.sekejap",
         "pages/project-studio/connections/db/sekejap/page.tsx",
+    ),
+    (
+        "platform-project-table-connection-mapserver",
+        "platform.project.table_connection.mapserver",
+        "pages/project-studio/connections/db/mapserver/page.tsx",
+    ),
+    (
+        "platform-project-marketplace",
+        "platform.project.marketplace",
+        "pages/project-studio/marketplace/page.tsx",
     ),
     (
         "platform-design-system",
@@ -292,7 +299,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
-        .route("/home/project-templates", get(home_project_templates_page))
         .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
@@ -306,6 +312,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/projects/{owner}/{project}/dashboard",
             get(project_dashboard_page),
+        )
+        .route(
+            "/projects/{owner}/{project}/marketplace",
+            get(project_marketplace_page),
+        )
+        .route(
+            "/projects/{owner}/{project}/marketplace/{tab}",
+            get(project_marketplace_tab_page),
         )
         .route(
             "/projects/{owner}/{project}/credentials",
@@ -403,6 +417,23 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_projects).post(api_create_project),
         )
         .route(
+            "/api/users/{owner}/marketplace/repositories",
+            get(api_list_platform_marketplace_repositories)
+                .post(api_upsert_platform_marketplace_repository),
+        )
+        .route(
+            "/api/users/{owner}/marketplace/repositories/{repository_id}",
+            delete(api_delete_platform_marketplace_repository),
+        )
+        .route(
+            "/api/users/{owner}/marketplace/assets",
+            get(api_list_platform_marketplace_assets),
+        )
+        .route(
+            "/api/users/{owner}/marketplace/install",
+            post(api_install_platform_marketplace_project),
+        )
+        .route(
             "/api/users/{owner}/projects/{project}",
             delete(api_delete_project),
         )
@@ -433,6 +464,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/git/status",
             get(api_repo_git_status),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/git/health",
+            get(api_repo_git_health),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/git/repair",
+            post(api_repo_git_repair),
         )
         .route(
             "/api/projects/{owner}/{project}/git/commit",
@@ -605,6 +644,78 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_test_db_connection),
         )
         .route(
+            "/api/projects/{owner}/{project}/marketplace/assets",
+            get(api_list_marketplace_assets),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/help",
+            get(api_get_project_help),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/remote/assets",
+            get(api_list_remote_marketplace_assets),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/remote/assets/{package_id}/{version}",
+            get(api_get_remote_marketplace_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/assets/mine",
+            get(api_list_my_marketplace_assets),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/publish-sources",
+            get(api_list_marketplace_publish_sources),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/publish-preview",
+            get(api_preview_marketplace_publish_source),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/assets/publish",
+            post(api_publish_marketplace_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/assets/{package_id}/{version}/add",
+            post(api_install_marketplace_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/remote/assets/publish",
+            post(api_remote_publish_marketplace_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/tokens",
+            get(api_list_marketplace_tokens).post(api_create_marketplace_token),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/publishers",
+            get(api_list_marketplace_publishers).post(api_upsert_marketplace_publisher),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/repositories",
+            get(api_list_marketplace_repositories).post(api_upsert_marketplace_repository),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/repositories/{repository_id}/packs/{package_id}/{version}/add",
+            post(api_install_remote_marketplace_pack),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/repositories/{repository_id}",
+            delete(api_delete_marketplace_repository),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/producer",
+            post(api_set_marketplace_producer_mode),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/tokens/{token_id}",
+            delete(api_delete_marketplace_token),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/publishers/{publisher_id}",
+            delete(api_delete_marketplace_publisher),
+        )
+        .route(
             "/api/projects/{owner}/{project}/docs",
             get(api_list_project_docs).post(api_upsert_project_doc),
         )
@@ -660,6 +771,18 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             delete(api_delete_asset),
         )
         .route(
+            "/api/projects/{owner}/{project}/mapserver/{instance}/sources",
+            get(api_mapserver_sources_list),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/mapserver/{instance}/layers",
+            get(api_mapserver_layers_list).post(api_mapserver_layers_publish),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/mapserver/{instance}/layers/{layer_id}",
+            delete(api_mapserver_layers_delete),
+        )
+        .route(
             "/api/projects/{owner}/{project}/install/catalog/ui",
             get(api_list_ui_catalog),
         )
@@ -675,6 +798,9 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
         .route("/wh/{owner}/{project}/{*tail}", any(public_webhook_ingress))
+        .route("/ms/{owner}/{project}", get(public_mapserver_ingress_root))
+        .route("/ms/{owner}/{project}/", get(public_mapserver_ingress_root))
+        .route("/ms/{owner}/{project}/{*tail}", get(public_mapserver_ingress))
         .route(
             "/ws/{owner}/{project}/rooms/{room_id}",
             get(ws_room_handler),
@@ -1123,6 +1249,7 @@ fn externalize_rwe_scripts(
             .platform
             .zebflow_cfg
             .read_or_default(owner, project)
+            .configs
             .rwe
             .deployment_asset_base
     });
@@ -1925,6 +2052,9 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     let Some(owner) = session_owner(&headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
+    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+        return internal_error(err);
+    }
 
     match state.platform.projects.list_projects(&owner) {
         Ok(items) => {
@@ -2104,71 +2234,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                 });
             let projects = items
                 .into_iter()
-                .map(|item| {
-                    let item_owner = if item.owner.trim().is_empty() {
-                        owner.clone()
-                    } else {
-                        item.owner.clone()
-                    };
-                    let placement = state
-                        .platform
-                        .cluster_placement
-                        .get(&item_owner, &item.project)
-                        .ok()
-                        .flatten();
-                    let runtime_mode = placement
-                        .as_ref()
-                        .map(|value| value.mode.to_string())
-                        .unwrap_or_else(|| {
-                            state
-                                .platform
-                                .zebflow_cfg
-                                .get_runtime_profile(&item_owner, &item.project)
-                                .mode
-                                .to_string()
-                        });
-                    let runtime_summary = state
-                        .platform
-                        .cluster_placement
-                        .describe(placement.as_ref());
-                    let (office_label, office_url) = match placement.as_ref() {
-                        Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => {
-                            if let Some(worker_id) = value.worker_id.as_deref() {
-                                match state.platform.cluster_registry.get_worker(worker_id) {
-                                    Ok(Some(worker)) => (
-                                        worker.label,
-                                        if worker.base_url.trim().is_empty() {
-                                            None
-                                        } else {
-                                            Some(worker.base_url)
-                                        },
-                                    ),
-                                    _ => (worker_id.to_string(), None),
-                                }
-                            } else {
-                                ("Remote office".to_string(), None)
-                            }
-                        }
-                        _ => (
-                            state.platform.cluster_bootstrap.node_label(),
-                            state
-                                .platform
-                                .cluster_bootstrap
-                                .advertise_url()
-                                .map(str::to_string),
-                        ),
-                    };
-                    json!({
-                        "owner": item_owner,
-                        "project": item.project,
-                        "title": item.title,
-                        "path": format!("/projects/{}/{}", item_owner, item.project),
-                        "runtime_mode": runtime_mode,
-                        "runtime_summary": runtime_summary,
-                        "office_label": office_label,
-                        "office_url": office_url,
-                    })
-                })
+                .map(|item| home_project_card_json(&state, &owner, &item))
                 .collect::<Vec<_>>();
             match render_page(
                 &state,
@@ -2181,6 +2247,11 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     },
                     "owner": owner,
                     "projects": projects,
+                    "marketplace_api": {
+                        "repositories": format!("/api/users/{}/marketplace/repositories", owner),
+                        "assets": format!("/api/users/{}/marketplace/assets", owner),
+                        "install": format!("/api/users/{}/marketplace/install", owner),
+                    },
                     "offices": offices,
                     "runtime_targets": runtime_targets,
                     "app_version": APP_VERSION,
@@ -2194,26 +2265,146 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     }
 }
 
-async fn home_project_templates_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-) -> Response {
-    let Some(_owner) = session_owner(&headers) else {
-        return Redirect::to(LOGIN_PATH).into_response();
+fn home_project_card_json(
+    state: &PlatformAppState,
+    owner: &str,
+    item: &crate::platform::model::PlatformProject,
+) -> Value {
+    let item_owner = if item.owner.trim().is_empty() {
+        owner.to_string()
+    } else {
+        item.owner.clone()
     };
-    match render_page(
-        &state,
-        "platform-home-project-templates",
-        "/home/project-templates",
-        json!({
-            "seo": {
-                "title": "Project templates · Zebflow",
-                "description": "Starter blueprints for new automation projects",
-            },
-        }),
-    ) {
-        Ok(html) => Html(html).into_response(),
-        Err(err) => internal_error(err),
+    let placement = state
+        .platform
+        .cluster_placement
+        .get(&item_owner, &item.project)
+        .ok()
+        .flatten();
+    let runtime_mode = placement
+        .as_ref()
+        .map(|value| value.mode.to_string())
+        .unwrap_or_else(|| {
+            state
+                .platform
+                .zebflow_cfg
+                .get_runtime_profile(&item_owner, &item.project)
+                .mode
+                .to_string()
+        });
+    let runtime_summary = state
+        .platform
+        .cluster_placement
+        .describe(placement.as_ref());
+    let (office_label, office_url) = match placement.as_ref() {
+        Some(value) if value.target == ProjectRuntimePlacementTarget::Worker => {
+            if let Some(worker_id) = value.worker_id.as_deref() {
+                match state.platform.cluster_registry.get_worker(worker_id) {
+                    Ok(Some(worker)) => (
+                        worker.label,
+                        if worker.base_url.trim().is_empty() {
+                            None
+                        } else {
+                            Some(worker.base_url)
+                        },
+                    ),
+                    _ => (worker_id.to_string(), None),
+                }
+            } else {
+                ("Remote office".to_string(), None)
+            }
+        }
+        _ => (
+            state.platform.cluster_bootstrap.node_label(),
+            state
+                .platform
+                .cluster_bootstrap
+                .advertise_url()
+                .map(str::to_string),
+        ),
+    };
+    let marketplace_cfg = state
+        .platform
+        .zebflow_cfg
+        .get_marketplace_distribution(&item_owner, &item.project);
+    let open_app_path = resolve_project_marketplace_entry_path(
+        &item_owner,
+        &item.project,
+        &marketplace_cfg.entry_url,
+        marketplace_cfg.as_app,
+    );
+    json!({
+        "owner": item_owner,
+        "project": item.project,
+        "title": item.title,
+        "path": format!("/projects/{}/{}", item_owner, item.project),
+        "edit_path": format!("/projects/{}/{}", item_owner, item.project),
+        "open_app_path": open_app_path,
+        "is_app": marketplace_cfg.as_app,
+        "runtime_mode": runtime_mode,
+        "runtime_summary": runtime_summary,
+        "office_label": office_label,
+        "office_url": office_url,
+    })
+}
+
+fn resolve_project_marketplace_entry_path(
+    owner: &str,
+    project: &str,
+    entry_url: &str,
+    as_app: bool,
+) -> Option<String> {
+    if !as_app {
+        return None;
+    }
+    let entry = entry_url.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    if entry.starts_with("http://") || entry.starts_with("https://") {
+        return Some(entry.to_string());
+    }
+    let suffix = if entry.starts_with('/') {
+        entry.to_string()
+    } else {
+        format!("/{entry}")
+    };
+    Some(format!("/wh/{owner}/{project}{suffix}"))
+}
+
+fn is_project_marketplace_producer_enabled(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> bool {
+    let cfg = state
+        .platform
+        .zebflow_cfg
+        .get_marketplace_distribution(owner, project);
+    cfg.producer_enabled && owner == state.platform.config.default_owner
+}
+
+fn can_manage_project_marketplace_producer(state: &PlatformAppState, owner: &str) -> bool {
+    owner == state.platform.config.default_owner
+}
+
+fn require_project_marketplace_producer(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<(), Response> {
+    if is_project_marketplace_producer_enabled(state, owner, project) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": "Marketplace producer mode is disabled for this project",
+                "code": "MARKETPLACE_PRODUCER_DISABLED"
+            })),
+        )
+            .into_response())
     }
 }
 
@@ -2425,13 +2616,11 @@ async fn home_clone_project_submit(
         return internal_error(e);
     }
 
-    // Save git credential + identity + remote config in zebflow.json.
-    // Blank form values inherit from the acting user's profile before falling
-    // back to generated defaults.
+    // Save git remote config in zebflow.json.
+    // Git author identity is resolved from the acting platform user profile.
     let cred_id = format!("{}-origin", req.provider);
     let resolved_git = state.platform.git_identity.resolve_for_actor(
         Some(&owner),
-        &crate::platform::model::ZebflowJsonGit::default(),
         &project,
     );
     let git_name = if req.git_name.trim().is_empty() {
@@ -2445,15 +2634,9 @@ async fn home_clone_project_submit(
         req.git_email.trim().to_string()
     };
     let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-        if !git_name.is_empty() {
-            cfg.git.author_name = git_name.clone();
-        }
-        if !git_email.is_empty() {
-            cfg.git.author_email = git_email.clone();
-        }
-        cfg.remote.credential_id = cred_id.clone();
-        cfg.remote.repo_url = req.repo_url.clone();
-        cfg.remote.branch = effective_local.clone();
+        cfg.configs.git.remote.credential_id = cred_id.clone();
+        cfg.configs.git.remote.repo_url = req.repo_url.clone();
+        cfg.configs.git.remote.branch = effective_local.clone();
     });
 
     // Save credential record so git push can look it up later
@@ -2666,7 +2849,7 @@ async fn finalize_project_runtime_setup(
 ) -> Result<crate::infra::execution::placement::ProjectRuntimePlacement, PlatformError> {
     if let Some(mode) = selection.runtime_mode {
         state.platform.zebflow_cfg.update(owner, project, |cfg| {
-            cfg.runtime.mode = mode;
+            cfg.configs.runtime.mode = mode;
         })?;
     }
     state
@@ -3231,7 +3414,7 @@ async fn render_project_pipelines_with_tab(
                                     &project,
                                     &file_rel_path,
                                 ) {
-                                    Ok(source) => webhook_trigger_from_pipeline_source(&source)
+                                    Ok(source) => crate::platform::services::project::first_webhook_trigger_from_source(&source)
                                         .map_or((None, None), |(path, method)| {
                                             (Some(path), Some(method))
                                         }),
@@ -4336,6 +4519,121 @@ async fn project_dashboard_page(
     }
 }
 
+async fn project_marketplace_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    project_marketplace_tab_page(
+        State(state),
+        headers,
+        Path((owner, project, "packs".to_string())),
+    )
+    .await
+}
+
+async fn project_marketplace_tab_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, raw_tab)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_page_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    match state.platform.projects.get_project(&owner, &project) {
+        Ok(Some(info)) => {
+            let tab = normalize_marketplace_tab(&raw_tab);
+            let producer_enabled = is_project_marketplace_producer_enabled(&state, &owner, &project);
+            let route = if tab == "packs" {
+                format!("/projects/{owner}/{project}/marketplace")
+            } else {
+                format!("/projects/{owner}/{project}/marketplace/{tab}")
+            };
+            let nav = nav_classes(&owner, &project, "marketplace", None);
+            let assets = match marketplace_asset_rows(&state, &owner, &project, false) {
+                Ok(items) => items,
+                Err(err) => return internal_error(err),
+            };
+            let my_assets = match marketplace_asset_rows(&state, &owner, &project, true) {
+                Ok(items) => items,
+                Err(err) => return internal_error(err),
+            };
+            let publish_sources = match marketplace_publish_sources(
+                &state,
+                &owner,
+                &project,
+                "pipeline_with_dependencies",
+            ) {
+                Ok(items) => items,
+                Err(err) => return internal_error(err),
+            };
+            let tokens = match marketplace_token_rows(&state, &owner, &project) {
+                Ok(items) => items,
+                Err(err) => return internal_error(err),
+            };
+            let publishers = match state.platform.marketplace.list_publishers(&owner, &project) {
+                Ok(items) => items,
+                Err(err) => return internal_error(err),
+            };
+            let input = json!({
+                "seo": {
+                    "title": format!("{} - Marketplace", info.title),
+                    "description": "Embedded asset marketplace for pipelines and reusable project materials."
+                },
+                "owner": info.owner,
+                "project": info.project,
+                "title": info.title,
+                "project_href": format!("/projects/{owner}/{project}"),
+                "nav": nav,
+                "marketplace_tabs": marketplace_tab_items(&owner, &project, tab, producer_enabled),
+                "marketplace_producer": {
+                    "enabled": producer_enabled,
+                    "can_manage": can_manage_project_marketplace_producer(&state, &owner),
+                },
+                "tab_flags": {
+                    "packs": tab == "packs",
+                    "my_packs": producer_enabled && tab == "my-packs",
+                    "publish": producer_enabled && tab == "publish",
+                    "tokens": producer_enabled && tab == "tokens",
+                    "settings": tab == "settings",
+                },
+                "assets": assets,
+                "my_assets": my_assets,
+                "publish_sources": publish_sources,
+                "tokens": tokens,
+                "publishers": publishers.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>(),
+                "repositories": match state.platform.marketplace.list_repositories(&owner, &project) {
+                    Ok(items) => items,
+                    Err(err) => return internal_error(err),
+                },
+                "marketplace_api": {
+                    "assets": format!("/api/projects/{owner}/{project}/marketplace/assets"),
+                    "my_assets": format!("/api/projects/{owner}/{project}/marketplace/assets/mine"),
+                    "publish_sources": format!("/api/projects/{owner}/{project}/marketplace/publish-sources"),
+                    "publish_preview": format!("/api/projects/{owner}/{project}/marketplace/publish-preview"),
+                    "publish_asset": format!("/api/projects/{owner}/{project}/marketplace/assets/publish"),
+                    "tokens": format!("/api/projects/{owner}/{project}/marketplace/tokens"),
+                    "publishers": format!("/api/projects/{owner}/{project}/marketplace/publishers"),
+                    "repositories": format!("/api/projects/{owner}/{project}/marketplace/repositories"),
+                    "producer": format!("/api/projects/{owner}/{project}/marketplace/producer")
+                }
+            });
+            match render_page(&state, "platform-project-marketplace", &route, input) {
+                Ok(html) => Html(html).into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, Html("project not found".to_string())).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn project_credentials_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -4409,7 +4707,7 @@ async fn project_db_connections_page(
                 Ok(items) => items,
                 Err(err) => return internal_error(err),
             };
-            let connection_cards = connections
+            let external_connection_cards = connections
                 .iter()
                 .map(|item| {
                     json!({
@@ -4429,6 +4727,18 @@ async fn project_db_connections_page(
                     })
                 })
                 .collect::<Vec<_>>();
+            let mut connection_cards = vec![json!({
+                "connection_id": "builtin:mapserver:default-mapserver",
+                "slug": "default-mapserver",
+                "name": "Default Mapserver",
+                "kind": "mapserver",
+                "icon_class": "i-devicon-mapserver",
+                "credential_id": "",
+                "updated_at": "",
+                "description": "Published GeoJSON-backed spatial layers for map serving.",
+                "path": format!("/projects/{owner}/{project}/db/mapserver/default-mapserver/layers")
+            })];
+            connection_cards.extend(external_connection_cards);
             let input = json!({
                 "seo": {
                     "title": format!("{} - Databases", info.title),
@@ -4492,6 +4802,7 @@ async fn project_db_suite_page(
 
     let tab_key = match tab.as_str() {
         "tables" | "query" | "schema" | "mart" => tab,
+        "layers" | "publish" | "test" => tab,
         _ => {
             return (StatusCode::NOT_FOUND, Html("db tab not found".to_string())).into_response();
         }
@@ -4499,6 +4810,88 @@ async fn project_db_suite_page(
 
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
+            if db_kind == "mapserver" {
+                if connection != "default-mapserver" {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Html("mapserver instance not found".to_string()),
+                    )
+                        .into_response();
+                }
+                if tab_key != "layers" && tab_key != "publish" && tab_key != "test" {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Html("mapserver tab not found".to_string()),
+                    )
+                        .into_response();
+                }
+                let nav = nav_classes(&owner, &project, "databases", Some("connections"));
+                let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
+                let base = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}");
+                let suite_tabs = vec![
+                    json!({
+                        "label": "Layers",
+                        "href": format!("{base}/layers"),
+                        "classes": if tab_key == "layers" { "is-active" } else { "" },
+                    }),
+                    json!({
+                        "label": "Publish",
+                        "href": format!("{base}/publish"),
+                        "classes": if tab_key == "publish" { "is-active" } else { "" },
+                    }),
+                    json!({
+                        "label": "Test",
+                        "href": format!("{base}/test"),
+                        "classes": if tab_key == "test" { "is-active" } else { "" },
+                    }),
+                ];
+                let layers = match read_mapserver_layers(&state, &owner, &project, &connection) {
+                    Ok(items) => items,
+                    Err(err) => return internal_error(err),
+                };
+                let sources = match list_mapserver_source_files(&state, &owner, &project) {
+                    Ok(items) => items,
+                    Err(err) => return internal_error(err),
+                };
+                let input = json!({
+                    "seo": {
+                        "title": format!("{} - Mapserver {}", info.title, connection),
+                        "description": "Published GeoJSON-backed spatial layers"
+                    },
+                    "owner": info.owner,
+                    "project": info.project,
+                    "title": info.title,
+                    "project_href": format!("/projects/{owner}/{project}"),
+                    "connection": {
+                        "id": format!("builtin:mapserver:{connection}"),
+                        "name": "Default Mapserver",
+                        "kind": db_kind,
+                        "slug": connection,
+                        "icon_class": "i-devicon-mapserver",
+                        "credential_id": "",
+                    },
+                    "suite_tabs": suite_tabs,
+                    "tab_flags": {
+                        "layers": tab_key == "layers",
+                        "publish": tab_key == "publish",
+                        "test": tab_key == "test",
+                    },
+                    "layers": layers,
+                    "sources": sources,
+                    "mapserver_api": {
+                        "sources": format!("/api/projects/{owner}/{project}/mapserver/{connection}/sources"),
+                        "layers": format!("/api/projects/{owner}/{project}/mapserver/{connection}/layers"),
+                        "upload": format!("/api/projects/{owner}/{project}/files/upload?path=private/mapserver"),
+                        "list_files": format!("/api/projects/{owner}/{project}/files/list?path=private/mapserver"),
+                        "base_public": format!("/ms/{owner}/{project}"),
+                    },
+                    "nav": nav,
+                });
+                match render_page(&state, "platform-project-table-connection-mapserver", &route, input) {
+                    Ok(html) => return Html(html).into_response(),
+                    Err(err) => return internal_error(err),
+                }
+            }
             let Some(connection_info) = (match state.platform.db_connections.get_project_connection(
                 &owner,
                 &project,
@@ -4987,20 +5380,22 @@ async fn render_settings_tab_page(
                 },
                 "rwe": {
                     "api": format!("/api/projects/{owner}/{project}/settings/rwe"),
-                    "config": zebflow_cfg.rwe
+                    "config": zebflow_cfg.configs.rwe
                 },
                 "logging": {
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
-                    "config": zebflow_cfg.logging
+                    "config": zebflow_cfg.configs.pipelines.logging
                 },
                 "git": {
-                    "api": format!("/api/projects/{owner}/{project}/settings/git"),
-                    "config": zebflow_cfg.git
+                    "remote_api": format!("/api/projects/{owner}/{project}/git/remote"),
+                    "config": zebflow_cfg.configs.git.remote,
+                    "health_api": format!("/api/projects/{owner}/{project}/git/health"),
+                    "repair_api": format!("/api/projects/{owner}/{project}/git/repair")
                 },
                 "assets": {
                     "api": format!("/api/projects/{owner}/{project}/assets"),
                     "settings_api": format!("/api/projects/{owner}/{project}/settings/assets"),
-                    "config": zebflow_cfg.assets
+                    "config": zebflow_cfg.configs.files.uploads
                 },
                 "reindex_api": format!("/api/projects/{owner}/{project}/reindex"),
                 "transfer": {
@@ -5306,6 +5701,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipelines_schedules": format!("{pipelines_base}/schedules"),
             "pipelines_manual": format!("{pipelines_base}/manual"),
             "pipelines_functions": format!("{pipelines_base}/functions"),
+            "marketplace": format!("/projects/{owner}/{project}/marketplace"),
             "dashboard": format!("/projects/{owner}/{project}/dashboard"),
             "credentials": format!("/projects/{owner}/{project}/credentials"),
             "db_connections": format!("/projects/{owner}/{project}/db/connections"),
@@ -5316,6 +5712,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
         },
         "classes": {
             "pipelines": if main == "pipelines" { "is-active" } else { "" },
+            "marketplace": if main == "marketplace" { "is-active" } else { "" },
             "dashboard": if main == "dashboard" { "is-active" } else { "" },
             "credentials": if main == "credentials" { "is-active" } else { "" },
             "databases": if main == "databases" { "is-active" } else { "" },
@@ -5333,6 +5730,143 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "table_connections": if main == "databases" { "is-active" } else { "" },
         }
     })
+}
+
+fn normalize_marketplace_tab(raw: &str) -> &'static str {
+    match raw.trim() {
+        "" | "packs" | "assets" => "packs",
+        "my-packs" => "my-packs",
+        "publish" => "publish",
+        "tokens" => "tokens",
+        "settings" => "settings",
+        _ => "packs",
+    }
+}
+
+fn marketplace_tab_items(owner: &str, project: &str, active: &str, producer_enabled: bool) -> Vec<Value> {
+    let base = format!("/projects/{owner}/{project}/marketplace");
+    let mut tabs = vec!["packs", "settings"];
+    if producer_enabled {
+        tabs.splice(1..1, ["my-packs", "publish", "tokens"]);
+    }
+    tabs.into_iter()
+        .map(|tab| {
+            let label = match tab {
+                "packs" => "Packs",
+                "my-packs" => "My Packs",
+                "publish" => "Publish",
+                "tokens" => "Tokens",
+                "settings" => "Settings",
+                _ => tab,
+            };
+            let href = if tab == "packs" {
+                base.clone()
+            } else {
+                format!("{base}/{tab}")
+            };
+            json!({
+                "label": label,
+                "href": href,
+                "classes": if active == tab { "is-active" } else { "" }
+            })
+        })
+        .collect()
+}
+
+fn marketplace_publish_sources(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    source_type: &str,
+) -> Result<Vec<Value>, PlatformError> {
+    let mut rows = state
+        .platform
+        .marketplace
+        .list_publish_sources(owner, project, source_type)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(rows
+        .into_iter()
+        .filter_map(|item| serde_json::to_value(item).ok())
+        .collect())
+}
+
+fn marketplace_asset_rows(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    only_mine: bool,
+) -> Result<Vec<Value>, PlatformError> {
+    let packages = if only_mine {
+        state.platform.marketplace.list_asset_packages_by_owner(owner)?
+    } else {
+        state.platform.marketplace.list_asset_packages()?
+    };
+    let mut rows = Vec::new();
+    for package in packages {
+        if package.authority_owner != owner || package.authority_project != project {
+            continue;
+        }
+        if !only_mine
+            && package.visibility == "private"
+            && package.publisher_owner != owner
+        {
+            continue;
+        }
+        let latest_version = state
+            .platform
+            .marketplace
+            .list_asset_versions(&package.package_id)?
+            .into_iter()
+            .next()
+            .map(|item| item.version)
+            .unwrap_or_default();
+        rows.push(json!({
+            "package_id": package.package_id,
+            "publisher_owner": package.publisher_owner,
+            "publisher_id": package.publisher_id,
+            "publisher_display_name": package.publisher_display_name,
+            "publisher_url": package.publisher_url,
+            "publisher_email": package.publisher_email,
+            "asset_kind": package.asset_kind,
+            "title": package.title,
+            "description": package.description,
+            "visibility": package.visibility,
+            "tags": package.tags,
+            "latest_version": latest_version,
+            "updated_at": package.updated_at,
+            "source": "local",
+            "repository_id": "",
+            "repository_title": "Local",
+        }));
+    }
+    Ok(rows)
+}
+
+fn marketplace_token_rows(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Vec<Value>, PlatformError> {
+    Ok(state
+        .platform
+        .marketplace
+        .list_tokens(owner, project)?
+        .into_iter()
+        .map(marketplace_token_json)
+        .collect())
+}
+
+fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(axum::http::header::AUTHORIZATION)?;
+    let value = value.to_str().ok()?.trim();
+    let token = value.strip_prefix("Bearer ")?.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_string())
+    }
 }
 
 /// Strip `https?://user:token@` from git stderr before returning to the client.
@@ -5480,6 +6014,24 @@ const PROJECT_ASSET_LIBRARY_SPECS: &[ProjectAssetLibrarySpec] = &[
         ],
         npm_deps: &[("d3", "7.9.0")],
         detect_markers: &["/assets/libraries/zeb/d3/", "zeb/d3", "'d3'", "\"d3\""],
+    },
+    ProjectAssetLibrarySpec {
+        library: "zeb/livegeo",
+        version: "0.1",
+        default_entry: "runtime/livegeo.bundle.mjs",
+        vendor_rel_paths: &[
+            "library.json",
+            "exports.json",
+            "keywords.json",
+            "runtime/livegeo.bundle.mjs",
+        ],
+        npm_deps: &[],
+        detect_markers: &[
+            "/assets/libraries/zeb/livegeo/",
+            "zeb/livegeo",
+            "usePlayback",
+            "useTrackPlayback",
+        ],
     },
     ProjectAssetLibrarySpec {
         library: "zeb/icons",
@@ -6889,6 +7441,170 @@ async fn api_create_project(
     }
 }
 
+async fn api_list_platform_marketplace_repositories(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+) -> Response {
+    let Some(session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+            .into_response();
+    };
+    if session != owner {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+            .into_response();
+    }
+    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+        return internal_error(err);
+    }
+    match state.platform.marketplace.list_platform_repositories(&owner) {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(platform_marketplace_repository_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_platform_marketplace_repository(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+) -> Response {
+    let Some(session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+            .into_response();
+    };
+    if session != owner {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+            .into_response();
+    }
+    match state.platform.marketplace.upsert_platform_repository(
+        &owner,
+        &req.repository_id,
+        &req.title,
+        &req.base_url,
+        &req.remote_owner,
+        &req.remote_project,
+        &req.read_token,
+        req.enabled,
+    ) {
+        Ok(repository) => Json(json!({
+            "ok": true,
+            "repository": platform_marketplace_repository_json(repository)
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_platform_marketplace_repository(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, repository_id)): Path<(String, String)>,
+) -> Response {
+    let Some(session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+            .into_response();
+    };
+    if session != owner {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .delete_platform_repository(&owner, &repository_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_platform_marketplace_assets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+) -> Response {
+    let Some(session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+            .into_response();
+    };
+    if session != owner {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+            .into_response();
+    }
+    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+        return internal_error(err);
+    }
+    match state
+        .platform
+        .marketplace
+        .fetch_platform_remote_app_rows(&state.http_client, &owner)
+        .await
+    {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_install_platform_marketplace_project(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+    Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
+) -> Response {
+    let Some(session) = session_owner(&headers) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+            .into_response();
+    };
+    if session != owner {
+        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .install_remote_project_from_platform_repository(
+            &state.http_client,
+            &owner,
+            &req.repository_id,
+            &req.package_id,
+            &req.version,
+        )
+        .await
+    {
+        Ok((installed_owner, installed_project)) => {
+            if let Err(err) = state
+                .platform
+                .cluster_runtime_sync
+                .refresh_local_repo_state(&installed_owner, &installed_project)
+            {
+                return internal_error(err);
+            }
+            match state
+                .platform
+                .projects
+                .get_project(&installed_owner, &installed_project)
+            {
+                Ok(Some(project)) => Json(json!({
+                    "ok": true,
+                    "project": home_project_card_json(&state, &owner, &project)
+                }))
+                .into_response(),
+                Ok(None) => internal_error(PlatformError::new(
+                    "MARKETPLACE_INSTALL",
+                    "installed project missing after install",
+                )),
+                Err(err) => internal_error(err),
+            }
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_cluster_workers(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -8155,13 +8871,13 @@ async fn api_upsert_pipeline_definition(
     let self_file_rel_path = req.file_rel_path.clone();
     // Conflict check: reject if any active pipeline already owns the same webhook path.
     if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&req.source) {
-        let conflicts = state.platform.pipeline_runtime.check_webhook_path_conflict(
+        if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
             &owner,
             &project,
             &graph,
             &self_file_rel_path,
-        );
-        if !conflicts.is_empty() {
+        ) {
+            if !conflicts.is_empty() {
             let msg = format!(
                 "{} {} is already registered by pipeline '{}'",
                 conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
@@ -8179,12 +8895,15 @@ async fn api_upsert_pipeline_definition(
             )
                 .into_response();
         }
+        }
     }
 
     // Derive trigger_kind from the actual graph entry nodes so that it stays correct
     // even when the user changes the trigger node in the visual editor after creation.
-    let trigger_kind =
-        derive_trigger_kind_from_source(&req.source).unwrap_or_else(|| req.trigger_kind.clone());
+    let trigger_kind = crate::platform::services::project::derive_trigger_kind_from_source(
+        &req.source,
+    )
+    .unwrap_or_else(|| req.trigger_kind.clone());
 
     match state.platform.projects.upsert_pipeline_definition(
         &owner,
@@ -8348,10 +9067,8 @@ async fn api_pipeline_lock_toggle(
         .replace(".zf.json", "");
     let verb = if req.locked { "lock" } else { "unlock" };
     let commit_msg = format!("{verb}: pipeline {name}");
-    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
-    let git_cfg = &zebflow_cfg.git;
     let actor_user = session_owner(&headers);
-    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
         add_cmd
@@ -8430,10 +9147,8 @@ async fn api_template_lock_toggle(
     };
     let verb = if req.locked { "lock" } else { "unlock" };
     let commit_msg = format!("{verb}: template {}", req.rel_path);
-    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
-    let git_cfg = &zebflow_cfg.git;
     let actor_user = session_owner(&headers);
-    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
         add_cmd
@@ -8503,6 +9218,92 @@ async fn api_repo_git_status(
                 .unwrap_or_default();
             Json(json!({ "branch": branch, "files": items })).into_response()
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct GitRepairRequest {
+    #[serde(default)]
+    mode: Option<crate::platform::services::project::ProjectGitRepairMode>,
+}
+
+async fn api_repo_git_health(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TemplatesRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state.platform.projects.get_repo_git_health(&owner, &project) {
+        Ok(health) => Json(json!({ "ok": true, "health": health })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repo_git_repair(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<GitRepairRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let mode = req
+        .mode
+        .unwrap_or(crate::platform::services::project::ProjectGitRepairMode::Repair);
+    match state
+        .platform
+        .projects
+        .repair_repo_git(&owner, &project, mode)
+    {
+        Ok(health) => Json(json!({ "ok": true, "health": health })).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -8606,18 +9407,16 @@ async fn api_git_checkout_branch(
 }
 
 /// Returns `-c user.name=… -c user.email=…` args for git.
-/// Prefers the acting user's git profile, then project settings, then a
-/// generated fallback identity.
+/// Prefers the acting user's git profile, then a generated fallback identity.
 fn git_identity_args(
     state: &PlatformAppState,
     actor_user: Option<&str>,
-    git_cfg: &crate::platform::model::ZebflowJsonGit,
     project_slug: &str,
 ) -> Vec<String> {
     let resolved = state
         .platform
         .git_identity
-        .resolve_for_actor(actor_user, git_cfg, project_slug);
+        .resolve_for_actor(actor_user, project_slug);
     vec![
         "-c".to_string(),
         format!("user.name={}", resolved.name),
@@ -8706,10 +9505,8 @@ async fn api_git_commit(
             .into_response();
     }
     // git commit -m <message>
-    let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
-    let git_cfg = &zebflow_cfg.git;
     let actor_user = session_owner(&headers);
-    let identity_args = git_identity_args(&state, actor_user.as_deref(), git_cfg, &project_slug);
+    let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let mut commit_cmd = std::process::Command::new("git");
     for arg in &identity_args {
         commit_cmd.arg(arg);
@@ -8741,8 +9538,12 @@ async fn api_git_commit(
     // optional push
     if req.push {
         // Resolve push target: prefer explicit request fields, fall back to zebflow.json remote
+        let zebflow_cfg = state
+            .platform
+            .zebflow_cfg
+            .read_or_default(&owner_slug, &project_slug);
         let (cred_id, repo_url, branch) = {
-            let remote_cfg = &zebflow_cfg.remote;
+            let remote_cfg = &zebflow_cfg.configs.git.remote;
             let cid = req
                 .credential_id
                 .clone()
@@ -8919,9 +9720,9 @@ async fn api_git_get_remote(
     }
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     Json(json!({
-        "credential_id": cfg.remote.credential_id,
-        "repo_url": cfg.remote.repo_url,
-        "branch": cfg.remote.branch,
+        "credential_id": cfg.configs.git.remote.credential_id,
+        "repo_url": cfg.configs.git.remote.repo_url,
+        "branch": cfg.configs.git.remote.branch,
     }))
     .into_response()
 }
@@ -8964,9 +9765,9 @@ async fn api_git_put_remote(
         req.branch.trim().to_string()
     };
     match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
-        cfg.remote.credential_id = req.credential_id.trim().to_string();
-        cfg.remote.repo_url = req.repo_url.trim().to_string();
-        cfg.remote.branch = branch;
+        cfg.configs.git.remote.credential_id = req.credential_id.trim().to_string();
+        cfg.configs.git.remote.repo_url = req.repo_url.trim().to_string();
+        cfg.configs.git.remote.branch = branch;
     }) {
         Ok(_) => Json(json!({"ok": true})).into_response(),
         Err(e) => internal_error(e),
@@ -9005,11 +9806,47 @@ async fn api_activate_pipeline_definition(
         };
     }
 
-    match state
+    if let Ok(Some(meta)) = state
         .platform
         .projects
-        .activate_pipeline_definition(&owner, &project, &req.file_rel_path)
+        .get_pipeline_meta_by_file_id(&owner, &project, &req.file_rel_path)
     {
+        if let Ok(source) = state
+            .platform
+            .projects
+            .read_pipeline_source(&owner, &project, &meta.file_rel_path)
+        {
+            if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
+                if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
+                    &owner,
+                    &project,
+                    &graph,
+                    &meta.file_rel_path,
+                ) {
+                    if !conflicts.is_empty() {
+                        let msg = format!(
+                            "{} {} is already registered by pipeline '{}'",
+                            conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
+                        );
+                        return (
+                            StatusCode::CONFLICT,
+                            Json(json!({
+                                "ok": false,
+                                "error": {
+                                    "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
+                                    "message": msg,
+                                    "conflicts": conflicts
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+
+    match state.platform.projects.activate_pipeline_definition(&owner, &project, &req.file_rel_path) {
         Ok(meta) => {
             if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
                 &owner,
@@ -9131,6 +9968,8 @@ async fn execute_pipeline_local(
         .platform
         .zebflow_cfg
         .read_or_default(owner, project)
+        .configs
+        .pipelines
         .logging
         .effective_max_invocations();
     let request_id = format!(
@@ -10550,6 +11389,243 @@ async fn api_files_rm(
     }
 }
 
+async fn api_mapserver_sources_list(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, _instance)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    match list_mapserver_source_files(&state, &owner, &project) {
+        Ok(items) => Json(json!({ "items": items })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_mapserver_layers_list(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, instance)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return r;
+    }
+    match read_mapserver_layers(&state, &owner, &project, &instance) {
+        Ok(items) => Json(json!({ "items": items })).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_mapserver_layers_publish(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, instance)): Path<(String, String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    let layer_id = body
+        .get("layer_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    let path = body
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    let source_path = body
+        .get("source_path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    if layer_id.is_empty() || path.is_empty() || source_path.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "layer_id, path, and source_path are required"})),
+        )
+            .into_response();
+    }
+    if !source_path.starts_with("private/mapserver/") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "source_path must be under private/mapserver/"})),
+        )
+            .into_response();
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
+    let source_abs_path = layout.files_dir.join(source_path.trim_start_matches('/'));
+    if !source_abs_path.exists() || !source_abs_path.is_file() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "source_path file not found"})),
+        )
+            .into_response();
+    }
+    let allowed_properties = body
+        .get("allowed_properties")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let min_zoom = body
+        .get("min_zoom")
+        .and_then(Value::as_u64)
+        .and_then(|v| u8::try_from(v).ok());
+    let max_zoom = body
+        .get("max_zoom")
+        .and_then(Value::as_u64)
+        .and_then(|v| u8::try_from(v).ok());
+    if let (Some(min_zoom), Some(max_zoom)) = (min_zoom, max_zoom) {
+        if min_zoom > max_zoom {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "min_zoom must be <= max_zoom"})),
+            )
+                .into_response();
+        }
+    }
+    let artifact_root = match mapserver_artifacts_root(&state, &owner, &project, &instance) {
+        Ok(path) => path,
+        Err(err) => return internal_error(err),
+    };
+    let safe_layer_id = layer_id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .collect::<String>();
+    let artifact_abs_dir = artifact_root.join(&safe_layer_id);
+    let artifact_rel_dir = format!("private/mapserver/.artifacts/{instance}/{safe_layer_id}");
+    let build = match crate::mapserver::publish::build::build_geojson_artifact(
+        &source_abs_path,
+        layer_id,
+        &artifact_abs_dir,
+        &artifact_rel_dir,
+    ) {
+        Ok(build) => build,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err})),
+            )
+                .into_response()
+        }
+    };
+    let mut items = match read_mapserver_layers(&state, &owner, &project, &instance) {
+        Ok(items) => items,
+        Err(err) => return internal_error(err),
+    };
+    let record = MapserverLayerRecord {
+        layer_id: layer_id.to_string(),
+        path: if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{}", path)
+        },
+        source_path: source_path.to_string(),
+        artifact_manifest_path: Some(build.manifest_rel_path.clone()),
+        mode: "features".to_string(),
+        min_zoom,
+        max_zoom,
+        bbox_required: body
+            .get("bbox_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        max_features: body
+            .get("max_features")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+            .unwrap_or(1000),
+        allowed_properties,
+        feature_count: Some(build.feature_count),
+        chunk_count: Some(build.chunk_count),
+    };
+    items.retain(|item| item.layer_id != record.layer_id);
+    items.push(record.clone());
+    items.sort_by(|a, b| a.layer_id.cmp(&b.layer_id));
+    if let Err(err) = write_mapserver_layers(&state, &owner, &project, &instance, &items) {
+        return internal_error(err);
+    }
+    Json(json!({
+        "ok": true,
+        "item": record,
+        "public_url": format!("/ms/{owner}/{project}{}", items.iter().find(|i| i.layer_id == layer_id).map(|i| i.path.clone()).unwrap_or_default())
+    }))
+    .into_response()
+}
+
+async fn api_mapserver_layers_delete(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, instance, layer_id)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    let mut items = match read_mapserver_layers(&state, &owner, &project, &instance) {
+        Ok(items) => items,
+        Err(err) => return internal_error(err),
+    };
+    let removed = items.iter().find(|item| item.layer_id == layer_id).cloned();
+    let before = items.len();
+    items.retain(|item| item.layer_id != layer_id);
+    if before == items.len() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "layer not found"})),
+        )
+            .into_response();
+    }
+    if let Err(err) = write_mapserver_layers(&state, &owner, &project, &instance, &items) {
+        return internal_error(err);
+    }
+    if let Some(removed) = removed {
+        if let Some(artifact_rel) = removed.artifact_manifest_path {
+            if let Ok(layout) = state.platform.file.ensure_project_layout(&owner, &project) {
+                let artifact_manifest = layout.files_dir.join(artifact_rel.trim_start_matches('/'));
+                if let Some(dir) = artifact_manifest.parent() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            }
+        }
+    }
+    Json(json!({"ok": true})).into_response()
+}
+
 fn sanitize_file_path(path: &str) -> String {
     path.split('/')
         .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
@@ -10749,11 +11825,10 @@ async fn api_get_settings_section(
     }
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     match section.as_str() {
-        "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.rwe})).into_response(),
+        "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.configs.rwe})).into_response(),
         "logging" => {
-            Json(json!({"ok": true, "section": "logging", "data": cfg.logging})).into_response()
+            Json(json!({"ok": true, "section": "logging", "data": cfg.configs.pipelines.logging})).into_response()
         }
-        "git" => Json(json!({"ok": true, "section": "git", "data": cfg.git})).into_response(),
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
@@ -10834,17 +11909,17 @@ async fn api_upsert_settings_section(
                             .into_response();
                     }
                 };
-                cfg.rwe.allow_list = payload.allow_list;
-                cfg.rwe.minify_html = payload.minify_html;
-                cfg.rwe.strict_mode = payload.strict_mode;
-                cfg.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
+                cfg.configs.rwe.allow_list = payload.allow_list;
+                cfg.configs.rwe.minify_html = payload.minify_html;
+                cfg.configs.rwe.strict_mode = payload.strict_mode;
+                cfg.configs.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
                     if s.trim().is_empty() {
                         None
                     } else {
                         Some(s.trim().to_string())
                     }
                 });
-                json!(cfg.rwe)
+                json!(cfg.configs.rwe)
             }
             "logging" => {
                 let max_inv: Option<u32> = req
@@ -10852,27 +11927,8 @@ async fn api_upsert_settings_section(
                     .get("max_invocations")
                     .and_then(|v| v.as_u64())
                     .map(|v| v.min(1000) as u32);
-                cfg.logging.max_invocations = max_inv;
-                json!(cfg.logging)
-            }
-            "git" => {
-                let name = req
-                    .data
-                    .get("author_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let email = req
-                    .data
-                    .get("author_email")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                cfg.git.author_name = name;
-                cfg.git.author_email = email;
-                json!(cfg.git)
+                cfg.configs.pipelines.logging.max_invocations = max_inv;
+                json!(cfg.configs.pipelines.logging)
             }
             "assets" => {
                 let max_mb = req
@@ -10881,8 +11937,8 @@ async fn api_upsert_settings_section(
                     .and_then(|v| v.as_u64())
                     .map(|v| v.clamp(5, 50) as u32)
                     .unwrap_or(10);
-                cfg.assets.max_asset_size_mb = max_mb;
-                json!(cfg.assets)
+                cfg.configs.files.uploads.max_asset_size_mb = max_mb;
+                json!(cfg.configs.files.uploads)
             }
             _ => return (
                 StatusCode::NOT_FOUND,
@@ -10898,14 +11954,14 @@ async fn api_upsert_settings_section(
     }
 
     // Git: stage zebflow.json and commit with the user-provided message.
-    // Uses identity from cfg.git (already updated in memory) so first-time saves work.
+    // Uses the acting platform user's Git identity when committing settings changes.
     // Failure is non-fatal — settings are already saved; we report the git outcome.
     let (committed, git_error) = {
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
         let actor_user = session_owner(&headers);
-        let identity_args =
-            git_identity_args(&state, actor_user.as_deref(), &cfg.git, &project_slug);
+    let identity_args =
+            git_identity_args(&state, actor_user.as_deref(), &project_slug);
         match state
             .platform
             .file
@@ -11206,12 +12262,7 @@ fn rwe_library_git_commit(
     if !add_ok {
         return Err(());
     }
-    let git_cfg = state
-        .platform
-        .zebflow_cfg
-        .read_or_default(owner, project)
-        .git;
-    let identity_args = git_identity_args(state, actor_user, &git_cfg, &project_slug);
+    let identity_args = git_identity_args(state, actor_user, &project_slug);
     let mut cmd = std::process::Command::new("git");
     for arg in &identity_args {
         cmd.arg(arg);
@@ -11237,7 +12288,7 @@ fn apply_rwe_project_options(
     graph: &mut PipelineGraph,
 ) {
     let cfg = state.platform.zebflow_cfg.read_or_default(owner, project);
-    let rwe = &cfg.rwe;
+    let rwe = &cfg.configs.rwe;
 
     // Resolve template root so @/ alias imports work in user project templates.
     let template_root_str = state
@@ -11774,7 +12825,911 @@ async fn api_list_db_connections(
         .db_connections
         .list_project_connections(&owner, &project)
     {
+        Ok(items) => {
+            let mut rows = vec![json!({
+                "connection_id": "builtin:mapserver:default-mapserver",
+                "connection_slug": "default-mapserver",
+                "connection_label": "Default Mapserver",
+                "database_kind": "mapserver",
+                "credential_id": "",
+                "config_json": "{}",
+                "created_at": 0,
+                "updated_at": 0,
+                "path": format!("/projects/{owner}/{project}/db/mapserver/default-mapserver/layers"),
+                "builtin": true
+            })];
+            rows.extend(items.into_iter().filter_map(|item| serde_json::to_value(item).ok()));
+            Json(json!({"ok": true, "items": rows})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishMarketplaceAssetRequest {
+    source_type: String,
+    source_ref: String,
+    package_id: String,
+    version: String,
+    publisher_id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketplacePublishQuery {
+    #[serde(default)]
+    source_type: String,
+    #[serde(default)]
+    source_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertMarketplaceRepositoryRequest {
+    repository_id: String,
+    title: String,
+    base_url: String,
+    remote_owner: String,
+    remote_project: String,
+    #[serde(default)]
+    read_token: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertMarketplacePublisherRequest {
+    publisher_id: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    publisher_url: String,
+    #[serde(default)]
+    email: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    icon_url: String,
+    #[serde(default)]
+    website_url: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstallPlatformMarketplaceProjectRequest {
+    repository_id: String,
+    package_id: String,
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetMarketplaceProducerRequest {
+    project_name: String,
+    password: String,
+    enabled: bool,
+}
+
+fn project_marketplace_repository_json(
+    item: crate::platform::model::ProjectMarketplaceRepository,
+) -> Value {
+    json!({
+        "owner": item.owner,
+        "project": item.project,
+        "repository_id": item.repository_id,
+        "title": item.title,
+        "base_url": item.base_url,
+        "remote_owner": item.remote_owner,
+        "remote_project": item.remote_project,
+        "read_token": "",
+        "has_read_token": !item.read_token.trim().is_empty(),
+        "enabled": item.enabled,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    })
+}
+
+fn platform_marketplace_repository_json(
+    item: crate::platform::model::PlatformMarketplaceRepository,
+) -> Value {
+    json!({
+        "owner": item.owner,
+        "repository_id": item.repository_id,
+        "title": item.title,
+        "base_url": item.base_url,
+        "remote_owner": item.remote_owner,
+        "remote_project": item.remote_project,
+        "read_token": "",
+        "has_read_token": !item.read_token.trim().is_empty(),
+        "enabled": item.enabled,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    })
+}
+
+fn marketplace_token_json(item: crate::platform::model::MarketplaceToken) -> Value {
+    json!({
+        "token_id": item.token_id,
+        "publisher_id": item.publisher_id,
+        "publisher_display_name": item.publisher_display_name,
+        "publisher_url": item.publisher_url,
+        "publisher_email": item.publisher_email,
+        "title": item.title,
+        "scopes": item.scopes,
+        "expires_at": item.expires_at,
+        "last_used_at": item.last_used_at,
+        "revoked_at": item.revoked_at,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    })
+}
+
+fn marketplace_publisher_json(item: crate::platform::model::MarketplacePublisher) -> Value {
+    json!({
+        "owner": item.owner,
+        "project": item.project,
+        "publisher_id": item.publisher_id,
+        "display_name": item.display_name,
+        "publisher_url": item.publisher_url,
+        "email": item.email,
+        "description": item.description,
+        "icon_url": item.icon_url,
+        "website_url": item.website_url,
+        "enabled": item.enabled,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    })
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn api_list_marketplace_assets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    let mut items = match marketplace_asset_rows(&state, &owner, &project, false) {
+        Ok(items) => items,
+        Err(err) => return internal_error(err),
+    };
+    match state
+        .platform
+        .marketplace
+        .fetch_remote_pack_rows(&state.http_client, &owner, &project)
+        .await
+    {
+        Ok(remote_rows) => {
+            items.extend(remote_rows.into_iter().filter_map(|item| serde_json::to_value(item).ok()));
+            Json(json!({"ok": true, "items": items})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_project_help(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    let ops = crate::platform::services::ops::PlatformOps::new(
+        state.platform.clone(),
+        &owner,
+        &project,
+    );
+    Json(json!({
+        "ok": true,
+        "sections": ops.help_dialog_sections(),
+    }))
+    .into_response()
+}
+
+async fn api_list_remote_marketplace_assets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    let token = bearer_token_from_headers(&headers);
+    let requester = if let Some(token_value) = token {
+        match state
+            .platform
+            .marketplace
+            .authenticate_token(&token_value, "marketplace:read")
+        {
+            Ok(token) => {
+                if token.owner != owner || token.project != project {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                    )
+                        .into_response();
+                }
+                Some(token.owner)
+            }
+            Err(err) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": err.message, "code": err.code})),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    match state.platform.marketplace.list_asset_packages() {
+        Ok(packages) => {
+            let mut items = Vec::new();
+            for package in packages {
+                if package.authority_owner != owner || package.authority_project != project {
+                    continue;
+                }
+                if package.visibility == "private"
+                    && requester.as_deref() != Some(package.publisher_owner.as_str())
+                {
+                    continue;
+                }
+                let latest_version = state
+                    .platform
+                    .marketplace
+                    .list_asset_versions(&package.package_id)
+                    .ok()
+                    .and_then(|items| items.into_iter().next().map(|v| v.version))
+                    .unwrap_or_default();
+                items.push(json!({
+                    "package_id": package.package_id,
+                    "publisher_owner": package.publisher_owner,
+                    "publisher_id": package.publisher_id,
+                    "publisher_display_name": package.publisher_display_name,
+                    "publisher_url": package.publisher_url,
+                    "publisher_email": package.publisher_email,
+                    "asset_kind": package.asset_kind,
+                    "title": package.title,
+                    "description": package.description,
+                    "visibility": package.visibility,
+                    "tags": package.tags,
+                    "latest_version": latest_version,
+                    "updated_at": package.updated_at,
+                }));
+            }
+            Json(json!({"ok": true, "items": items})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_remote_marketplace_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    let token = bearer_token_from_headers(&headers);
+    let requester = if let Some(token_value) = token {
+        match state
+            .platform
+            .marketplace
+            .authenticate_token(&token_value, "marketplace:read")
+        {
+            Ok(token) => {
+                if token.owner != owner || token.project != project {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                    )
+                        .into_response();
+                }
+                Some(token.owner)
+            }
+            Err(err) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": err.message, "code": err.code})),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let Some(package) = state
+        .platform
+        .marketplace
+        .list_asset_packages()
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id && item.authority_owner == owner && item.authority_project == project))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "package not found"})),
+        )
+            .into_response();
+    };
+    if package.visibility == "private"
+        && requester.as_deref() != Some(package.publisher_owner.as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "private package"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .get_asset_version_artifact(&package_id, &version)
+    {
+        Ok((version_row, artifact)) => {
+            Json(json!({"ok": true, "version": version_row, "artifact": artifact})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_my_marketplace_assets(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match marketplace_asset_rows(&state, &owner, &project, true) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_marketplace_publish_sources(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<MarketplacePublishQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match marketplace_publish_sources(
+        &state,
+        &owner,
+        &project,
+        if query.source_type.trim().is_empty() {
+            "pipeline_with_dependencies"
+        } else {
+            &query.source_type
+        },
+    ) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_preview_marketplace_publish_source(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Query(query): Query<MarketplacePublishQuery>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.preview_publish_source(
+        &owner,
+        &project,
+        &query.source_type,
+        &query.source_ref,
+    ) {
+        Ok(preview) => Json(json!({"ok": true, "preview": preview})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_publish_marketplace_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<PublishMarketplaceAssetRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.publish_asset(
+        &owner,
+        &project,
+        &owner,
+        &req.publisher_id,
+        "",
+        "",
+        "",
+        &owner,
+        &project,
+        &req.source_type,
+        &req.source_ref,
+        &req.package_id,
+        &req.version,
+        &req.title,
+        &req.description,
+        &req.visibility,
+        req.tags,
+    ) {
+        Ok((package, version)) => Json(json!({"ok": true, "package": package, "version": version})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_install_marketplace_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .marketplace
+        .install_asset(&owner, &project, &package_id, &version)
+    {
+        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_remote_publish_marketplace_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<RemoteMarketplacePublishRequest>,
+) -> Response {
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    let Some(token_value) = bearer_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "missing bearer token"})),
+        )
+            .into_response();
+    };
+    let token = match state
+        .platform
+        .marketplace
+        .authenticate_token(&token_value, "marketplace:publish")
+    {
+        Ok(token) => token,
+        Err(err) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": err.message, "code": err.code})),
+            )
+                .into_response();
+        }
+    };
+    if token.owner != owner || token.project != project {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .import_remote_asset(&owner, &project, &token, &req)
+    {
+        Ok((package, version)) => {
+            Json(json!({"ok": true, "package": package, "version": version})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_marketplace_tokens(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match marketplace_token_rows(&state, &owner, &project) {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_marketplace_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<CreateMarketplaceTokenRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.create_token(&owner, &project, &req) {
+        Ok((token, token_value)) => {
+            Json(json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_marketplace_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, token_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.revoke_token(&owner, &project, &token_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_marketplace_publishers(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.list_publishers(&owner, &project) {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_marketplace_publisher(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<UpsertMarketplacePublisherRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state.platform.marketplace.upsert_publisher(
+        &owner,
+        &project,
+        &req.publisher_id,
+        &req.display_name,
+        &req.publisher_url,
+        &req.email,
+        &req.description,
+        &req.icon_url,
+        &req.website_url,
+        req.enabled,
+    ) {
+        Ok(item) => Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_marketplace_publisher(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, publisher_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    match state
+        .platform
+        .marketplace
+        .delete_publisher(&owner, &project, &publisher_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_set_marketplace_producer_mode(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<SetMarketplaceProducerRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "Not authenticated"})),
+        )
+            .into_response();
+    };
+    let owner_slug = crate::platform::model::slug_segment(&owner);
+    let project_slug = crate::platform::model::slug_segment(&project);
+    if crate::platform::model::slug_segment(&session_owner) != owner_slug {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "Forbidden"})),
+        )
+            .into_response();
+    }
+    if !can_manage_project_marketplace_producer(&state, &owner_slug) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "Only curated superadmin projects can host a marketplace producer"})),
+        )
+            .into_response();
+    }
+    if crate::platform::model::slug_segment(&req.project_name) != project_slug || project_slug.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "Project name does not match"})),
+        )
+            .into_response();
+    }
+    match state.platform.users.authenticate(&owner_slug, &req.password) {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Incorrect password"})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    }
+    let mut cfg = state
+        .platform
+        .zebflow_cfg
+        .get_marketplace_distribution(&owner_slug, &project_slug);
+    cfg.producer_enabled = req.enabled;
+    match state
+        .platform
+        .zebflow_cfg
+        .set_marketplace_distribution(&owner_slug, &project_slug, cfg.clone())
+    {
+        Ok(()) => Json(json!({"ok": true, "marketplace": cfg})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_marketplace_repositories(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    match state.platform.marketplace.list_repositories(&owner, &project) {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(project_marketplace_repository_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_marketplace_repository(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state.platform.marketplace.upsert_repository(
+        &owner,
+        &project,
+        &req.repository_id,
+        &req.title,
+        &req.base_url,
+        &req.remote_owner,
+        &req.remote_project,
+        &req.read_token,
+        req.enabled,
+    ) {
+        Ok(item) => Json(json!({
+            "ok": true,
+            "repository": project_marketplace_repository_json(item)
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_marketplace_repository(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, repository_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .marketplace
+        .delete_repository(&owner, &project, &repository_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_install_remote_marketplace_pack(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, repository_id, package_id, version)): Path<(String, String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match state
+        .platform
+        .marketplace
+        .install_remote_pack_from_repository(
+            &state.http_client,
+            &owner,
+            &project,
+            &repository_id,
+            &package_id,
+            &version,
+        )
+        .await
+    {
+        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -13111,6 +15066,8 @@ async fn public_webhook_ingress(
         .platform
         .zebflow_cfg
         .read_or_default(&owner, &project)
+        .configs
+        .pipelines
         .logging
         .effective_max_invocations();
     let request_id = format!(
@@ -13625,6 +15582,380 @@ async fn public_webhook_ingress_root(
     .await
 }
 
+async fn public_mapserver_ingress(
+    State(state): State<PlatformAppState>,
+    Path((owner, project, tail)): Path<(String, String, String)>,
+    uri: Uri,
+) -> Response {
+    let owner = crate::platform::model::slug_segment(&owner);
+    let project = crate::platform::model::slug_segment(&project);
+    let path = format!("/{}", tail.trim_start_matches('/'));
+
+    struct Candidate {
+        compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
+        trigger: crate::platform::services::pipeline_runtime::MapserverTriggerSpec,
+        static_segments: usize,
+        dynamic_segments: usize,
+        total_segments: usize,
+    }
+
+    let mut candidates = Vec::<Candidate>::new();
+    for compiled in state
+        .platform
+        .pipeline_runtime
+        .list_project(&owner, &project)
+    {
+        for trigger in &compiled.mapserver_triggers {
+            let Some(path_match) = match_webhook_path(&trigger.path, &path) else {
+                continue;
+            };
+            candidates.push(Candidate {
+                compiled: compiled.clone(),
+                trigger: trigger.clone(),
+                static_segments: path_match.static_segments,
+                dynamic_segments: path_match.dynamic_segments,
+                total_segments: path_match.total_segments,
+            });
+        }
+    }
+
+    candidates.sort_by(|a, b| {
+        b.static_segments
+            .cmp(&a.static_segments)
+            .then(a.dynamic_segments.cmp(&b.dynamic_segments))
+            .then(b.total_segments.cmp(&a.total_segments))
+            .then(a.compiled.file_rel_path.cmp(&b.compiled.file_rel_path))
+    });
+
+    let params = uri
+        .query()
+        .map(|raw| serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(raw))
+        .transpose();
+    let params = match params {
+        Ok(Some(map)) => map,
+        Ok(None) => std::collections::HashMap::new(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid query string"})),
+            )
+                .into_response()
+        }
+    };
+
+    let selected = if let Some(selected) = candidates.into_iter().next() {
+        Some((
+            selected.trigger.node_id.clone(),
+            selected.trigger.path.clone(),
+            match selected.trigger.source_kind.as_str() {
+                "geojson_artifact" => crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
+                _ => crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+            },
+            selected.trigger.source_path.clone(),
+            selected.trigger.mode.clone(),
+            selected.trigger.min_zoom,
+            selected.trigger.max_zoom,
+            selected.trigger.bbox_required,
+            selected.trigger.max_features,
+            selected.trigger.allowed_properties.clone(),
+        ))
+    } else {
+        match resolve_mapserver_manifest_for_path(&state, &owner, &project, &path) {
+            Ok(Some(manifest)) => Some((
+                manifest.layer_id,
+                manifest.path,
+                manifest.source_kind,
+                manifest.source_ref,
+                manifest.mode,
+                manifest.min_zoom,
+                manifest.max_zoom,
+                manifest.bbox_required,
+                manifest.max_features,
+                manifest.allowed_properties,
+            )),
+            Ok(None) => None,
+            Err(err) => return internal_error(err),
+        }
+    };
+    let Some((layer_id, layer_path, source_kind, source_path, mode, min_zoom, max_zoom, bbox_required, max_features, allowed_properties)) = selected else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "map layer not found"})),
+        )
+            .into_response();
+    };
+    if !mode.eq_ignore_ascii_case("features") {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({"ok": false, "error": "only features mode is supported in v1"})),
+        )
+            .into_response();
+    }
+
+    let bbox = match crate::mapserver::infra::http::parse_bbox_param(&params) {
+        Ok(v) => v,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err})),
+            )
+                .into_response()
+        }
+    };
+    let limit = match crate::mapserver::infra::http::parse_limit_param(
+        &params,
+        max_features,
+    ) {
+        Ok(v) => v,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err})),
+            )
+                .into_response()
+        }
+    };
+    let zoom = params.get("zoom").and_then(|s| s.parse::<u8>().ok());
+
+    let manifest = crate::mapserver::publish::registry::manifest_from_runtime(
+        layer_id,
+        layer_path,
+        source_kind,
+        source_path,
+        mode,
+        min_zoom,
+        max_zoom,
+        bbox_required,
+        max_features,
+        allowed_properties,
+    );
+    let request = crate::mapserver::resolve::ResolveRequest {
+        layer_id: manifest.layer_id.clone(),
+        bbox,
+        zoom,
+        limit: Some(limit),
+    };
+    let response_cache_key = crate::mapserver::resolve::cache::response_cache_key(&manifest, &request);
+    if let Some(body) = crate::mapserver::resolve::cache::get_response_bytes(&response_cache_key) {
+        let mut resp = (StatusCode::OK, body).into_response();
+        resp.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/geo+json; charset=utf-8"),
+        );
+        return resp;
+    }
+    let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &request) {
+        Ok(v) => v,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err})),
+            )
+                .into_response()
+        }
+    };
+    let payload = json!({
+            "type": "FeatureCollection",
+            "layer": resolved.layer,
+            "count": resolved.count,
+            "truncated": resolved.truncated,
+            "features": resolved.features
+        });
+    let body = match serde_json::to_vec(&payload) {
+        Ok(body) => body,
+        Err(err) => {
+            return internal_error(PlatformError::new(
+                "MAPSERVER_RESPONSE_SERIALIZE",
+                format!("failed serializing mapserver payload: {err}"),
+            ));
+        }
+    };
+    crate::mapserver::resolve::cache::put_response_bytes(response_cache_key, body.clone());
+    let mut resp = (StatusCode::OK, body).into_response();
+    resp.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/geo+json; charset=utf-8"),
+    );
+    resp
+}
+
+async fn public_mapserver_ingress_root(
+    State(state): State<PlatformAppState>,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    public_mapserver_ingress(State(state), Path((owner, project, String::new())), uri).await
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct MapserverLayerRecord {
+    layer_id: String,
+    path: String,
+    source_path: String,
+    #[serde(default)]
+    artifact_manifest_path: Option<String>,
+    mode: String,
+    #[serde(default)]
+    min_zoom: Option<u8>,
+    #[serde(default)]
+    max_zoom: Option<u8>,
+    bbox_required: bool,
+    max_features: usize,
+    allowed_properties: Vec<String>,
+    #[serde(default)]
+    feature_count: Option<usize>,
+    #[serde(default)]
+    chunk_count: Option<usize>,
+}
+
+fn mapserver_layers_manifest_path(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    instance: &str,
+) -> Result<std::path::PathBuf, PlatformError> {
+    let layout = state.platform.file.ensure_project_layout(owner, project)?;
+    Ok(layout
+        .files_dir
+        .join("private")
+        .join("mapserver")
+        .join(format!("{instance}.layers.json")))
+}
+
+fn mapserver_artifacts_root(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    instance: &str,
+) -> Result<std::path::PathBuf, PlatformError> {
+    let layout = state.platform.file.ensure_project_layout(owner, project)?;
+    Ok(layout
+        .files_dir
+        .join("private")
+        .join("mapserver")
+        .join(".artifacts")
+        .join(instance))
+}
+
+fn read_mapserver_layers(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    instance: &str,
+) -> Result<Vec<MapserverLayerRecord>, PlatformError> {
+    let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|err| PlatformError::new("MAPSERVER_READ", err.to_string()))?;
+    serde_json::from_str::<Vec<MapserverLayerRecord>>(&raw)
+        .map_err(|err| PlatformError::new("MAPSERVER_PARSE", err.to_string()))
+}
+
+fn write_mapserver_layers(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    instance: &str,
+    items: &[MapserverLayerRecord],
+) -> Result<(), PlatformError> {
+    let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))?;
+    }
+    let raw = serde_json::to_string_pretty(items)
+        .map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))?;
+    std::fs::write(path, raw).map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))
+}
+
+fn list_mapserver_source_files(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Vec<serde_json::Value>, PlatformError> {
+    let layout = state.platform.file.ensure_project_layout(owner, project)?;
+    let dir = layout.files_dir.join("private").join("mapserver");
+    std::fs::create_dir_all(&dir).map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".layers.json") {
+                continue;
+            }
+            let lower = name.to_ascii_lowercase();
+            if !(lower.ends_with(".geojson") || lower.ends_with(".json")) {
+                continue;
+            }
+            let rel = format!("private/mapserver/{name}");
+            let meta = path.metadata().ok();
+            out.push(json!({
+                "name": name,
+                "path": rel,
+                "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                "url": format!("/files/{owner}/{project}/{rel}")
+            }));
+        }
+    }
+    Ok(out)
+}
+
+fn resolve_mapserver_manifest_for_path(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    path: &str,
+) -> Result<Option<crate::mapserver::publish::manifest::PublishedLayerManifest>, PlatformError> {
+    let layers = read_mapserver_layers(state, owner, project, "default-mapserver")?;
+    let layer = layers.into_iter().find(|item| item.path == path);
+    let layout = state.platform.file.ensure_project_layout(owner, project)?;
+    Ok(layer.map(|item| {
+        if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
+            crate::mapserver::publish::registry::manifest_from_runtime(
+                item.layer_id,
+                item.path,
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
+                layout
+                    .files_dir
+                    .join(artifact_rel.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
+                item.mode,
+                item.min_zoom,
+                item.max_zoom,
+                item.bbox_required,
+                item.max_features,
+                item.allowed_properties,
+            )
+        } else {
+            crate::mapserver::publish::registry::manifest_from_runtime(
+                item.layer_id,
+                item.path,
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                layout
+                    .files_dir
+                    .join(item.source_path.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
+                item.mode,
+                item.min_zoom,
+                item.max_zoom,
+                item.bbox_required,
+                item.max_features,
+                item.allowed_properties,
+            )
+        }
+    }))
+}
+
 /// Extract a safe subset of request headers for the trigger snapshot.
 /// Excludes Authorization and Cookie to avoid leaking credentials downstream.
 fn safe_headers(headers: &HeaderMap) -> Value {
@@ -14098,60 +16429,6 @@ fn require_project_api_capability(
     }
 }
 
-/// Derives the trigger kind from the graph source by inspecting entry nodes.
-/// Returns e.g. "function", "webhook", "schedule", "manual", "ws".
-/// Falls back to None when the graph can't be parsed or has no trigger node.
-fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
-    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
-    // Prefer explicit entry nodes; fall back to nodes with no incoming edges.
-    let entry_ids: std::collections::HashSet<&str> = if !graph.entry_nodes.is_empty() {
-        graph.entry_nodes.iter().map(|s| s.as_str()).collect()
-    } else {
-        let targets: std::collections::HashSet<&str> =
-            graph.edges.iter().map(|e| e.to_node.as_str()).collect();
-        graph
-            .nodes
-            .iter()
-            .filter(|n| !targets.contains(n.id.as_str()))
-            .map(|n| n.id.as_str())
-            .collect()
-    };
-    graph
-        .nodes
-        .iter()
-        .filter(|n| entry_ids.contains(n.id.as_str()))
-        .find_map(|n| {
-            let canonical = canonical_pipeline_node_kind(&n.kind);
-            canonical
-                .strip_prefix("n.trigger.")
-                .map(|suffix| suffix.to_string())
-        })
-}
-
-fn webhook_trigger_from_pipeline_source(source: &str) -> Option<(String, String)> {
-    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
-    let node = graph
-        .nodes
-        .iter()
-        .find(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.webhook")?;
-    let path = node
-        .config
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(ToString::to_string)?;
-    let method = node
-        .config
-        .get("method")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|method| !method.is_empty())
-        .unwrap_or("POST")
-        .to_ascii_uppercase();
-    Some((path, method))
-}
-
 fn canonical_pipeline_node_kind(kind: &str) -> &str {
     if let Some(stripped) = kind.strip_prefix("x.n.") {
         return match stripped {
@@ -14177,25 +16454,9 @@ fn validate_execute_trigger(
                 .unwrap_or("POST")
                 .trim()
                 .to_uppercase();
-            let matched = graph.nodes.iter().any(|node| {
-                if canonical_pipeline_node_kind(&node.kind) != "n.trigger.webhook" {
-                    return false;
-                }
-                let node_path = node
-                    .config
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .unwrap_or("/")
-                    .trim();
-                let node_method = node
-                    .config
-                    .get("method")
-                    .and_then(Value::as_str)
-                    .unwrap_or("POST")
-                    .trim()
-                    .to_uppercase();
-                node_path == wanted_path && node_method == wanted_method
-            });
+            let matched = crate::platform::services::project::webhook_triggers_from_graph(graph)
+                .iter()
+                .any(|trigger| trigger.path == wanted_path && trigger.method == wanted_method);
             if matched {
                 Ok(())
             } else {
@@ -14633,8 +16894,23 @@ async fn api_revoke_mcp_session(
 }
 
 fn internal_error(err: PlatformError) -> Response {
+    let status = match &*err.code {
+        "PLATFORM_PIPELINE_LOCKED" | "PLATFORM_TEMPLATE_LOCKED" => StatusCode::LOCKED,
+        "MARKETPLACE_PUBLISHER_MISSING"
+        | "MARKETPLACE_ASSET_MISSING"
+        | "MARKETPLACE_PUBLISH_SOURCE_MISSING" => StatusCode::NOT_FOUND,
+        "MARKETPLACE_TOKEN_FORBIDDEN" => StatusCode::FORBIDDEN,
+        "MARKETPLACE_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
+        "MARKETPLACE_TOKEN_INVALID"
+        | "MARKETPLACE_PUBLISH_INVALID"
+        | "MARKETPLACE_REMOTE_INVALID"
+        | "MARKETPLACE_REPOSITORY_INVALID"
+        | "MARKETPLACE_TOKEN_SCOPE_INVALID"
+        | "MARKETPLACE_PUBLISH_EMPTY" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
     (
-        StatusCode::INTERNAL_SERVER_ERROR,
+        status,
         Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
     )
         .into_response()
@@ -14943,7 +17219,8 @@ async fn api_reindex_project(
                                     .and_then(|g| g.description)
                                     .unwrap_or_default();
                             let reindex_trigger_kind =
-                                derive_trigger_kind_from_source(&source).unwrap_or_default();
+                                crate::platform::services::project::derive_trigger_kind_from_source(&source)
+                                    .unwrap_or_default();
                             match state.platform.projects.upsert_pipeline_definition(
                                 &owner_slug,
                                 &project_slug,
@@ -15304,7 +17581,7 @@ async fn api_upload_asset(
         .platform
         .zebflow_cfg
         .read_or_default(&owner_slug, &project_slug);
-    let max_bytes = (cfg.assets.max_asset_size_mb as u64) * 1024 * 1024;
+    let max_bytes = (cfg.configs.files.uploads.max_asset_size_mb as u64) * 1024 * 1024;
 
     let subfolder = query
         .subfolder
@@ -15368,7 +17645,7 @@ async fn api_upload_asset(
     if bytes.len() as u64 > max_bytes {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), cfg.assets.max_asset_size_mb)})),
+            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), cfg.configs.files.uploads.max_asset_size_mb)})),
         ).into_response();
     }
 

@@ -24,7 +24,9 @@ import {
   normalizeNodePins,
   nodeColor,
   canonicalNodeKind,
+  isTriggerNodeKind,
   nodeCategories,
+  triggerKindFromNodeKind,
 } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/catalog";
 import { sanitizeSlug, ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import { extractNodeConfig } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
@@ -336,6 +338,7 @@ export default function PipelineEditor({
 
   // ── onNodeEdit callback from PipelineGraph ────────────────────────────────
   function handleNodeEdit(nodeData: PipelineNodeData) {
+    if (currentLocked) return;
     const kind = canonicalNodeKind(nodeData.zfKind);
     if (kind === "n.web.render") {
       setWebRenderNode(nodeData);
@@ -461,10 +464,16 @@ export default function PipelineEditor({
   // ── Activate ──────────────────────────────────────────────────────────────
   async function handleActivate() {
     if (!currentMeta || currentLocked) return;
-    await requestJson(api.activate, {
-      method: "POST",
-      body: JSON.stringify({ file_rel_path: currentMeta.file_rel_path }),
-    });
+    setSaveError(null);
+    try {
+      await requestJson(api.activate, {
+        method: "POST",
+        body: JSON.stringify({ file_rel_path: currentMeta.file_rel_path }),
+      });
+    } catch (err: any) {
+      setSaveError(err?.message || "Activate failed");
+      return;
+    }
     if (typeof document !== "undefined") {
       nav(`${document.location.pathname}${document.location.search}`);
     }
@@ -544,6 +553,51 @@ export default function PipelineEditor({
   function handleAddNode(kind: string) {
     if (!graphRef.current || currentLocked) return;
     const entry = catalog.get(kind);
+    const app = (graphRef.current as any)?.getApp?.();
+    if (isTriggerNodeKind(kind) && app?.graph && app?.factory && app?.ui) {
+      const existingTriggers = Array.isArray(app.graph.nodes)
+        ? app.graph.nodes.filter((node: any) => isTriggerNodeKind(node?.zfKind || node?.kind || ""))
+        : [];
+      const anchor = existingTriggers[0] || null;
+      if (app.ui.selectedNode && existingTriggers.some((node: any) => node?.id === app.ui.selectedNode?.id)) {
+        app.ui.clearSelection?.();
+      }
+      existingTriggers.forEach((node: any) => app.graph.remove(node));
+      app.ui.updateWires?.();
+
+      const x = typeof anchor?.x === "number"
+        ? anchor.x
+        : (-app.ui.transform.x + app.ui.workspaceEl.clientWidth / 2) / app.ui.transform.k - 90;
+      const y = typeof anchor?.y === "number"
+        ? anchor.y
+        : (-app.ui.transform.y + app.ui.workspaceEl.clientHeight / 2) / app.ui.transform.k - 50;
+
+      const node = app.factory.custom(x, y, {
+        title: entry?.title || kind,
+        color: nodeColor(kind),
+        inputs: normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]),
+        outputs: normalizeNodePins(kind, "output", entry?.output_pins || [], ["out"]),
+      });
+      node.zfKind = kind;
+      node.zfConfig = canonicalNodeKind(kind) === "n.trigger.webhook"
+        ? { method: "GET" }
+        : canonicalNodeKind(kind) === "n.trigger.mapserver"
+          ? { mode: "features", source_kind: "geojson_file", bbox_required: true, max_features: 1000 }
+          : {};
+      node.zfPipelineNodeId =
+        anchor?.zfPipelineNodeId ||
+        String(kind).replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
+      app.addNode(node);
+      setCurrentMeta((prev) =>
+        prev
+          ? {
+              ...prev,
+              trigger_kind: triggerKindFromNodeKind(kind) || prev.trigger_kind,
+            }
+          : prev
+      );
+      return;
+    }
     graphRef.current.addNode(kind, {
       title: entry?.title || kind,
       color: nodeColor(kind),
@@ -615,8 +669,8 @@ export default function PipelineEditor({
               {currentMeta?.file_rel_path || "Select a pipeline to edit."}
             </p>
           </div>
-          <div className="flex min-w-0 shrink-0 flex-col items-end gap-2">
-            <div className="flex flex-wrap items-center justify-end gap-3">
+          <div className="flex min-w-0 shrink-0 items-center justify-end gap-2 overflow-x-auto">
+            <div className="flex shrink-0 items-center gap-3">
               <span
                 className="pipeline-editor-indicator pipeline-editor-indicator-trigger"
                 data-trigger-kind={triggerKind.toLowerCase()}
@@ -636,7 +690,7 @@ export default function PipelineEditor({
                 {currentLocked ? "locked" : "editable"}
               </span>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               {isManualTrigger && (
                 <Button
                   size="icon"
@@ -683,7 +737,15 @@ export default function PipelineEditor({
                   {currentLocked ? <LockIcon /> : <LockOpenIcon />}
                 </Button>
               )}
-              {onDeleteClick ? (
+              {currentLocked && currentMeta ? (
+                <span
+                  className="inline-flex items-center justify-center text-dark-accent1"
+                  title="Locked — cannot delete"
+                  aria-label="Locked pipeline"
+                >
+                  <LockIcon />
+                </span>
+              ) : onDeleteClick ? (
                 <Button
                   variant="destructive"
                   size="icon"
@@ -758,7 +820,7 @@ export default function PipelineEditor({
             gridSize={30}
             id="pipeline-canvas"
             className="w-full h-full"
-            onNodeEdit={handleNodeEdit}
+            onNodeEdit={currentLocked ? undefined : handleNodeEdit}
             onReady={() => {
               // No-op; edit buttons handled by PipelineGraph's MutationObserver
             }}

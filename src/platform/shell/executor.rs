@@ -479,18 +479,21 @@ impl DslExecutor {
             .map(|m| m.file_rel_path)
             .unwrap_or_default();
 
-        let conflicts = self.platform.pipeline_runtime.check_webhook_path_conflict(
+        match self.platform.projects.check_webhook_path_conflict(
             &self.owner,
             &self.project,
             &graph,
             &self_file_rel_path,
-        );
-        if !conflicts.is_empty() {
-            let c = &conflicts[0];
-            return DslOutput::err(format!(
-                "Webhook conflict: {} {} is already registered by pipeline '{}' ({})",
-                c.method, c.path, c.pipeline_name, c.file_rel_path
-            ));
+        ) {
+            Ok(conflicts) if !conflicts.is_empty() => {
+                let c = &conflicts[0];
+                return DslOutput::err(format!(
+                    "Webhook conflict: {} {} is already registered by pipeline '{}' ({})",
+                    c.method, c.path, c.pipeline_name, c.file_rel_path
+                ));
+            }
+            Ok(_) => {}
+            Err(err) => return DslOutput::err(format!("Webhook validation failed: {err}")),
         }
 
         let trigger_kind = graph

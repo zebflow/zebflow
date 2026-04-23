@@ -1,6 +1,6 @@
 # Tool.* Globals
 
-`Tool` is a pure-function utility library available in TSX templates and `n.script` nodes. No DOM, no state, no side effects. Four namespaces: `Tool.time`, `Tool.arr`, `Tool.stat`, `Tool.geo`.
+`Tool` is a pure-function utility library available in TSX templates and `n.script` nodes. No DOM, no state, no side effects. Five namespaces: `Tool.time`, `Tool.arr`, `Tool.stat`, `Tool.csv`, `Tool.geo`.
 
 Available as `globalThis.Tool` — use it directly, no import needed.
 
@@ -113,6 +113,26 @@ Tool.stat.lerp(0, 100, 0.5)          // 50
 
 ---
 
+## Tool.csv
+
+CSV parsing and serialization.
+
+```js
+Tool.csv.parse("id,name\n1,Alice\n2,Bob")
+Tool.csv.stringify([{ id: 1, name: "Alice" }, { id: 2, name: "Bob" }])
+```
+
+`Tool.csv.parse(text, options?)`
+- `delimiter` — defaults to `,`
+- `header` — defaults to `true`
+
+`Tool.csv.stringify(rows, options?)`
+- `delimiter` — defaults to `,`
+- `header` — defaults to `true`
+- `columns` — optional explicit column order
+
+---
+
 ## Tool.geo
 
 Geographic utilities.
@@ -128,6 +148,9 @@ Tool.geo.centroid(polygonOrMultiPolygon)                   // → [lon, lat]
 Tool.geo.nearestPoint([lon, lat], points)                  // → { index, distance, point }
 Tool.geo.parseWktLineString("LINESTRING (...)")            // → [[lon, lat], ...]
 Tool.geo.heading([lon1, lat1], [lon2, lat2])              // → degrees
+Tool.geo.bearing([lon1, lat1], [lon2, lat2])              // → 0..360 geographic bearing
+Tool.geo.routeProgress(route)                             // → { totalDistance, distances, segments }
+Tool.geo.interpolateRoute(route, 0.5)                     // → [lon, lat]
 ```
 
 `pointInPolygon` and `centroid` accept GeoJSON `Polygon` / `MultiPolygon`.

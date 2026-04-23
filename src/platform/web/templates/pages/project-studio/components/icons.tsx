@@ -33,6 +33,16 @@ export function TerminalIcon() {
   );
 }
 
+export function HelpIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M9.75 9.25a2.75 2.75 0 1 1 4.14 2.37c-.94.6-1.39 1.11-1.39 2.13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="17.25" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function SessionIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">

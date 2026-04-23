@@ -18,7 +18,7 @@
 
   /* Fonts */
   --font-display:
-    "Pathway Extreme", "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-sans:
     "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
   --font-mono:
@@ -84,71 +84,6 @@ select {
 [data-zf-surface="panel"] {
   border-radius: var(--radius-panel);
 }
-
-
-/* ── HelpTooltip ─────────────────────────────────────── */
-.zf-help-tooltip {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  cursor: help;
-  outline: none;
-}
-.zf-help-tooltip-icon {
-  display: inline-flex;
-  color: var(--color-ui-text-muted);
-  transition: color 0.15s ease;
-}
-.zf-help-tooltip:hover .zf-help-tooltip-icon,
-.zf-help-tooltip:focus-within .zf-help-tooltip-icon {
-  color: var(--color-ui-text);
-}
-.zf-help-tooltip-content {
-  visibility: hidden;
-  opacity: 0;
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
-  min-width: 160px;
-  max-width: 240px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-family: inherit;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-  line-height: 1.5;
-  white-space: normal;
-  background: #1f2937;
-  color: #f3f4f6;
-  border: 1px solid var(--color-ui-border);
-  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.15), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  pointer-events: none;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
-}
-.zf-help-tooltip:hover .zf-help-tooltip-content,
-.zf-help-tooltip:focus-within .zf-help-tooltip-content {
-  visibility: visible;
-  opacity: 1;
-}
-.zf-help-tooltip-content::after {
-  content: '';
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: #1f2937;
-}
-
-
-/* .zf-node-layout → Tailwind: flex flex-col gap-4 */
-/* .zf-node-layout-row → Tailwind: flex flex-row gap-4 items-start */
-/* .zf-node-layout-row-cell → Tailwind: flex-1 min-w-0 */
-/* .zf-node-layout-col → Tailwind: flex flex-col gap-4 */
 
 @keyframes zf-spin {
   to {

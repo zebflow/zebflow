@@ -21,6 +21,156 @@ use crate::platform::model::{
 };
 use crate::platform::services::project_config::ZebflowJsonService;
 use crate::platform::services::zeb_lock::ZebLockService;
+use crate::pipeline::PipelineGraph;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectWebhookTrigger {
+    pub node_id: String,
+    pub path: String,
+    pub method: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct WebhookPathConflict {
+    pub path: String,
+    pub method: String,
+    pub pipeline_name: String,
+    pub file_rel_path: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ProjectGitHealth {
+    pub state: String,
+    pub repo_path: String,
+    pub git_dir_path: String,
+    pub git_dir_exists: bool,
+    pub is_work_tree: bool,
+    pub head_exists: bool,
+    pub config_exists: bool,
+    pub objects_exists: bool,
+    pub refs_exists: bool,
+    pub branch: String,
+    pub last_error: String,
+    pub recommended_action: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectGitRepairMode {
+    Repair,
+    Reinitialize,
+    Reset,
+}
+
+pub fn canonical_webhook_method(raw: Option<&str>) -> String {
+    raw.unwrap_or("POST").trim().to_ascii_uppercase()
+}
+
+pub fn canonical_webhook_path(raw: Option<&str>) -> String {
+    let path = raw.unwrap_or("/").trim();
+    let path = if path.is_empty() { "/" } else { path };
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
+    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
+    let entry_ids: std::collections::HashSet<&str> = if !graph.entry_nodes.is_empty() {
+        graph.entry_nodes.iter().map(|s| s.as_str()).collect()
+    } else {
+        let targets: std::collections::HashSet<&str> =
+            graph.edges.iter().map(|e| e.to_node.as_str()).collect();
+        graph
+            .nodes
+            .iter()
+            .filter(|n| !targets.contains(n.id.as_str()))
+            .map(|n| n.id.as_str())
+            .collect()
+    };
+    graph
+        .nodes
+        .iter()
+        .filter(|n| entry_ids.contains(n.id.as_str()))
+        .find_map(|n| {
+            let canonical = canonical_pipeline_node_kind(&n.kind);
+            canonical
+                .strip_prefix("n.trigger.")
+                .map(|suffix| suffix.to_string())
+        })
+}
+
+fn pipeline_source_is_locked(source: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(source) else {
+        return false;
+    };
+    value
+        .get("metadata")
+        .and_then(|metadata| metadata.get("locked"))
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| value.get("locked").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false)
+}
+
+pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookTrigger> {
+    graph
+        .nodes
+        .iter()
+        .filter(|node| canonical_pipeline_node_kind(&node.kind) == "n.trigger.webhook")
+        .map(|node| ProjectWebhookTrigger {
+            node_id: node.id.clone(),
+            path: canonical_webhook_path(
+                node.config.get("path").and_then(serde_json::Value::as_str),
+            ),
+            method: canonical_webhook_method(
+                node.config.get("method").and_then(serde_json::Value::as_str),
+            ),
+        })
+        .collect()
+}
+
+pub fn webhook_triggers_from_source(source: &str) -> Option<Vec<ProjectWebhookTrigger>> {
+    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
+    Some(webhook_triggers_from_graph(&graph))
+}
+
+pub fn first_webhook_trigger_from_source(source: &str) -> Option<(String, String)> {
+    webhook_triggers_from_source(source)?
+        .into_iter()
+        .next()
+        .map(|trigger| (trigger.path, trigger.method))
+}
+
+fn canonical_pipeline_node_kind(kind: &str) -> &str {
+    if let Some(stripped) = kind.strip_prefix("x.n.") {
+        return match stripped {
+            "trigger.webhook" => "n.trigger.webhook",
+            "trigger.schedule" => "n.trigger.schedule",
+            "trigger.manual" => "n.trigger.manual",
+            _ => kind,
+        };
+    }
+    kind
+}
+
+fn init_git_repo(repo_dir: &Path) -> Result<(), PlatformError> {
+    let status = Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .arg("--initial-branch=main")
+        .current_dir(repo_dir)
+        .status()
+        .map_err(|e| PlatformError::new("PLATFORM_GIT_INIT", e.to_string()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(PlatformError::new(
+        "PLATFORM_GIT_INIT",
+        format!("git init failed with status {status}"),
+    ))
+}
 
 /// Project service backed by swappable data + file adapters.
 pub struct ProjectService {
@@ -49,6 +199,46 @@ impl ProjectService {
         }
     }
 
+    fn ensure_pipeline_editable(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: &str,
+        action: &str,
+    ) -> Result<(), PlatformError> {
+        let normalized = normalize_pipeline_file_rel_path(file_rel_path);
+        let Some(meta) = self.get_pipeline_meta_by_file_id(owner, project, &normalized)? else {
+            return Ok(());
+        };
+        let source = self.read_pipeline_source(owner, project, &meta.file_rel_path)?;
+        if pipeline_source_is_locked(&source) {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_LOCKED",
+                format!(
+                    "pipeline '{}' is locked and cannot be {}",
+                    meta.file_rel_path, action
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_template_editable(
+        &self,
+        owner: &str,
+        project: &str,
+        rel_path: &str,
+        action: &str,
+    ) -> Result<(), PlatformError> {
+        if self.zebflow_cfg.is_template_locked(owner, project, rel_path)? {
+            return Err(PlatformError::new(
+                "PLATFORM_TEMPLATE_LOCKED",
+                format!("template '{}' is locked and cannot be {}", rel_path, action),
+            ));
+        }
+        Ok(())
+    }
+
     /// Lists projects by owner, populating title from zebflow.json.
     pub fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
         let mut projects = self.data.list_projects(owner)?;
@@ -69,6 +259,17 @@ impl ProjectService {
         };
         p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project);
         Ok(Some(p))
+    }
+
+    /// Returns the ensured filesystem layout for one project.
+    pub fn project_layout(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectFileLayout, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        self.file.ensure_project_layout(&owner, &project)
     }
 
     /// Creates or updates project metadata + required folder layout.
@@ -175,9 +376,11 @@ impl ProjectService {
                 "project not found",
             ));
         }
+        self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;
+        self.ensure_webhook_paths_available(&owner, &project, source, &file_rel_path)?;
 
         let file_abs_path = self.pipeline_abs_path(&layout, &file_rel_path)?;
         if let Some(parent) = file_abs_path.parent() {
@@ -214,6 +417,77 @@ impl ProjectService {
         };
         self.data.put_pipeline_meta(&meta)?;
         Ok(meta)
+    }
+
+    pub fn check_webhook_path_conflict(
+        &self,
+        owner: &str,
+        project: &str,
+        graph: &PipelineGraph,
+        self_file_rel_path: &str,
+    ) -> Result<Vec<WebhookPathConflict>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let self_file_rel_path = normalize_pipeline_file_rel_path(self_file_rel_path);
+        let wanted = webhook_triggers_from_graph(graph);
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows = self.list_pipeline_meta_rows(&owner, &project)?;
+        let mut conflicts = Vec::new();
+        for meta in rows {
+            if normalize_pipeline_file_rel_path(&meta.file_rel_path) == self_file_rel_path {
+                continue;
+            }
+            let Ok(source) = self.read_pipeline_source(&owner, &project, &meta.file_rel_path) else {
+                continue;
+            };
+            let Some(existing) = webhook_triggers_from_source(&source) else {
+                continue;
+            };
+            for trigger in existing {
+                for candidate in &wanted {
+                    if candidate.method == trigger.method && candidate.path == trigger.path {
+                        conflicts.push(WebhookPathConflict {
+                            path: trigger.path.clone(),
+                            method: trigger.method.clone(),
+                            pipeline_name: meta.name.clone(),
+                            file_rel_path: meta.file_rel_path.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(conflicts)
+    }
+
+    pub fn ensure_webhook_paths_available(
+        &self,
+        owner: &str,
+        project: &str,
+        source: &str,
+        self_file_rel_path: &str,
+    ) -> Result<(), PlatformError> {
+        let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
+            PlatformError::new(
+                "PLATFORM_PIPELINE_PARSE",
+                format!("failed parsing pipeline source for webhook validation: {err}"),
+            )
+        })?;
+        let conflicts =
+            self.check_webhook_path_conflict(owner, project, &graph, self_file_rel_path)?;
+        if conflicts.is_empty() {
+            return Ok(());
+        }
+        let first = &conflicts[0];
+        Err(PlatformError::new(
+            "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
+            format!(
+                "{} {} is already registered by pipeline '{}'",
+                first.method, first.path, first.pipeline_name
+            ),
+        ))
     }
 
     /// Lists all pipeline metadata rows for one project.
@@ -296,6 +570,7 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_pipeline_editable(&owner, &project, file_rel_path, "activated")?;
         let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
         else {
             return Err(PlatformError::new(
@@ -305,7 +580,9 @@ impl ProjectService {
         };
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
+        self.ensure_webhook_paths_available(&owner, &project, &source, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
+        self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
         let snapshot_path =
             self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
         if let Some(parent) = snapshot_path.parent() {
@@ -330,6 +607,7 @@ impl ProjectService {
     ) -> Result<PipelineMeta, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_pipeline_editable(&owner, &project, file_rel_path, "deactivated")?;
         let Some(mut meta) = self.get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)?
         else {
             return Err(PlatformError::new(
@@ -337,10 +615,12 @@ impl ProjectService {
                 "pipeline not found",
             ));
         };
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
         meta.active_hash = None;
         meta.activated_at = None;
         meta.updated_at = now_ts();
         self.data.put_pipeline_meta(&meta)?;
+        self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
         Ok(meta)
     }
 
@@ -728,6 +1008,7 @@ impl ProjectService {
     ) -> Result<TemplateFilePayload, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, &req.rel_path, "edited")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -866,6 +1147,7 @@ impl ProjectService {
     ) -> Result<usize, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "edited")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
 
         let (rel, abs) = resolve_template_entry(&layout.repo_pipelines_dir, rel_path)?;
@@ -923,6 +1205,9 @@ impl ProjectService {
         let parent_rel =
             normalize_template_folder_rel_path(req.parent_rel_path.as_deref().unwrap_or_default());
         let parent_rel = default_template_parent(&req.kind, &parent_rel);
+        if !parent_rel.is_empty() {
+            self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
+        }
         let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
         if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
@@ -969,6 +1254,7 @@ impl ProjectService {
         } else {
             format!("{parent_rel}/{filename}")
         };
+        self.ensure_template_editable(&owner, &project, &rel, "created")?;
         let abs = layout.repo_pipelines_dir.join(&rel);
         if !abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
@@ -998,6 +1284,7 @@ impl ProjectService {
     ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, rel_path, "deleted")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -1031,6 +1318,7 @@ impl ProjectService {
     ) -> Result<String, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        self.ensure_template_editable(&owner, &project, &req.from_rel_path, "moved")?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -1043,6 +1331,9 @@ impl ProjectService {
             ));
         }
         let parent_rel = normalize_template_folder_rel_path(&req.to_parent_rel_path);
+        if !parent_rel.is_empty() {
+            self.ensure_template_editable(&owner, &project, &parent_rel, "modified")?;
+        }
         let parent_abs = layout.repo_pipelines_dir.join(&parent_rel);
         if !parent_abs.starts_with(&layout.repo_pipelines_dir) {
             return Err(PlatformError::new(
@@ -1200,6 +1491,104 @@ impl ProjectService {
         Ok(items)
     }
 
+    /// Returns the current health of the project's Git metadata.
+    pub fn get_repo_git_health(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectGitHealth, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let git_dir = &layout.repo_git_dir;
+        let head_exists = git_dir.join("HEAD").is_file();
+        let config_exists = git_dir.join("config").is_file();
+        let objects_exists = git_dir.join("objects").is_dir();
+        let refs_exists = git_dir.join("refs").is_dir();
+        let rev_parse = Command::new("git")
+            .arg("-C")
+            .arg(&layout.repo_dir)
+            .arg("rev-parse")
+            .arg("--is-inside-work-tree")
+            .output();
+        let (is_work_tree, last_error) = match rev_parse {
+            Ok(output) if output.status.success() => {
+                let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                (value == "true", String::new())
+            }
+            Ok(output) => (
+                false,
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ),
+            Err(err) => (false, err.to_string()),
+        };
+        let branch = if is_work_tree {
+            self.get_repo_git_branch(&owner, &project).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let (state, recommended_action) = if !git_dir.exists() {
+            ("missing".to_string(), "repair".to_string())
+        } else if is_work_tree {
+            if branch.is_empty() {
+                ("healthy".to_string(), "none".to_string())
+            } else {
+                ("healthy".to_string(), "none".to_string())
+            }
+        } else if head_exists || config_exists || objects_exists || refs_exists {
+            ("broken".to_string(), "repair".to_string())
+        } else {
+            ("broken".to_string(), "reinitialize".to_string())
+        };
+        Ok(ProjectGitHealth {
+            state,
+            repo_path: layout.repo_dir.display().to_string(),
+            git_dir_path: git_dir.display().to_string(),
+            git_dir_exists: git_dir.exists(),
+            is_work_tree,
+            head_exists,
+            config_exists,
+            objects_exists,
+            refs_exists,
+            branch,
+            last_error,
+            recommended_action,
+        })
+    }
+
+    /// Repairs or rebuilds project Git metadata while preserving the worktree.
+    pub fn repair_repo_git(
+        &self,
+        owner: &str,
+        project: &str,
+        mode: ProjectGitRepairMode,
+    ) -> Result<ProjectGitHealth, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.file.ensure_project_layout(&owner, &project)?;
+        let health = self.get_repo_git_health(&owner, &project)?;
+        if health.state == "healthy" && mode == ProjectGitRepairMode::Repair {
+            return Ok(health);
+        }
+
+        match mode {
+            ProjectGitRepairMode::Repair => {
+                init_git_repo(&layout.repo_dir)?;
+            }
+            ProjectGitRepairMode::Reinitialize | ProjectGitRepairMode::Reset => {
+                if layout.repo_git_dir.exists() {
+                    let backup = layout
+                        .root
+                        .join(format!("repo.git.broken.{}", now_ts()));
+                    fs::rename(&layout.repo_git_dir, backup)?;
+                }
+                init_git_repo(&layout.repo_dir)?;
+            }
+        }
+
+        self.get_repo_git_health(&owner, &project)
+    }
+
     /// Returns the current local branch name for the project's git repo.
     /// Falls back to an empty string if git is not initialized or has no commits yet.
     pub fn get_repo_git_branch(&self, owner: &str, project: &str) -> Result<String, PlatformError> {
@@ -1290,6 +1679,7 @@ impl ProjectService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let wanted = file_rel_path.trim().replace('\\', "/");
+        self.ensure_pipeline_editable(&owner, &project, &wanted, "deleted")?;
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let abs = layout.repo_dir.join(&wanted);
@@ -1404,6 +1794,70 @@ impl ProjectService {
             ));
         }
         Ok(abs)
+    }
+
+    /// Removes stale runtime snapshots for one logical pipeline file.
+    ///
+    /// `keep_hash`, when provided, preserves that one exact active snapshot and
+    /// removes all other historical hashes for the same `file_rel_path`.
+    fn remove_runtime_pipeline_snapshots(
+        &self,
+        layout: &ProjectFileLayout,
+        file_rel_path: &str,
+        keep_hash: Option<&str>,
+    ) -> Result<(), PlatformError> {
+        let sub = file_rel_path
+            .trim_start_matches("pipelines/")
+            .trim_start_matches('/');
+        let snapshot_prefix = if let Some(stem) = sub.strip_suffix(".zf.json") {
+            format!("{stem}.")
+        } else if let Some(stem) = sub.strip_suffix(".json") {
+            format!("{stem}.")
+        } else {
+            format!("{sub}.")
+        };
+        let runtime_root = &layout.data_runtime_pipelines_dir;
+        let parent = runtime_root.join(
+            Path::new(sub)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default(),
+        );
+        if !parent.exists() {
+            return Ok(());
+        }
+
+        let keep_name = keep_hash.map(|hash| {
+            if let Some(stem) = sub.strip_suffix(".zf.json") {
+                format!("{stem}.{}.zf.json", slug_segment(hash))
+            } else if let Some(stem) = sub.strip_suffix(".json") {
+                format!("{stem}.{}.json", slug_segment(hash))
+            } else {
+                format!("{sub}.{}", slug_segment(hash))
+            }
+        });
+
+        for entry in fs::read_dir(&parent)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(runtime_root) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            if !rel.starts_with(&snapshot_prefix) {
+                continue;
+            }
+            if let Some(keep_name) = &keep_name
+                && rel == *keep_name
+            {
+                continue;
+            }
+            fs::remove_file(path)?;
+        }
+        Ok(())
     }
 
     /// Lists project doc files under app/docs (ERD, README.md, AGENTS.md, use cases, etc.).
@@ -2246,4 +2700,498 @@ fn stable_hash_hex(input: &str) -> String {
         h = h.wrapping_mul(0x00000100000001B3);
     }
     format!("{h:016x}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::adapters::data::build_data_adapter;
+    use crate::platform::adapters::file::{FileAdapter, FilesystemFileAdapter};
+    use crate::platform::adapters::project_data::build_project_data_factory;
+    use crate::platform::model::{CreateProjectRequest, DataAdapterKind, ProjectRuntimeSelectionRequest};
+    use crate::platform::services::project_config::ZebflowJsonService;
+    use crate::platform::services::zeb_lock::ZebLockService;
+    use std::sync::Arc;
+
+    fn make_service(root: &Path) -> ProjectService {
+        let data = build_data_adapter(DataAdapterKind::Sqlite, root).expect("sqlite adapter");
+        let file = Arc::new(FilesystemFileAdapter::new(root.join("users")));
+        file.initialize().expect("file adapter init");
+        let project_data = build_project_data_factory(root);
+        let zebflow_cfg = Arc::new(ZebflowJsonService::new(root.join("users")));
+        let zeb_lock = Arc::new(ZebLockService::new(root.join("users")));
+        ProjectService::new(data, file, project_data, zebflow_cfg, zeb_lock)
+    }
+
+    #[test]
+    fn activate_replaces_old_runtime_snapshot_for_same_pipeline_file() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let file_rel_path = "pipelines/pages/home.zf.json";
+        let source_a = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+        let source_b = source_a.replace(r#""/a""#, r#""/b""#);
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Home",
+            "",
+            "webhook",
+            source_a,
+        )
+        .expect("upsert a");
+        let meta_a = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("activate a");
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Home",
+            "",
+            "webhook",
+            &source_b,
+        )
+        .expect("upsert b");
+        let meta_b = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("activate b");
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let runtime_pages = layout.data_runtime_pipelines_dir.join("pages");
+        let files = std::fs::read_dir(&runtime_pages)
+            .expect("runtime pages dir")
+            .map(|entry| entry.expect("dir entry").file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with("home."))
+            .collect::<Vec<_>>();
+
+        assert_eq!(files.len(), 1, "expected exactly one runtime snapshot, got {files:?}");
+        assert!(
+            files[0].contains(meta_b.active_hash.as_deref().unwrap_or("")),
+            "remaining snapshot should be the newest active hash"
+        );
+        assert!(
+            !files[0].contains(meta_a.active_hash.as_deref().unwrap_or("")),
+            "old snapshot hash should not remain"
+        );
+    }
+
+    #[test]
+    fn deactivate_removes_runtime_snapshot_for_pipeline_file() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let file_rel_path = "pipelines/pages/home.zf.json";
+        let source = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Home",
+            "",
+            "webhook",
+            source,
+        )
+        .expect("upsert");
+        let meta = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("activate");
+        svc.deactivate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("deactivate");
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let active_path = svc
+            .runtime_pipeline_snapshot_path(
+                &layout,
+                file_rel_path,
+                meta.active_hash.as_deref().unwrap_or_default(),
+            )
+            .expect("snapshot path");
+        assert!(
+            !active_path.exists(),
+            "runtime snapshot should be removed on deactivate"
+        );
+    }
+
+    #[test]
+    fn webhook_conflict_checks_all_saved_pipeline_definitions() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let source = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"GET"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            "pipelines/pages/a.zf.json",
+            "A",
+            "",
+            "webhook",
+            source,
+        )
+        .expect("save first");
+
+        let graph: crate::pipeline::PipelineGraph =
+            serde_json::from_str(source).expect("parse graph");
+        let conflicts = svc
+            .check_webhook_path_conflict(
+                "superadmin",
+                "default",
+                &graph,
+                "pipelines/pages/b.zf.json",
+            )
+            .expect("check conflict");
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].file_rel_path, "pipelines/pages/a.zf.json");
+        assert_eq!(conflicts[0].method, "GET");
+        assert_eq!(conflicts[0].path, "/same");
+    }
+
+    #[test]
+    fn upsert_rejects_duplicate_webhook_path_from_saved_pipeline() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let source = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            "pipelines/pages/a.zf.json",
+            "A",
+            "",
+            "webhook",
+            source,
+        )
+        .expect("save first");
+        let err = svc
+            .upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            "pipelines/pages/b.zf.json",
+            "B",
+            "",
+            "webhook",
+            source,
+        )
+            .expect_err("second save should conflict");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_WEBHOOK_CONFLICT");
+        assert!(err.message.contains("POST /same"));
+    }
+
+    #[test]
+    fn activate_rejects_duplicate_webhook_path_from_legacy_saved_pipeline() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let source = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+
+        let meta_a = svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            "pipelines/pages/a.zf.json",
+            "A",
+            "",
+            "webhook",
+            source,
+        )
+        .expect("save first");
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let legacy_file = "pipelines/pages/b.zf.json";
+        let legacy_abs = svc
+            .pipeline_abs_path(&layout, legacy_file)
+            .expect("legacy abs");
+        if let Some(parent) = legacy_abs.parent() {
+            std::fs::create_dir_all(parent).expect("mkdirs");
+        }
+        std::fs::write(&legacy_abs, source).expect("write legacy source");
+
+        let now = now_ts();
+        svc.data
+            .put_pipeline_meta(&PipelineMeta {
+                owner: "superadmin".to_string(),
+                project: "default".to_string(),
+                name: "b".to_string(),
+                title: "B".to_string(),
+                virtual_path: virtual_path_from_file_rel_path(legacy_file),
+                file_rel_path: legacy_file.to_string(),
+                description: "".to_string(),
+                trigger_kind: "webhook".to_string(),
+                hash: stable_hash_hex(source),
+                active_hash: None,
+                created_at: now,
+                updated_at: now,
+                activated_at: None,
+            })
+            .expect("insert legacy meta");
+
+        let err = svc
+            .activate_pipeline_definition("superadmin", "default", &meta_a.file_rel_path)
+            .expect_err("activate should conflict against legacy saved duplicate");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_WEBHOOK_CONFLICT");
+        assert!(err.message.contains("POST /same"));
+    }
+
+    #[test]
+    fn locked_pipeline_rejects_edit_activate_and_delete() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let file_rel_path = "pipelines/pages/home.zf.json";
+        let locked_source = r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "metadata":{"locked":true},
+  "id":"pipeline-canvas",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/locked"}},
+    {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
+  ],
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+}"#;
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Home",
+            "",
+            "webhook",
+            locked_source,
+        )
+        .expect("initial locked save");
+
+        let err = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                file_rel_path,
+                "Home",
+                "",
+                "webhook",
+                &locked_source.replace("/locked", "/changed"),
+            )
+            .expect_err("locked pipeline edit should fail");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_LOCKED");
+
+        let err = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("locked pipeline activate should fail");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_LOCKED");
+
+        let err = svc
+            .delete_pipeline("superadmin", "default", file_rel_path)
+            .expect_err("locked pipeline delete should fail");
+        assert_eq!(err.code, "PLATFORM_PIPELINE_LOCKED");
+    }
+
+    #[test]
+    fn locked_template_rejects_write_create_move_delete_and_edit() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+
+        let req = TemplateCreateRequest {
+            kind: TemplateCreateKind::Page,
+            name: "locked-page".to_string(),
+            parent_rel_path: Some("pages".to_string()),
+        };
+        let payload = svc
+            .create_template_entry("superadmin", "default", &req)
+            .expect("create template");
+
+        svc.zebflow_cfg
+            .set_template_locked("superadmin", "default", &payload.rel_path, true)
+            .expect("lock template");
+
+        let err = svc
+            .write_template_file(
+                "superadmin",
+                "default",
+                &TemplateSaveRequest {
+                    rel_path: payload.rel_path.clone(),
+                    content: "changed".to_string(),
+                },
+            )
+            .expect_err("locked template write should fail");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
+        let err = svc
+            .edit_template_file(
+                "superadmin",
+                "default",
+                &payload.rel_path,
+                "export",
+                "import",
+            )
+            .expect_err("locked template edit should fail");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
+        let err = svc
+            .move_template_entry(
+                "superadmin",
+                "default",
+                &TemplateMoveRequest {
+                    from_rel_path: payload.rel_path.clone(),
+                    to_parent_rel_path: "components".to_string(),
+                },
+            )
+            .expect_err("locked template move should fail");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
+        let err = svc
+            .delete_template_entry("superadmin", "default", &payload.rel_path)
+            .expect_err("locked template delete should fail");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+
+        svc.zebflow_cfg
+            .set_template_locked("superadmin", "default", "pages", true)
+            .expect("lock pages folder");
+        let err = svc
+            .create_template_entry(
+                "superadmin",
+                "default",
+                &TemplateCreateRequest {
+                    kind: TemplateCreateKind::Page,
+                    name: "blocked-child".to_string(),
+                    parent_rel_path: Some("pages".to_string()),
+                },
+            )
+            .expect_err("create inside locked folder should fail");
+        assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+    }
 }

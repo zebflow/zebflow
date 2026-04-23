@@ -306,6 +306,43 @@ export default function UnifiedRegistryEditor(input) {
     return lockedTemplates.some(p => relPath === p || relPath.startsWith(p.replace(/\/$/, "") + "/"));
   }
 
+  function isFolderPathLocked(relPath: string): boolean {
+    const clean = String(relPath || "").replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!clean) return false;
+    return lockedTemplates.some(p => {
+      const lockedPath = String(p || "").replace(/^\/+/, "").replace(/\/+$/, "");
+      return lockedPath === clean || lockedPath.startsWith(`${clean}/`);
+    });
+  }
+
+  function renderDeleteAffordance(options: {
+    locked: boolean;
+    title: string;
+    onDelete?: () => void;
+  }) {
+    if (options.locked) {
+      return (
+        <span
+          className="pipeline-registry-row-del inline-flex items-center justify-center text-dark-accent1"
+          title="Locked — cannot delete"
+          aria-label="Locked item"
+        >
+          <LockIcon />
+        </span>
+      );
+    }
+    return (
+      <button
+        type="button"
+        className="pipeline-registry-row-del"
+        title={options.title}
+        onClick={options.onDelete}
+      >
+        <TrashIcon />
+      </button>
+    );
+  }
+
   // ── Pipeline editor data ──────────────────────────────────────────────────
   const pipeline = input?.pipeline ?? {};
   const editorApi = pipeline?.api ?? {};
@@ -409,10 +446,12 @@ export default function UnifiedRegistryEditor(input) {
   const [installOpen, setInstallOpen] = useState(false);
   const [catalogData, setCatalogData] = useState([] as any[]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [marketplacePacks, setMarketplacePacks] = useState([] as any[]);
+  const [packSearch, setPackSearch] = useState("");
   const [selectedComponents, setSelectedComponents] = useState(new Set<string>());
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState(null as string | null);
-  const [installTab, setInstallTab] = useState("ui");
+  const [installTab, setInstallTab] = useState("packs");
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -481,6 +520,7 @@ export default function UnifiedRegistryEditor(input) {
       height: "100%",
       autocomplete: true,
       diagnostics: true,
+      readonly: !!editorOptions.readonly,
       projectFiles: editorOptions.projectFiles || [],
       templateOutlineUrl: editorOptions.templateOutlineUrl || "",
       onOpenImport: editorOptions.onOpenImport,
@@ -519,6 +559,7 @@ export default function UnifiedRegistryEditor(input) {
         mountTemplateEditor(content, fileKind, rt, {
           projectFiles,
           templateOutlineUrl,
+          readonly: selectedTemplateLocked,
           initialLine: selectedLine,
           onOpenImport: (target: any) => {
             if (target?.kind === "project" && target?.relPath) {
@@ -532,10 +573,10 @@ export default function UnifiedRegistryEditor(input) {
         console.error("[EDITOR] template init failed", err);
       }
     })();
-  }, []);
+  }, [isTemplate, template?.rel_path, template?.content, template?.file_kind, templateOutlineUrl, selectedLine, selectedTemplateLocked]);
 
   async function handleSaveTemplate() {
-    if (!templateEditorViewRef.current) return;
+    if (!templateEditorViewRef.current || selectedTemplateLocked) return;
     setTemplateSaveState("Saving…");
     try {
       const content = templateEditorViewRef.current.state.doc.toString();
@@ -614,12 +655,18 @@ export default function UnifiedRegistryEditor(input) {
 
   async function loadCatalog() {
     try {
-      const res = await fetch(`${projectApiBase}/install/catalog/ui`, { headers: { Accept: "application/json" } });
-      const json = await res.json();
-      setCatalogData(json?.components ?? []);
+      const [uiRes, packsRes] = await Promise.all([
+        fetch(`${projectApiBase}/install/catalog/ui`, { headers: { Accept: "application/json" } }),
+        fetch(`${projectApiBase}/marketplace/assets`, { headers: { Accept: "application/json" } }),
+      ]);
+      const uiJson = await uiRes.json().catch(() => null);
+      const packsJson = await packsRes.json().catch(() => null);
+      setCatalogData(uiJson?.components ?? []);
+      setMarketplacePacks(Array.isArray(packsJson?.items) ? packsJson.items : []);
       setCatalogLoaded(true);
     } catch {
       setCatalogData([]);
+      setMarketplacePacks([]);
     }
   }
 
@@ -655,6 +702,33 @@ export default function UnifiedRegistryEditor(input) {
       }
     } catch {
       setInstallResult("Network error.");
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function handleAddPack(item: any) {
+    const packageId = item?.package_id;
+    const version = item?.latest_version;
+    if (!packageId || !version) {
+      setInstallResult("Pack is missing package id or version.");
+      return;
+    }
+    setInstalling(true);
+    setInstallResult(`Adding ${packageId}@${version}...`);
+    try {
+      const url = item?.source === "remote"
+        ? `${projectApiBase}/marketplace/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
+        : `${projectApiBase}/marketplace/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
+      const json = await requestJson(url, { method: "POST" });
+      const result = json?.result || {};
+      setInstallResult(`Added ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
+      setTimeout(() => {
+        setInstallOpen(false);
+        nav(`${editorBase}?path=${encodeURIComponent(currentPath)}`);
+      }, 1200);
+    } catch (err: any) {
+      setInstallResult(String(err?.message || err));
     } finally {
       setInstalling(false);
     }
@@ -983,9 +1057,9 @@ export default function UnifiedRegistryEditor(input) {
                 </DropdownMenu>
                 <Button size="sm" variant="ghost"
                   onClick={() => { setInstallResult(null); setInstallOpen(true); if (!catalogLoaded) loadCatalog(); }}
-                  title="Install UI components"
+                  title="Add packs, pipelines, templates, and UI"
                   className="flex items-center gap-1.5">
-                  <DownloadIcon />Install
+                  <DownloadIcon />Add+
                 </Button>
               </div>
             </div>
@@ -1052,6 +1126,10 @@ export default function UnifiedRegistryEditor(input) {
               <div data-editor-pipeline-list="true">
                 {dynSidebarPipelines.map((item, index) => (
                   <div key={`${item?.id ?? "p"}-${index}`} className="pipeline-editor-item-wrap">
+                    {(() => {
+                      const pipelineLocked = !!item?.is_locked;
+                      return (
+                        <>
                     <Link
                       href={item?.editor_href ?? "#"}
                       className={cx("pipeline-editor-item", item?.is_selected ? "is-selected" : "")}
@@ -1068,14 +1146,18 @@ export default function UnifiedRegistryEditor(input) {
                       </div>
                       <p className="pipeline-editor-item-meta">{item?.trigger_kind}</p>
                     </Link>
-                    <button
-                      type="button"
-                      className="pipeline-registry-row-del"
-                      title={`Delete ${item?.name ?? "pipeline"}`}
-                      onClick={() => { setPendingDelete({ path: item?.id ?? "", name: item?.name ?? "", isPipeline: true }); setDeleteInput(""); setDeleteError(null); }}
-                    >
-                      <TrashIcon />
-                    </button>
+                    {renderDeleteAffordance({
+                      locked: pipelineLocked,
+                      title: `Delete ${item?.name ?? "pipeline"}`,
+                      onDelete: () => {
+                        setPendingDelete({ path: item?.id ?? "", name: item?.name ?? "", isPipeline: true });
+                        setDeleteInput("");
+                        setDeleteError(null);
+                      },
+                    })}
+                        </>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>
@@ -1087,6 +1169,10 @@ export default function UnifiedRegistryEditor(input) {
                   <div>
                     {dynSidebarTemplates.map((file, index) => (
                       <div key={`tpl-${file?.template_path ?? index}`} className="pipeline-editor-item-wrap">
+                        {(() => {
+                          const templateLocked = isTemplatePathLocked(file?.rel_path ?? "");
+                          return (
+                            <>
                         <Link
                           href={file?.editor_href ?? "#"}
                           className={cx("pipeline-editor-item", file?.is_selected ? "is-selected" : "")}
@@ -1103,14 +1189,18 @@ export default function UnifiedRegistryEditor(input) {
                           </div>
                           <p className="pipeline-editor-item-meta">{file?.kind}</p>
                         </Link>
-                        <button
-                          type="button"
-                          className="pipeline-registry-row-del"
-                          title={`Delete ${file?.name ?? "file"}`}
-                          onClick={() => { setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc" }); setDeleteInput(""); setDeleteError(null); }}
-                        >
-                          <TrashIcon />
-                        </button>
+                        {renderDeleteAffordance({
+                          locked: templateLocked,
+                          title: `Delete ${file?.name ?? "file"}`,
+                          onDelete: () => {
+                            setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc" });
+                            setDeleteInput("");
+                            setDeleteError(null);
+                          },
+                        })}
+                            </>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -1146,6 +1236,7 @@ export default function UnifiedRegistryEditor(input) {
                   ) : null}
                   {dynFolderNormalFolders.map((f, index) => {
                     const folderRelPath = (f?.virtual_path ?? "").replace(/^\//, "");
+                    const folderLocked = isFolderPathLocked(folderRelPath);
                     return (
                       <div
                         key={`ffolder-${index}`}
@@ -1169,14 +1260,15 @@ export default function UnifiedRegistryEditor(input) {
                           >
                             Move
                           </Button>
-                          <button
-                            type="button"
-                            className="pipeline-registry-row-del"
-                            title={`Delete folder ${f?.name}`}
-                            onClick={() => { setPendingDelete({ path: folderRelPath, name: f?.name ?? "folder", isPipeline: false, isFolder: true, isDoc: isDocsScope, parentPath: currentPath }); setDeleteInput(""); setDeleteError(null); }}
-                          >
-                            <TrashIcon />
-                          </button>
+                          {renderDeleteAffordance({
+                            locked: folderLocked,
+                            title: `Delete folder ${f?.name}`,
+                            onDelete: () => {
+                              setPendingDelete({ path: folderRelPath, name: f?.name ?? "folder", isPipeline: false, isFolder: true, isDoc: isDocsScope, parentPath: currentPath });
+                              setDeleteInput("");
+                              setDeleteError(null);
+                            },
+                          })}
                         </div>
                       </div>
                     );
@@ -1200,28 +1292,34 @@ export default function UnifiedRegistryEditor(input) {
                     <div className="pipeline-registry-section-head">Pipelines</div>
                   ) : null}
                   {dynFolderPipelines.map((item, index) => (
-                    <div
-                      key={`fpipeline-${index}`}
-                      className="pipeline-registry-row"
-                      data-pipeline-row=""
-                      data-rel-path={item?.id ?? ""}
-                    >
-                      <Link href={item?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
-                        <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
-                        {item?.is_locked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
-                        <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
-                        <Badge variant="secondary">{item?.trigger_kind}</Badge>
-                      </Link>
-                      <button
-                        type="button"
-                        className="pipeline-registry-row-del"
-                        title={`Delete ${item?.name ?? "pipeline"}`}
-                        onClick={() => { setPendingDelete({ path: item?.id ?? "", name: item?.name ?? "", isPipeline: true }); setDeleteInput(""); setDeleteError(null); }}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
+                    (() => {
+                      const pipelineLocked = !!item?.is_locked;
+                      return (
+                        <div
+                          key={`fpipeline-${index}`}
+                          className="pipeline-registry-row"
+                          data-pipeline-row=""
+                          data-rel-path={item?.id ?? ""}
+                        >
+                          <Link href={item?.editor_href ?? "#"} className="pipeline-registry-row-link">
+                            <span className="shrink-0 flex items-center text-body-soft"><PipelineIcon /></span>
+                            <StatusDot isActive={item?.is_active} hasDraft={item?.has_draft} />
+                            {pipelineLocked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
+                            <span className="pipeline-registry-row-name">{item?.title || item?.name}</span>
+                            <Badge variant="secondary">{item?.trigger_kind}</Badge>
+                          </Link>
+                          {renderDeleteAffordance({
+                            locked: pipelineLocked,
+                            title: `Delete ${item?.name ?? "pipeline"}`,
+                            onDelete: () => {
+                              setPendingDelete({ path: item?.id ?? "", name: item?.name ?? "", isPipeline: true });
+                              setDeleteInput("");
+                              setDeleteError(null);
+                            },
+                          })}
+                        </div>
+                      );
+                    })()
                   ))}
 
                   {/* Template files */}
@@ -1229,41 +1327,47 @@ export default function UnifiedRegistryEditor(input) {
                     <div className="pipeline-registry-section-head">Templates</div>
                   ) : null}
                   {dynFolderTemplates.map((file, index) => (
-                    <div
-                      key={`ffile-${index}`}
-                      className="pipeline-registry-row pipeline-registry-file-row"
-                      data-pipeline-row=""
-                      data-rel-path={file?.rel_path ?? ""}
-                    >
-                      <Link href={file?.editor_href ?? "#"} className="pipeline-registry-row-link">
-                        <span className="shrink-0 flex items-center text-body-soft"><FileKindIcon name={file?.name ?? ""} /></span>
-                        {isTemplatePathLocked(file?.rel_path ?? "") && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
-                        <span className="pipeline-registry-row-name">{file?.name}</span>
-                      </Link>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() => openMoveDialog({
-                            name: file?.name ?? "file",
-                            fromPath: file?.kind === "doc" ? String(file?.template_path ?? "").replace(/^docs\//, "") : file?.rel_path ?? "",
-                            isFolder: false,
-                            isDoc: file?.kind === "doc",
-                            targetParent: file?.kind === "doc" ? currentPath : currentPath.replace(/^\//, "") || "/",
-                          })}
+                    (() => {
+                      const templateLocked = isTemplatePathLocked(file?.rel_path ?? "");
+                      return (
+                        <div
+                          key={`ffile-${index}`}
+                          className="pipeline-registry-row pipeline-registry-file-row"
+                          data-pipeline-row=""
+                          data-rel-path={file?.rel_path ?? ""}
                         >
-                          Move
-                        </Button>
-                        <button
-                          type="button"
-                          className="pipeline-registry-row-del"
-                          title={`Delete ${file?.name ?? "file"}`}
-                          onClick={() => { setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc", parentPath: currentPath }); setDeleteInput(""); setDeleteError(null); }}
-                        >
-                          <TrashIcon />
-                        </button>
-                      </div>
-                    </div>
+                          <Link href={file?.editor_href ?? "#"} className="pipeline-registry-row-link">
+                            <span className="shrink-0 flex items-center text-body-soft"><FileKindIcon name={file?.name ?? ""} /></span>
+                            {templateLocked && <LockIcon className="w-3 h-3 text-dark-accent1 shrink-0" title="Locked — agents cannot access" />}
+                            <span className="pipeline-registry-row-name">{file?.name}</span>
+                          </Link>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => openMoveDialog({
+                                name: file?.name ?? "file",
+                                fromPath: file?.kind === "doc" ? String(file?.template_path ?? "").replace(/^docs\//, "") : file?.rel_path ?? "",
+                                isFolder: false,
+                                isDoc: file?.kind === "doc",
+                                targetParent: file?.kind === "doc" ? currentPath : currentPath.replace(/^\//, "") || "/",
+                              })}
+                            >
+                              Move
+                            </Button>
+                            {renderDeleteAffordance({
+                              locked: templateLocked,
+                              title: `Delete ${file?.name ?? "file"}`,
+                              onDelete: () => {
+                                setPendingDelete({ path: file?.rel_path ?? "", name: file?.name ?? "", isPipeline: false, isDoc: file?.kind === "doc", parentPath: currentPath });
+                                setDeleteInput("");
+                                setDeleteError(null);
+                              },
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()
                   ))}
 
                   {(dynFolderNormalFolders.length + dynFolderSpecialFolders.length) === 0 && dynFolderPipelines.length === 0 && dynFolderTemplates.length === 0 ? (
@@ -1277,47 +1381,74 @@ export default function UnifiedRegistryEditor(input) {
 
             {/* ── Template editor ─────────────────────────────────────── */}
             {isTemplate && (
-              <div className="flex flex-col flex-1 min-h-0">
-                <div className="pipeline-editor-toolbar">
-                  <div className="pipeline-editor-toolbar-main">
-                    <p className="pipeline-editor-title">{template?.name}</p>
-                    <p className="pipeline-editor-subtitle">{template?.rel_path}</p>
-                  </div>
-                  <div className="pipeline-editor-toolbar-actions">
-                    <span className="pipeline-editor-indicator">{templateSaveState}</span>
-                    <span className="pipeline-editor-indicator">{template?.file_kind}</span>
-                    {isTsxTemplate && (
-                      <Button
-                        variant={previewActive ? "live" : "outline"}
-                        size="xs"
-                        onClick={handleTogglePreview}
-                      >
-                        {previewActive ? "● Live" : "Live Preview"}
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={handleToggleTemplateLock}
-                      title={selectedTemplateLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
-                      className={selectedTemplateLocked ? "text-dark-accent1" : "text-body-soft hover:text-dark-accent1"}
-                    >
-                      {selectedTemplateLocked ? <LockIcon /> : <LockOpenIcon />}
-                    </Button>
-                    <Button variant="outline" size="xs" onClick={handleSaveTemplate}>Save</Button>
-                    <Button
-                      variant="destructive"
-                      size="xs"
-                      onClick={() => {
-                        setPendingDelete({ path: template?.rel_path ?? "", name: template?.name ?? "", isPipeline: false, isDoc: false });
-                        setDeleteInput("");
-                        setDeleteError(null);
-                      }}
-                    >Delete</Button>
-                    <Link href={`${editorBase}?path=${currentPath}`} className="zf-btn zf-btn-ghost zf-btn-xs">✕ Close</Link>
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--zf-radius-panel)] border border-border bg-surface">
+                <div className="pipeline-editor-toolbar border-b border-border-soft">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="pipeline-editor-toolbar-main">
+                      <p className="pipeline-editor-title">{template?.name}</p>
+                      <p className="pipeline-editor-subtitle">{template?.rel_path}</p>
+                    </div>
+                    <div className="flex min-w-0 shrink-0 items-center justify-end gap-2 overflow-x-auto">
+                      <div className="flex shrink-0 items-center gap-3">
+                        <span className="pipeline-editor-indicator">{templateSaveState}</span>
+                        <span className="pipeline-editor-indicator">{template?.file_kind}</span>
+                        <span className="pipeline-editor-indicator">
+                          {selectedTemplateLocked ? "locked" : "editable"}
+                        </span>
+                        {isTsxTemplate ? (
+                          <span className="pipeline-editor-indicator">
+                            {previewActive ? "live" : "preview off"}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button variant="outline" size="xs" onClick={handleSaveTemplate} disabled={selectedTemplateLocked}>
+                          Save
+                        </Button>
+                        {isTsxTemplate && (
+                          <Button
+                            variant={previewActive ? "live" : "outline"}
+                            size="xs"
+                            onClick={handleTogglePreview}
+                          >
+                            {previewActive ? "● Live" : "Live Preview"}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={handleToggleTemplateLock}
+                          title={selectedTemplateLocked ? "Unlock (allow agent access)" : "Lock (block agent access)"}
+                          aria-label={selectedTemplateLocked ? "Unlock template editor" : "Lock template editor"}
+                          className={selectedTemplateLocked ? "text-dark-accent1" : "text-body hover:text-dark-accent1"}
+                        >
+                          {selectedTemplateLocked ? <LockIcon /> : <LockOpenIcon />}
+                        </Button>
+                        {!selectedTemplateLocked ? (
+                          <Button
+                            variant="destructive"
+                            size="icon"
+                            onClick={() => {
+                              setPendingDelete({ path: template?.rel_path ?? "", name: template?.name ?? "", isPipeline: false, isDoc: false });
+                              setDeleteInput("");
+                              setDeleteError(null);
+                            }}
+                            title="Delete template"
+                            aria-label="Delete template"
+                          >
+                            <TrashIcon />
+                          </Button>
+                        ) : (
+                          <span className="inline-flex items-center justify-center text-dark-accent1" title="Locked — cannot delete" aria-label="Locked item">
+                            <LockIcon />
+                          </span>
+                        )}
+                        <Link href={`${editorBase}?path=${currentPath}`} className="zf-btn zf-btn-ghost zf-btn-xs">✕ Close</Link>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="pipeline-editor-template-host" ref={templateEditorHostRef} />
+                <div className="pipeline-editor-template-host flex-1 min-h-0" ref={templateEditorHostRef} />
                 <div className="pipeline-editor-foot">
                   <span className="pipeline-editor-foot-item">{template?.name}</span>
                   <span className="pipeline-editor-foot-item">{templateSaveState}</span>
@@ -1351,15 +1482,21 @@ export default function UnifiedRegistryEditor(input) {
                     >
                       Move
                     </Button>
-                    <Button
-                      variant="destructive"
-                      size="xs"
-                      onClick={() => {
-                        setPendingDelete({ path: doc?.rel_path ?? "", name: doc?.name ?? "", isPipeline: false, isDoc: true, parentPath: doc?.parent_virtual_path ?? "/docs" });
-                        setDeleteInput("");
-                        setDeleteError(null);
-                      }}
-                    >Delete</Button>
+                    {!isTemplatePathLocked(doc?.rel_path ?? "") ? (
+                      <Button
+                        variant="destructive"
+                        size="xs"
+                        onClick={() => {
+                          setPendingDelete({ path: doc?.rel_path ?? "", name: doc?.name ?? "", isPipeline: false, isDoc: true, parentPath: doc?.parent_virtual_path ?? "/docs" });
+                          setDeleteInput("");
+                          setDeleteError(null);
+                        }}
+                      >Delete</Button>
+                    ) : (
+                      <span className="inline-flex items-center justify-center text-dark-accent1" title="Locked — cannot delete" aria-label="Locked item">
+                        <LockIcon />
+                      </span>
+                    )}
                     <Link href={`${editorBase}?path=${encodeURIComponent(doc?.parent_virtual_path ?? "/docs")}`} className="zf-btn zf-btn-ghost zf-btn-xs">✕ Close</Link>
                   </div>
                 </div>
@@ -1395,7 +1532,7 @@ export default function UnifiedRegistryEditor(input) {
                 scopePath={currentPath}
                 graphuiSrc={pipeline?.graphui?.runtime_src ?? ""}
                 graphuiPackageLabel={pipeline?.graphui?.package_label ?? "Graph UI"}
-                onDeleteClick={() => {
+                onDeleteClick={pipeline?.selected_meta?.is_locked ? undefined : () => {
                   const pName = String(pipeline?.selected_meta?.name
                     ?? (pipeline?.selected_id ?? "").split("/").pop()?.replace(".zf.json", "")
                     ?? "");
@@ -1586,11 +1723,15 @@ export default function UnifiedRegistryEditor(input) {
               installTab={installTab}
               setInstallTab={setInstallTab}
               catalogData={catalogData}
+              marketplacePacks={marketplacePacks}
+              packSearch={packSearch}
+              setPackSearch={setPackSearch}
               selectedComponents={selectedComponents}
               setSelectedComponents={setSelectedComponents}
               installResult={installResult}
               installing={installing}
               onInstallSubmit={handleInstallSubmit}
+              onAddPack={handleAddPack}
             />
           )}
 

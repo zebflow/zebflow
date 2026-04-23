@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
@@ -224,6 +225,204 @@ pub struct ProjectDbConnectionListItem {
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
+}
+
+/// One project-scoped marketplace repository source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectMarketplaceRepository {
+    /// Owner identifier.
+    pub owner: String,
+    /// Project slug.
+    pub project: String,
+    /// Stable repository id.
+    pub repository_id: String,
+    /// Display title.
+    pub title: String,
+    /// Base URL of the remote marketplace, e.g. `http://127.0.0.1:10612`.
+    pub base_url: String,
+    /// Remote owner slug on the target marketplace.
+    pub remote_owner: String,
+    /// Remote project slug on the target marketplace.
+    pub remote_project: String,
+    /// Optional bearer token for read access.
+    pub read_token: String,
+    /// Whether this repository should be queried in Packs.
+    pub enabled: bool,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One platform-scoped marketplace repository source used from Home.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformMarketplaceRepository {
+    /// Owner identifier for the local platform user who manages this source.
+    pub owner: String,
+    /// Stable repository id.
+    pub repository_id: String,
+    /// Display title.
+    pub title: String,
+    /// Base URL of the remote marketplace, e.g. `http://127.0.0.1:10612/api/projects/superadmin/default/marketplace`.
+    pub base_url: String,
+    /// Remote owner slug on the target marketplace when using a proxy base.
+    pub remote_owner: String,
+    /// Remote project slug on the target marketplace when using a proxy base.
+    pub remote_project: String,
+    /// Optional bearer token for read access.
+    pub read_token: String,
+    /// Whether this repository should be queried in Home marketplace.
+    pub enabled: bool,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One stable publisher identity inside one project-hosted marketplace authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketplacePublisher {
+    /// Marketplace authority owner.
+    pub owner: String,
+    /// Marketplace authority project.
+    pub project: String,
+    /// Stable immutable public publisher identity.
+    pub publisher_id: String,
+    /// Human-facing publisher name.
+    pub display_name: String,
+    /// Stable public publisher URL.
+    pub publisher_url: String,
+    /// Publisher contact email.
+    pub email: String,
+    /// Optional human-readable description.
+    pub description: String,
+    /// Optional icon URL.
+    pub icon_url: String,
+    /// Optional website URL.
+    pub website_url: String,
+    /// Whether the publisher is active.
+    pub enabled: bool,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One published marketplace asset package stored at the platform level.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketplaceAssetPackage {
+    /// Stable package id, unique inside one marketplace instance.
+    pub package_id: String,
+    /// Marketplace authority owner that hosts this package.
+    pub authority_owner: String,
+    /// Marketplace authority project that hosts this package.
+    pub authority_project: String,
+    /// Publisher owner id.
+    pub publisher_owner: String,
+    /// Stable public publisher identity inside this marketplace authority.
+    pub publisher_id: String,
+    /// Human-facing publisher name.
+    pub publisher_display_name: String,
+    /// Stable public publisher URL for attribution and discovery.
+    pub publisher_url: String,
+    /// Publisher contact email.
+    pub publisher_email: String,
+    /// Asset kind (`pipeline`, `template_pack`, ...).
+    pub asset_kind: String,
+    /// Display title.
+    pub title: String,
+    /// Optional human-readable description.
+    pub description: String,
+    /// Visibility (`public`, `private`, `unlisted`).
+    pub visibility: String,
+    /// Search tags.
+    pub tags: Vec<String>,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One immutable version of a marketplace asset package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarketplaceAssetVersion {
+    /// Stable package id.
+    pub package_id: String,
+    /// Version string.
+    pub version: String,
+    /// Marketplace authority owner that hosts this package version.
+    pub authority_owner: String,
+    /// Marketplace authority project that hosts this package version.
+    pub authority_project: String,
+    /// Publisher owner id.
+    pub publisher_owner: String,
+    /// Stable public publisher identity.
+    pub publisher_id: String,
+    /// Source owner from which the asset was exported.
+    pub source_owner: String,
+    /// Source project from which the asset was exported.
+    pub source_project: String,
+    /// Source kind (`pipeline` for v1).
+    pub source_kind: String,
+    /// Source ref such as `pipelines/foo.zf.json`.
+    pub source_ref: String,
+    /// Artifact relative path under platform storage.
+    pub artifact_rel_path: String,
+    /// SHA-256 of artifact bytes.
+    pub artifact_sha256: String,
+    /// Serialized manifest/payload metadata.
+    pub manifest: serde_json::Value,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+}
+
+/// One marketplace access token used for publish/read/manage operations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketplaceToken {
+    /// Stable token id.
+    pub token_id: String,
+    /// Owner id.
+    pub owner: String,
+    /// Project slug for the marketplace authority that owns this token.
+    pub project: String,
+    /// Stable public publisher identity this token acts as.
+    pub publisher_id: String,
+    /// Human-facing publisher name.
+    pub publisher_display_name: String,
+    /// Stable public publisher URL.
+    pub publisher_url: String,
+    /// Publisher contact email.
+    pub publisher_email: String,
+    /// Display title.
+    pub title: String,
+    /// SHA-256 hash of the secret, never returned to clients.
+    pub secret_hash: String,
+    /// Granted scopes.
+    pub scopes: Vec<String>,
+    /// Optional unix timestamp seconds.
+    pub expires_at: Option<i64>,
+    /// Optional unix timestamp seconds.
+    pub last_used_at: Option<i64>,
+    /// Optional unix timestamp seconds.
+    pub revoked_at: Option<i64>,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// Request to create one marketplace token.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateMarketplaceTokenRequest {
+    /// Stable public publisher identity.
+    pub publisher_id: String,
+    /// Display title.
+    pub title: String,
+    /// Granted scopes.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Optional unix timestamp seconds.
+    pub expires_at: Option<i64>,
 }
 
 /// Project-scoped assistant runtime configuration (used by Zebtune/chat assistant).
@@ -1367,18 +1566,51 @@ pub struct ResolvedGitIdentity {
 }
 
 /// Layer 2 project config stored in `repo/zebflow.json` (git-synced, non-sensitive).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZebflowJson {
+    #[serde(default = "default_zebflow_json_version")]
+    pub version: String,
     #[serde(default)]
-    pub project: ZebflowJsonProject,
+    pub metadata: ZebflowJsonMetadata,
     #[serde(default)]
-    pub assistant: ZebflowJsonAssistant,
+    pub configs: ZebflowJsonConfigs,
     #[serde(default)]
-    pub ui: ZebflowJsonUi,
+    pub distribution: ZebflowJsonDistribution,
+}
+
+fn default_zebflow_json_version() -> String {
+    "1.0".to_string()
+}
+
+fn default_max_asset_size_mb() -> u32 {
+    10
+}
+
+impl Default for ZebflowJson {
+    fn default() -> Self {
+        Self {
+            version: default_zebflow_json_version(),
+            metadata: ZebflowJsonMetadata::default(),
+            configs: ZebflowJsonConfigs::default(),
+            distribution: ZebflowJsonDistribution::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonMetadata {
     #[serde(default)]
-    pub logging: ZebflowJsonLogging,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonConfigs {
     #[serde(default)]
     pub rwe: ZebflowJsonRwe,
+    #[serde(default)]
+    pub pipelines: ZebflowJsonPipelines,
     #[serde(default)]
     pub runtime: ProjectRuntimeProfile,
     #[serde(default)]
@@ -1386,11 +1618,64 @@ pub struct ZebflowJson {
     #[serde(default)]
     pub git: ZebflowJsonGit,
     #[serde(default)]
-    pub remote: ZebflowJsonGitRemote,
-    #[serde(default)]
-    pub assets: ZebflowJsonAssets,
+    pub assistant: ZebflowJsonAssistant,
     #[serde(default)]
     pub locks: ZebflowJsonLocks,
+    #[serde(default)]
+    pub data: ZebflowJsonData,
+    #[serde(default)]
+    pub files: ZebflowJsonFiles,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonPipelines {
+    #[serde(default)]
+    pub logging: ZebflowJsonLogging,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub nodes: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonData {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonFiles {
+    #[serde(default)]
+    pub uploads: ZebflowJsonUploads,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZebflowJsonUploads {
+    /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
+    #[serde(default = "default_max_asset_size_mb")]
+    pub max_asset_size_mb: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_size_mb: Option<u32>,
+}
+
+impl Default for ZebflowJsonUploads {
+    fn default() -> Self {
+        Self {
+            max_asset_size_mb: 10,
+            max_file_size_mb: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonDistribution {
+    #[serde(default)]
+    pub marketplace: ZebflowJsonDistributionMarketplace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ZebflowJsonDistributionMarketplace {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub entry_url: String,
+    #[serde(default)]
+    pub as_app: bool,
+    #[serde(default)]
+    pub producer_enabled: bool,
 }
 
 /// Lock settings stored in `zebflow.json` — controls which resources agents cannot access.
@@ -1401,16 +1686,11 @@ pub struct ZebflowJsonLocks {
     pub templates: Vec<String>,
 }
 
-/// Git identity section of `zebflow.json`.
-/// Provides author name and email for all git commits in this project.
+/// Git settings section of `zebflow.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZebflowJsonGit {
-    /// Git author/committer display name (e.g. "Jane Doe").
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub author_name: String,
-    /// Git author/committer email (e.g. "jane@example.com").
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub author_email: String,
+    #[serde(default)]
+    pub remote: ZebflowJsonGitRemote,
 }
 
 /// Git remote section of `zebflow.json`.
@@ -1426,26 +1706,6 @@ pub struct ZebflowJsonGitRemote {
     /// Default branch to push to (e.g. `"main"`).
     #[serde(default)]
     pub branch: String,
-}
-
-/// Asset management section of `zebflow.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZebflowJsonAssets {
-    /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
-    #[serde(default = "default_max_asset_size_mb")]
-    pub max_asset_size_mb: u32,
-}
-
-fn default_max_asset_size_mb() -> u32 {
-    10
-}
-
-impl Default for ZebflowJsonAssets {
-    fn default() -> Self {
-        Self {
-            max_asset_size_mb: 10,
-        }
-    }
 }
 
 /// RWE settings section of `zebflow.json`.
@@ -1577,15 +1837,6 @@ pub struct PipelineInvocationEntry {
     pub trace: Vec<crate::pipeline::model::NodeTraceEntry>,
 }
 
-/// Project identity section of zebflow.json.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ZebflowJsonProject {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-}
-
 /// Assistant settings section of zebflow.json.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZebflowJsonAssistant {
@@ -1601,13 +1852,6 @@ pub struct ZebflowJsonAssistant {
     pub chat_history_pairs: Option<u32>,
     #[serde(default)]
     pub enabled: Option<bool>,
-}
-
-/// UI preferences section of zebflow.json.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ZebflowJsonUi {
-    #[serde(default)]
-    pub theme: String,
 }
 
 /// Request payload for project creation.

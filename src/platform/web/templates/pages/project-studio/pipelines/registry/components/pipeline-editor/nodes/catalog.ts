@@ -3,6 +3,7 @@ import type { NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry
 export const nodeCategories: Record<string, string[]> = {
   trigger: [
     "n.trigger.webhook",
+    "n.trigger.mapserver",
     "n.trigger.schedule",
     "n.trigger.manual",
     "n.trigger.ws",
@@ -38,6 +39,7 @@ export const nodeCategories: Record<string, string[]> = {
 
 const NODE_KIND_COLORS: Record<string, string> = {
   "n.trigger.webhook": "#065f46",
+  "n.trigger.mapserver": "#0f766e",
   "n.trigger.schedule": "#14532d",
   "n.trigger.manual": "#166534",
   "n.trigger.weberror": "#7f1d1d",
@@ -86,6 +88,15 @@ export function canonicalNodeKind(kind: string): string {
   return raw;
 }
 
+export function isTriggerNodeKind(kind: string): boolean {
+  return canonicalNodeKind(kind).startsWith("n.trigger.");
+}
+
+export function triggerKindFromNodeKind(kind: string): string {
+  const canonical = canonicalNodeKind(kind);
+  return isTriggerNodeKind(canonical) ? canonical.slice("n.trigger.".length) : "";
+}
+
 export function buildNodeCatalog(items: any[]): Map<string, NodeCatalogEntry> {
   const map = new Map<string, NodeCatalogEntry>();
   (Array.isArray(items) ? items : []).forEach((item) => {
@@ -110,6 +121,7 @@ export function normalizeNodePins(
   if (
     pinRole === "input" &&
     (canonicalKind === "n.trigger.webhook" ||
+      canonicalKind === "n.trigger.mapserver" ||
       canonicalKind === "n.trigger.schedule" ||
       canonicalKind === "n.trigger.manual")
   ) {

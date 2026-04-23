@@ -22,7 +22,7 @@ use crate::pipeline::nodes::basic::{
     agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
     img_thumbnail, logic, mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set,
     pg_query, script, sekejap_query, sqlite_mutate, sqlite_query,
-    trigger::{function as trigger_function, manual, memsubscribe, schedule, weberror, webhook},
+    trigger::{function as trigger_function, manual, mapserver, memsubscribe, schedule, weberror, webhook},
     web_response, web_static_generate, ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
@@ -380,6 +380,11 @@ impl BasicPipelineEngine {
             manual::NODE_KIND => Ok(NodeDispatch::Manual(manual::Node::new(
                 serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_MANUAL_CONFIG", err.to_string()))?,
+            ))),
+            mapserver::NODE_KIND => Ok(NodeDispatch::Mapserver(mapserver::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    PipelineError::new("FW_NODE_MAPSERVER_CONFIG", err.to_string())
+                })?,
             ))),
             script::NODE_KIND => Ok(NodeDispatch::Script(script::Node::new(
                 &node.id,
@@ -901,6 +906,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::Webhook(node) => node.execute_async(input).await,
                     NodeDispatch::Schedule(node) => node.execute_async(input).await,
                     NodeDispatch::Manual(node) => node.execute_async(input).await,
+                    NodeDispatch::Mapserver(node) => node.execute_async(input).await,
                     NodeDispatch::Script(node) => node.execute_async(input).await,
                     NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
                     NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
@@ -1513,6 +1519,7 @@ enum NodeDispatch {
     Webhook(webhook::Node),
     Schedule(schedule::Node),
     Manual(manual::Node),
+    Mapserver(mapserver::Node),
     Script(script::Node),
     HttpRequest(http_request::Node),
     BrowserRun(browser_run::Node),

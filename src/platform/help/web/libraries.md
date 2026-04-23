@@ -44,6 +44,21 @@ const page = Number(params.get("page") ?? "1");
 
 ---
 
+## zeb/livegeo — Live Map Hooks
+
+Frontend-only hooks for playback, smoothing, and live track interactivity.
+
+| Hook | Signature | Description |
+|------|-----------|-------------|
+| `usePlayback` | `({ start, end, initialTime, autoplay, speed, msPerSecond, loop })` | Timeline playback state with play, pause, reset, and seek. |
+| `useTrackPlayback` | `(tracks, options?)` | Produces interpolated moving entity snapshots from timed track points. |
+| `useTrackSmoothing` | `(target, options?)` | Smooths moving position and bearing updates. |
+| `useMapFollow` | `(target, options?)` | Keeps map view state centered on a moving target. |
+
+Use `Tool.geo` for cross-runtime math like `routeProgress`, `interpolateRoute`, and `bearing`.
+
+---
+
 ## zeb/icons — SVG Icon Components
 
 Lucide icon components. After enabling, you must still import the bundle explicitly:

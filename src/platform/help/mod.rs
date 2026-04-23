@@ -21,6 +21,25 @@ pub struct HelpNode {
     pub content: &'static str,
 }
 
+pub fn top_level_sections() -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for node in HELP.iter() {
+        let top = node.path.split('/').next().unwrap_or("").trim();
+        if top.is_empty() || !seen.insert(top.to_string()) {
+            continue;
+        }
+        let title = HELP
+            .iter()
+            .find(|n| n.path == format!("{}/index", top) || n.path == top)
+            .map(|n| n.title.to_string())
+            .unwrap_or_else(|| top.to_string());
+        let content = get_help(top).unwrap_or_else(|_| format!("# {title}\n"));
+        out.push((top.to_string(), title, content));
+    }
+    out
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Primary help lookup. Returns the rendered content for `path`.

@@ -1,5 +1,8 @@
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
+import DialogHeader from "@/components/ui/dialog-header";
+import DialogTitle from "@/components/ui/dialog-title";
+import DialogFooter from "@/components/ui/dialog-footer";
 import Button from "@/components/ui/button";
 
 /**
@@ -22,11 +25,13 @@ export default function ConfirmDialog({
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
       <DialogContent>
-        <div className="flex flex-col gap-1.5">
-          <p className="font-semibold text-body text-[0.95rem]">{title}</p>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="px-6 py-4">
           {message ? <p className="text-[0.82rem] text-body-soft">{message}</p> : null}
         </div>
-        <div className="flex justify-end gap-2 pt-2">
+        <DialogFooter>
           {cancelLabel ? (
             <Button variant="outline" size="sm" onClick={onClose}>{cancelLabel}</Button>
           ) : null}
@@ -37,7 +42,7 @@ export default function ConfirmDialog({
           >
             {confirmLabel}
           </Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

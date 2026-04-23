@@ -12,8 +12,20 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
+use base64::Engine as _;
+use reqwest::Url;
+use serde_json::Value;
 use zebflow::infra::cluster::config::ClusterRole;
+use zebflow::infra::execution::sync::ProjectBootstrapPlan;
+use zebflow::platform::model::CreateProjectRequest;
+use zebflow::platform::services::project::{
+    derive_trigger_kind_from_source, webhook_triggers_from_source,
+};
+use zebflow::platform::services::PlatformService;
+use zebflow::platform::web;
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
 use zebflow::provision::k8s as k8s_provision;
 use zebflow::version::APP_VERSION;
@@ -78,6 +90,7 @@ fn top_level_help() -> String {
 
 Usage:
   zebflow [standalone]
+  zebflow run <project-or-marketplace-asset-url> [--owner <owner>] [--project <project>]
   zebflow controller
   zebflow office
   zebflow k8s cluster <command> ...
@@ -87,6 +100,7 @@ Usage:
 
 Runtime Modes:
   standalone   Start the combined controller + office server (default)
+  run          Materialize one app project if needed, then serve its public route
   controller   Start the control-plane oriented server
   office       Start the execution-plane oriented server
 
@@ -105,6 +119,7 @@ Environment:
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
   ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+  ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL  Default platform marketplace API URL
 
 Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
         version = APP_VERSION
@@ -120,7 +135,10 @@ fn print_version() {
 }
 
 /// Load the platform configuration for the requested runtime role from environment variables.
-fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> {
+fn load_platform_config_with_default_password(
+    role: ClusterRole,
+    default_password_fallback: Option<&str>,
+) -> Result<PlatformConfig, io::Error> {
     let mut config = PlatformConfig::default();
     let host = configured_host();
     let port = configured_port();
@@ -131,8 +149,11 @@ fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> 
     if let Ok(owner) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_OWNER") {
         config.default_owner = owner;
     }
-    config.default_password =
-        std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD").unwrap_or_default();
+    config.default_password = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PASSWORD")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| default_password_fallback.map(ToString::to_string))
+        .unwrap_or_default();
     if let Ok(project) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PROJECT") {
         config.default_project = project;
     }
@@ -155,6 +176,10 @@ fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> 
     }
 
     Ok(config)
+}
+
+fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> {
+    load_platform_config_with_default_password(role, None)
 }
 
 /// Run the requested Zebflow server role.
@@ -180,6 +205,367 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+struct RunRequest {
+    target: String,
+    owner: Option<String>,
+    project: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteAssetRef {
+    url: String,
+    package_id: String,
+    version: String,
+}
+
+fn parse_run_request(args: &[String]) -> Result<RunRequest, io::Error> {
+    let Some(target) = args.first() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "missing run target",
+        ));
+    };
+    let mut owner = None;
+    let mut project = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--owner" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value for --owner",
+                    ));
+                };
+                owner = Some(value.clone());
+            }
+            "--project" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value for --project",
+                    ));
+                };
+                project = Some(value.clone());
+            }
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown run flag '{other}'"),
+                ));
+            }
+        }
+        index += 1;
+    }
+    Ok(RunRequest {
+        target: target.clone(),
+        owner,
+        project,
+    })
+}
+
+fn parse_remote_asset_ref(raw: &str) -> Option<RemoteAssetRef> {
+    let url = Url::parse(raw).ok()?;
+    let segments = url
+        .path_segments()?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let remote_idx = segments.windows(2).position(|window| window == ["remote", "assets"])?;
+    let package_id = segments.get(remote_idx + 2)?.to_string();
+    let version = segments.get(remote_idx + 3)?.to_string();
+    Some(RemoteAssetRef {
+        url: raw.to_string(),
+        package_id,
+        version,
+    })
+}
+
+fn sanitize_project_slug(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn repo_rel_path(raw: &str) -> Result<PathBuf, io::Error> {
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("absolute repo path is not allowed: {raw}"),
+        ));
+    }
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("repo path must not escape project root: {raw}"),
+                ));
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported repo path component in '{raw}'"),
+                ));
+            }
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "repo path must not be empty",
+        ));
+    }
+    Ok(out)
+}
+
+fn decode_artifact_entry_bytes(entry: &Value) -> Result<Vec<u8>, io::Error> {
+    let encoding = entry
+        .get("encoding")
+        .and_then(Value::as_str)
+        .unwrap_or("text");
+    let content = entry
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if encoding == "base64" {
+        return base64::engine::general_purpose::STANDARD
+            .decode(content)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()));
+    }
+    Ok(content.as_bytes().to_vec())
+}
+
+fn fallback_pipeline_title(file_rel_path: &str) -> String {
+    Path::new(file_rel_path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Imported Pipeline")
+        .replace(".zf", "")
+        .replace('-', " ")
+}
+
+fn choose_public_app_path(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+) -> Result<String, io::Error> {
+    let metas = platform
+        .projects
+        .list_pipeline_meta_rows(owner, project)
+        .map_err(|err| io::Error::other(err.to_string()))?;
+    let mut preferred_root = None::<String>;
+    let mut preferred_get = None::<String>;
+    let mut fallback = None::<String>;
+
+    for meta in metas {
+        let source = platform
+            .projects
+            .read_pipeline_source(owner, project, &meta.file_rel_path)
+            .map_err(|err| io::Error::other(err.to_string()))?;
+        if let Some(triggers) = webhook_triggers_from_source(&source) {
+            for trigger in triggers {
+                if trigger.method == "GET" && trigger.path == "/" {
+                    preferred_root = Some(trigger.path);
+                    break;
+                }
+                if preferred_get.is_none() && trigger.method == "GET" {
+                    preferred_get = Some(trigger.path.clone());
+                }
+                if fallback.is_none() {
+                    fallback = Some(trigger.path.clone());
+                }
+            }
+        }
+        if preferred_root.is_some() {
+            break;
+        }
+    }
+
+    preferred_root
+        .or(preferred_get)
+        .or(fallback)
+        .ok_or_else(|| io::Error::other("no webhook-triggered public route found for project"))
+}
+
+async fn install_remote_project_asset(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+    remote: &RemoteAssetRef,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response = reqwest::Client::new().get(&remote.url).send().await?;
+    if !response.status().is_success() {
+        return Err(io::Error::other(format!(
+            "remote marketplace fetch failed with {}",
+            response.status()
+        ))
+        .into());
+    }
+    let payload: Value = response.json().await?;
+    let artifact = payload
+        .get("artifact")
+        .cloned()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing artifact payload"))?;
+    let files = artifact
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "artifact.files must be an array"))?;
+
+    platform.projects.create_or_update_project(
+        owner,
+        &CreateProjectRequest {
+            project: project.to_string(),
+            title: Some(remote.package_id.replace('-', " ")),
+            local_branch: None,
+            runtime: Default::default(),
+        },
+    )?;
+    let layout = platform.projects.project_layout(owner, project)?;
+
+    let mut activated = Vec::<String>::new();
+    for entry in files {
+        let rel_path_raw = entry
+            .get("rel_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "artifact entry missing rel_path"))?;
+        let rel_path = repo_rel_path(rel_path_raw)?;
+        let dest_abs = layout.repo_dir.join(&rel_path);
+        if let Some(parent) = dest_abs.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = decode_artifact_entry_bytes(entry)?;
+        std::fs::write(&dest_abs, bytes)?;
+
+        if rel_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("json"))
+            .unwrap_or(false)
+            && rel_path
+                .to_str()
+                .map(|value| value.starts_with("pipelines/") && value.ends_with(".zf.json"))
+                .unwrap_or(false)
+        {
+            let rel_string = rel_path.to_string_lossy().to_string();
+            let source = std::fs::read_to_string(&dest_abs)?;
+            let title = fallback_pipeline_title(&rel_string);
+            let trigger_kind =
+                derive_trigger_kind_from_source(&source).unwrap_or_else(|| "webhook".to_string());
+            let meta = platform.projects.upsert_pipeline_definition(
+                owner,
+                project,
+                &rel_string,
+                &title,
+                "",
+                &trigger_kind,
+                &source,
+            )?;
+            activated.push(meta.file_rel_path);
+        }
+    }
+
+    if !activated.is_empty() {
+        platform.zebflow_cfg.set_bootstrap(
+            owner,
+            project,
+            ProjectBootstrapPlan {
+                activate: activated.clone(),
+            },
+        )?;
+        platform
+            .cluster_runtime_sync
+            .refresh_local_repo_state(owner, project)?;
+    }
+
+    Ok(())
+}
+
+async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_platform_config_with_default_password(ClusterRole::Standalone, Some("secret"))?;
+
+    let remote = parse_remote_asset_ref(&req.target);
+    let owner = req
+        .owner
+        .clone()
+        .unwrap_or_else(|| config.default_owner.clone());
+    let project = req.project.clone().unwrap_or_else(|| {
+        remote
+            .as_ref()
+            .map(|item| sanitize_project_slug(&item.package_id))
+            .unwrap_or_else(|| sanitize_project_slug(&req.target))
+    });
+    if project.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty project slug").into());
+    }
+
+    let platform = Arc::new(PlatformService::from_config(config)?);
+    if let Some(remote) = remote {
+        println!(
+            "Installing {}@{} from remote marketplace asset...",
+            remote.package_id, remote.version
+        );
+        install_remote_project_asset(platform.as_ref(), &owner, &project, &remote).await?;
+    } else {
+        let exists = platform
+            .projects
+            .list_projects(&owner)?
+            .into_iter()
+            .any(|item| item.project == project);
+        if !exists {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("project '{owner}/{project}' is not installed"),
+            )
+            .into());
+        }
+        platform
+            .cluster_runtime_sync
+            .refresh_local_repo_state(&owner, &project)?;
+    }
+
+    let public_path = choose_public_app_path(platform.as_ref(), &owner, &project)?;
+    let host = configured_host();
+    let port = configured_port();
+    let app_url = format!(
+        "http://{}:{}/wh/{owner}/{project}{}",
+        if host == "0.0.0.0" { "127.0.0.1" } else { host.as_str() },
+        port,
+        public_path
+    );
+
+    let app = web::router(platform).await;
+    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    println!("Zebflow app running for {owner}/{project}");
+    println!("Public route: {app_url}");
+    println!("Mode: standalone app runtime");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    eprintln!("Zebflow: shutdown complete.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -187,6 +573,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match mode.as_deref() {
         None | Some("standalone") => run_server(ClusterRole::Standalone).await,
+        Some("run") => run_project(parse_run_request(&args.collect::<Vec<_>>())?).await,
         Some("help") | Some("--help") | Some("-h") => {
             print_top_level_help();
             Ok(())

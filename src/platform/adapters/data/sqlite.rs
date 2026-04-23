@@ -16,11 +16,12 @@ use crate::infra::execution::placement::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject, PlatformUser,
-    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
-    ProjectInvite, ProjectInviteStatus, ProjectMember, ProjectOperationKind,
-    ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding,
-    ProjectSubjectKind, StoredUser,
+    MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplacePublisher, MarketplaceToken, McpSession,
+    PipelineInvocationEntry, PipelineMeta, PlatformMarketplaceRepository, PlatformProject,
+    PlatformUser, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
+    ProjectDbConnection, ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository,
+    ProjectMember, ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus,
+    ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
 };
 
 const SCHEMA_SQL: &str = "
@@ -64,6 +65,99 @@ CREATE TABLE IF NOT EXISTS project_db_connections (
     created_at       INTEGER NOT NULL DEFAULT 0,
     updated_at       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, connection_id)
+);
+CREATE TABLE IF NOT EXISTS project_marketplace_repositories (
+    owner         TEXT NOT NULL,
+    project       TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    base_url      TEXT NOT NULL DEFAULT '',
+    remote_owner  TEXT NOT NULL DEFAULT '',
+    remote_project TEXT NOT NULL DEFAULT '',
+    read_token    TEXT NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, repository_id)
+);
+CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
+    owner         TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    base_url      TEXT NOT NULL DEFAULT '',
+    remote_owner  TEXT NOT NULL DEFAULT '',
+    remote_project TEXT NOT NULL DEFAULT '',
+    read_token    TEXT NOT NULL DEFAULT '',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, repository_id)
+);
+CREATE TABLE IF NOT EXISTS marketplace_publishers (
+    owner          TEXT NOT NULL,
+    project        TEXT NOT NULL,
+    publisher_id   TEXT NOT NULL,
+    display_name   TEXT NOT NULL DEFAULT '',
+    publisher_url  TEXT NOT NULL DEFAULT '',
+    email          TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    icon_url       TEXT NOT NULL DEFAULT '',
+    website_url    TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, publisher_id)
+);
+CREATE TABLE IF NOT EXISTS marketplace_asset_packages (
+    package_id       TEXT PRIMARY KEY,
+    authority_owner  TEXT NOT NULL DEFAULT '',
+    authority_project TEXT NOT NULL DEFAULT '',
+    publisher_owner  TEXT NOT NULL DEFAULT '',
+    publisher_id     TEXT NOT NULL DEFAULT '',
+    publisher_display_name TEXT NOT NULL DEFAULT '',
+    publisher_url    TEXT NOT NULL DEFAULT '',
+    publisher_email  TEXT NOT NULL DEFAULT '',
+    asset_kind       TEXT NOT NULL DEFAULT '',
+    title            TEXT NOT NULL DEFAULT '',
+    description      TEXT NOT NULL DEFAULT '',
+    visibility       TEXT NOT NULL DEFAULT 'private',
+    tags_json        TEXT NOT NULL DEFAULT '[]',
+    created_at       INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS marketplace_asset_versions (
+    package_id        TEXT NOT NULL,
+    version           TEXT NOT NULL,
+    authority_owner   TEXT NOT NULL DEFAULT '',
+    authority_project TEXT NOT NULL DEFAULT '',
+    publisher_owner   TEXT NOT NULL DEFAULT '',
+    publisher_id      TEXT NOT NULL DEFAULT '',
+    source_owner      TEXT NOT NULL DEFAULT '',
+    source_project    TEXT NOT NULL DEFAULT '',
+    source_kind       TEXT NOT NULL DEFAULT '',
+    source_ref        TEXT NOT NULL DEFAULT '',
+    artifact_rel_path TEXT NOT NULL DEFAULT '',
+    artifact_sha256   TEXT NOT NULL DEFAULT '',
+    manifest_json     TEXT NOT NULL DEFAULT 'null',
+    created_at        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (package_id, version)
+);
+CREATE TABLE IF NOT EXISTS marketplace_tokens (
+    token_id       TEXT PRIMARY KEY,
+    owner          TEXT NOT NULL DEFAULT '',
+    project        TEXT NOT NULL DEFAULT '',
+    publisher_id   TEXT NOT NULL DEFAULT '',
+    publisher_display_name TEXT NOT NULL DEFAULT '',
+    publisher_url  TEXT NOT NULL DEFAULT '',
+    publisher_email TEXT NOT NULL DEFAULT '',
+    title          TEXT NOT NULL DEFAULT '',
+    secret_hash    TEXT NOT NULL DEFAULT '',
+    scopes_json    TEXT NOT NULL DEFAULT '[]',
+    expires_at     INTEGER,
+    last_used_at   INTEGER,
+    revoked_at     INTEGER,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS pipeline_meta (
     owner         TEXT NOT NULL,
@@ -214,6 +308,7 @@ impl SqliteDataAdapter {
         conn.execute_batch(SCHEMA_SQL)
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
         Self::ensure_pipeline_invocation_schema(&conn)?;
+        Self::ensure_marketplace_schema(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -221,6 +316,10 @@ impl SqliteDataAdapter {
 
     fn qe(e: rusqlite::Error) -> PlatformError {
         PlatformError::new("PLATFORM_SQLITE", e.to_string())
+    }
+
+    fn json_error(e: serde_json::Error) -> PlatformError {
+        PlatformError::new("PLATFORM_SQLITE_JSON", e.to_string())
     }
 
     fn ensure_table_column(
@@ -252,6 +351,93 @@ impl SqliteDataAdapter {
             conn,
             "pipeline_invocations",
             "run_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+    }
+
+    fn ensure_marketplace_schema(conn: &Connection) -> Result<(), PlatformError> {
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "authority_owner",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "authority_project",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "publisher_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "publisher_display_name",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "publisher_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_packages",
+            "publisher_email",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_versions",
+            "authority_owner",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_versions",
+            "authority_project",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_asset_versions",
+            "publisher_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_tokens",
+            "project",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_tokens",
+            "publisher_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_tokens",
+            "publisher_display_name",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_tokens",
+            "publisher_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_tokens",
+            "publisher_email",
             "TEXT NOT NULL DEFAULT ''",
         )
     }
@@ -759,6 +945,607 @@ impl DataAdapter for SqliteDataAdapter {
             "DELETE FROM project_db_connections
              WHERE owner = ?1 AND project = ?2 AND connection_slug = ?3",
             params![owner, project, connection_slug],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn put_project_marketplace_repository(
+        &self,
+        repository: &ProjectMarketplaceRepository,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO project_marketplace_repositories
+             (owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                &repository.owner,
+                &repository.project,
+                &repository.repository_id,
+                &repository.title,
+                &repository.base_url,
+                &repository.remote_owner,
+                &repository.remote_project,
+                &repository.read_token,
+                if repository.enabled { 1 } else { 0 },
+                repository.created_at,
+                repository.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_project_marketplace_repositories(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectMarketplaceRepository>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
+                 FROM project_marketplace_repositories WHERE owner = ?1 AND project = ?2
+                 ORDER BY title ASC, repository_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project], |row| {
+                Ok(ProjectMarketplaceRepository {
+                    owner: row.get(0)?,
+                    project: row.get(1)?,
+                    repository_id: row.get(2)?,
+                    title: row.get(3)?,
+                    base_url: row.get(4)?,
+                    remote_owner: row.get(5)?,
+                    remote_project: row.get(6)?,
+                    read_token: row.get(7)?,
+                    enabled: row.get::<_, i64>(8)? != 0,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_project_marketplace_repository(
+        &self,
+        owner: &str,
+        project: &str,
+        repository_id: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM project_marketplace_repositories
+             WHERE owner = ?1 AND project = ?2 AND repository_id = ?3",
+            params![owner, project, repository_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn put_platform_marketplace_repository(
+        &self,
+        repository: &PlatformMarketplaceRepository,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO platform_marketplace_repositories
+             (owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &repository.owner,
+                &repository.repository_id,
+                &repository.title,
+                &repository.base_url,
+                &repository.remote_owner,
+                &repository.remote_project,
+                &repository.read_token,
+                if repository.enabled { 1 } else { 0 },
+                repository.created_at,
+                repository.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_platform_marketplace_repositories(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<PlatformMarketplaceRepository>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
+                 FROM platform_marketplace_repositories WHERE owner = ?1
+                 ORDER BY title ASC, repository_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner], |row| {
+                Ok(PlatformMarketplaceRepository {
+                    owner: row.get(0)?,
+                    repository_id: row.get(1)?,
+                    title: row.get(2)?,
+                    base_url: row.get(3)?,
+                    remote_owner: row.get(4)?,
+                    remote_project: row.get(5)?,
+                    read_token: row.get(6)?,
+                    enabled: row.get::<_, i64>(7)? != 0,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_platform_marketplace_repository(
+        &self,
+        owner: &str,
+        repository_id: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM platform_marketplace_repositories
+             WHERE owner = ?1 AND repository_id = ?2",
+            params![owner, repository_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn put_marketplace_publisher(
+        &self,
+        publisher: &MarketplacePublisher,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT OR REPLACE INTO marketplace_publishers
+             (owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                &publisher.owner,
+                &publisher.project,
+                &publisher.publisher_id,
+                &publisher.display_name,
+                &publisher.publisher_url,
+                &publisher.email,
+                &publisher.description,
+                &publisher.icon_url,
+                &publisher.website_url,
+                if publisher.enabled { 1 } else { 0 },
+                publisher.created_at,
+                publisher.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_marketplace_publishers(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<MarketplacePublisher>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                 FROM marketplace_publishers WHERE owner = ?1 AND project = ?2
+                 ORDER BY display_name ASC, publisher_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project], |row| {
+                Ok(MarketplacePublisher {
+                    owner: row.get(0)?,
+                    project: row.get(1)?,
+                    publisher_id: row.get(2)?,
+                    display_name: row.get(3)?,
+                    publisher_url: row.get(4)?,
+                    email: row.get(5)?,
+                    description: row.get(6)?,
+                    icon_url: row.get(7)?,
+                    website_url: row.get(8)?,
+                    enabled: row.get::<_, i64>(9)? != 0,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(items)
+    }
+
+    fn get_marketplace_publisher(
+        &self,
+        owner: &str,
+        project: &str,
+        publisher_id: &str,
+    ) -> Result<Option<MarketplacePublisher>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                 FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
+            )
+            .map_err(Self::qe)?;
+        match stmt.query_row(params![owner, project, publisher_id], |row| {
+            Ok(MarketplacePublisher {
+                owner: row.get(0)?,
+                project: row.get(1)?,
+                publisher_id: row.get(2)?,
+                display_name: row.get(3)?,
+                publisher_url: row.get(4)?,
+                email: row.get(5)?,
+                description: row.get(6)?,
+                icon_url: row.get(7)?,
+                website_url: row.get(8)?,
+                enabled: row.get::<_, i64>(9)? != 0,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+            })
+        }) {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn delete_marketplace_publisher(
+        &self,
+        owner: &str,
+        project: &str,
+        publisher_id: &str,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
+            params![owner, project, publisher_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn put_marketplace_asset_package(
+        &self,
+        package: &MarketplaceAssetPackage,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tags_json = serde_json::to_string(&package.tags).map_err(Self::json_error)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO marketplace_asset_packages
+             (package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                &package.package_id,
+                &package.authority_owner,
+                &package.authority_project,
+                &package.publisher_owner,
+                &package.publisher_id,
+                &package.publisher_display_name,
+                &package.publisher_url,
+                &package.publisher_email,
+                &package.asset_kind,
+                &package.title,
+                &package.description,
+                &package.visibility,
+                &tags_json,
+                package.created_at,
+                package.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_marketplace_asset_packages(&self) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                 FROM marketplace_asset_packages
+                 ORDER BY updated_at DESC, package_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .map(|(package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)| MarketplaceAssetPackage {
+                package_id,
+                authority_owner,
+                authority_project,
+                publisher_owner,
+                publisher_id,
+                publisher_display_name,
+                publisher_url,
+                publisher_email,
+                asset_kind,
+                title,
+                description,
+                visibility,
+                tags: serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default(),
+                created_at,
+                updated_at,
+            })
+            .collect();
+        Ok(items)
+    }
+
+    fn get_marketplace_asset_package(
+        &self,
+        package_id: &str,
+    ) -> Result<Option<MarketplaceAssetPackage>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                 FROM marketplace_asset_packages WHERE package_id = ?1",
+            )
+            .map_err(Self::qe)?;
+        match stmt.query_row(params![package_id], |row| {
+            Ok(MarketplaceAssetPackage {
+                package_id: row.get(0)?,
+                authority_owner: row.get(1)?,
+                authority_project: row.get(2)?,
+                publisher_owner: row.get(3)?,
+                publisher_id: row.get(4)?,
+                publisher_display_name: row.get(5)?,
+                publisher_url: row.get(6)?,
+                publisher_email: row.get(7)?,
+                asset_kind: row.get(8)?,
+                title: row.get(9)?,
+                description: row.get(10)?,
+                visibility: row.get(11)?,
+                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(12)?).unwrap_or_default(),
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        }) {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn put_marketplace_asset_version(
+        &self,
+        version: &MarketplaceAssetVersion,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let manifest_json = serde_json::to_string(&version.manifest).map_err(Self::json_error)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO marketplace_asset_versions
+             (package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                &version.package_id,
+                &version.version,
+                &version.authority_owner,
+                &version.authority_project,
+                &version.publisher_owner,
+                &version.publisher_id,
+                &version.source_owner,
+                &version.source_project,
+                &version.source_kind,
+                &version.source_ref,
+                &version.artifact_rel_path,
+                &version.artifact_sha256,
+                &manifest_json,
+                version.created_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_marketplace_asset_versions(
+        &self,
+        package_id: &str,
+    ) -> Result<Vec<MarketplaceAssetVersion>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                 FROM marketplace_asset_versions WHERE package_id = ?1
+                 ORDER BY created_at DESC, version DESC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![package_id], |row| {
+                Ok(MarketplaceAssetVersion {
+                    package_id: row.get(0)?,
+                    version: row.get(1)?,
+                    authority_owner: row.get(2)?,
+                    authority_project: row.get(3)?,
+                    publisher_owner: row.get(4)?,
+                    publisher_id: row.get(5)?,
+                    source_owner: row.get(6)?,
+                    source_project: row.get(7)?,
+                    source_kind: row.get(8)?,
+                    source_ref: row.get(9)?,
+                    artifact_rel_path: row.get(10)?,
+                    artifact_sha256: row.get(11)?,
+                    manifest: serde_json::from_str::<Value>(&row.get::<_, String>(12)?).unwrap_or(Value::Null),
+                    created_at: row.get(13)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn get_marketplace_asset_version(
+        &self,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<MarketplaceAssetVersion>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                 FROM marketplace_asset_versions WHERE package_id = ?1 AND version = ?2",
+            )
+            .map_err(Self::qe)?;
+        match stmt.query_row(params![package_id, version], |row| {
+            Ok(MarketplaceAssetVersion {
+                package_id: row.get(0)?,
+                version: row.get(1)?,
+                authority_owner: row.get(2)?,
+                authority_project: row.get(3)?,
+                publisher_owner: row.get(4)?,
+                publisher_id: row.get(5)?,
+                source_owner: row.get(6)?,
+                source_project: row.get(7)?,
+                source_kind: row.get(8)?,
+                source_ref: row.get(9)?,
+                artifact_rel_path: row.get(10)?,
+                artifact_sha256: row.get(11)?,
+                manifest: serde_json::from_str::<Value>(&row.get::<_, String>(12)?).unwrap_or(Value::Null),
+                created_at: row.get(13)?,
+            })
+        }) {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn put_marketplace_token(&self, token: &MarketplaceToken) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let scopes_json = serde_json::to_string(&token.scopes).map_err(Self::json_error)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO marketplace_tokens
+             (token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                &token.token_id,
+                &token.owner,
+                &token.project,
+                &token.publisher_id,
+                &token.publisher_display_name,
+                &token.publisher_url,
+                &token.publisher_email,
+                &token.title,
+                &token.secret_hash,
+                &scopes_json,
+                token.expires_at,
+                token.last_used_at,
+                token.revoked_at,
+                token.created_at,
+                token.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn get_marketplace_token(&self, token_id: &str) -> Result<Option<MarketplaceToken>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at
+                 FROM marketplace_tokens WHERE token_id = ?1",
+            )
+            .map_err(Self::qe)?;
+        match stmt.query_row(params![token_id], |row| {
+            Ok(MarketplaceToken {
+                token_id: row.get(0)?,
+                owner: row.get(1)?,
+                project: row.get(2)?,
+                publisher_id: row.get(3)?,
+                publisher_display_name: row.get(4)?,
+                publisher_url: row.get(5)?,
+                publisher_email: row.get(6)?,
+                title: row.get(7)?,
+                secret_hash: row.get(8)?,
+                scopes: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
+                expires_at: row.get(10)?,
+                last_used_at: row.get(11)?,
+                revoked_at: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        }) {
+            Ok(item) => Ok(Some(item)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(Self::qe(e)),
+        }
+    }
+
+    fn list_marketplace_tokens(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<MarketplaceToken>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at
+                 FROM marketplace_tokens WHERE owner = ?1 AND project = ?2
+                 ORDER BY updated_at DESC, token_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![owner, project], |row| {
+                Ok(MarketplaceToken {
+                    token_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    project: row.get(2)?,
+                    publisher_id: row.get(3)?,
+                    publisher_display_name: row.get(4)?,
+                    publisher_url: row.get(5)?,
+                    publisher_email: row.get(6)?,
+                    title: row.get(7)?,
+                    secret_hash: row.get(8)?,
+                    scopes: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
+                    expires_at: row.get(10)?,
+                    last_used_at: row.get(11)?,
+                    revoked_at: row.get(12)?,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_marketplace_token(&self, token_id: &str) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "DELETE FROM marketplace_tokens WHERE token_id = ?1",
+            params![token_id],
         )
         .map_err(Self::qe)?;
         Ok(())

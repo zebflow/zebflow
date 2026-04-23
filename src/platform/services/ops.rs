@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::platform::model::{
@@ -48,6 +49,15 @@ pub struct PlatformOps {
     pub project: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectHelpSection {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub children: Vec<ProjectHelpSection>,
+}
+
 impl PlatformOps {
     pub fn new(platform: Arc<PlatformService>, owner: &str, project: &str) -> Self {
         Self {
@@ -61,6 +71,192 @@ impl PlatformOps {
 // ── Orientation ───────────────────────────────────────────────────────────────
 
 impl PlatformOps {
+    pub fn help_dialog_sections(&self) -> Vec<ProjectHelpSection> {
+        let owner = &self.owner;
+        let project = &self.project;
+        let node_count = crate::pipeline::nodes::builtin_node_definitions().len();
+        let example_count = crate::platform::help::HELP
+            .iter()
+            .filter(|n| n.path.starts_with("pipeline/examples/"))
+            .count();
+
+        let start_here = format!(
+            "# Start Here\n\n\
+             Zebflow turns pipeline triggers into APIs, pages, and automations.\n\n\
+             - Project: `{owner}/{project}`\n\
+             - Webhook base: `/wh/{owner}/{project}{{path}}`\n\
+             - Built-in nodes: `{node_count}`\n\
+             - Pipeline examples: `{example_count}`\n\n\
+             ## Core References\n\n\
+             - Node catalog: `help(\"pipeline/nodes\")`\n\
+             - Pipeline DSL: `help(\"pipeline/dsl\")`\n\
+             - TSX templates: `help(\"web\")`\n\
+             - Pipeline examples: `help(\"pipeline/examples\")`\n\
+             - Search docs: `help_search(\"query\")`\n\n\
+             ## Efficient Development\n\n\
+             - Debug a pipeline immediately with `pipeline_execute file_rel_path=\"...\" input={{...}}`.\n\
+             - Inspect the full graph first with `pipeline_describe file_rel_path=\"...\"`.\n\
+             - Patch one node with `pipeline_patch`, then `pipeline_activate` to make it live.\n\
+             - Use `pipeline_get_invocations file_rel_path=\"...\"` for webhook or scheduled runs.\n\
+             - Search before creating: `pipeline_search` and `template_search`.\n\n\
+             ## Template Cache Note\n\n\
+             If template changes do not show after agent-side edits, clear the RWE template cache. UI saves already do this automatically.\n"
+        );
+
+        fn doc(path: &str) -> String {
+            crate::platform::help::get_help(path)
+                .unwrap_or_else(|err| format!("# Missing Help\n\nRequested `{path}` but failed to load it.\n\n```\n{err}\n```"))
+        }
+
+        fn join_docs(paths: &[&str]) -> String {
+            paths.iter().map(|path| doc(path)).collect::<Vec<_>>().join("\n\n---\n\n")
+        }
+
+        fn section(
+            id: &str,
+            title: &str,
+            content: String,
+            children: Vec<ProjectHelpSection>,
+        ) -> ProjectHelpSection {
+            ProjectHelpSection {
+                id: id.to_string(),
+                title: title.to_string(),
+                content,
+                children,
+            }
+        }
+
+        vec![
+            section(
+                "start",
+                "Start",
+                doc("guide"),
+                vec![
+                    section("start-here", "Start Here", start_here, vec![]),
+                    section("zebflow-overview", "Zebflow Overview", doc("guide/overview"), vec![]),
+                    section(
+                        "pipelines-and-templates",
+                        "Pipelines + Templates",
+                        join_docs(&["guide/pipelines-templates", "pipeline/index"]),
+                        vec![],
+                    ),
+                    section("simple-blog", "Simple Blog", doc("guide/simple-blog"), vec![]),
+                ],
+            ),
+            section(
+                "build-web-apps",
+                "Build Web Apps",
+                join_docs(&[
+                    "guide/react-and-libraries",
+                    "guide/gallery",
+                    "guide/project-management",
+                ]),
+                vec![
+                    section(
+                        "react-and-internal-libraries",
+                        "React + Internal Libraries",
+                        join_docs(&["guide/react-and-libraries", "web/index"]),
+                        vec![],
+                    ),
+                    section(
+                        "gallery-and-examples",
+                        "Gallery + Source Examples",
+                        join_docs(&["guide/gallery", "pipeline/examples"]),
+                        vec![],
+                    ),
+                    section(
+                        "project-management",
+                        "Project Management",
+                        join_docs(&["guide/project-management", "platform/operations"]),
+                        vec![],
+                    ),
+                ],
+            ),
+            section(
+                "databases",
+                "Databases",
+                join_docs(&["db/index"]),
+                vec![
+                    section(
+                        "sekejap",
+                        "Sekejap",
+                        join_docs(&["db/sekejap"]),
+                        vec![],
+                    ),
+                    section("sqlite", "SQLite", doc("guide/sqlite"), vec![]),
+                    section("mapserver", "MapServer", doc("guide/mapserver"), vec![]),
+                ],
+            ),
+            section(
+                "marketplace",
+                "Marketplace",
+                doc("guide/marketplace"),
+                vec![
+                    section(
+                        "frontend-libraries",
+                        "Frontend Libraries",
+                        doc("guide/marketplace/frontend-libraries"),
+                        vec![
+                            section("zeb-use", "zeb/use", doc("web/use"), vec![]),
+                            section("zeb-deckgl", "zeb/deckgl", doc("web/deckgl"), vec![]),
+                            section("zeb-pdf", "zeb/pdf", doc("web/pdf"), vec![]),
+                            section("zeb-markdown", "zeb/markdown", doc("web/markdown"), vec![]),
+                        ],
+                    ),
+                    section(
+                        "marketplace-nodes",
+                        "Nodes",
+                        doc("guide/marketplace/nodes"),
+                        vec![section(
+                            "node-catalog",
+                            "Node Catalog",
+                            doc("pipeline/nodes"),
+                            vec![],
+                        )],
+                    ),
+                    section("packs", "Packs", doc("guide/marketplace/packs"), vec![]),
+                    section(
+                        "marketplace-how-it-works",
+                        "How Marketplace Works",
+                        doc("guide/marketplace/how-it-works"),
+                        vec![],
+                    ),
+                ],
+            ),
+            section(
+                "agentic-use",
+                "Agentic Use",
+                doc("guide/agentic"),
+                vec![
+                    section(
+                        "agent-node-and-tools",
+                        "Agent Node + Tools",
+                        join_docs(&["guide/agentic", "platform/agent"]),
+                        vec![],
+                    ),
+                    section(
+                        "operator-console",
+                        "Operator Console",
+                        doc("guide/agentic/operator-console"),
+                        vec![],
+                    ),
+                    section(
+                        "mcp-by-project",
+                        "MCP by Project",
+                        join_docs(&["guide/agentic/mcp-by-project", "platform/agent"]),
+                        vec![],
+                    ),
+                ],
+            ),
+            section(
+                "federated-offices",
+                "Federated Offices",
+                doc("guide/federated-offices"),
+                vec![],
+            ),
+        ]
+    }
+
     pub async fn start_here(&self) -> OpsResult {
         let owner = &self.owner;
         let project = &self.project;

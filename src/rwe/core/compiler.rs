@@ -710,13 +710,20 @@ fn collect_inlined_module(
     zeb_libs: &mut HashSet<String>,
     template_root: Option<&str>,
 ) -> Result<(), EngineError> {
-    if visited.contains(path) {
+    let canonical_path = canonical_module_identity(path)?;
+    let visit_key = canonical_path.to_string_lossy().to_string();
+
+    if visited.contains(&visit_key) {
         return Ok(());
     }
-    visited.insert(path.to_string());
+    visited.insert(visit_key);
 
-    let raw = fs::read_to_string(path)
-        .map_err(|e| EngineError::new("RWE_BUNDLE_READ", format!("cannot read '{path}': {e}")))?;
+    let raw = fs::read_to_string(&canonical_path).map_err(|e| {
+        EngineError::new(
+            "RWE_BUNDLE_READ",
+            format!("cannot read '{}': {e}", canonical_path.display()),
+        )
+    })?;
 
     // Resolve any remaining @/ alias imports to absolute paths.
     // Component files written via the API may not have been pre-processed by
@@ -774,6 +781,11 @@ fn collect_inlined_module(
 
     parts.push(processed);
     Ok(())
+}
+
+fn canonical_module_identity(path: &str) -> Result<PathBuf, EngineError> {
+    let canonical = canonical_or_fallback(Path::new(path))?;
+    Ok(normalize_path(&canonical))
 }
 
 /// Collect all top-level exported binding names from a module source (before export stripping).
@@ -1212,6 +1224,10 @@ fn strip_local_imports(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn compile_detects_codemirror_library_imports() {
@@ -1271,6 +1287,55 @@ export default function DemoPage() {
             "expected zeb/icons to be detected, got {:?}",
             compiled.detected_zeb_libs
         );
+    }
+
+    #[test]
+    fn prepare_path_rewrite_is_not_required_for_zeb_imports() {
+        let root = std::env::temp_dir().join(format!(
+            "rwe-zeb-rewrite-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp root");
+
+        let file = root.join("page.tsx");
+        let source = r#"import { useState } from "zeb";
+export default function Page() { return <div />; }"#;
+        fs::write(&file, source).expect("write source");
+
+        crate::rwe::core::prepare_template_root(&root).expect("prepare template root");
+        let rewritten = fs::read_to_string(&file).expect("read rewritten source");
+        assert!(
+            rewritten.contains(r#"from "zeb""#),
+            "zeb imports must stay logical, got: {rewritten}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_module_identity_collapses_symlink_aliases() {
+        let root = std::env::temp_dir().join(format!(
+            "rwe-canonical-module-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp root");
+
+        let target = root.join("real.tsx");
+        let alias = root.join("alias.tsx");
+        fs::write(&target, "export default function Real() { return <div />; }")
+            .expect("write real file");
+        symlink(&target, &alias).expect("create symlink");
+
+        let real = canonical_module_identity(target.to_str().expect("real path utf8"))
+            .expect("canonical real");
+        let aliased = canonical_module_identity(alias.to_str().expect("alias path utf8"))
+            .expect("canonical alias");
+        assert_eq!(real, aliased);
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

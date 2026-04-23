@@ -3,6 +3,10 @@
 Sekejap is Zebflow's embedded multi-model database — graph, vector, spatial, full-text, and vague
 temporal. In Zebflow, project queries should be written as SQL-like SekejapQL.
 
+Project + engine reference:
+
+- GitHub: <https://crates.io/crates/sekejap>
+
 ## Query Shape
 
 Read queries start with `SELECT`.

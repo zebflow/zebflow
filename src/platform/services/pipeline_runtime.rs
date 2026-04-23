@@ -69,13 +69,19 @@ pub struct MemSubscribeTriggerSpec {
     pub channel: String,
 }
 
-/// Describes one webhook path conflict found during pipeline registration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebhookPathConflict {
+/// One extracted mapserver trigger from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MapserverTriggerSpec {
+    pub node_id: String,
     pub path: String,
-    pub method: String,
-    pub pipeline_name: String,
-    pub file_rel_path: String,
+    pub mode: String,
+    pub source_kind: String,
+    pub source_path: String,
+    pub min_zoom: Option<u8>,
+    pub max_zoom: Option<u8>,
+    pub bbox_required: bool,
+    pub max_features: usize,
+    pub allowed_properties: Vec<String>,
 }
 
 /// Execution-ready active pipeline entry.
@@ -93,6 +99,7 @@ pub struct CompiledPipeline {
     pub ws_triggers: Vec<WsTriggerSpec>,
     pub weberror_triggers: Vec<WebErrorTriggerSpec>,
     pub mem_subscribe_triggers: Vec<MemSubscribeTriggerSpec>,
+    pub mapserver_triggers: Vec<MapserverTriggerSpec>,
 }
 
 impl CompiledPipeline {
@@ -150,6 +157,7 @@ impl CompiledPipeline {
         let mut ws_triggers = Vec::new();
         let mut weberror_triggers = Vec::new();
         let mut mem_subscribe_triggers = Vec::new();
+        let mut mapserver_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
                 "n.trigger.webhook" => {
@@ -258,6 +266,89 @@ impl CompiledPipeline {
                         channel,
                     });
                 }
+                "n.trigger.mapserver" => {
+                    let path = node
+                        .config
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("/")
+                        .to_string();
+                    let mode = node
+                        .config
+                        .get("mode")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("features")
+                        .to_string();
+                    let source_kind = node
+                        .config
+                        .get("source_kind")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("geojson_file")
+                        .to_string();
+                    let source_path = node
+                        .config
+                        .get("source_path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let min_zoom = node
+                        .config
+                        .get("min_zoom")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|v| u8::try_from(v).ok());
+                    let max_zoom = node
+                        .config
+                        .get("max_zoom")
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|v| u8::try_from(v).ok());
+                    let bbox_required = node
+                        .config
+                        .get("bbox_required")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true);
+                    let max_features = node
+                        .config
+                        .get("max_features")
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|v| v as usize)
+                        .unwrap_or(1000);
+                    let mut allowed_properties = node
+                        .config
+                        .get("allowed_properties")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(ToString::to_string))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if allowed_properties.is_empty() {
+                        if let Some(csv) = node
+                            .config
+                            .get("allowed_properties_csv")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            allowed_properties = csv
+                                .split(',')
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(ToString::to_string)
+                                .collect();
+                        }
+                    }
+                    mapserver_triggers.push(MapserverTriggerSpec {
+                        node_id: node.id.clone(),
+                        path,
+                        mode,
+                        source_kind,
+                        source_path,
+                        min_zoom,
+                        max_zoom,
+                        bbox_required,
+                        max_features,
+                        allowed_properties,
+                    });
+                }
                 _ => {}
             }
         }
@@ -275,6 +366,7 @@ impl CompiledPipeline {
             ws_triggers,
             weberror_triggers,
             mem_subscribe_triggers,
+            mapserver_triggers,
         })
     }
 }
@@ -375,71 +467,6 @@ impl PipelineRuntimeService {
     /// Returns all active compiled pipelines across every owner/project.
     pub fn list_all(&self) -> Vec<CompiledPipeline> {
         self.inner.load().values().cloned().collect()
-    }
-
-    /// Returns any active pipelines that already claim the same `{method, path}` webhook
-    /// combination as the incoming graph.  Pass `self_file_rel_path` so a pipeline updating
-    /// itself is not reported as a conflict.
-    pub fn check_webhook_path_conflict(
-        &self,
-        owner: &str,
-        project: &str,
-        graph: &crate::pipeline::PipelineGraph,
-        self_file_rel_path: &str,
-    ) -> Vec<WebhookPathConflict> {
-        use crate::pipeline::nodes::basic::trigger::webhook::NODE_KIND as WEBHOOK_KIND;
-
-        let new_triggers: Vec<(String, String)> = graph
-            .nodes
-            .iter()
-            .filter(|n| n.kind == WEBHOOK_KIND)
-            .map(|n| {
-                let path = n
-                    .config
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("/")
-                    .to_string();
-                let method = n
-                    .config
-                    .get("method")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("POST")
-                    .to_uppercase();
-                (method, path)
-            })
-            .collect();
-
-        if new_triggers.is_empty() {
-            return vec![];
-        }
-
-        let mut conflicts = vec![];
-        for compiled in self.list_project(owner, project) {
-            if compiled.file_rel_path == self_file_rel_path {
-                continue;
-            }
-            for trigger in &compiled.webhook_triggers {
-                let existing = (trigger.method.to_uppercase(), trigger.path.clone());
-                for new in &new_triggers {
-                    if *new == existing {
-                        conflicts.push(WebhookPathConflict {
-                            path: trigger.path.clone(),
-                            method: trigger.method.to_uppercase(),
-                            pipeline_name: compiled
-                                .file_rel_path
-                                .trim_end_matches(".zf.json")
-                                .split('/')
-                                .last()
-                                .unwrap_or(&compiled.file_rel_path)
-                                .to_string(),
-                            file_rel_path: compiled.file_rel_path.clone(),
-                        });
-                    }
-                }
-            }
-        }
-        conflicts
     }
 }
 

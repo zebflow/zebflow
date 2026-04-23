@@ -48,6 +48,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         mem_publish::definition(),
         mem_set::definition(),
         trigger::function::definition(),
+        trigger::mapserver::definition(),
         trigger::memsubscribe::definition(),
         trigger::webhook::definition(),
         trigger::schedule::definition(),

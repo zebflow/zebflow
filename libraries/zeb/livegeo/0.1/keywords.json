@@ -1,0 +1,12 @@
+[
+  "usePlayback",
+  "useTrackPlayback",
+  "useTrackSmoothing",
+  "useMapFollow",
+  "livegeo",
+  "tracking",
+  "playback",
+  "route",
+  "bearing",
+  "map"
+]
