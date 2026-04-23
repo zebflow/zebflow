@@ -74,6 +74,9 @@ impl Default for PlatformConfig {
 /// User profile stored by platform metadata adapter.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformUser {
+    /// Stable internal user id.
+    #[serde(default)]
+    pub user_id: String,
     /// User identifier.
     pub owner: String,
     /// Role string (`superadmin`, `member`, ...).
@@ -95,13 +98,32 @@ pub struct PlatformUser {
 pub struct StoredUser {
     /// Public profile fields.
     pub profile: PlatformUser,
-    /// Plain password for prototype bootstrap.
-    pub password: String,
+    /// Local platform auth material.
+    pub auth: PlatformUserLocalAuth,
+}
+
+/// Local auth record for one user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformUserLocalAuth {
+    /// Stable internal user id.
+    pub user_id: String,
+    /// Stored password hash.
+    pub password_hash: String,
+    /// Password hash algorithm identifier.
+    pub password_alg: String,
+    /// Unix timestamp seconds.
+    pub password_updated_at: i64,
 }
 
 /// Project profile stored by metadata adapter.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformProject {
+    /// Stable internal project id.
+    #[serde(default)]
+    pub project_id: String,
+    /// Stable internal owner user id.
+    #[serde(default)]
+    pub owner_user_id: String,
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
@@ -257,6 +279,12 @@ pub struct ProjectMarketplaceRepository {
 /// One platform-scoped marketplace repository source used from Home.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformMarketplaceRepository {
+    /// Stable internal source id.
+    #[serde(default)]
+    pub source_id: String,
+    /// Stable internal owner user id.
+    #[serde(default)]
+    pub owner_user_id: String,
     /// Owner identifier for the local platform user who manages this source.
     pub owner: String,
     /// Stable repository id.
@@ -279,9 +307,79 @@ pub struct PlatformMarketplaceRepository {
     pub updated_at: i64,
 }
 
+/// One explicit project-hosted marketplace authority control-plane row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MarketplaceAuthority {
+    /// Stable authority id.
+    pub authority_id: String,
+    /// Host project id.
+    pub host_project_id: String,
+    /// Marketplace authority owner slug.
+    pub owner: String,
+    /// Marketplace authority project slug.
+    pub project: String,
+    /// Whether producer mode is currently enabled.
+    pub enabled: bool,
+    /// Public marketplace API base URL when exposed.
+    pub public_base_url: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One durable office row in the platform control plane.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOffice {
+    /// Stable office id.
+    pub office_id: String,
+    /// Human-readable / URL-safe office slug.
+    pub office_slug: String,
+    /// Display label.
+    pub label: String,
+    /// Office kind (`controller`, `office`, `standalone`).
+    pub office_kind: String,
+    /// Base URL advertised for control/runtime traffic.
+    pub base_url: String,
+    /// Current status summary.
+    pub status: String,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
+/// One registered runtime node under an office.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformOfficeNode {
+    /// Stable office id.
+    pub office_id: String,
+    /// Stable node id.
+    pub node_id: String,
+    /// Display label.
+    pub label: String,
+    /// Advertised base URL.
+    pub base_url: String,
+    /// Current status summary.
+    pub status: String,
+    /// Declared capabilities.
+    #[serde(default)]
+    pub capabilities: RunnerCapabilities,
+    /// Unix timestamp seconds.
+    pub registered_at: i64,
+    /// Unix timestamp seconds.
+    pub last_heartbeat_at: i64,
+}
+
 /// One stable publisher identity inside one project-hosted marketplace authority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplacePublisher {
+    /// Stable authority id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_id: String,
+    /// Stable publisher row id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publisher_pk: String,
     /// Marketplace authority owner.
     pub owner: String,
     /// Marketplace authority project.
@@ -311,6 +409,15 @@ pub struct MarketplacePublisher {
 /// One published marketplace asset package stored at the platform level.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplaceAssetPackage {
+    /// Stable package row id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_pk: String,
+    /// Stable authority id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_id: String,
+    /// Stable publisher row id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publisher_pk: String,
     /// Stable package id, unique inside one marketplace instance.
     pub package_id: String,
     /// Marketplace authority owner that hosts this package.
@@ -346,6 +453,9 @@ pub struct MarketplaceAssetPackage {
 /// One immutable version of a marketplace asset package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MarketplaceAssetVersion {
+    /// Stable package row id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_pk: String,
     /// Stable package id.
     pub package_id: String,
     /// Version string.
@@ -381,6 +491,12 @@ pub struct MarketplaceAssetVersion {
 pub struct MarketplaceToken {
     /// Stable token id.
     pub token_id: String,
+    /// Stable authority id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_id: String,
+    /// Stable publisher row id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub publisher_pk: String,
     /// Owner id.
     pub owner: String,
     /// Project slug for the marketplace authority that owns this token.
@@ -399,6 +515,15 @@ pub struct MarketplaceToken {
     pub secret_hash: String,
     /// Granted scopes.
     pub scopes: Vec<String>,
+    /// Whether this token grants marketplace read access.
+    #[serde(default, skip_serializing)]
+    pub scope_read: bool,
+    /// Whether this token grants marketplace publish access.
+    #[serde(default, skip_serializing)]
+    pub scope_publish: bool,
+    /// Whether this token grants marketplace manage access.
+    #[serde(default, skip_serializing)]
+    pub scope_manage: bool,
     /// Optional unix timestamp seconds.
     pub expires_at: Option<i64>,
     /// Optional unix timestamp seconds.
@@ -409,6 +534,18 @@ pub struct MarketplaceToken {
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
+}
+
+impl MarketplaceToken {
+    /// Returns whether the token grants the required marketplace scope.
+    pub fn grants_scope(&self, required_scope: &str) -> bool {
+        match required_scope.trim() {
+            "marketplace:read" => self.scope_read,
+            "marketplace:publish" => self.scope_publish,
+            "marketplace:manage" => self.scope_manage,
+            _ => false,
+        }
+    }
 }
 
 /// Request to create one marketplace token.
@@ -635,12 +772,18 @@ impl ProjectAccessRolePreset {
 /// One explicit project member row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectMember {
+    /// Stable internal project id.
+    #[serde(default)]
+    pub project_id: String,
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
     pub project: String,
-    /// Stable user id receiving membership.
+    /// Public user slug receiving membership.
     pub user_id: String,
+    /// Stable internal user id receiving membership.
+    #[serde(default)]
+    pub member_user_id: String,
     /// Managed role preset.
     pub role_preset: ProjectAccessRolePreset,
     /// Extra policy ids layered on top of the role preset.
@@ -652,6 +795,9 @@ pub struct ProjectMember {
     /// Acting user that created or last updated the row.
     #[serde(default)]
     pub created_by: String,
+    /// Stable internal actor user id.
+    #[serde(default)]
+    pub created_by_user_id: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -745,6 +891,9 @@ pub struct CreateProjectInviteRequest {
 /// Project policy bundle stored in metadata and reused by users, MCP sessions, and assistants.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectPolicy {
+    /// Stable internal project id.
+    #[serde(default)]
+    pub project_id: String,
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
@@ -786,6 +935,9 @@ impl ProjectSubjectKind {
 /// One project-level subject -> policy binding.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectPolicyBinding {
+    /// Stable internal project id.
+    #[serde(default)]
+    pub project_id: String,
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
@@ -2070,6 +2222,9 @@ impl ProjectOperationStatus {
 pub struct ProjectOperationRecord {
     /// Stable operation id.
     pub operation_id: String,
+    /// Stable project id.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
     /// Stable owner id.
     pub owner: String,
     /// Stable project slug.

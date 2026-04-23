@@ -34,6 +34,9 @@ pub enum ProjectRuntimePlacementTarget {
 /// Durable environment-owned placement record for one project runtime.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProjectRuntimePlacement {
+    /// Stable project id in the platform catalog.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
@@ -42,9 +45,24 @@ pub struct ProjectRuntimePlacement {
     pub mode: ProjectRuntimeMode,
     /// Placement target class.
     pub target: ProjectRuntimePlacementTarget,
+    /// Stable office id that owns the runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_office_id: Option<String>,
+    /// Stable node id selected for runtime traffic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_node_id: Option<String>,
     /// Stable worker id when `target == worker`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_id: Option<String>,
+    /// Requested resource profile for operator inspection.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resource_profile: String,
+    /// Desired replica count for the runtime target.
+    #[serde(default)]
+    pub desired_replicas: u32,
+    /// Current effective state summary.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub effective_state: String,
     /// Unix timestamp when the placement was first created.
     pub created_at: i64,
     /// Unix timestamp when the placement was most recently updated.

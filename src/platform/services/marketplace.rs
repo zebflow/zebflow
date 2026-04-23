@@ -15,8 +15,9 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateMarketplaceTokenRequest, CreateProjectRequest, MarketplaceAssetPackage,
-    MarketplaceAssetVersion, MarketplacePublisher, MarketplaceToken, PlatformMarketplaceRepository, ProjectFileLayout,
-    ProjectMarketplaceRepository, ProjectRuntimeSelectionRequest, ZebflowJson, now_ts, slug_segment,
+    MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher, MarketplaceToken,
+    PlatformMarketplaceRepository, ProjectFileLayout, ProjectMarketplaceRepository,
+    ProjectRuntimeSelectionRequest, ZebflowJson, now_ts, slug_segment,
 };
 use crate::platform::services::ProjectService;
 use crate::platform::services::tsx_outline::extract_import_sources;
@@ -195,6 +196,34 @@ impl MarketplaceService {
         }
     }
 
+    pub fn get_authority(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<MarketplaceAuthority>, PlatformError> {
+        self.data
+            .get_marketplace_authority(&slug_segment(owner), &slug_segment(project))
+    }
+
+    pub fn set_authority_enabled(
+        &self,
+        owner: &str,
+        project: &str,
+        enabled: bool,
+    ) -> Result<MarketplaceAuthority, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let authority = self.ensure_authority(&owner, &project)?;
+        let now = now_ts();
+        let next = MarketplaceAuthority {
+            enabled,
+            updated_at: now,
+            ..authority
+        };
+        self.data.put_marketplace_authority(&next)?;
+        Ok(next)
+    }
+
     pub fn list_asset_packages(&self) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
         self.data.list_marketplace_asset_packages()
     }
@@ -240,6 +269,7 @@ impl MarketplaceService {
     ) -> Result<MarketplacePublisher, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        let authority = self.ensure_authority(&owner, &project)?;
         let publisher_id = slug_segment(publisher_id);
         if owner.is_empty() || project.is_empty() || publisher_id.is_empty() {
             return Err(PlatformError::new(
@@ -252,6 +282,12 @@ impl MarketplaceService {
             .data
             .get_marketplace_publisher(&owner, &project, &publisher_id)?;
         let row = MarketplacePublisher {
+            authority_id: authority.authority_id,
+            publisher_pk: existing
+                .as_ref()
+                .map(|v| v.publisher_pk.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| format!("mpub_{}", random_hex(8))),
             owner,
             project,
             publisher_id: publisher_id.clone(),
@@ -294,6 +330,7 @@ impl MarketplaceService {
     ) -> Result<(MarketplaceToken, String), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        let authority = self.ensure_authority(&owner, &project)?;
         if owner.is_empty() || project.is_empty() {
             return Err(PlatformError::new(
                 "MARKETPLACE_TOKEN_INVALID",
@@ -329,6 +366,8 @@ impl MarketplaceService {
         let plain = format!("zfmt_{token_id}_{secret}");
         let token = MarketplaceToken {
             token_id: token_id.clone(),
+            authority_id: authority.authority_id,
+            publisher_pk: publisher.publisher_pk.clone(),
             owner,
             project,
             publisher_id: publisher_id.clone(),
@@ -338,12 +377,16 @@ impl MarketplaceService {
             title: title.to_string(),
             secret_hash: sha256_hex(plain.as_bytes()),
             scopes: normalize_scopes(&req.scopes),
+            scope_read: false,
+            scope_publish: false,
+            scope_manage: false,
             expires_at: req.expires_at,
             last_used_at: None,
             revoked_at: None,
             created_at: now,
             updated_at: now,
         };
+        let token = apply_scope_flags(token);
         self.data.put_marketplace_token(&token)?;
         Ok((token, plain))
     }
@@ -416,12 +459,27 @@ impl MarketplaceService {
             ));
         }
         let now = now_ts();
+        let owner_user_id = self
+            .data
+            .get_user_auth(&owner)?
+            .map(|user| user.profile.user_id)
+            .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found"))?;
         let existing = self
             .data
             .list_platform_marketplace_repositories(&owner)?
             .into_iter()
             .find(|item| item.repository_id == repository_id);
         let row = PlatformMarketplaceRepository {
+            source_id: existing
+                .as_ref()
+                .map(|item| item.source_id.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("pmr_{}", random_hex(8))),
+            owner_user_id: existing
+                .as_ref()
+                .map(|item| item.owner_user_id.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(owner_user_id),
             owner,
             repository_id,
             title: if title.trim().is_empty() {
@@ -465,7 +523,14 @@ impl MarketplaceService {
             return Ok(());
         }
         let now = now_ts();
+        let owner_user_id = self
+            .data
+            .get_user_auth(&owner)?
+            .map(|user| user.profile.user_id)
+            .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found"))?;
         self.data.put_platform_marketplace_repository(&PlatformMarketplaceRepository {
+            source_id: format!("pmr_{}", random_hex(8)),
+            owner_user_id,
             owner,
             repository_id: "zebflow-com".to_string(),
             title: "Zebflow Marketplace".to_string(),
@@ -594,7 +659,7 @@ impl MarketplaceService {
         {
             return Err(PlatformError::new("MARKETPLACE_TOKEN_EXPIRED", "token expired"));
         }
-        if !token.scopes.iter().any(|scope| scope == required_scope) {
+        if !token.grants_scope(required_scope) {
             return Err(PlatformError::new("MARKETPLACE_TOKEN_FORBIDDEN", "scope missing"));
         }
         token.last_used_at = Some(now_ts());
@@ -756,6 +821,7 @@ impl MarketplaceService {
                 "publisher is disabled",
             ));
         }
+        let authority = self.ensure_authority(&authority_owner, &authority_project)?;
         if package_id.is_empty() || version.is_empty() {
             return Err(PlatformError::new(
                 "MARKETPLACE_PUBLISH_INVALID",
@@ -819,7 +885,15 @@ impl MarketplaceService {
             .map_err(|err| PlatformError::new("MARKETPLACE_PUBLISH", err.to_string()))?;
         fs::write(&artifact_abs, &artifact_bytes)?;
         let artifact_sha256 = sha256_hex(&artifact_bytes);
+        let existing_package = self.data.get_marketplace_asset_package(&package_id)?;
         let package = MarketplaceAssetPackage {
+            package_pk: existing_package
+                .as_ref()
+                .map(|item| item.package_pk.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("mpkg_{}", random_hex(8))),
+            authority_id: authority.authority_id.clone(),
+            publisher_pk: publisher.publisher_pk.clone(),
             package_id: package_id.clone(),
             authority_owner: authority_owner.clone(),
             authority_project: authority_project.clone(),
@@ -833,14 +907,11 @@ impl MarketplaceService {
             description: manifest.description.clone(),
             visibility: normalize_visibility(visibility),
             tags,
-            created_at: self
-                .data
-                .get_marketplace_asset_package(&package_id)?
-                .map(|item| item.created_at)
-                .unwrap_or(now),
+            created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
             updated_at: now,
         };
         let version_row = MarketplaceAssetVersion {
+            package_pk: package.package_pk.clone(),
             package_id: package_id.clone(),
             version: version.to_string(),
             authority_owner,
@@ -999,7 +1070,16 @@ impl MarketplaceService {
             .map_err(|err| PlatformError::new("MARKETPLACE_REMOTE_INVALID", err.to_string()))?;
         fs::write(&artifact_abs, &artifact_bytes)?;
         let now = now_ts();
+        let authority = self.ensure_authority(&authority_owner, &authority_project)?;
+        let existing_package = self.data.get_marketplace_asset_package(&package_id)?;
         let package = MarketplaceAssetPackage {
+            package_pk: existing_package
+                .as_ref()
+                .map(|item| item.package_pk.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("mpkg_{}", random_hex(8))),
+            authority_id: authority.authority_id.clone(),
+            publisher_pk: publisher.publisher_pk.clone(),
             package_id: package_id.clone(),
             authority_owner: authority_owner.clone(),
             authority_project: authority_project.clone(),
@@ -1021,14 +1101,11 @@ impl MarketplaceService {
             },
             visibility: normalize_visibility(&req.visibility),
             tags: req.tags.clone(),
-            created_at: self
-                .data
-                .get_marketplace_asset_package(&package_id)?
-                .map(|item| item.created_at)
-                .unwrap_or(now),
+            created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
             updated_at: now,
         };
         let version_row = MarketplaceAssetVersion {
+            package_pk: package.package_pk.clone(),
             package_id,
             version,
             authority_owner,
@@ -1184,6 +1261,8 @@ impl MarketplaceService {
             .map_err(|err| PlatformError::new("MARKETPLACE_REMOTE_FETCH", err.to_string()))?;
         let publish_token = MarketplaceToken {
             token_id: "imported".to_string(),
+            authority_id: String::new(),
+            publisher_pk: String::new(),
             owner: payload.version.publisher_owner.clone(),
             project: target_project.to_string(),
             publisher_id: payload.version.publisher_id.clone(),
@@ -1208,6 +1287,9 @@ impl MarketplaceService {
             title: "imported".to_string(),
             secret_hash: String::new(),
             scopes: vec![],
+            scope_read: false,
+            scope_publish: false,
+            scope_manage: false,
             expires_at: None,
             last_used_at: None,
             revoked_at: None,
@@ -1563,6 +1645,35 @@ impl MarketplaceService {
     }
 }
 
+impl MarketplaceService {
+    fn ensure_authority(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<MarketplaceAuthority, PlatformError> {
+        if let Some(authority) = self.data.get_marketplace_authority(owner, project)? {
+            return Ok(authority);
+        }
+        let project_row = self
+            .data
+            .get_project(owner, project)?
+            .ok_or_else(|| PlatformError::new("PROJECT_NOT_FOUND", "project not found"))?;
+        let now = now_ts();
+        let authority = MarketplaceAuthority {
+            authority_id: format!("mka_{}", project_row.project_id),
+            host_project_id: project_row.project_id,
+            owner: owner.to_string(),
+            project: project.to_string(),
+            enabled: false,
+            public_base_url: String::new(),
+            created_at: now,
+            updated_at: now,
+        };
+        self.data.put_marketplace_authority(&authority)?;
+        Ok(authority)
+    }
+}
+
 fn remote_marketplace_api_base(base_url: &str) -> String {
     base_url.trim().trim_end_matches('/').to_string()
 }
@@ -1687,6 +1798,19 @@ fn normalize_scopes(input: &[String]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+fn apply_scope_flags(mut token: MarketplaceToken) -> MarketplaceToken {
+    token.scope_read = token.scopes.iter().any(|scope| scope == "marketplace:read");
+    token.scope_publish = token
+        .scopes
+        .iter()
+        .any(|scope| scope == "marketplace:publish");
+    token.scope_manage = token
+        .scopes
+        .iter()
+        .any(|scope| scope == "marketplace:manage");
+    token
 }
 
 fn normalize_publisher_url(publisher_id: &str, explicit: &str) -> String {
@@ -1986,4 +2110,61 @@ fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
         })
         .unwrap_or_else(|| "webhook".to_string());
     (fallback_title, trigger_kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_scopes_only_keeps_known_marketplace_scopes() {
+        let scopes = normalize_scopes(&[
+            "marketplace:publish".to_string(),
+            " marketplace:read ".to_string(),
+            "marketplace:publish".to_string(),
+            "custom:other".to_string(),
+        ]);
+        assert_eq!(
+            scopes,
+            vec![
+                "marketplace:publish".to_string(),
+                "marketplace:read".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn apply_scope_flags_sets_explicit_permissions() {
+        let token = apply_scope_flags(MarketplaceToken {
+            token_id: "mkt_1".to_string(),
+            authority_id: "mka_1".to_string(),
+            publisher_pk: "mpub_1".to_string(),
+            owner: "superadmin".to_string(),
+            project: "default".to_string(),
+            publisher_id: "zebflow-official".to_string(),
+            publisher_display_name: "Zebflow Official".to_string(),
+            publisher_url: "/publishers/zebflow-official".to_string(),
+            publisher_email: "publishers@zebflow.com".to_string(),
+            title: "Official".to_string(),
+            secret_hash: "hash".to_string(),
+            scopes: vec![
+                "marketplace:read".to_string(),
+                "marketplace:publish".to_string(),
+            ],
+            scope_read: false,
+            scope_publish: false,
+            scope_manage: false,
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+            created_at: 0,
+            updated_at: 0,
+        });
+        assert!(token.scope_read);
+        assert!(token.scope_publish);
+        assert!(!token.scope_manage);
+        assert!(token.grants_scope("marketplace:read"));
+        assert!(token.grants_scope("marketplace:publish"));
+        assert!(!token.grants_scope("marketplace:manage"));
+    }
 }

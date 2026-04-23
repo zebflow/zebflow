@@ -227,10 +227,15 @@ impl McpSessionService {
         token: &str,
         capabilities: &[ProjectCapability],
     ) -> Result<(), PlatformError> {
+        let project_row = self
+            .data
+            .get_project(owner, project)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_PROJECT_MISSING", "project not found"))?;
         let now = now_ts();
         let policy_id = format!("mcp.session.{}", &token[..8]);
 
         let policy = ProjectPolicy {
+            project_id: project_row.project_id.clone(),
             owner: owner.to_string(),
             project: project.to_string(),
             policy_id: policy_id.clone(),
@@ -243,6 +248,7 @@ impl McpSessionService {
         self.data.put_project_policy(&policy)?;
 
         let binding = ProjectPolicyBinding {
+            project_id: project_row.project_id,
             owner: owner.to_string(),
             project: project.to_string(),
             subject_kind: ProjectSubjectKind::McpSession,

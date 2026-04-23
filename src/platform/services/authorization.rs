@@ -34,12 +34,12 @@ impl AuthorizationService {
                 "owner/project must not be empty",
             ));
         }
-        if self.data.get_project(&owner, &project)?.is_none() {
+        let Some(project_row) = self.data.get_project(&owner, &project)? else {
             return Err(PlatformError::new(
                 "PLATFORM_PROJECT_MISSING",
                 format!("project '{owner}/{project}' not found"),
             ));
-        }
+        };
 
         let now = now_ts();
         let existing = self
@@ -55,6 +55,7 @@ impl AuthorizationService {
                 .map(|row| row.created_at)
                 .unwrap_or(now);
             let mut policy = managed;
+            policy.project_id = project_row.project_id.clone();
             policy.created_at = created_at;
             self.data.put_project_policy(&policy)?;
         }
@@ -68,6 +69,7 @@ impl AuthorizationService {
         if !owner_binding_exists {
             self.data
                 .put_project_policy_binding(&ProjectPolicyBinding {
+                    project_id: project_row.project_id.clone(),
                     owner: owner.clone(),
                     project: project.clone(),
                     subject_kind: ProjectSubjectKind::User,
@@ -208,6 +210,7 @@ fn policy(
     now: i64,
 ) -> ProjectPolicy {
     ProjectPolicy {
+        project_id: String::new(),
         owner: owner.to_string(),
         project: project.to_string(),
         policy_id: policy_id.to_string(),

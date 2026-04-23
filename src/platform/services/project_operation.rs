@@ -33,9 +33,14 @@ impl ProjectOperationService {
     ) -> Result<ProjectOperationRecord, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        let project_row = self
+            .data
+            .get_project(&owner, &project)?
+            .ok_or_else(|| PlatformError::new("PROJECT_NOT_FOUND", "project not found"))?;
         let now = now_ts();
         let operation = ProjectOperationRecord {
             operation_id: format!("op-{}-{now}", kind.key()),
+            project_id: project_row.project_id,
             owner,
             project,
             kind,
