@@ -50,22 +50,33 @@ impl ClusterPlacementService {
     ) -> Result<ProjectRuntimePlacement, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
+        let project_row = self
+            .data
+            .get_project(&owner, &project)?
+            .ok_or_else(|| PlatformError::new("PROJECT_NOT_FOUND", "project not found"))?;
         let worker_id = selection
             .placement_worker_id
             .as_deref()
             .map(slug_segment)
             .filter(|value| !value.is_empty() && value != "local");
-        if let Some(ref worker_id) = worker_id {
-            if self.data.get_worker_registry_record(worker_id)?.is_none() {
-                return Err(PlatformError::new(
-                    "CLUSTER_WORKER_UNKNOWN",
-                    format!("worker '{}' is not registered", worker_id),
-                ));
-            }
-        }
+        let target_worker = if let Some(ref worker_id) = worker_id {
+            Some(
+                self.data
+                    .get_worker_registry_record(worker_id)?
+                    .ok_or_else(|| {
+                        PlatformError::new(
+                            "CLUSTER_WORKER_UNKNOWN",
+                            format!("worker '{}' is not registered", worker_id),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let now = now_ts();
         let existing = self.data.get_project_runtime_placement(&owner, &project)?;
         let placement = ProjectRuntimePlacement {
+            project_id: project_row.project_id,
             owner,
             project,
             mode: selection.runtime_mode.unwrap_or(runtime_profile.mode),
@@ -74,7 +85,25 @@ impl ClusterPlacementService {
             } else {
                 ProjectRuntimePlacementTarget::Local
             },
+            target_office_id: target_worker.as_ref().map(|worker| {
+                if worker.office_id.trim().is_empty() {
+                    worker.node_id.clone()
+                } else {
+                    worker.office_id.clone()
+                }
+            }),
+            target_node_id: worker_id.clone(),
             worker_id,
+            resource_profile: serde_json::to_value(runtime_profile.resource_profile)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+                .unwrap_or_else(|| "small".to_string()),
+            desired_replicas: 1,
+            effective_state: if target_worker.is_some() {
+                "assigned".to_string()
+            } else {
+                "local".to_string()
+            },
             created_at: existing
                 .as_ref()
                 .map(|value| value.created_at)

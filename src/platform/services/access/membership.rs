@@ -39,18 +39,25 @@ impl ProjectMembershipService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.authz.ensure_project_defaults(&owner, &project)?;
+        let project_row = self
+            .data
+            .get_project(&owner, &project)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_PROJECT_MISSING", "project not found"))?;
         let mut items = self.data.list_project_members(&owner, &project)?;
         if !items.iter().any(|item| item.user_id == owner) {
             items.insert(
                 0,
                 ProjectMember {
+                    project_id: project_row.project_id.clone(),
                     owner: owner.clone(),
                     project: project.clone(),
                     user_id: owner.clone(),
+                    member_user_id: project_row.owner_user_id.clone(),
                     role_preset: ProjectAccessRolePreset::Owner,
                     custom_policy_ids: Vec::new(),
                     mcp_capability_ceiling: Vec::new(),
                     created_by: owner.clone(),
+                    created_by_user_id: project_row.owner_user_id.clone(),
                     created_at: 0,
                     updated_at: 0,
                 },
@@ -72,6 +79,14 @@ impl ProjectMembershipService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let user_id = slug_segment(&req.user_id);
+        let project_row = self
+            .data
+            .get_project(&owner, &project)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_PROJECT_MISSING", "project not found"))?;
+        let actor_user_row = self
+            .data
+            .get_user_auth(&actor_user)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "actor user not found"))?;
 
         if user_id.is_empty() {
             return Err(PlatformError::new(
@@ -79,12 +94,10 @@ impl ProjectMembershipService {
                 "user_id must not be empty",
             ));
         }
-        if self.data.get_user_auth(&user_id)?.is_none() {
-            return Err(PlatformError::new(
-                "PLATFORM_MEMBER_USER_MISSING",
-                format!("user '{user_id}' not found"),
-            ));
-        }
+        let member_user_row = self
+            .data
+            .get_user_auth(&user_id)?
+            .ok_or_else(|| PlatformError::new("PLATFORM_MEMBER_USER_MISSING", "user not found"))?;
 
         self.authz.ensure_project_defaults(&owner, &project)?;
         ensure_managed_role_policies(&self.data, &owner, &project)?;
@@ -103,13 +116,16 @@ impl ProjectMembershipService {
             .map(|row| row.created_at)
             .unwrap_or(now);
         let member = ProjectMember {
+            project_id: project_row.project_id.clone(),
             owner: owner.clone(),
             project: project.clone(),
             user_id: user_id.clone(),
+            member_user_id: member_user_row.profile.user_id,
             role_preset: req.role_preset,
             custom_policy_ids: req.custom_policy_ids.clone(),
             mcp_capability_ceiling: req.mcp_capability_ceiling.clone(),
             created_by: actor_user,
+            created_by_user_id: actor_user_row.profile.user_id,
             created_at,
             updated_at: now,
         };
@@ -121,6 +137,7 @@ impl ProjectMembershipService {
             for policy_id in member_policy_ids(&member) {
                 self.data
                     .put_project_policy_binding(&ProjectPolicyBinding {
+                        project_id: project_row.project_id.clone(),
                         owner: owner.clone(),
                         project: project.clone(),
                         subject_kind: ProjectSubjectKind::User,
@@ -200,9 +217,11 @@ mod tests {
     #[test]
     fn member_policy_ids_include_role_and_custom_bindings_once() {
         let ids = member_policy_ids(&ProjectMember {
+            project_id: "prj_1".to_string(),
             owner: "superadmin".to_string(),
             project: "default".to_string(),
             user_id: "alice".to_string(),
+            member_user_id: "usr_2".to_string(),
             role_preset: ProjectAccessRolePreset::Developer,
             custom_policy_ids: vec![
                 "developer".to_string(),
@@ -211,6 +230,7 @@ mod tests {
             ],
             mcp_capability_ceiling: Vec::new(),
             created_by: "superadmin".to_string(),
+            created_by_user_id: "usr_1".to_string(),
             created_at: 1,
             updated_at: 1,
         });

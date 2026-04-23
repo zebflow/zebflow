@@ -2,10 +2,14 @@
 
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateUserRequest, PlatformUser, StoredUser, UpdateUserSettingsRequest, now_ts, slug_segment,
+    CreateUserRequest, PlatformUser, PlatformUserLocalAuth, StoredUser, UpdateUserSettingsRequest,
+    now_ts, slug_segment,
 };
 
 /// User service backed by a swappable data adapter.
@@ -14,6 +18,17 @@ pub struct UserService {
 }
 
 impl UserService {
+    fn hash_password(password: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(password.as_bytes());
+        let digest = hasher.finalize();
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn new_user_id() -> String {
+        format!("usr_{}", Uuid::new_v4().simple())
+    }
+
     /// Creates user service.
     pub fn new(data: Arc<dyn DataAdapter>) -> Self {
         Self { data }
@@ -54,6 +69,11 @@ impl UserService {
             .map(|u| u.profile.created_at)
             .unwrap_or(now);
         let profile = PlatformUser {
+            user_id: existing
+                .as_ref()
+                .map(|u| u.profile.user_id.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(Self::new_user_id),
             owner: owner.clone(),
             role: req.role.trim().to_string(),
             git_name: req.git_name.trim().to_string(),
@@ -63,7 +83,12 @@ impl UserService {
         };
         let stored = StoredUser {
             profile: profile.clone(),
-            password: req.password.clone(),
+            auth: PlatformUserLocalAuth {
+                user_id: profile.user_id.clone(),
+                password_hash: Self::hash_password(&req.password),
+                password_alg: "sha256".to_string(),
+                password_updated_at: now,
+            },
         };
         self.data.put_user(&stored)?;
         Ok(profile)
@@ -89,6 +114,7 @@ impl UserService {
             ));
         };
         let profile = PlatformUser {
+            user_id: existing.profile.user_id.clone(),
             owner: existing.profile.owner.clone(),
             role: existing.profile.role.clone(),
             git_name: req.git_name.trim().to_string(),
@@ -98,7 +124,7 @@ impl UserService {
         };
         self.data.put_user(&StoredUser {
             profile: profile.clone(),
-            password: existing.password,
+            auth: existing.auth,
         })?;
         Ok(profile)
     }
@@ -112,6 +138,6 @@ impl UserService {
         let Some(found) = self.data.get_user_auth(&owner)? else {
             return Ok(false);
         };
-        Ok(found.password == password)
+        Ok(found.auth.password_hash == Self::hash_password(password))
     }
 }

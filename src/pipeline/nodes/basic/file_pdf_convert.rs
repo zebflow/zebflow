@@ -6,9 +6,15 @@
 //!
 //! # Goal
 //!
-//! Convert one project PDF file into page-level artifacts under project file
-//! storage. The node is intended to support text extraction, page-image
-//! generation, and later richer outputs such as JSON manifests.
+//! Convert one project PDF file into page-level text artifacts under project
+//! file storage.
+//!
+//! Version 1 is deliberately narrow:
+//!
+//! - page-split output
+//! - text extraction only
+//! - no page-image rendering yet
+//! - no embedded-image extraction contract yet
 //!
 //! # Proposed node kind
 //!
@@ -30,9 +36,7 @@
 //! {
 //!   "source_key": "saved.path",
 //!   "output_dir": "pdf/precise-paper",
-//!   "access": "private",
-//!   "mode": "text_and_images",
-//!   "dpi": 180
+//!   "access": "private"
 //! }
 //! ```
 //!
@@ -45,13 +49,6 @@
 //!   - destination subdirectory under `files/{access}/`
 //! - `access`
 //!   - `public` or `private`
-//! - `mode`
-//!   - `text_only`
-//!   - `images_only`
-//!   - `text_and_images`
-//! - `dpi`
-//!   - target render density for page-image outputs
-//!   - ignored when image generation is disabled
 //!
 //! # Input payload contract
 //!
@@ -81,20 +78,20 @@
 //!   "pdf_convert": {
 //!     "source_path": "private/uploads/paper.pdf",
 //!     "output_dir": "private/pdf/precise-paper",
-//!     "mode": "text_and_images",
 //!     "page_count": 16,
 //!     "pages": [
 //!       {
 //!         "page": 1,
 //!         "text_path": "private/pdf/precise-paper/1/text.md",
-//!         "image_path": "private/pdf/precise-paper/1/page.png"
+//!         "page_meta_path": "private/pdf/precise-paper/1/page.json"
 //!       },
 //!       {
 //!         "page": 2,
 //!         "text_path": "private/pdf/precise-paper/2/text.md",
-//!         "image_path": "private/pdf/precise-paper/2/page.png"
+//!         "page_meta_path": "private/pdf/precise-paper/2/page.json"
 //!       }
-//!     ]
+//!     ],
+//!     "manifest_path": "private/pdf/precise-paper/manifest.json"
 //!   }
 //! }
 //! ```
@@ -105,32 +102,30 @@
 //!
 //! ```text
 //! files/private/pdf/precise-paper/
+//!   manifest.json
 //!   1/
 //!     text.md
-//!     page.png
 //!     page.json
 //!   2/
 //!     text.md
-//!     page.png
 //!     page.json
 //! ```
 //!
-//! Depending on mode:
-//!
-//! - `text_only` emits `text.md` and `page.json`
-//! - `images_only` emits `page.png` and `page.json`
-//! - `text_and_images` emits both
+//! This page-first layout is intentional even in text-only mode. It keeps the
+//! node compatible with later expansion to page-image rendering, page-level
+//! retries, and page-level ingestion flows.
 //!
 //! # Deliberately undecided
 //!
-//! This stub does **not** choose the implementation technology yet.
-//! In particular, it does not commit to:
+//! This stub does **not** lock down the exact extraction library yet, but the
+//! current v1 direction is a pure-Rust text path only.
 //!
-//! - text extraction library
-//! - page-image renderer
+//! This stub does **not** commit to:
+//!
+//! - page-image rendering
 //! - embedded-image extraction behavior
-//! - JSON manifest richness
-//! - whether the node will later support more output modes
+//! - richer JSON outputs beyond page and run manifests
+//! - future output modes
 //!
 //! # Next implementation step
 //!
@@ -147,14 +142,6 @@
 /// Stable proposed node kind for project-scoped PDF conversion.
 pub const NODE_KIND: &str = "n.file.pdf_convert";
 
-/// Proposed output mode for the future `n.file.pdf_convert` node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PdfConvertMode {
-    TextOnly,
-    ImagesOnly,
-    TextAndImages,
-}
-
 /// Proposed static config contract for the future `n.file.pdf_convert` node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -164,18 +151,14 @@ pub struct Config {
     pub output_dir: String,
     /// Access class: `public` or `private`.
     pub access: String,
-    /// Which artifact families to emit.
-    pub mode: PdfConvertMode,
-    /// Target DPI for page-image rendering.
-    pub dpi: u32,
 }
 
 /// One page-level artifact entry the node is expected to return.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageArtifact {
     pub page: usize,
-    pub text_path: Option<String>,
-    pub image_path: Option<String>,
+    pub text_path: String,
+    pub page_meta_path: String,
 }
 
 /// Top-level output payload contract for the future node.
@@ -183,7 +166,7 @@ pub struct PageArtifact {
 pub struct PdfConvertOutput {
     pub source_path: String,
     pub output_dir: String,
-    pub mode: PdfConvertMode,
+    pub manifest_path: String,
     pub page_count: usize,
     pub pages: Vec<PageArtifact>,
 }

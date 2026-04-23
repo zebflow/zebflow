@@ -13614,7 +13614,14 @@ async fn api_set_marketplace_producer_mode(
         .zebflow_cfg
         .set_marketplace_distribution(&owner_slug, &project_slug, cfg.clone())
     {
-        Ok(()) => Json(json!({"ok": true, "marketplace": cfg})).into_response(),
+        Ok(()) => match state
+            .platform
+            .marketplace
+            .set_authority_enabled(&owner_slug, &project_slug, req.enabled)
+        {
+            Ok(authority) => Json(json!({"ok": true, "marketplace": cfg, "authority": authority})).into_response(),
+            Err(err) => internal_error(err),
+        },
         Err(err) => internal_error(err),
     }
 }

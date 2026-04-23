@@ -6,18 +6,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use uuid::Uuid;
+
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::ZebLock;
 use crate::platform::model::{
-    AgentDocItem, CreateProjectRequest, PipelineBreadcrumb, PipelineFolderItem, PipelineMeta,
-    PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
-    ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem, TemplateCreateKind,
-    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
-    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
-    now_ts, slug_segment,
+    AgentDocItem, CreateProjectRequest, MarketplaceAuthority, PipelineBreadcrumb,
+    PipelineFolderItem, PipelineMeta, PipelineRegistryItem, PipelineRegistryListing,
+    PlatformProject, ProjectDocItem, ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem,
+    TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem,
+    TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing,
+    normalize_virtual_path, now_ts, slug_segment,
 };
 use crate::platform::services::project_config::ZebflowJsonService;
 use crate::platform::services::zeb_lock::ZebLockService;
@@ -182,6 +184,10 @@ pub struct ProjectService {
 }
 
 impl ProjectService {
+    fn new_project_id() -> String {
+        format!("prj_{}", Uuid::new_v4().simple())
+    }
+
     /// Creates project service.
     pub fn new(
         data: Arc<dyn DataAdapter>,
@@ -295,6 +301,11 @@ impl ProjectService {
 
         let now = now_ts();
         let existing = self.data.get_project(&owner, &project)?;
+        let owner_user_id = self
+            .data
+            .get_user_auth(&owner)?
+            .map(|user| user.profile.user_id)
+            .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found"))?;
         let created_at = existing.as_ref().map(|p| p.created_at).unwrap_or(now);
         let title = req.title.as_deref().unwrap_or("").trim().to_string();
         let title = if title.is_empty() {
@@ -304,6 +315,16 @@ impl ProjectService {
         };
 
         let record = PlatformProject {
+            project_id: existing
+                .as_ref()
+                .map(|p| p.project_id.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(Self::new_project_id),
+            owner_user_id: existing
+                .as_ref()
+                .map(|p| p.owner_user_id.clone())
+                .filter(|v| !v.is_empty())
+                .unwrap_or(owner_user_id),
             owner: owner.clone(),
             project: project.clone(),
             title: title.clone(),
@@ -311,6 +332,16 @@ impl ProjectService {
             updated_at: now,
         };
         self.data.put_project(&record)?;
+        self.data.put_marketplace_authority(&MarketplaceAuthority {
+            authority_id: format!("mka_{}", record.project_id),
+            host_project_id: record.project_id.clone(),
+            owner: owner.clone(),
+            project: project.clone(),
+            enabled: false,
+            public_base_url: String::new(),
+            created_at,
+            updated_at: now,
+        })?;
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         // Rename initial "main" branch if caller requested a different name.
         // Safe even with no commits — git branch -m works on an unborn branch.
@@ -2708,7 +2739,10 @@ mod tests {
     use crate::platform::adapters::data::build_data_adapter;
     use crate::platform::adapters::file::{FileAdapter, FilesystemFileAdapter};
     use crate::platform::adapters::project_data::build_project_data_factory;
-    use crate::platform::model::{CreateProjectRequest, DataAdapterKind, ProjectRuntimeSelectionRequest};
+    use crate::platform::model::{
+        CreateProjectRequest, DataAdapterKind, PlatformUser, PlatformUserLocalAuth,
+        ProjectRuntimeSelectionRequest, StoredUser,
+    };
     use crate::platform::services::project_config::ZebflowJsonService;
     use crate::platform::services::zeb_lock::ZebLockService;
     use std::sync::Arc;
@@ -2717,6 +2751,26 @@ mod tests {
         let data = build_data_adapter(DataAdapterKind::Sqlite, root).expect("sqlite adapter");
         let file = Arc::new(FilesystemFileAdapter::new(root.join("users")));
         file.initialize().expect("file adapter init");
+        let now = now_ts();
+        let seeded_user_id = "usr_test_superadmin".to_string();
+        data.put_user(&StoredUser {
+            profile: PlatformUser {
+                user_id: seeded_user_id.clone(),
+                owner: "superadmin".to_string(),
+                role: "superadmin".to_string(),
+                git_name: "Superadmin".to_string(),
+                git_email: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            auth: PlatformUserLocalAuth {
+                user_id: seeded_user_id,
+                password_hash: String::new(),
+                password_alg: "sha256".to_string(),
+                password_updated_at: now,
+            },
+        })
+        .expect("seed test owner user");
         let project_data = build_project_data_factory(root);
         let zebflow_cfg = Arc::new(ZebflowJsonService::new(root.join("users")));
         let zeb_lock = Arc::new(ZebLockService::new(root.join("users")));

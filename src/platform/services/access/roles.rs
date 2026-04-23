@@ -107,6 +107,7 @@ pub fn managed_role_policies(owner: &str, project: &str, now: i64) -> Vec<Projec
     ]
     .into_iter()
     .map(|role| ProjectPolicy {
+        project_id: String::new(),
         owner: owner.to_string(),
         project: project.to_string(),
         policy_id: role.policy_id().to_string(),
@@ -124,6 +125,7 @@ pub fn managed_role_policies(owner: &str, project: &str, now: i64) -> Vec<Projec
 pub fn managed_role_alias_policies(owner: &str, project: &str, now: i64) -> Vec<ProjectPolicy> {
     vec![
         ProjectPolicy {
+            project_id: String::new(),
             owner: owner.to_string(),
             project: project.to_string(),
             policy_id: "viewer".to_string(),
@@ -134,6 +136,7 @@ pub fn managed_role_alias_policies(owner: &str, project: &str, now: i64) -> Vec<
             updated_at: now,
         },
         ProjectPolicy {
+            project_id: String::new(),
             owner: owner.to_string(),
             project: project.to_string(),
             policy_id: "editor".to_string(),

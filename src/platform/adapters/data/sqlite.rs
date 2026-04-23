@@ -3,10 +3,11 @@
 //! Uses a single `catalog.db` file under `{data_root}/platform/` with proper
 //! WAL journaling. Safe across K8s restarts — no unsafe mmap code.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::Value;
 
 use crate::infra::cluster::registry::WorkerRegistryRecord;
@@ -16,30 +17,45 @@ use crate::infra::execution::placement::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplacePublisher, MarketplaceToken, McpSession,
-    PipelineInvocationEntry, PipelineMeta, PlatformMarketplaceRepository, PlatformProject,
-    PlatformUser, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
-    ProjectDbConnection, ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository,
-    ProjectMember, ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus,
-    ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher,
+    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformMarketplaceRepository,
+    PlatformOffice, PlatformOfficeNode, PlatformProject, PlatformUser, PlatformUserLocalAuth,
+    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
+    ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository, ProjectMember,
+    ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy,
+    ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
 };
 
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS users (
     owner         TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL UNIQUE DEFAULT '',
     role          TEXT NOT NULL DEFAULT 'owner',
     git_name      TEXT NOT NULL DEFAULT '',
     git_email     TEXT NOT NULL DEFAULT '',
-    password      TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS user_local_auth (
+    user_id              TEXT PRIMARY KEY,
+    password_hash        TEXT NOT NULL DEFAULT '',
+    password_alg         TEXT NOT NULL DEFAULT 'sha256',
+    password_updated_at  INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS projects (
     owner         TEXT NOT NULL,
     project       TEXT NOT NULL,
+    project_id    TEXT NOT NULL UNIQUE DEFAULT '',
+    owner_user_id TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project)
+    PRIMARY KEY (owner, project),
+    FOREIGN KEY (owner_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_credentials (
     owner         TEXT NOT NULL,
@@ -81,6 +97,8 @@ CREATE TABLE IF NOT EXISTS project_marketplace_repositories (
     PRIMARY KEY (owner, project, repository_id)
 );
 CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
+    source_id     TEXT NOT NULL UNIQUE DEFAULT '',
+    owner_user_id TEXT NOT NULL DEFAULT '',
     owner         TEXT NOT NULL,
     repository_id TEXT NOT NULL,
     title         TEXT NOT NULL DEFAULT '',
@@ -91,9 +109,27 @@ CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, repository_id)
+    PRIMARY KEY (owner, repository_id),
+    FOREIGN KEY (owner_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS marketplace_authorities (
+    authority_id     TEXT PRIMARY KEY,
+    host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
+    owner            TEXT NOT NULL DEFAULT '',
+    project          TEXT NOT NULL DEFAULT '',
+    enabled          INTEGER NOT NULL DEFAULT 0,
+    public_base_url  TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (host_project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS marketplace_publishers (
+    authority_id    TEXT NOT NULL DEFAULT '',
+    publisher_pk    TEXT NOT NULL UNIQUE DEFAULT '',
     owner          TEXT NOT NULL,
     project        TEXT NOT NULL,
     publisher_id   TEXT NOT NULL,
@@ -106,9 +142,15 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
     enabled        INTEGER NOT NULL DEFAULT 1,
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project, publisher_id)
+    PRIMARY KEY (owner, project, publisher_id),
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS marketplace_asset_packages (
+    package_pk       TEXT NOT NULL UNIQUE DEFAULT '',
+    authority_id     TEXT NOT NULL DEFAULT '',
+    publisher_pk     TEXT NOT NULL DEFAULT '',
     package_id       TEXT PRIMARY KEY,
     authority_owner  TEXT NOT NULL DEFAULT '',
     authority_project TEXT NOT NULL DEFAULT '',
@@ -123,9 +165,16 @@ CREATE TABLE IF NOT EXISTS marketplace_asset_packages (
     visibility       TEXT NOT NULL DEFAULT 'private',
     tags_json        TEXT NOT NULL DEFAULT '[]',
     created_at       INTEGER NOT NULL DEFAULT 0,
-    updated_at       INTEGER NOT NULL DEFAULT 0
+    updated_at       INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS marketplace_asset_versions (
+    package_pk        TEXT NOT NULL DEFAULT '',
     package_id        TEXT NOT NULL,
     version           TEXT NOT NULL,
     authority_owner   TEXT NOT NULL DEFAULT '',
@@ -140,10 +189,15 @@ CREATE TABLE IF NOT EXISTS marketplace_asset_versions (
     artifact_sha256   TEXT NOT NULL DEFAULT '',
     manifest_json     TEXT NOT NULL DEFAULT 'null',
     created_at        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (package_id, version)
+    PRIMARY KEY (package_id, version),
+    FOREIGN KEY (package_pk) REFERENCES marketplace_asset_packages(package_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS marketplace_tokens (
     token_id       TEXT PRIMARY KEY,
+    authority_id   TEXT NOT NULL DEFAULT '',
+    publisher_pk   TEXT NOT NULL DEFAULT '',
     owner          TEXT NOT NULL DEFAULT '',
     project        TEXT NOT NULL DEFAULT '',
     publisher_id   TEXT NOT NULL DEFAULT '',
@@ -157,7 +211,13 @@ CREATE TABLE IF NOT EXISTS marketplace_tokens (
     last_used_at   INTEGER,
     revoked_at     INTEGER,
     created_at     INTEGER NOT NULL DEFAULT 0,
-    updated_at     INTEGER NOT NULL DEFAULT 0
+    updated_at     INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS pipeline_meta (
     owner         TEXT NOT NULL,
@@ -176,6 +236,7 @@ CREATE TABLE IF NOT EXISTS pipeline_meta (
     PRIMARY KEY (owner, project, file_rel_path)
 );
 CREATE TABLE IF NOT EXISTS project_policies (
+    project_id        TEXT NOT NULL DEFAULT '',
     owner             TEXT NOT NULL,
     project           TEXT NOT NULL,
     policy_id         TEXT NOT NULL,
@@ -184,9 +245,14 @@ CREATE TABLE IF NOT EXISTS project_policies (
     managed           INTEGER NOT NULL DEFAULT 0,
     created_at        INTEGER NOT NULL DEFAULT 0,
     updated_at        INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project, policy_id)
+    PRIMARY KEY (owner, project, policy_id),
+    UNIQUE (project_id, policy_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_policy_bindings (
+    project_id   TEXT NOT NULL DEFAULT '',
     owner        TEXT NOT NULL,
     project      TEXT NOT NULL,
     subject_kind TEXT NOT NULL,
@@ -194,19 +260,37 @@ CREATE TABLE IF NOT EXISTS project_policy_bindings (
     policy_id    TEXT NOT NULL,
     created_at   INTEGER NOT NULL DEFAULT 0,
     updated_at   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project, subject_id, policy_id)
+    PRIMARY KEY (owner, project, subject_id, policy_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, policy_id) REFERENCES project_policies(project_id, policy_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_members (
+    project_id              TEXT NOT NULL DEFAULT '',
     owner                  TEXT NOT NULL,
     project                TEXT NOT NULL,
     user_id                TEXT NOT NULL,
+    member_user_id         TEXT NOT NULL DEFAULT '',
     role_preset            TEXT NOT NULL DEFAULT 'reporter',
     custom_policy_ids_json TEXT NOT NULL DEFAULT '[]',
     mcp_capabilities_json  TEXT NOT NULL DEFAULT '[]',
     created_by             TEXT NOT NULL DEFAULT '',
+    created_by_user_id     TEXT NOT NULL DEFAULT '',
     created_at             INTEGER NOT NULL DEFAULT 0,
     updated_at             INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project, user_id)
+    PRIMARY KEY (owner, project, user_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (member_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_invites (
     owner                  TEXT NOT NULL,
@@ -224,7 +308,32 @@ CREATE TABLE IF NOT EXISTS project_invites (
     updated_at             INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, invite_id)
 );
+CREATE TABLE IF NOT EXISTS offices (
+    office_id     TEXT PRIMARY KEY,
+    office_slug   TEXT NOT NULL UNIQUE DEFAULT '',
+    label         TEXT NOT NULL DEFAULT '',
+    office_kind   TEXT NOT NULL DEFAULT 'office',
+    base_url      TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS office_nodes (
+    node_id             TEXT PRIMARY KEY,
+    office_id           TEXT NOT NULL DEFAULT '',
+    label               TEXT NOT NULL DEFAULT '',
+    base_url            TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT '',
+    capabilities_json   TEXT NOT NULL DEFAULT '{}',
+    registered_at       INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+);
 CREATE TABLE IF NOT EXISTS worker_registry (
+    office_id           TEXT NOT NULL DEFAULT '',
+    office_slug         TEXT NOT NULL DEFAULT '',
     node_id             TEXT PRIMARY KEY,
     label               TEXT NOT NULL DEFAULT '',
     base_url            TEXT NOT NULL DEFAULT '',
@@ -234,16 +343,32 @@ CREATE TABLE IF NOT EXISTS worker_registry (
     last_heartbeat_at   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS project_runtime_placements (
+    project_id           TEXT NOT NULL DEFAULT '',
     owner               TEXT NOT NULL,
     project             TEXT NOT NULL,
     mode                TEXT NOT NULL DEFAULT 'shared',
     target              TEXT NOT NULL DEFAULT 'local',
+    target_office_id    TEXT,
+    target_node_id      TEXT,
     worker_id           TEXT,
+    resource_profile    TEXT NOT NULL DEFAULT '',
+    desired_replicas    INTEGER NOT NULL DEFAULT 1,
+    effective_state     TEXT NOT NULL DEFAULT '',
     created_at          INTEGER NOT NULL DEFAULT 0,
     updated_at          INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (owner, project)
+    PRIMARY KEY (owner, project),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_node_id) REFERENCES office_nodes(node_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE TABLE IF NOT EXISTS project_operations (
+    project_id          TEXT NOT NULL DEFAULT '',
     owner               TEXT NOT NULL,
     project             TEXT NOT NULL,
     operation_id        TEXT NOT NULL,
@@ -260,7 +385,16 @@ CREATE TABLE IF NOT EXISTS project_operations (
     created_at          INTEGER NOT NULL DEFAULT 0,
     updated_at          INTEGER NOT NULL DEFAULT 0,
     completed_at        INTEGER,
-    PRIMARY KEY (owner, project, operation_id)
+    PRIMARY KEY (owner, project, operation_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (source_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_project_operations_project
     ON project_operations (owner, project, updated_at DESC, operation_id ASC);
@@ -290,6 +424,21 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_invocations_pipeline
     ON pipeline_invocations (owner, project, file_rel_path, at DESC);
 ";
 
+const SCHEMA_MIGRATIONS_SQL: &str = "
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    applied_at  INTEGER NOT NULL DEFAULT 0
+);
+";
+
+#[derive(Clone, Copy)]
+struct MigrationDef {
+    version: i64,
+    name: &'static str,
+    apply: fn(&Transaction<'_>) -> Result<(), PlatformError>,
+}
+
 /// Platform catalog adapter backed by a single WAL-mode SQLite file.
 pub struct SqliteDataAdapter {
     conn: Arc<Mutex<Connection>>,
@@ -297,18 +446,17 @@ pub struct SqliteDataAdapter {
 
 impl SqliteDataAdapter {
     /// Opens or creates `{data_root}/platform/catalog.db` with WAL mode and
-    /// runs DDL migrations (`CREATE TABLE IF NOT EXISTS`).
+    /// applies ordered platform schema migrations.
     pub fn new(data_root: &Path) -> Result<Self, PlatformError> {
         std::fs::create_dir_all(data_root.join("platform"))?;
         let path = data_root.join("platform").join("catalog.db");
-        let conn = Connection::open(&path)
+        let mut conn = Connection::open(&path)
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_OPEN", e.to_string()))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+        )
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
-        conn.execute_batch(SCHEMA_SQL)
-            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
-        Self::ensure_pipeline_invocation_schema(&conn)?;
-        Self::ensure_marketplace_schema(&conn)?;
+        Self::run_migrations(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -322,12 +470,37 @@ impl SqliteDataAdapter {
         PlatformError::new("PLATFORM_SQLITE_JSON", e.to_string())
     }
 
-    fn ensure_table_column(
-        conn: &Connection,
-        table: &str,
-        column: &str,
-        definition: &str,
-    ) -> Result<(), PlatformError> {
+    fn sha256_hex(input: &str) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(input.as_bytes());
+        let digest = hasher.finalize();
+        digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn marketplace_token_scopes(
+        scope_read: bool,
+        scope_publish: bool,
+        scope_manage: bool,
+    ) -> Vec<String> {
+        let mut scopes = Vec::new();
+        if scope_read {
+            scopes.push("marketplace:read".to_string());
+        }
+        if scope_publish {
+            scopes.push("marketplace:publish".to_string());
+        }
+        if scope_manage {
+            scopes.push("marketplace:manage".to_string());
+        }
+        scopes
+    }
+
+    fn table_has_column<C>(conn: &C, table: &str, column: &str) -> Result<bool, PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
         let pragma_sql = format!("PRAGMA table_info({table})");
         let mut stmt = conn.prepare(&pragma_sql).map_err(Self::qe)?;
         let exists = stmt
@@ -335,6 +508,1641 @@ impl SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|row| row.ok())
             .any(|name| name == column);
+        Ok(exists)
+    }
+
+    fn migrations() -> [MigrationDef; 11] {
+        [
+            MigrationDef {
+                version: 1,
+                name: "initial_catalog",
+                apply: Self::apply_migration_0001_initial_catalog,
+            },
+            MigrationDef {
+                version: 2,
+                name: "pipeline_invocation_run_id",
+                apply: Self::apply_migration_0002_pipeline_invocation_run_id,
+            },
+            MigrationDef {
+                version: 3,
+                name: "marketplace_columns_and_publishers",
+                apply: Self::apply_migration_0003_marketplace_columns_and_publishers,
+            },
+            MigrationDef {
+                version: 4,
+                name: "stable_ids_and_user_local_auth",
+                apply: Self::apply_migration_0004_stable_ids_and_user_local_auth,
+            },
+            MigrationDef {
+                version: 5,
+                name: "authorities_offices_and_runtime_normalization",
+                apply: Self::apply_migration_0005_authorities_offices_and_runtime_normalization,
+            },
+            MigrationDef {
+                version: 6,
+                name: "marketplace_and_operations_internal_ids",
+                apply: Self::apply_migration_0006_marketplace_and_operations_internal_ids,
+            },
+            MigrationDef {
+                version: 7,
+                name: "ownership_and_access_internal_ids",
+                apply: Self::apply_migration_0007_ownership_and_access_internal_ids,
+            },
+            MigrationDef {
+                version: 8,
+                name: "constraint_and_uniqueness_hardening",
+                apply: Self::apply_migration_0008_constraint_and_uniqueness_hardening,
+            },
+            MigrationDef {
+                version: 9,
+                name: "core_foreign_key_enforcement",
+                apply: Self::apply_migration_0009_core_foreign_key_enforcement,
+            },
+            MigrationDef {
+                version: 10,
+                name: "project_access_normalization",
+                apply: Self::apply_migration_0010_project_access_normalization,
+            },
+            MigrationDef {
+                version: 11,
+                name: "marketplace_token_scope_flags",
+                apply: Self::apply_migration_0011_marketplace_token_scope_flags,
+            },
+        ]
+    }
+
+    fn run_migrations(conn: &mut Connection) -> Result<(), PlatformError> {
+        conn.execute_batch(SCHEMA_MIGRATIONS_SQL)
+            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+
+        let applied_versions = {
+            let mut stmt = conn
+                .prepare("SELECT version FROM schema_migrations ORDER BY version ASC")
+                .map_err(Self::qe)?;
+            stmt.query_map([], |row| row.get::<_, i64>(0))
+                .map_err(Self::qe)?
+                .collect::<Result<BTreeSet<_>, _>>()
+                .map_err(Self::qe)?
+        };
+
+        for migration in Self::migrations() {
+            if applied_versions.contains(&migration.version) {
+                continue;
+            }
+            let tx = conn.transaction().map_err(Self::qe)?;
+            (migration.apply)(&tx)?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, strftime('%s','now'))",
+                params![migration.version, migration.name],
+            )
+            .map_err(Self::qe)?;
+            tx.commit().map_err(Self::qe)?;
+        }
+        Ok(())
+    }
+
+    fn apply_migration_0001_initial_catalog(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        tx.execute_batch(SCHEMA_SQL)
+            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))
+    }
+
+    fn apply_migration_0002_pipeline_invocation_run_id(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(
+            tx,
+            "pipeline_invocations",
+            "run_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )
+    }
+
+    fn apply_migration_0003_marketplace_columns_and_publishers(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_marketplace_schema(tx)
+    }
+
+    fn apply_migration_0004_stable_ids_and_user_local_auth(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS user_local_auth (
+    user_id              TEXT PRIMARY KEY,
+    password_hash        TEXT NOT NULL DEFAULT '',
+    password_alg         TEXT NOT NULL DEFAULT 'sha256',
+    password_updated_at  INTEGER NOT NULL DEFAULT 0
+);
+",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+
+        Self::ensure_table_column(tx, "users", "user_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "projects", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+
+        if Self::table_has_column(tx, "users", "password")? {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT owner, created_at FROM users WHERE COALESCE(user_id, '') = '' ORDER BY owner ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for (owner, created_at) in items {
+                let user_id = format!("usr_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "UPDATE users SET user_id = ?1 WHERE owner = ?2",
+                    params![user_id, owner],
+                )
+                .map_err(Self::qe)?;
+                let password = tx
+                    .query_row(
+                        "SELECT password FROM users WHERE owner = ?1",
+                        params![owner],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(Self::qe)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO user_local_auth (user_id, password_hash, password_alg, password_updated_at)
+                     VALUES (?1, ?2, 'sha256', ?3)",
+                    params![user_id, Self::sha256_hex(&password), created_at],
+                )
+                .map_err(Self::qe)?;
+            }
+            let mut stmt = tx
+                .prepare(
+                    "SELECT user_id, owner, password, created_at FROM users
+                     WHERE COALESCE(user_id, '') <> '' ORDER BY owner ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for (user_id, _owner, password, created_at) in items {
+                tx.execute(
+                    "INSERT OR IGNORE INTO user_local_auth (user_id, password_hash, password_alg, password_updated_at)
+                     VALUES (?1, ?2, 'sha256', ?3)",
+                    params![user_id, Self::sha256_hex(&password), created_at],
+                )
+                .map_err(Self::qe)?;
+            }
+        }
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT owner, project FROM projects WHERE COALESCE(project_id, '') = '' ORDER BY owner ASC, project ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for (owner, project) in items {
+                let project_id = format!("prj_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "UPDATE projects SET project_id = ?1 WHERE owner = ?2 AND project = ?3",
+                    params![project_id, owner, project],
+                )
+                .map_err(Self::qe)?;
+            }
+        }
+
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_project_id ON projects(project_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn apply_migration_0005_authorities_offices_and_runtime_normalization(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS marketplace_authorities (
+    authority_id     TEXT PRIMARY KEY,
+    host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
+    owner            TEXT NOT NULL DEFAULT '',
+    project          TEXT NOT NULL DEFAULT '',
+    enabled          INTEGER NOT NULL DEFAULT 0,
+    public_base_url  TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS offices (
+    office_id     TEXT PRIMARY KEY,
+    office_slug   TEXT NOT NULL UNIQUE DEFAULT '',
+    label         TEXT NOT NULL DEFAULT '',
+    office_kind   TEXT NOT NULL DEFAULT 'office',
+    base_url      TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS office_nodes (
+    node_id             TEXT PRIMARY KEY,
+    office_id           TEXT NOT NULL DEFAULT '',
+    label               TEXT NOT NULL DEFAULT '',
+    base_url            TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT '',
+    capabilities_json   TEXT NOT NULL DEFAULT '{}',
+    registered_at       INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0
+);
+",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+
+        Self::ensure_table_column(tx, "worker_registry", "office_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "worker_registry", "office_slug", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "target_office_id", "TEXT")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "target_node_id", "TEXT")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "resource_profile", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "desired_replicas", "INTEGER NOT NULL DEFAULT 1")?;
+        Self::ensure_table_column(tx, "project_runtime_placements", "effective_state", "TEXT NOT NULL DEFAULT ''")?;
+
+        tx.execute(
+            "UPDATE worker_registry
+             SET office_id = node_id
+             WHERE COALESCE(office_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE worker_registry
+             SET office_slug = office_id
+             WHERE COALESCE(office_slug, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO offices
+             (office_id, office_slug, label, office_kind, base_url, status, created_at, updated_at)
+             SELECT office_id,
+                    CASE WHEN COALESCE(office_slug, '') = '' THEN office_id ELSE office_slug END,
+                    label,
+                    'office',
+                    base_url,
+                    status,
+                    registered_at,
+                    last_heartbeat_at
+             FROM worker_registry",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO office_nodes
+             (node_id, office_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
+             SELECT node_id, office_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+             FROM worker_registry",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_runtime_placements
+             SET project_id = (
+                 SELECT projects.project_id
+                 FROM projects
+                 WHERE projects.owner = project_runtime_placements.owner
+                   AND projects.project = project_runtime_placements.project
+             )
+             WHERE COALESCE(project_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_runtime_placements
+             SET target_node_id = worker_id
+             WHERE COALESCE(target_node_id, '') = '' AND COALESCE(worker_id, '') <> ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_runtime_placements
+             SET target_office_id = target_node_id
+             WHERE COALESCE(target_office_id, '') = '' AND COALESCE(target_node_id, '') <> ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_runtime_placements
+             SET effective_state = CASE
+                 WHEN target = 'worker' AND COALESCE(target_node_id, '') <> '' THEN 'assigned'
+                 ELSE 'local'
+             END
+             WHERE COALESCE(effective_state, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO marketplace_authorities
+             (authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at)
+             SELECT 'mka_' || project_id,
+                    project_id,
+                    owner,
+                    project,
+                    0,
+                    '',
+                    created_at,
+                    updated_at
+             FROM projects
+             WHERE COALESCE(project_id, '') <> ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_authorities_host_project_id
+             ON marketplace_authorities(host_project_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_office_nodes_office_id
+             ON office_nodes(office_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_runtime_placements_project_id
+             ON project_runtime_placements(project_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn apply_migration_0006_marketplace_and_operations_internal_ids(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(tx, "marketplace_publishers", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_publishers", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_tokens", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_tokens", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_asset_packages", "package_pk", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_asset_packages", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_asset_packages", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "marketplace_asset_versions", "package_pk", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_operations", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+
+        tx.execute(
+            "UPDATE marketplace_publishers
+             SET authority_id = (
+                 SELECT authority_id
+                 FROM marketplace_authorities
+                 WHERE marketplace_authorities.owner = marketplace_publishers.owner
+                   AND marketplace_authorities.project = marketplace_publishers.project
+             )
+             WHERE COALESCE(authority_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT owner, project, publisher_id
+                     FROM marketplace_publishers
+                     WHERE COALESCE(publisher_pk, '') = ''
+                     ORDER BY owner ASC, project ASC, publisher_id ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for (owner, project, publisher_id) in items {
+                let publisher_pk = format!("mpub_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "UPDATE marketplace_publishers
+                     SET publisher_pk = ?1
+                     WHERE owner = ?2 AND project = ?3 AND publisher_id = ?4",
+                    params![publisher_pk, owner, project, publisher_id],
+                )
+                .map_err(Self::qe)?;
+            }
+        }
+
+        tx.execute(
+            "UPDATE marketplace_tokens
+             SET authority_id = (
+                 SELECT authority_id
+                 FROM marketplace_authorities
+                 WHERE marketplace_authorities.owner = marketplace_tokens.owner
+                   AND marketplace_authorities.project = marketplace_tokens.project
+             )
+             WHERE COALESCE(authority_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE marketplace_tokens
+             SET publisher_pk = (
+                 SELECT publisher_pk
+                 FROM marketplace_publishers
+                 WHERE marketplace_publishers.owner = marketplace_tokens.owner
+                   AND marketplace_publishers.project = marketplace_tokens.project
+                   AND marketplace_publishers.publisher_id = marketplace_tokens.publisher_id
+             )
+             WHERE COALESCE(publisher_pk, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT package_id
+                     FROM marketplace_asset_packages
+                     WHERE COALESCE(package_pk, '') = ''
+                     ORDER BY package_id ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for package_id in items {
+                let package_pk = format!("mpkg_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "UPDATE marketplace_asset_packages SET package_pk = ?1 WHERE package_id = ?2",
+                    params![package_pk, package_id],
+                )
+                .map_err(Self::qe)?;
+            }
+        }
+
+        tx.execute(
+            "UPDATE marketplace_asset_packages
+             SET authority_id = (
+                 SELECT authority_id
+                 FROM marketplace_authorities
+                 WHERE marketplace_authorities.owner = marketplace_asset_packages.authority_owner
+                   AND marketplace_authorities.project = marketplace_asset_packages.authority_project
+             )
+             WHERE COALESCE(authority_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE marketplace_asset_packages
+             SET publisher_pk = (
+                 SELECT publisher_pk
+                 FROM marketplace_publishers
+                 WHERE marketplace_publishers.owner = marketplace_asset_packages.authority_owner
+                   AND marketplace_publishers.project = marketplace_asset_packages.authority_project
+                   AND marketplace_publishers.publisher_id = marketplace_asset_packages.publisher_id
+             )
+             WHERE COALESCE(publisher_pk, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE marketplace_asset_versions
+             SET package_pk = (
+                 SELECT package_pk
+                 FROM marketplace_asset_packages
+                 WHERE marketplace_asset_packages.package_id = marketplace_asset_versions.package_id
+             )
+             WHERE COALESCE(package_pk, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_operations
+             SET project_id = (
+                 SELECT projects.project_id
+                 FROM projects
+                 WHERE projects.owner = project_operations.owner
+                   AND projects.project = project_operations.project
+             )
+             WHERE COALESCE(project_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_publisher_pk
+             ON marketplace_publishers(publisher_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_package_pk
+             ON marketplace_asset_packages(package_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
+             ON marketplace_tokens(publisher_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_asset_versions_package_pk
+             ON marketplace_asset_versions(package_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_operations_project_id
+             ON project_operations(project_id, updated_at DESC, operation_id ASC)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn apply_migration_0007_ownership_and_access_internal_ids(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(tx, "projects", "owner_user_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "platform_marketplace_repositories", "source_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "platform_marketplace_repositories", "owner_user_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_policies", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_policy_bindings", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_members", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "project_members", "created_by_user_id", "TEXT NOT NULL DEFAULT ''")?;
+
+        tx.execute(
+            "UPDATE projects
+             SET owner_user_id = (
+                 SELECT users.user_id FROM users WHERE users.owner = projects.owner
+             )
+             WHERE COALESCE(owner_user_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT owner, repository_id
+                     FROM platform_marketplace_repositories
+                     WHERE COALESCE(source_id, '') = ''
+                     ORDER BY owner ASC, repository_id ASC",
+                )
+                .map_err(Self::qe)?;
+            let items = stmt
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(Self::qe)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(Self::qe)?;
+            drop(stmt);
+            for (owner, repository_id) in items {
+                let source_id = format!("pmr_{}", uuid::Uuid::new_v4().simple());
+                tx.execute(
+                    "UPDATE platform_marketplace_repositories
+                     SET source_id = ?1
+                     WHERE owner = ?2 AND repository_id = ?3",
+                    params![source_id, owner, repository_id],
+                )
+                .map_err(Self::qe)?;
+            }
+        }
+
+        tx.execute(
+            "UPDATE platform_marketplace_repositories
+             SET owner_user_id = (
+                 SELECT users.user_id FROM users WHERE users.owner = platform_marketplace_repositories.owner
+             )
+             WHERE COALESCE(owner_user_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_policies
+             SET project_id = (
+                 SELECT projects.project_id
+                 FROM projects
+                 WHERE projects.owner = project_policies.owner
+                   AND projects.project = project_policies.project
+             )
+             WHERE COALESCE(project_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_policy_bindings
+             SET project_id = (
+                 SELECT projects.project_id
+                 FROM projects
+                 WHERE projects.owner = project_policy_bindings.owner
+                   AND projects.project = project_policy_bindings.project
+             )
+             WHERE COALESCE(project_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_members
+             SET project_id = (
+                 SELECT projects.project_id
+                 FROM projects
+                 WHERE projects.owner = project_members.owner
+                   AND projects.project = project_members.project
+             )
+             WHERE COALESCE(project_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "UPDATE project_members
+             SET created_by_user_id = (
+                 SELECT users.user_id
+                 FROM users
+                 WHERE users.owner = project_members.created_by
+             )
+             WHERE COALESCE(created_by_user_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_marketplace_repositories_source_id
+             ON platform_marketplace_repositories(source_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_owner_user_id
+             ON projects(owner_user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_members_project_id
+             ON project_members(project_id, user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_policies_project_id
+             ON project_policies(project_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_policy_bindings_project_id
+             ON project_policy_bindings(project_id, subject_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn apply_migration_0008_constraint_and_uniqueness_hardening(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_db_connections_slug
+             ON project_db_connections(owner, project, connection_slug)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_project_user
+             ON project_members(project_id, user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_policies_project_policy
+             ON project_policies(project_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_policy_bindings_project_subject_policy
+             ON project_policy_bindings(project_id, subject_kind, subject_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_authority_publisher
+             ON marketplace_publishers(authority_id, publisher_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_authority_url
+             ON marketplace_publishers(authority_id, publisher_url)
+             WHERE publisher_url <> ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_authority_package
+             ON marketplace_asset_packages(authority_id, package_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_versions_packagepk_version
+             ON marketplace_asset_versions(package_pk, version)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_platform_marketplace_repositories_owner_user
+             ON platform_marketplace_repositories(owner_user_id, enabled, title)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_meta_project_file
+             ON pipeline_meta(owner, project, file_rel_path)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn apply_migration_0009_core_foreign_key_enforcement(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
+            .map_err(Self::qe)?;
+
+        Self::assert_non_empty_column(tx, "users", "user_id")?;
+        Self::assert_non_empty_column(tx, "projects", "project_id")?;
+        Self::assert_non_empty_column(tx, "projects", "owner_user_id")?;
+        Self::assert_non_empty_column(tx, "platform_marketplace_repositories", "source_id")?;
+        Self::assert_non_empty_column(tx, "platform_marketplace_repositories", "owner_user_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_authorities", "authority_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_authorities", "host_project_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_publishers", "authority_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_publishers", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "marketplace_tokens", "authority_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_tokens", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "package_pk")?;
+        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "authority_id")?;
+        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "marketplace_asset_versions", "package_pk")?;
+        Self::assert_non_empty_column(tx, "office_nodes", "office_id")?;
+        Self::assert_non_empty_column(tx, "project_runtime_placements", "project_id")?;
+        Self::assert_non_empty_column(tx, "project_operations", "project_id")?;
+
+        Self::rebuild_table(
+            tx,
+            "user_local_auth",
+            "
+CREATE TABLE user_local_auth (
+    user_id              TEXT PRIMARY KEY,
+    password_hash        TEXT NOT NULL DEFAULT '',
+    password_alg         TEXT NOT NULL DEFAULT 'sha256',
+    password_updated_at  INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+)",
+            &["user_id", "password_hash", "password_alg", "password_updated_at"],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "projects",
+            "
+CREATE TABLE projects (
+    owner         TEXT NOT NULL,
+    project       TEXT NOT NULL,
+    project_id    TEXT NOT NULL UNIQUE DEFAULT '',
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project),
+    FOREIGN KEY (owner_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &["owner", "project", "project_id", "owner_user_id", "created_at", "updated_at"],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "platform_marketplace_repositories",
+            "
+CREATE TABLE platform_marketplace_repositories (
+    source_id      TEXT NOT NULL UNIQUE DEFAULT '',
+    owner_user_id  TEXT NOT NULL DEFAULT '',
+    owner          TEXT NOT NULL,
+    repository_id  TEXT NOT NULL,
+    title          TEXT NOT NULL DEFAULT '',
+    base_url       TEXT NOT NULL DEFAULT '',
+    remote_owner   TEXT NOT NULL DEFAULT '',
+    remote_project TEXT NOT NULL DEFAULT '',
+    read_token     TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, repository_id),
+    FOREIGN KEY (owner_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "source_id",
+                "owner_user_id",
+                "owner",
+                "repository_id",
+                "title",
+                "base_url",
+                "remote_owner",
+                "remote_project",
+                "read_token",
+                "enabled",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "marketplace_authorities",
+            "
+CREATE TABLE marketplace_authorities (
+    authority_id     TEXT PRIMARY KEY,
+    host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
+    owner            TEXT NOT NULL DEFAULT '',
+    project          TEXT NOT NULL DEFAULT '',
+    enabled          INTEGER NOT NULL DEFAULT 0,
+    public_base_url  TEXT NOT NULL DEFAULT '',
+    created_at       INTEGER NOT NULL DEFAULT 0,
+    updated_at       INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (host_project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "authority_id",
+                "host_project_id",
+                "owner",
+                "project",
+                "enabled",
+                "public_base_url",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "marketplace_publishers",
+            "
+CREATE TABLE marketplace_publishers (
+    authority_id    TEXT NOT NULL DEFAULT '',
+    publisher_pk    TEXT NOT NULL UNIQUE DEFAULT '',
+    owner           TEXT NOT NULL,
+    project         TEXT NOT NULL,
+    publisher_id    TEXT NOT NULL,
+    display_name    TEXT NOT NULL DEFAULT '',
+    publisher_url   TEXT NOT NULL DEFAULT '',
+    email           TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    icon_url        TEXT NOT NULL DEFAULT '',
+    website_url     TEXT NOT NULL DEFAULT '',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    created_at      INTEGER NOT NULL DEFAULT 0,
+    updated_at      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, publisher_id),
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "authority_id",
+                "publisher_pk",
+                "owner",
+                "project",
+                "publisher_id",
+                "display_name",
+                "publisher_url",
+                "email",
+                "description",
+                "icon_url",
+                "website_url",
+                "enabled",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "marketplace_tokens",
+            "
+CREATE TABLE marketplace_tokens (
+    token_id                TEXT PRIMARY KEY,
+    authority_id            TEXT NOT NULL DEFAULT '',
+    publisher_pk            TEXT NOT NULL DEFAULT '',
+    owner                   TEXT NOT NULL DEFAULT '',
+    project                 TEXT NOT NULL DEFAULT '',
+    publisher_id            TEXT NOT NULL DEFAULT '',
+    publisher_display_name  TEXT NOT NULL DEFAULT '',
+    publisher_url           TEXT NOT NULL DEFAULT '',
+    publisher_email         TEXT NOT NULL DEFAULT '',
+    title                   TEXT NOT NULL DEFAULT '',
+    secret_hash             TEXT NOT NULL DEFAULT '',
+    scopes_json             TEXT NOT NULL DEFAULT '[]',
+    expires_at              INTEGER,
+    last_used_at            INTEGER,
+    revoked_at              INTEGER,
+    created_at              INTEGER NOT NULL DEFAULT 0,
+    updated_at              INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "token_id",
+                "authority_id",
+                "publisher_pk",
+                "owner",
+                "project",
+                "publisher_id",
+                "publisher_display_name",
+                "publisher_url",
+                "publisher_email",
+                "title",
+                "secret_hash",
+                "scopes_json",
+                "expires_at",
+                "last_used_at",
+                "revoked_at",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "marketplace_asset_packages",
+            "
+CREATE TABLE marketplace_asset_packages (
+    package_pk              TEXT NOT NULL UNIQUE DEFAULT '',
+    authority_id            TEXT NOT NULL DEFAULT '',
+    publisher_pk            TEXT NOT NULL DEFAULT '',
+    package_id              TEXT PRIMARY KEY,
+    authority_owner         TEXT NOT NULL DEFAULT '',
+    authority_project       TEXT NOT NULL DEFAULT '',
+    publisher_owner         TEXT NOT NULL DEFAULT '',
+    publisher_id            TEXT NOT NULL DEFAULT '',
+    publisher_display_name  TEXT NOT NULL DEFAULT '',
+    publisher_url           TEXT NOT NULL DEFAULT '',
+    publisher_email         TEXT NOT NULL DEFAULT '',
+    asset_kind              TEXT NOT NULL DEFAULT '',
+    title                   TEXT NOT NULL DEFAULT '',
+    description             TEXT NOT NULL DEFAULT '',
+    visibility              TEXT NOT NULL DEFAULT 'private',
+    tags_json               TEXT NOT NULL DEFAULT '[]',
+    created_at              INTEGER NOT NULL DEFAULT 0,
+    updated_at              INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "package_pk",
+                "authority_id",
+                "publisher_pk",
+                "package_id",
+                "authority_owner",
+                "authority_project",
+                "publisher_owner",
+                "publisher_id",
+                "publisher_display_name",
+                "publisher_url",
+                "publisher_email",
+                "asset_kind",
+                "title",
+                "description",
+                "visibility",
+                "tags_json",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "marketplace_asset_versions",
+            "
+CREATE TABLE marketplace_asset_versions (
+    package_pk         TEXT NOT NULL DEFAULT '',
+    package_id         TEXT NOT NULL,
+    version            TEXT NOT NULL,
+    authority_owner    TEXT NOT NULL DEFAULT '',
+    authority_project  TEXT NOT NULL DEFAULT '',
+    publisher_owner    TEXT NOT NULL DEFAULT '',
+    publisher_id       TEXT NOT NULL DEFAULT '',
+    source_owner       TEXT NOT NULL DEFAULT '',
+    source_project     TEXT NOT NULL DEFAULT '',
+    source_kind        TEXT NOT NULL DEFAULT '',
+    source_ref         TEXT NOT NULL DEFAULT '',
+    artifact_rel_path  TEXT NOT NULL DEFAULT '',
+    artifact_sha256    TEXT NOT NULL DEFAULT '',
+    manifest_json      TEXT NOT NULL DEFAULT 'null',
+    created_at         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (package_id, version),
+    FOREIGN KEY (package_pk) REFERENCES marketplace_asset_packages(package_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "package_pk",
+                "package_id",
+                "version",
+                "authority_owner",
+                "authority_project",
+                "publisher_owner",
+                "publisher_id",
+                "source_owner",
+                "source_project",
+                "source_kind",
+                "source_ref",
+                "artifact_rel_path",
+                "artifact_sha256",
+                "manifest_json",
+                "created_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "office_nodes",
+            "
+CREATE TABLE office_nodes (
+    node_id             TEXT PRIMARY KEY,
+    office_id           TEXT NOT NULL DEFAULT '',
+    label               TEXT NOT NULL DEFAULT '',
+    base_url            TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT '',
+    capabilities_json   TEXT NOT NULL DEFAULT '{}',
+    registered_at       INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat_at   INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "node_id",
+                "office_id",
+                "label",
+                "base_url",
+                "status",
+                "capabilities_json",
+                "registered_at",
+                "last_heartbeat_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "project_runtime_placements",
+            "
+CREATE TABLE project_runtime_placements (
+    project_id         TEXT NOT NULL DEFAULT '',
+    owner              TEXT NOT NULL,
+    project            TEXT NOT NULL,
+    mode               TEXT NOT NULL DEFAULT 'shared',
+    target             TEXT NOT NULL DEFAULT 'local',
+    target_office_id   TEXT,
+    target_node_id     TEXT,
+    worker_id          TEXT,
+    resource_profile   TEXT NOT NULL DEFAULT '',
+    desired_replicas   INTEGER NOT NULL DEFAULT 1,
+    effective_state    TEXT NOT NULL DEFAULT '',
+    created_at         INTEGER NOT NULL DEFAULT 0,
+    updated_at         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_node_id) REFERENCES office_nodes(node_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "mode",
+                "target",
+                "target_office_id",
+                "target_node_id",
+                "worker_id",
+                "resource_profile",
+                "desired_replicas",
+                "effective_state",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "project_operations",
+            "
+CREATE TABLE project_operations (
+    project_id          TEXT NOT NULL DEFAULT '',
+    owner               TEXT NOT NULL,
+    project             TEXT NOT NULL,
+    operation_id        TEXT NOT NULL,
+    kind                TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    current_step        TEXT NOT NULL DEFAULT '',
+    source_office_id    TEXT,
+    target_office_id    TEXT,
+    artifact_rel_path   TEXT,
+    artifact_sha256     TEXT,
+    artifact_bytes      INTEGER,
+    error_message       TEXT,
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0,
+    completed_at        INTEGER,
+    PRIMARY KEY (owner, project, operation_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (source_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (target_office_id) REFERENCES offices(office_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "operation_id",
+                "kind",
+                "status",
+                "current_step",
+                "source_office_id",
+                "target_office_id",
+                "artifact_rel_path",
+                "artifact_sha256",
+                "artifact_bytes",
+                "error_message",
+                "retry_count",
+                "created_at",
+                "updated_at",
+                "completed_at",
+            ],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_office_nodes_office_id
+             ON office_nodes(office_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_runtime_placements_project_id
+             ON project_runtime_placements(project_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_operations_project
+             ON project_operations(owner, project, updated_at DESC, operation_id ASC)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_operations_project_id
+             ON project_operations(project_id, updated_at DESC, operation_id ASC)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_publisher_pk
+             ON marketplace_publishers(publisher_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_package_pk
+             ON marketplace_asset_packages(package_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
+             ON marketplace_tokens(publisher_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_asset_versions_package_pk
+             ON marketplace_asset_versions(package_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        Self::apply_migration_0008_constraint_and_uniqueness_hardening(tx)?;
+        let violations = {
+            let mut stmt = tx
+                .prepare("PRAGMA foreign_key_check")
+                .map_err(Self::qe)?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Self::qe)?
+        };
+        if let Some((table, rowid, parent, fk)) = violations.into_iter().next() {
+            return Err(PlatformError::new(
+                "PLATFORM_SQLITE_FK_CHECK_FAILED",
+                format!(
+                    "foreign key violation after rebuild: table={table} rowid={rowid} parent={parent} fk={fk}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn apply_migration_0010_project_access_normalization(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
+            .map_err(Self::qe)?;
+        Self::ensure_table_column(tx, "project_members", "member_user_id", "TEXT NOT NULL DEFAULT ''")?;
+
+        tx.execute(
+            "UPDATE project_members
+             SET member_user_id = (
+                 SELECT users.user_id
+                 FROM users
+                 WHERE users.owner = project_members.user_id
+             )
+             WHERE COALESCE(member_user_id, '') = ''",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        Self::assert_non_empty_column(tx, "project_policies", "project_id")?;
+        Self::assert_non_empty_column(tx, "project_policy_bindings", "project_id")?;
+        Self::assert_non_empty_column(tx, "project_members", "project_id")?;
+        Self::assert_non_empty_column(tx, "project_members", "member_user_id")?;
+        Self::assert_non_empty_column(tx, "project_members", "created_by_user_id")?;
+
+        Self::rebuild_table(
+            tx,
+            "project_policies",
+            "
+CREATE TABLE project_policies (
+    project_id        TEXT NOT NULL DEFAULT '',
+    owner             TEXT NOT NULL,
+    project           TEXT NOT NULL,
+    policy_id         TEXT NOT NULL,
+    title             TEXT NOT NULL DEFAULT '',
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    managed           INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL DEFAULT 0,
+    updated_at        INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, policy_id),
+    UNIQUE (project_id, policy_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "policy_id",
+                "title",
+                "capabilities_json",
+                "managed",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "project_policy_bindings",
+            "
+CREATE TABLE project_policy_bindings (
+    project_id    TEXT NOT NULL DEFAULT '',
+    owner         TEXT NOT NULL,
+    project       TEXT NOT NULL,
+    subject_kind  TEXT NOT NULL,
+    subject_id    TEXT NOT NULL,
+    policy_id     TEXT NOT NULL,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, subject_id, policy_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (project_id, policy_id) REFERENCES project_policies(project_id, policy_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "subject_kind",
+                "subject_id",
+                "policy_id",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+        Self::rebuild_table(
+            tx,
+            "project_members",
+            "
+CREATE TABLE project_members (
+    project_id              TEXT NOT NULL DEFAULT '',
+    owner                   TEXT NOT NULL,
+    project                 TEXT NOT NULL,
+    user_id                 TEXT NOT NULL,
+    member_user_id          TEXT NOT NULL DEFAULT '',
+    role_preset             TEXT NOT NULL DEFAULT 'reporter',
+    custom_policy_ids_json  TEXT NOT NULL DEFAULT '[]',
+    mcp_capabilities_json   TEXT NOT NULL DEFAULT '[]',
+    created_by              TEXT NOT NULL DEFAULT '',
+    created_by_user_id      TEXT NOT NULL DEFAULT '',
+    created_at              INTEGER NOT NULL DEFAULT 0,
+    updated_at              INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, user_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (member_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(user_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+            &[
+                "project_id",
+                "owner",
+                "project",
+                "user_id",
+                "member_user_id",
+                "role_preset",
+                "custom_policy_ids_json",
+                "mcp_capabilities_json",
+                "created_by",
+                "created_by_user_id",
+                "created_at",
+                "updated_at",
+            ],
+        )?;
+
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_policies_project_policy
+             ON project_policies(project_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_policy_bindings_project_subject_policy
+             ON project_policy_bindings(project_id, subject_kind, subject_id, policy_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_project_user
+             ON project_members(project_id, user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_members_project_member_user_id
+             ON project_members(project_id, member_user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_members_member_user_id
+             ON project_members(member_user_id)",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        let violations = {
+            let mut stmt = tx
+                .prepare("PRAGMA foreign_key_check")
+                .map_err(Self::qe)?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Self::qe)?
+        };
+        if let Some((table, rowid, parent, fk)) = violations.into_iter().next() {
+            return Err(PlatformError::new(
+                "PLATFORM_SQLITE_FK_CHECK_FAILED",
+                format!(
+                    "foreign key violation after access rebuild: table={table} rowid={rowid} parent={parent} fk={fk}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn apply_migration_0011_marketplace_token_scope_flags(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
+            .map_err(Self::qe)?;
+        Self::ensure_table_column(tx, "marketplace_tokens", "scope_read", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_table_column(tx, "marketplace_tokens", "scope_publish", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_table_column(tx, "marketplace_tokens", "scope_manage", "INTEGER NOT NULL DEFAULT 0")?;
+
+        if Self::table_has_column(tx, "marketplace_tokens", "scopes_json")? {
+            tx.execute(
+                "UPDATE marketplace_tokens
+                 SET scope_read = CASE
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:read\"%' THEN 1
+                        ELSE 0
+                     END,
+                     scope_publish = CASE
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:publish\"%' THEN 1
+                        ELSE 0
+                     END,
+                     scope_manage = CASE
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:manage\"%' THEN 1
+                        ELSE 0
+                     END",
+                [],
+            )
+            .map_err(Self::qe)?;
+        }
+
+        let old_table = "marketplace_tokens__old";
+        tx.execute_batch(&format!("ALTER TABLE marketplace_tokens RENAME TO {old_table};"))
+            .map_err(Self::qe)?;
+        tx.execute_batch(
+            "
+CREATE TABLE marketplace_tokens (
+    token_id                TEXT PRIMARY KEY,
+    authority_id            TEXT NOT NULL DEFAULT '',
+    publisher_pk            TEXT NOT NULL DEFAULT '',
+    owner                   TEXT NOT NULL DEFAULT '',
+    project                 TEXT NOT NULL DEFAULT '',
+    publisher_id            TEXT NOT NULL DEFAULT '',
+    publisher_display_name  TEXT NOT NULL DEFAULT '',
+    publisher_url           TEXT NOT NULL DEFAULT '',
+    publisher_email         TEXT NOT NULL DEFAULT '',
+    title                   TEXT NOT NULL DEFAULT '',
+    secret_hash             TEXT NOT NULL DEFAULT '',
+    scope_read              INTEGER NOT NULL DEFAULT 0,
+    scope_publish           INTEGER NOT NULL DEFAULT 0,
+    scope_manage            INTEGER NOT NULL DEFAULT 0,
+    expires_at              INTEGER,
+    last_used_at            INTEGER,
+    revoked_at              INTEGER,
+    created_at              INTEGER NOT NULL DEFAULT 0,
+    updated_at              INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT,
+    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+        ON UPDATE CASCADE
+        ON DELETE RESTRICT
+)",
+        )
+        .map_err(Self::qe)?;
+        let old_has_scope_columns = Self::table_has_column(tx, old_table, "scope_read")?;
+        let old_has_scopes_json = Self::table_has_column(tx, old_table, "scopes_json")?;
+        let insert_sql = if old_has_scope_columns {
+            format!(
+                "INSERT INTO marketplace_tokens
+                 (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
+                 SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
+                 FROM {old_table}"
+            )
+        } else if old_has_scopes_json {
+            format!(
+                "INSERT INTO marketplace_tokens
+                 (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
+                 SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:read\"%' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:publish\"%' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:manage\"%' THEN 1 ELSE 0 END,
+                        expires_at, last_used_at, revoked_at, created_at, updated_at
+                 FROM {old_table}"
+            )
+        } else {
+            return Err(PlatformError::new(
+                "PLATFORM_SQLITE_SCOPE_MIGRATION",
+                "marketplace_tokens has neither scope flags nor scopes_json",
+            ));
+        };
+        tx.execute(&insert_sql, []).map_err(Self::qe)?;
+        tx.execute_batch(&format!("DROP TABLE {old_table};"))
+            .map_err(Self::qe)?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
+             ON marketplace_tokens(publisher_pk)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_scope_publish
+             ON marketplace_tokens(scope_publish, revoked_at, expires_at)",
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_scope_read
+             ON marketplace_tokens(scope_read, revoked_at, expires_at)",
+            [],
+        )
+        .map_err(Self::qe)?;
+
+        let violations = {
+            let mut stmt = tx
+                .prepare("PRAGMA foreign_key_check")
+                .map_err(Self::qe)?;
+            stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Self::qe)?
+        };
+        if let Some((table, rowid, parent, fk)) = violations.into_iter().next() {
+            return Err(PlatformError::new(
+                "PLATFORM_SQLITE_FK_CHECK_FAILED",
+                format!(
+                    "foreign key violation after token scope rebuild: table={table} rowid={rowid} parent={parent} fk={fk}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_table_column<C>(
+        conn: &C,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        let exists = Self::table_has_column(conn, table, column)?;
         if exists {
             return Ok(());
         }
@@ -346,16 +2154,71 @@ impl SqliteDataAdapter {
         Ok(())
     }
 
-    fn ensure_pipeline_invocation_schema(conn: &Connection) -> Result<(), PlatformError> {
-        Self::ensure_table_column(
-            conn,
-            "pipeline_invocations",
-            "run_id",
-            "TEXT NOT NULL DEFAULT ''",
-        )
+    fn assert_non_empty_column(
+        tx: &Transaction<'_>,
+        table: &str,
+        column: &str,
+    ) -> Result<(), PlatformError> {
+        let sql = format!(
+            "SELECT COUNT(1) FROM {table} WHERE COALESCE(TRIM({column}), '') = ''"
+        );
+        let count: i64 = tx
+            .query_row(&sql, [], |row| row.get(0))
+            .map_err(Self::qe)?;
+        if count > 0 {
+            return Err(PlatformError::new(
+                "PLATFORM_SQLITE_FK_REBUILD_BLOCKED",
+                format!("{table}.{column} has {count} blank rows"),
+            ));
+        }
+        Ok(())
     }
 
-    fn ensure_marketplace_schema(conn: &Connection) -> Result<(), PlatformError> {
+    fn rebuild_table(
+        tx: &Transaction<'_>,
+        table: &str,
+        create_sql: &str,
+        columns: &[&str],
+    ) -> Result<(), PlatformError> {
+        let old_table = format!("{table}__old");
+        tx.execute_batch(&format!("ALTER TABLE {table} RENAME TO {old_table};"))
+            .map_err(Self::qe)?;
+        tx.execute_batch(create_sql).map_err(Self::qe)?;
+        let cols = columns.join(", ");
+        tx.execute(
+            &format!("INSERT INTO {table} ({cols}) SELECT {cols} FROM {old_table}"),
+            [],
+        )
+        .map_err(Self::qe)?;
+        tx.execute_batch(&format!("DROP TABLE {old_table};"))
+            .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn ensure_marketplace_schema<C>(conn: &C) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS marketplace_publishers (
+    owner          TEXT NOT NULL,
+    project        TEXT NOT NULL,
+    publisher_id   TEXT NOT NULL,
+    display_name   TEXT NOT NULL DEFAULT '',
+    publisher_url  TEXT NOT NULL DEFAULT '',
+    email          TEXT NOT NULL DEFAULT '',
+    description    TEXT NOT NULL DEFAULT '',
+    icon_url       TEXT NOT NULL DEFAULT '',
+    website_url    TEXT NOT NULL DEFAULT '',
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, publisher_id)
+);
+",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
         Self::ensure_table_column(
             conn,
             "marketplace_asset_packages",
@@ -479,20 +2342,31 @@ impl DataAdapter for SqliteDataAdapter {
     fn get_user_auth(&self, owner: &str) -> Result<Option<StoredUser>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, role, git_name, git_email, password, created_at, updated_at
-             FROM users WHERE owner = ?1",
+            "SELECT u.user_id, u.owner, u.role, u.git_name, u.git_email, u.created_at, u.updated_at,
+                    a.password_hash, a.password_alg, a.password_updated_at
+             FROM users u
+             LEFT JOIN user_local_auth a ON a.user_id = u.user_id
+             WHERE u.owner = ?1",
             params![owner],
             |row| {
                 Ok(StoredUser {
                     profile: PlatformUser {
-                        owner: row.get(0)?,
-                        role: row.get(1)?,
-                        git_name: row.get(2)?,
-                        git_email: row.get(3)?,
+                        user_id: row.get(0)?,
+                        owner: row.get(1)?,
+                        role: row.get(2)?,
+                        git_name: row.get(3)?,
+                        git_email: row.get(4)?,
                         created_at: row.get(5)?,
                         updated_at: row.get(6)?,
                     },
-                    password: row.get(4)?,
+                    auth: PlatformUserLocalAuth {
+                        user_id: row.get(0)?,
+                        password_hash: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                        password_alg: row
+                            .get::<_, Option<String>>(8)?
+                            .unwrap_or_else(|| "sha256".to_string()),
+                        password_updated_at: row.get::<_, Option<i64>>(9)?.unwrap_or_default(),
+                    },
                 })
             },
         );
@@ -506,17 +2380,40 @@ impl DataAdapter for SqliteDataAdapter {
     fn put_user(&self, user: &StoredUser) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO users
-             (owner, role, git_name, git_email, password, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO users
+             (owner, user_id, role, git_name, git_email, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner) DO UPDATE SET
+                 user_id = excluded.user_id,
+                 role = excluded.role,
+                 git_name = excluded.git_name,
+                 git_email = excluded.git_email,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
                 &user.profile.owner,
+                &user.profile.user_id,
                 &user.profile.role,
                 &user.profile.git_name,
                 &user.profile.git_email,
-                &user.password,
                 user.profile.created_at,
                 user.profile.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        conn.execute(
+            "INSERT INTO user_local_auth
+             (user_id, password_hash, password_alg, password_updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(user_id) DO UPDATE SET
+                 password_hash = excluded.password_hash,
+                 password_alg = excluded.password_alg,
+                 password_updated_at = excluded.password_updated_at",
+            params![
+                &user.auth.user_id,
+                &user.auth.password_hash,
+                &user.auth.password_alg,
+                user.auth.password_updated_at,
             ],
         )
         .map_err(Self::qe)?;
@@ -527,19 +2424,20 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, role, git_name, git_email, created_at, updated_at
+                "SELECT user_id, owner, role, git_name, git_email, created_at, updated_at
                  FROM users ORDER BY owner ASC",
             )
             .map_err(Self::qe)?;
         let users = stmt
             .query_map([], |row| {
                 Ok(PlatformUser {
-                    owner: row.get(0)?,
-                    role: row.get(1)?,
-                    git_name: row.get(2)?,
-                    git_email: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    user_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    role: row.get(2)?,
+                    git_name: row.get(3)?,
+                    git_email: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
                 })
             })
             .map_err(Self::qe)?
@@ -557,16 +2455,18 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<PlatformProject>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, created_at, updated_at
+            "SELECT owner, project, project_id, owner_user_id, created_at, updated_at
              FROM projects WHERE owner = ?1 AND project = ?2",
             params![owner, project],
             |row| {
                 Ok(PlatformProject {
                     owner: row.get(0)?,
                     project: row.get(1)?,
+                    project_id: row.get(2)?,
+                    owner_user_id: row.get(3)?,
                     title: String::new(), // populated from zebflow.json by ProjectService
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         );
@@ -580,11 +2480,18 @@ impl DataAdapter for SqliteDataAdapter {
     fn put_project(&self, project: &PlatformProject) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO projects (owner, project, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO projects (owner, project, project_id, owner_user_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(owner, project) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 owner_user_id = excluded.owner_user_id,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
                 &project.owner,
                 &project.project,
+                &project.project_id,
+                &project.owner_user_id,
                 project.created_at,
                 project.updated_at
             ],
@@ -597,7 +2504,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, created_at, updated_at
+                "SELECT owner, project, project_id, owner_user_id, created_at, updated_at
                  FROM projects WHERE owner = ?1 ORDER BY project ASC",
             )
             .map_err(Self::qe)?;
@@ -606,9 +2513,11 @@ impl DataAdapter for SqliteDataAdapter {
                 Ok(PlatformProject {
                     owner: row.get(0)?,
                     project: row.get(1)?,
+                    project_id: row.get(2)?,
+                    owner_user_id: row.get(3)?,
                     title: String::new(),
-                    created_at: row.get(2)?,
-                    updated_at: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             })
             .map_err(Self::qe)?
@@ -1034,10 +2943,23 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO platform_marketplace_repositories
-             (owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO platform_marketplace_repositories
+             (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(owner, repository_id) DO UPDATE SET
+                 source_id = excluded.source_id,
+                 owner_user_id = excluded.owner_user_id,
+                 title = excluded.title,
+                 base_url = excluded.base_url,
+                 remote_owner = excluded.remote_owner,
+                 remote_project = excluded.remote_project,
+                 read_token = excluded.read_token,
+                 enabled = excluded.enabled,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &repository.source_id,
+                &repository.owner_user_id,
                 &repository.owner,
                 &repository.repository_id,
                 &repository.title,
@@ -1061,7 +2983,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
+                "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
                  FROM platform_marketplace_repositories WHERE owner = ?1
                  ORDER BY title ASC, repository_id ASC",
             )
@@ -1069,16 +2991,18 @@ impl DataAdapter for SqliteDataAdapter {
         let items = stmt
             .query_map(params![owner], |row| {
                 Ok(PlatformMarketplaceRepository {
-                    owner: row.get(0)?,
-                    repository_id: row.get(1)?,
-                    title: row.get(2)?,
-                    base_url: row.get(3)?,
-                    remote_owner: row.get(4)?,
-                    remote_project: row.get(5)?,
-                    read_token: row.get(6)?,
-                    enabled: row.get::<_, i64>(7)? != 0,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
+                    source_id: row.get(0)?,
+                    owner_user_id: row.get(1)?,
+                    owner: row.get(2)?,
+                    repository_id: row.get(3)?,
+                    title: row.get(4)?,
+                    base_url: row.get(5)?,
+                    remote_owner: row.get(6)?,
+                    remote_project: row.get(7)?,
+                    read_token: row.get(8)?,
+                    enabled: row.get::<_, i64>(9)? != 0,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             })
             .map_err(Self::qe)?
@@ -1108,10 +3032,24 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_publishers
-             (owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO marketplace_publishers
+             (authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT(owner, project, publisher_id) DO UPDATE SET
+                 authority_id = excluded.authority_id,
+                 publisher_pk = excluded.publisher_pk,
+                 display_name = excluded.display_name,
+                 publisher_url = excluded.publisher_url,
+                 email = excluded.email,
+                 description = excluded.description,
+                 icon_url = excluded.icon_url,
+                 website_url = excluded.website_url,
+                 enabled = excluded.enabled,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &publisher.authority_id,
+                &publisher.publisher_pk,
                 &publisher.owner,
                 &publisher.project,
                 &publisher.publisher_id,
@@ -1138,7 +3076,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
                  FROM marketplace_publishers WHERE owner = ?1 AND project = ?2
                  ORDER BY display_name ASC, publisher_id ASC",
             )
@@ -1146,18 +3084,20 @@ impl DataAdapter for SqliteDataAdapter {
         let items = stmt
             .query_map(params![owner, project], |row| {
                 Ok(MarketplacePublisher {
-                    owner: row.get(0)?,
-                    project: row.get(1)?,
-                    publisher_id: row.get(2)?,
-                    display_name: row.get(3)?,
-                    publisher_url: row.get(4)?,
-                    email: row.get(5)?,
-                    description: row.get(6)?,
-                    icon_url: row.get(7)?,
-                    website_url: row.get(8)?,
-                    enabled: row.get::<_, i64>(9)? != 0,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    authority_id: row.get(0)?,
+                    publisher_pk: row.get(1)?,
+                    owner: row.get(2)?,
+                    project: row.get(3)?,
+                    publisher_id: row.get(4)?,
+                    display_name: row.get(5)?,
+                    publisher_url: row.get(6)?,
+                    email: row.get(7)?,
+                    description: row.get(8)?,
+                    icon_url: row.get(9)?,
+                    website_url: row.get(10)?,
+                    enabled: row.get::<_, i64>(11)? != 0,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             })
             .map_err(Self::qe)?
@@ -1175,24 +3115,26 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
                  FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![owner, project, publisher_id], |row| {
             Ok(MarketplacePublisher {
-                owner: row.get(0)?,
-                project: row.get(1)?,
-                publisher_id: row.get(2)?,
-                display_name: row.get(3)?,
-                publisher_url: row.get(4)?,
-                email: row.get(5)?,
-                description: row.get(6)?,
-                icon_url: row.get(7)?,
-                website_url: row.get(8)?,
-                enabled: row.get::<_, i64>(9)? != 0,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
+                authority_id: row.get(0)?,
+                publisher_pk: row.get(1)?,
+                owner: row.get(2)?,
+                project: row.get(3)?,
+                publisher_id: row.get(4)?,
+                display_name: row.get(5)?,
+                publisher_url: row.get(6)?,
+                email: row.get(7)?,
+                description: row.get(8)?,
+                icon_url: row.get(9)?,
+                website_url: row.get(10)?,
+                enabled: row.get::<_, i64>(11)? != 0,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -1223,10 +3165,31 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tags_json = serde_json::to_string(&package.tags).map_err(Self::json_error)?;
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_asset_packages
-             (package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO marketplace_asset_packages
+             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             ON CONFLICT(package_id) DO UPDATE SET
+                 package_pk = excluded.package_pk,
+                 authority_id = excluded.authority_id,
+                 publisher_pk = excluded.publisher_pk,
+                 authority_owner = excluded.authority_owner,
+                 authority_project = excluded.authority_project,
+                 publisher_owner = excluded.publisher_owner,
+                 publisher_id = excluded.publisher_id,
+                 publisher_display_name = excluded.publisher_display_name,
+                 publisher_url = excluded.publisher_url,
+                 publisher_email = excluded.publisher_email,
+                 asset_kind = excluded.asset_kind,
+                 title = excluded.title,
+                 description = excluded.description,
+                 visibility = excluded.visibility,
+                 tags_json = excluded.tags_json,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &package.package_pk,
+                &package.authority_id,
+                &package.publisher_pk,
                 &package.package_id,
                 &package.authority_owner,
                 &package.authority_project,
@@ -1252,50 +3215,36 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
                  FROM marketplace_asset_packages
                  ORDER BY updated_at DESC, package_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, String>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, String>(12)?,
-                    row.get::<_, i64>(13)?,
-                    row.get::<_, i64>(14)?,
-                ))
+                Ok(MarketplaceAssetPackage {
+                    package_pk: row.get(0)?,
+                    authority_id: row.get(1)?,
+                    publisher_pk: row.get(2)?,
+                    package_id: row.get(3)?,
+                    authority_owner: row.get(4)?,
+                    authority_project: row.get(5)?,
+                    publisher_owner: row.get(6)?,
+                    publisher_id: row.get(7)?,
+                    publisher_display_name: row.get(8)?,
+                    publisher_url: row.get(9)?,
+                    publisher_email: row.get(10)?,
+                    asset_kind: row.get(11)?,
+                    title: row.get(12)?,
+                    description: row.get(13)?,
+                    visibility: row.get(14)?,
+                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?).unwrap_or_default(),
+                    created_at: row.get(16)?,
+                    updated_at: row.get(17)?,
+                })
             })
             .map_err(Self::qe)?
-            .filter_map(|r| r.ok())
-            .map(|(package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)| MarketplaceAssetPackage {
-                package_id,
-                authority_owner,
-                authority_project,
-                publisher_owner,
-                publisher_id,
-                publisher_display_name,
-                publisher_url,
-                publisher_email,
-                asset_kind,
-                title,
-                description,
-                visibility,
-                tags: serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default(),
-                created_at,
-                updated_at,
-            })
+            .filter_map(Result::ok)
             .collect();
         Ok(items)
     }
@@ -1307,27 +3256,30 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
                  FROM marketplace_asset_packages WHERE package_id = ?1",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![package_id], |row| {
             Ok(MarketplaceAssetPackage {
-                package_id: row.get(0)?,
-                authority_owner: row.get(1)?,
-                authority_project: row.get(2)?,
-                publisher_owner: row.get(3)?,
-                publisher_id: row.get(4)?,
-                publisher_display_name: row.get(5)?,
-                publisher_url: row.get(6)?,
-                publisher_email: row.get(7)?,
-                asset_kind: row.get(8)?,
-                title: row.get(9)?,
-                description: row.get(10)?,
-                visibility: row.get(11)?,
-                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(12)?).unwrap_or_default(),
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
+                package_pk: row.get(0)?,
+                authority_id: row.get(1)?,
+                publisher_pk: row.get(2)?,
+                package_id: row.get(3)?,
+                authority_owner: row.get(4)?,
+                authority_project: row.get(5)?,
+                publisher_owner: row.get(6)?,
+                publisher_id: row.get(7)?,
+                publisher_display_name: row.get(8)?,
+                publisher_url: row.get(9)?,
+                publisher_email: row.get(10)?,
+                asset_kind: row.get(11)?,
+                title: row.get(12)?,
+                description: row.get(13)?,
+                visibility: row.get(14)?,
+                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?).unwrap_or_default(),
+                created_at: row.get(16)?,
+                updated_at: row.get(17)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -1343,10 +3295,25 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let manifest_json = serde_json::to_string(&version.manifest).map_err(Self::json_error)?;
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_asset_versions
-             (package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO marketplace_asset_versions
+             (package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(package_id, version) DO UPDATE SET
+                 package_pk = excluded.package_pk,
+                 authority_owner = excluded.authority_owner,
+                 authority_project = excluded.authority_project,
+                 publisher_owner = excluded.publisher_owner,
+                 publisher_id = excluded.publisher_id,
+                 source_owner = excluded.source_owner,
+                 source_project = excluded.source_project,
+                 source_kind = excluded.source_kind,
+                 source_ref = excluded.source_ref,
+                 artifact_rel_path = excluded.artifact_rel_path,
+                 artifact_sha256 = excluded.artifact_sha256,
+                 manifest_json = excluded.manifest_json,
+                 created_at = excluded.created_at",
             params![
+                &version.package_pk,
                 &version.package_id,
                 &version.version,
                 &version.authority_owner,
@@ -1374,7 +3341,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
                  FROM marketplace_asset_versions WHERE package_id = ?1
                  ORDER BY created_at DESC, version DESC",
             )
@@ -1382,20 +3349,21 @@ impl DataAdapter for SqliteDataAdapter {
         let items = stmt
             .query_map(params![package_id], |row| {
                 Ok(MarketplaceAssetVersion {
-                    package_id: row.get(0)?,
-                    version: row.get(1)?,
-                    authority_owner: row.get(2)?,
-                    authority_project: row.get(3)?,
-                    publisher_owner: row.get(4)?,
-                    publisher_id: row.get(5)?,
-                    source_owner: row.get(6)?,
-                    source_project: row.get(7)?,
-                    source_kind: row.get(8)?,
-                    source_ref: row.get(9)?,
-                    artifact_rel_path: row.get(10)?,
-                    artifact_sha256: row.get(11)?,
-                    manifest: serde_json::from_str::<Value>(&row.get::<_, String>(12)?).unwrap_or(Value::Null),
-                    created_at: row.get(13)?,
+                    package_pk: row.get(0)?,
+                    package_id: row.get(1)?,
+                    version: row.get(2)?,
+                    authority_owner: row.get(3)?,
+                    authority_project: row.get(4)?,
+                    publisher_owner: row.get(5)?,
+                    publisher_id: row.get(6)?,
+                    source_owner: row.get(7)?,
+                    source_project: row.get(8)?,
+                    source_kind: row.get(9)?,
+                    source_ref: row.get(10)?,
+                    artifact_rel_path: row.get(11)?,
+                    artifact_sha256: row.get(12)?,
+                    manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?).unwrap_or(Value::Null),
+                    created_at: row.get(14)?,
                 })
             })
             .map_err(Self::qe)?
@@ -1412,26 +3380,27 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
+                "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
                  FROM marketplace_asset_versions WHERE package_id = ?1 AND version = ?2",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![package_id, version], |row| {
             Ok(MarketplaceAssetVersion {
-                package_id: row.get(0)?,
-                version: row.get(1)?,
-                authority_owner: row.get(2)?,
-                authority_project: row.get(3)?,
-                publisher_owner: row.get(4)?,
-                publisher_id: row.get(5)?,
-                source_owner: row.get(6)?,
-                source_project: row.get(7)?,
-                source_kind: row.get(8)?,
-                source_ref: row.get(9)?,
-                artifact_rel_path: row.get(10)?,
-                artifact_sha256: row.get(11)?,
-                manifest: serde_json::from_str::<Value>(&row.get::<_, String>(12)?).unwrap_or(Value::Null),
-                created_at: row.get(13)?,
+                package_pk: row.get(0)?,
+                package_id: row.get(1)?,
+                version: row.get(2)?,
+                authority_owner: row.get(3)?,
+                authority_project: row.get(4)?,
+                publisher_owner: row.get(5)?,
+                publisher_id: row.get(6)?,
+                source_owner: row.get(7)?,
+                source_project: row.get(8)?,
+                source_kind: row.get(9)?,
+                source_ref: row.get(10)?,
+                artifact_rel_path: row.get(11)?,
+                artifact_sha256: row.get(12)?,
+                manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?).unwrap_or(Value::Null),
+                created_at: row.get(14)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -1442,13 +3411,33 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn put_marketplace_token(&self, token: &MarketplaceToken) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let scopes_json = serde_json::to_string(&token.scopes).map_err(Self::json_error)?;
         conn.execute(
-            "INSERT OR REPLACE INTO marketplace_tokens
-             (token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT INTO marketplace_tokens
+             (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             ON CONFLICT(token_id) DO UPDATE SET
+                 authority_id = excluded.authority_id,
+                 publisher_pk = excluded.publisher_pk,
+                 owner = excluded.owner,
+                 project = excluded.project,
+                 publisher_id = excluded.publisher_id,
+                 publisher_display_name = excluded.publisher_display_name,
+                 publisher_url = excluded.publisher_url,
+                 publisher_email = excluded.publisher_email,
+                 title = excluded.title,
+                 secret_hash = excluded.secret_hash,
+                 scope_read = excluded.scope_read,
+                 scope_publish = excluded.scope_publish,
+                 scope_manage = excluded.scope_manage,
+                 expires_at = excluded.expires_at,
+                 last_used_at = excluded.last_used_at,
+                 revoked_at = excluded.revoked_at,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
                 &token.token_id,
+                &token.authority_id,
+                &token.publisher_pk,
                 &token.owner,
                 &token.project,
                 &token.publisher_id,
@@ -1457,7 +3446,9 @@ impl DataAdapter for SqliteDataAdapter {
                 &token.publisher_email,
                 &token.title,
                 &token.secret_hash,
-                &scopes_json,
+                if token.scope_read { 1 } else { 0 },
+                if token.scope_publish { 1 } else { 0 },
+                if token.scope_manage { 1 } else { 0 },
                 token.expires_at,
                 token.last_used_at,
                 token.revoked_at,
@@ -1473,28 +3464,42 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at
+                "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
                  FROM marketplace_tokens WHERE token_id = ?1",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![token_id], |row| {
-            Ok(MarketplaceToken {
-                token_id: row.get(0)?,
-                owner: row.get(1)?,
-                project: row.get(2)?,
-                publisher_id: row.get(3)?,
-                publisher_display_name: row.get(4)?,
-                publisher_url: row.get(5)?,
-                publisher_email: row.get(6)?,
-                title: row.get(7)?,
-                secret_hash: row.get(8)?,
-                scopes: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
-                expires_at: row.get(10)?,
-                last_used_at: row.get(11)?,
-                revoked_at: row.get(12)?,
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
-            })
+            {
+                let scope_read = row.get::<_, i64>(11)? != 0;
+                let scope_publish = row.get::<_, i64>(12)? != 0;
+                let scope_manage = row.get::<_, i64>(13)? != 0;
+                Ok(MarketplaceToken {
+                    token_id: row.get(0)?,
+                    authority_id: row.get(1)?,
+                    publisher_pk: row.get(2)?,
+                    owner: row.get(3)?,
+                    project: row.get(4)?,
+                    publisher_id: row.get(5)?,
+                    publisher_display_name: row.get(6)?,
+                    publisher_url: row.get(7)?,
+                    publisher_email: row.get(8)?,
+                    title: row.get(9)?,
+                    secret_hash: row.get(10)?,
+                    scopes: Self::marketplace_token_scopes(
+                        scope_read,
+                        scope_publish,
+                        scope_manage,
+                    ),
+                    scope_read,
+                    scope_publish,
+                    scope_manage,
+                    expires_at: row.get(14)?,
+                    last_used_at: row.get(15)?,
+                    revoked_at: row.get(16)?,
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
+                })
+            }
         }) {
             Ok(item) => Ok(Some(item)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -1510,30 +3515,44 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT token_id, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scopes_json, expires_at, last_used_at, revoked_at, created_at, updated_at
+                "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
                  FROM marketplace_tokens WHERE owner = ?1 AND project = ?2
                  ORDER BY updated_at DESC, token_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner, project], |row| {
-                Ok(MarketplaceToken {
-                    token_id: row.get(0)?,
-                    owner: row.get(1)?,
-                    project: row.get(2)?,
-                    publisher_id: row.get(3)?,
-                    publisher_display_name: row.get(4)?,
-                    publisher_url: row.get(5)?,
-                    publisher_email: row.get(6)?,
-                    title: row.get(7)?,
-                    secret_hash: row.get(8)?,
-                    scopes: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
-                    expires_at: row.get(10)?,
-                    last_used_at: row.get(11)?,
-                    revoked_at: row.get(12)?,
-                    created_at: row.get(13)?,
-                    updated_at: row.get(14)?,
-                })
+                {
+                    let scope_read = row.get::<_, i64>(11)? != 0;
+                    let scope_publish = row.get::<_, i64>(12)? != 0;
+                    let scope_manage = row.get::<_, i64>(13)? != 0;
+                    Ok(MarketplaceToken {
+                        token_id: row.get(0)?,
+                        authority_id: row.get(1)?,
+                        publisher_pk: row.get(2)?,
+                        owner: row.get(3)?,
+                        project: row.get(4)?,
+                        publisher_id: row.get(5)?,
+                        publisher_display_name: row.get(6)?,
+                        publisher_url: row.get(7)?,
+                        publisher_email: row.get(8)?,
+                        title: row.get(9)?,
+                        secret_hash: row.get(10)?,
+                        scopes: Self::marketplace_token_scopes(
+                            scope_read,
+                            scope_publish,
+                            scope_manage,
+                        ),
+                        scope_read,
+                        scope_publish,
+                        scope_manage,
+                        expires_at: row.get(14)?,
+                        last_used_at: row.get(15)?,
+                        revoked_at: row.get(16)?,
+                        created_at: row.get(17)?,
+                        updated_at: row.get(18)?,
+                    })
+                }
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
@@ -1639,10 +3658,18 @@ impl DataAdapter for SqliteDataAdapter {
         let caps_json = serde_json::to_string(&policy.capabilities)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO project_policies
-             (owner, project, policy_id, title, capabilities_json, managed, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO project_policies
+             (project_id, owner, project, policy_id, title, capabilities_json, managed, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(owner, project, policy_id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 title = excluded.title,
+                 capabilities_json = excluded.capabilities_json,
+                 managed = excluded.managed,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &policy.project_id,
                 &policy.owner,
                 &policy.project,
                 &policy.policy_id,
@@ -1665,7 +3692,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, policy_id, title, capabilities_json, managed, created_at, updated_at
+                "SELECT project_id, owner, project, policy_id, title, capabilities_json, managed, created_at, updated_at
                  FROM project_policies WHERE owner = ?1 AND project = ?2
                  ORDER BY policy_id ASC",
             )
@@ -1678,18 +3705,20 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
                 ))
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(owner, project, policy_id, title, caps_json, managed, created_at, updated_at)| {
+                |(project_id, owner, project, policy_id, title, caps_json, managed, created_at, updated_at)| {
                     let capabilities: Vec<ProjectCapability> =
                         serde_json::from_str(&caps_json).unwrap_or_default();
                     Some(ProjectPolicy {
+                        project_id,
                         owner,
                         project,
                         policy_id,
@@ -1727,10 +3756,16 @@ impl DataAdapter for SqliteDataAdapter {
         let subject_kind = binding.subject_kind.key();
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO project_policy_bindings
-             (owner, project, subject_kind, subject_id, policy_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO project_policy_bindings
+             (project_id, owner, project, subject_kind, subject_id, policy_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(owner, project, subject_id, policy_id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 subject_kind = excluded.subject_kind,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &binding.project_id,
                 &binding.owner,
                 &binding.project,
                 subject_kind,
@@ -1752,7 +3787,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, subject_kind, subject_id, policy_id, created_at, updated_at
+                "SELECT project_id, owner, project, subject_kind, subject_id, policy_id, created_at, updated_at
                  FROM project_policy_bindings WHERE owner = ?1 AND project = ?2
                  ORDER BY subject_kind ASC, subject_id ASC, policy_id ASC",
             )
@@ -1765,14 +3800,16 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(5)?,
                     row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
                 ))
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
                 |(
+                    project_id,
                     owner,
                     project,
                     subject_kind_str,
@@ -1784,6 +3821,7 @@ impl DataAdapter for SqliteDataAdapter {
                     let subject_kind: ProjectSubjectKind =
                         serde_json::from_value(Value::String(subject_kind_str)).ok()?;
                     Some(ProjectPolicyBinding {
+                        project_id,
                         owner,
                         project,
                         subject_kind,
@@ -1822,7 +3860,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<ProjectMember>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at
+            "SELECT project_id, owner, project, user_id, member_user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_by_user_id, created_at, updated_at
              FROM project_members WHERE owner = ?1 AND project = ?2 AND user_id = ?3",
             params![owner, project, user_id],
             |row| {
@@ -1834,20 +3872,26 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
                 ))
             },
         );
         match result {
             Ok((
+                project_id,
                 owner,
                 project,
                 user_id,
+                member_user_id,
                 role_preset,
                 custom_policy_ids_json,
                 mcp_capabilities_json,
                 created_by,
+                created_by_user_id,
                 created_at,
                 updated_at,
             )) => {
@@ -1858,13 +3902,16 @@ impl DataAdapter for SqliteDataAdapter {
                 let mcp_capability_ceiling: Vec<ProjectCapability> =
                     serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
                 Ok(Some(ProjectMember {
+                    project_id,
                     owner,
                     project,
                     user_id,
+                    member_user_id,
                     role_preset,
                     custom_policy_ids,
                     mcp_capability_ceiling,
                     created_by,
+                    created_by_user_id,
                     created_at,
                     updated_at,
                 }))
@@ -1879,17 +3926,30 @@ impl DataAdapter for SqliteDataAdapter {
         let mcp_capabilities_json = serde_json::to_string(&member.mcp_capability_ceiling)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO project_members
-             (owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO project_members
+             (project_id, owner, project, user_id, member_user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_by_user_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(owner, project, user_id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 member_user_id = excluded.member_user_id,
+                 role_preset = excluded.role_preset,
+                 custom_policy_ids_json = excluded.custom_policy_ids_json,
+                 mcp_capabilities_json = excluded.mcp_capabilities_json,
+                 created_by = excluded.created_by,
+                 created_by_user_id = excluded.created_by_user_id,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &member.project_id,
                 &member.owner,
                 &member.project,
                 &member.user_id,
+                &member.member_user_id,
                 member.role_preset.key(),
                 custom_policy_ids_json,
                 mcp_capabilities_json,
                 &member.created_by,
+                &member.created_by_user_id,
                 member.created_at,
                 member.updated_at,
             ],
@@ -1906,7 +3966,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_at, updated_at
+                "SELECT project_id, owner, project, user_id, member_user_id, role_preset, custom_policy_ids_json, mcp_capabilities_json, created_by, created_by_user_id, created_at, updated_at
                  FROM project_members WHERE owner = ?1 AND project = ?2 ORDER BY user_id ASC",
             )
             .map_err(Self::qe)?;
@@ -1920,21 +3980,27 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
                 ))
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
                 |(
+                    project_id,
                     owner,
                     project,
                     user_id,
+                    member_user_id,
                     role_preset,
                     custom_policy_ids_json,
                     mcp_capabilities_json,
                     created_by,
+                    created_by_user_id,
                     created_at,
                     updated_at,
                 )| {
@@ -1945,13 +4011,16 @@ impl DataAdapter for SqliteDataAdapter {
                     let mcp_capability_ceiling: Vec<ProjectCapability> =
                         serde_json::from_str(&mcp_capabilities_json).unwrap_or_default();
                     Some(ProjectMember {
+                        project_id,
                         owner,
                         project,
                         user_id,
+                        member_user_id,
                         role_preset,
                         custom_policy_ids,
                         mcp_capability_ceiling,
                         created_by,
+                        created_by_user_id,
                         created_at,
                         updated_at,
                     })
@@ -2168,27 +4237,295 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
+    fn get_marketplace_authority(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<MarketplaceAuthority>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at
+             FROM marketplace_authorities
+             WHERE owner = ?1 AND project = ?2",
+            params![owner, project],
+            |row| {
+                Ok(MarketplaceAuthority {
+                    authority_id: row.get(0)?,
+                    host_project_id: row.get(1)?,
+                    owner: row.get(2)?,
+                    project: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    public_base_url: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_marketplace_authority(
+        &self,
+        authority: &MarketplaceAuthority,
+    ) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO marketplace_authorities
+             (authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(authority_id) DO UPDATE SET
+                 host_project_id = excluded.host_project_id,
+                 owner = excluded.owner,
+                 project = excluded.project,
+                 enabled = excluded.enabled,
+                 public_base_url = excluded.public_base_url,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                &authority.authority_id,
+                &authority.host_project_id,
+                &authority.owner,
+                &authority.project,
+                if authority.enabled { 1 } else { 0 },
+                &authority.public_base_url,
+                authority.created_at,
+                authority.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_marketplace_authorities(&self) -> Result<Vec<MarketplaceAuthority>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at
+                 FROM marketplace_authorities
+                 ORDER BY owner ASC, project ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(MarketplaceAuthority {
+                    authority_id: row.get(0)?,
+                    host_project_id: row.get(1)?,
+                    owner: row.get(2)?,
+                    project: row.get(3)?,
+                    enabled: row.get::<_, i64>(4)? != 0,
+                    public_base_url: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn get_platform_office(&self, office_id: &str) -> Result<Option<PlatformOffice>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT office_id, office_slug, label, office_kind, base_url, status, created_at, updated_at
+             FROM offices
+             WHERE office_id = ?1",
+            params![office_id],
+            |row| {
+                Ok(PlatformOffice {
+                    office_id: row.get(0)?,
+                    office_slug: row.get(1)?,
+                    label: row.get(2)?,
+                    office_kind: row.get(3)?,
+                    base_url: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_platform_office(&self, office: &PlatformOffice) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO offices
+             (office_id, office_slug, label, office_kind, base_url, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(office_id) DO UPDATE SET
+                 office_slug = excluded.office_slug,
+                 label = excluded.label,
+                 office_kind = excluded.office_kind,
+                 base_url = excluded.base_url,
+                 status = excluded.status,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                &office.office_id,
+                &office.office_slug,
+                &office.label,
+                &office.office_kind,
+                &office.base_url,
+                &office.status,
+                office.created_at,
+                office.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT office_id, office_slug, label, office_kind, base_url, status, created_at, updated_at
+                 FROM offices
+                 ORDER BY office_slug ASC, office_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(PlatformOffice {
+                    office_id: row.get(0)?,
+                    office_slug: row.get(1)?,
+                    label: row.get(2)?,
+                    office_kind: row.get(3)?,
+                    base_url: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn get_platform_office_node(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<PlatformOfficeNode>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT office_id, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+             FROM office_nodes
+             WHERE node_id = ?1",
+            params![node_id],
+            |row| {
+                let capabilities_json: String = row.get(5)?;
+                Ok(PlatformOfficeNode {
+                    office_id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    label: row.get(2)?,
+                    base_url: row.get(3)?,
+                    status: row.get(4)?,
+                    capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
+                    registered_at: row.get(6)?,
+                    last_heartbeat_at: row.get(7)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_platform_office_node(&self, node: &PlatformOfficeNode) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let capabilities_json =
+            serde_json::to_string(&node.capabilities).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            "INSERT INTO office_nodes
+             (office_id, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(node_id) DO UPDATE SET
+                 office_id = excluded.office_id,
+                 label = excluded.label,
+                 base_url = excluded.base_url,
+                 status = excluded.status,
+                 capabilities_json = excluded.capabilities_json,
+                 registered_at = excluded.registered_at,
+                 last_heartbeat_at = excluded.last_heartbeat_at",
+            params![
+                &node.office_id,
+                &node.node_id,
+                &node.label,
+                &node.base_url,
+                &node.status,
+                capabilities_json,
+                node.registered_at,
+                node.last_heartbeat_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_platform_office_nodes(&self) -> Result<Vec<PlatformOfficeNode>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT office_id, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+                 FROM office_nodes
+                 ORDER BY office_id ASC, node_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                let capabilities_json: String = row.get(5)?;
+                Ok(PlatformOfficeNode {
+                    office_id: row.get(0)?,
+                    node_id: row.get(1)?,
+                    label: row.get(2)?,
+                    base_url: row.get(3)?,
+                    status: row.get(4)?,
+                    capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
+                    registered_at: row.get(6)?,
+                    last_heartbeat_at: row.get(7)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
     fn get_worker_registry_record(
         &self,
         node_id: &str,
     ) -> Result<Option<WorkerRegistryRecord>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+            "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
              FROM worker_registry
              WHERE node_id = ?1",
             params![node_id],
             |row| {
-                let capabilities_json: String = row.get(4)?;
+                let capabilities_json: String = row.get(6)?;
                 let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
                 Ok(WorkerRegistryRecord {
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                    base_url: row.get(2)?,
-                    status: row.get(3)?,
+                    office_id: row.get(0)?,
+                    office_slug: row.get(1)?,
+                    node_id: row.get(2)?,
+                    label: row.get(3)?,
+                    base_url: row.get(4)?,
+                    status: row.get(5)?,
                     capabilities,
-                    registered_at: row.get(5)?,
-                    last_heartbeat_at: row.get(6)?,
+                    registered_at: row.get(7)?,
+                    last_heartbeat_at: row.get(8)?,
                 })
             },
         );
@@ -2208,9 +4545,11 @@ impl DataAdapter for SqliteDataAdapter {
             serde_json::to_string(&record.capabilities).unwrap_or_else(|_| "{}".to_string());
         conn.execute(
             "INSERT OR REPLACE INTO worker_registry
-             (node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
+                &record.office_id,
+                &record.office_slug,
                 &record.node_id,
                 &record.label,
                 &record.base_url,
@@ -2228,23 +4567,25 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
+                "SELECT office_id, office_slug, node_id, label, base_url, status, capabilities_json, registered_at, last_heartbeat_at
                  FROM worker_registry
                  ORDER BY node_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                let capabilities_json: String = row.get(4)?;
+                let capabilities_json: String = row.get(6)?;
                 let capabilities = serde_json::from_str(&capabilities_json).unwrap_or_default();
                 Ok(WorkerRegistryRecord {
-                    node_id: row.get(0)?,
-                    label: row.get(1)?,
-                    base_url: row.get(2)?,
-                    status: row.get(3)?,
+                    office_id: row.get(0)?,
+                    office_slug: row.get(1)?,
+                    node_id: row.get(2)?,
+                    label: row.get(3)?,
+                    base_url: row.get(4)?,
+                    status: row.get(5)?,
                     capabilities,
-                    registered_at: row.get(5)?,
-                    last_heartbeat_at: row.get(6)?,
+                    registered_at: row.get(7)?,
+                    last_heartbeat_at: row.get(8)?,
                 })
             })
             .map_err(Self::qe)?
@@ -2270,23 +4611,29 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<ProjectRuntimePlacement>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, mode, target, worker_id, created_at, updated_at
+            "SELECT project_id, owner, project, mode, target, target_office_id, target_node_id, worker_id, resource_profile, desired_replicas, effective_state, created_at, updated_at
              FROM project_runtime_placements
              WHERE owner = ?1 AND project = ?2",
             params![owner, project],
             |row| {
-                let mode: String = row.get(2)?;
-                let target: String = row.get(3)?;
+                let mode: String = row.get(3)?;
+                let target: String = row.get(4)?;
                 Ok(ProjectRuntimePlacement {
-                    owner: row.get(0)?,
-                    project: row.get(1)?,
+                    project_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    project: row.get(2)?,
                     mode: serde_json::from_value(Value::String(mode))
                         .unwrap_or(ProjectRuntimeMode::Shared),
                     target: serde_json::from_value(Value::String(target))
                         .unwrap_or(ProjectRuntimePlacementTarget::Local),
-                    worker_id: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    target_office_id: row.get(5)?,
+                    target_node_id: row.get(6)?,
+                    worker_id: row.get::<_, Option<String>>(7)?.or_else(|| row.get::<_, Option<String>>(6).ok().flatten()),
+                    resource_profile: row.get(8)?,
+                    desired_replicas: row.get::<_, i64>(9)?.max(0) as u32,
+                    effective_state: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             },
         );
@@ -2311,15 +4658,33 @@ impl DataAdapter for SqliteDataAdapter {
             .and_then(|value| value.as_str().map(ToString::to_string))
             .unwrap_or_else(|| "local".to_string());
         conn.execute(
-            "INSERT OR REPLACE INTO project_runtime_placements
-             (owner, project, mode, target, worker_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO project_runtime_placements
+             (project_id, owner, project, mode, target, target_office_id, target_node_id, worker_id, resource_profile, desired_replicas, effective_state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(owner, project) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 mode = excluded.mode,
+                 target = excluded.target,
+                 target_office_id = excluded.target_office_id,
+                 target_node_id = excluded.target_node_id,
+                 worker_id = excluded.worker_id,
+                 resource_profile = excluded.resource_profile,
+                 desired_replicas = excluded.desired_replicas,
+                 effective_state = excluded.effective_state,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
             params![
+                &placement.project_id,
                 &placement.owner,
                 &placement.project,
                 mode,
                 target,
+                &placement.target_office_id,
+                &placement.target_node_id,
                 &placement.worker_id,
+                &placement.resource_profile,
+                i64::from(placement.desired_replicas),
+                &placement.effective_state,
                 placement.created_at,
                 placement.updated_at,
             ],
@@ -2334,25 +4699,31 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, mode, target, worker_id, created_at, updated_at
+                "SELECT project_id, owner, project, mode, target, target_office_id, target_node_id, worker_id, resource_profile, desired_replicas, effective_state, created_at, updated_at
                  FROM project_runtime_placements
                  ORDER BY owner ASC, project ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                let mode: String = row.get(2)?;
-                let target: String = row.get(3)?;
+                let mode: String = row.get(3)?;
+                let target: String = row.get(4)?;
                 Ok(ProjectRuntimePlacement {
-                    owner: row.get(0)?,
-                    project: row.get(1)?,
+                    project_id: row.get(0)?,
+                    owner: row.get(1)?,
+                    project: row.get(2)?,
                     mode: serde_json::from_value(Value::String(mode))
                         .unwrap_or(ProjectRuntimeMode::Shared),
                     target: serde_json::from_value(Value::String(target))
                         .unwrap_or(ProjectRuntimePlacementTarget::Local),
-                    worker_id: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    target_office_id: row.get(5)?,
+                    target_node_id: row.get(6)?,
+                    worker_id: row.get::<_, Option<String>>(7)?.or_else(|| row.get::<_, Option<String>>(6).ok().flatten()),
+                    resource_profile: row.get(8)?,
+                    desired_replicas: row.get::<_, i64>(9)?.max(0) as u32,
+                    effective_state: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             })
             .map_err(Self::qe)?
@@ -2383,7 +4754,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<Option<ProjectOperationRecord>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
-            "SELECT owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
+            "SELECT project_id, owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
              FROM project_operations
              WHERE owner = ?1 AND project = ?2 AND operation_id = ?3",
             params![owner, project, operation_id],
@@ -2395,21 +4766,23 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<u64>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                    row.get::<_, u32>(12)?,
-                    row.get::<_, i64>(13)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<u64>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, u32>(13)?,
                     row.get::<_, i64>(14)?,
-                    row.get::<_, Option<i64>>(15)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, Option<i64>>(16)?,
                 ))
             },
         );
         match result {
             Ok((
+                project_id,
                 owner,
                 project,
                 operation_id,
@@ -2427,6 +4800,7 @@ impl DataAdapter for SqliteDataAdapter {
                 updated_at,
                 completed_at,
             )) => Ok(Some(ProjectOperationRecord {
+                project_id,
                 owner,
                 project,
                 operation_id,
@@ -2452,10 +4826,26 @@ impl DataAdapter for SqliteDataAdapter {
     fn put_project_operation(&self, record: &ProjectOperationRecord) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO project_operations
-             (owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            "INSERT INTO project_operations
+             (project_id, owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT(owner, project, operation_id) DO UPDATE SET
+                 project_id = excluded.project_id,
+                 kind = excluded.kind,
+                 status = excluded.status,
+                 current_step = excluded.current_step,
+                 source_office_id = excluded.source_office_id,
+                 target_office_id = excluded.target_office_id,
+                 artifact_rel_path = excluded.artifact_rel_path,
+                 artifact_sha256 = excluded.artifact_sha256,
+                 artifact_bytes = excluded.artifact_bytes,
+                 error_message = excluded.error_message,
+                 retry_count = excluded.retry_count,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at,
+                 completed_at = excluded.completed_at",
             params![
+                &record.project_id,
                 &record.owner,
                 &record.project,
                 &record.operation_id,
@@ -2487,7 +4877,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
+                "SELECT project_id, owner, project, operation_id, kind, status, current_step, source_office_id, target_office_id, artifact_rel_path, artifact_sha256, artifact_bytes, error_message, retry_count, created_at, updated_at, completed_at
                  FROM project_operations
                  WHERE owner = ?1 AND project = ?2
                  ORDER BY updated_at DESC, operation_id DESC
@@ -2503,16 +4893,17 @@ impl DataAdapter for SqliteDataAdapter {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<u64>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                    row.get::<_, u32>(12)?,
-                    row.get::<_, i64>(13)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<u64>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, u32>(13)?,
                     row.get::<_, i64>(14)?,
-                    row.get::<_, Option<i64>>(15)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, Option<i64>>(16)?,
                 ))
             })
             .map_err(Self::qe)?
@@ -2520,6 +4911,7 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         let mut out = Vec::with_capacity(items.len());
         for (
+            project_id,
             owner,
             project,
             operation_id,
@@ -2539,6 +4931,7 @@ impl DataAdapter for SqliteDataAdapter {
         ) in items
         {
             out.push(ProjectOperationRecord {
+                project_id,
                 owner,
                 project,
                 operation_id,

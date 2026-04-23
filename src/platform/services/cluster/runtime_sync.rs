@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use uuid::Uuid;
 
 use crate::infra::execution::sync::{
     ProjectBootstrapPlan, ProjectBundleFile, ProjectBundleIdentity, ProjectRuntimeBundle,
@@ -17,7 +18,8 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, ProjectRuntimeMaterializationRequest, now_ts, slug_segment,
+    CreateProjectRequest, PlatformUser, PlatformUserLocalAuth, ProjectRuntimeMaterializationRequest,
+    StoredUser, now_ts, slug_segment,
 };
 use crate::platform::services::{PipelineRuntimeService, ProjectService, ZebflowJsonService};
 
@@ -129,6 +131,32 @@ impl ClusterRuntimeSyncService {
         Ok(())
     }
 
+    fn ensure_materialized_owner(&self, owner: &str) -> Result<(), PlatformError> {
+        if self.data.get_user_auth(owner)?.is_some() {
+            return Ok(());
+        }
+        let now = now_ts();
+        let user_id = format!("usr_shadow_{}", Uuid::new_v4().simple());
+        self.data.put_user(&StoredUser {
+            profile: PlatformUser {
+                user_id: user_id.clone(),
+                owner: owner.to_string(),
+                role: "member".to_string(),
+                git_name: owner.to_string(),
+                git_email: String::new(),
+                created_at: now,
+                updated_at: now,
+            },
+            auth: PlatformUserLocalAuth {
+                user_id,
+                password_hash: String::new(),
+                password_alg: "shadow".to_string(),
+                password_updated_at: now,
+            },
+        })?;
+        Ok(())
+    }
+
     /// Apply one portable runtime bundle onto the local node.
     pub fn apply_bundle(&self, bundle: &ProjectRuntimeBundle) -> Result<(), PlatformError> {
         let owner = slug_segment(&bundle.identity.owner);
@@ -138,6 +166,7 @@ impl ClusterRuntimeSyncService {
         } else {
             bundle.identity.title.trim().to_string()
         };
+        self.ensure_materialized_owner(&owner)?;
         self.projects.create_or_update_project(
             &owner,
             &CreateProjectRequest {

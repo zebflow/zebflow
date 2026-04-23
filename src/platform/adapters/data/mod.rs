@@ -11,11 +11,11 @@ use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformProject,
-    PlatformUser, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplacePublisher, MarketplaceToken,
-    PlatformMarketplaceRepository, ProjectMarketplaceRepository,
-    ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMember, ProjectOperationRecord,
-    ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority,
+    MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
+    PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
+    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMarketplaceRepository,
+    ProjectMember, ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -358,6 +358,67 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         invite_id: &str,
     ) -> Result<(), PlatformError>;
+    /// Get one explicit marketplace authority row for a host project.
+    fn get_marketplace_authority(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<MarketplaceAuthority>, PlatformError> {
+        let _ = (owner, project);
+        Ok(None)
+    }
+    /// Upsert one explicit marketplace authority row.
+    fn put_marketplace_authority(
+        &self,
+        authority: &MarketplaceAuthority,
+    ) -> Result<(), PlatformError> {
+        let _ = authority;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "marketplace authorities are not supported by this adapter",
+        ))
+    }
+    /// List marketplace authorities.
+    fn list_marketplace_authorities(&self) -> Result<Vec<MarketplaceAuthority>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Get one office row.
+    fn get_platform_office(&self, office_id: &str) -> Result<Option<PlatformOffice>, PlatformError> {
+        let _ = office_id;
+        Ok(None)
+    }
+    /// Upsert one office row.
+    fn put_platform_office(&self, office: &PlatformOffice) -> Result<(), PlatformError> {
+        let _ = office;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "platform offices are not supported by this adapter",
+        ))
+    }
+    /// List offices.
+    fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Get one office node row.
+    fn get_platform_office_node(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<PlatformOfficeNode>, PlatformError> {
+        let _ = node_id;
+        Ok(None)
+    }
+    /// Upsert one office node row.
+    fn put_platform_office_node(&self, node: &PlatformOfficeNode) -> Result<(), PlatformError> {
+        let _ = node;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "platform office nodes are not supported by this adapter",
+        ))
+    }
+    /// List office nodes.
+    fn list_platform_office_nodes(&self) -> Result<Vec<PlatformOfficeNode>, PlatformError> {
+        Ok(vec![])
+    }
     /// Get one registered worker record.
     fn get_worker_registry_record(
         &self,

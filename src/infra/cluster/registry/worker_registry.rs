@@ -7,6 +7,12 @@ use crate::infra::execution::runner::RunnerCapabilities;
 /// One registered worker/runtime entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerRegistryRecord {
+    /// Stable office identifier that owns this runtime node.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub office_id: String,
+    /// Human-readable office slug.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub office_slug: String,
     /// Stable node identifier.
     pub node_id: String,
     /// Human-readable label.

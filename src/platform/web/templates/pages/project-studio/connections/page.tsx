@@ -5,8 +5,8 @@ import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
+    title: "Database Connections",
+    description: "Manage project database connections and open DB suite.",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
@@ -36,7 +36,6 @@ export default function Page(input) {
     },
   };
   return (
-<Page>
     <ProjectStudioShell
       projectHref={input.project_href}
       projectLabel={input.title}
@@ -203,6 +202,5 @@ export default function Page(input) {
         </section>
       </div>
     </ProjectStudioShell>
-</Page>
   );
 }

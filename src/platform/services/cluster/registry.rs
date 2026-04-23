@@ -13,7 +13,7 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     ClusterWorkerHeartbeatRequest, ClusterWorkerHeartbeatResponse, ClusterWorkerRegisterRequest,
-    now_ts,
+    PlatformOffice, PlatformOfficeNode, now_ts, slug_segment,
 };
 
 /// Product-facing office registry service.
@@ -35,7 +35,17 @@ impl ClusterRegistryService {
     ) -> Result<WorkerRegistryRecord, PlatformError> {
         let now = now_ts();
         let existing = self.data.get_worker_registry_record(&request.node_id)?;
+        let office_id = {
+            let value = slug_segment(&request.node_id);
+            if value.is_empty() {
+                "local".to_string()
+            } else {
+                value
+            }
+        };
         let record = WorkerRegistryRecord {
+            office_id: office_id.clone(),
+            office_slug: office_id.clone(),
             node_id: request.node_id.trim().to_string(),
             label: if request.label.trim().is_empty() {
                 request.node_id.trim().to_string()
@@ -55,6 +65,26 @@ impl ClusterRegistryService {
                 .unwrap_or(now),
             last_heartbeat_at: now,
         };
+        self.data.put_platform_office(&PlatformOffice {
+            office_id: office_id.clone(),
+            office_slug: office_id.clone(),
+            label: record.label.clone(),
+            office_kind: "office".to_string(),
+            base_url: record.base_url.clone(),
+            status: record.status.clone(),
+            created_at: existing.as_ref().map(|value| value.registered_at).unwrap_or(now),
+            updated_at: now,
+        })?;
+        self.data.put_platform_office_node(&PlatformOfficeNode {
+            office_id: office_id.clone(),
+            node_id: record.node_id.clone(),
+            label: record.label.clone(),
+            base_url: record.base_url.clone(),
+            status: record.status.clone(),
+            capabilities: record.capabilities.clone(),
+            registered_at: record.registered_at,
+            last_heartbeat_at: record.last_heartbeat_at,
+        })?;
         self.data.put_worker_registry_record(&record)?;
         Ok(record)
     }
@@ -89,6 +119,31 @@ impl ClusterRegistryService {
             record.capabilities = request.capabilities.clone();
         }
         record.last_heartbeat_at = now;
+        let office_id = record
+            .office_id
+            .trim()
+            .to_string()
+            .if_empty_then(record.node_id.clone());
+        self.data.put_platform_office(&PlatformOffice {
+            office_id: office_id.clone(),
+            office_slug: record.office_slug.clone().if_empty_then(office_id.clone()),
+            label: record.label.clone(),
+            office_kind: "office".to_string(),
+            base_url: record.base_url.clone(),
+            status: record.status.clone(),
+            created_at: record.registered_at,
+            updated_at: now,
+        })?;
+        self.data.put_platform_office_node(&PlatformOfficeNode {
+            office_id,
+            node_id: record.node_id.clone(),
+            label: record.label.clone(),
+            base_url: record.base_url.clone(),
+            status: record.status.clone(),
+            capabilities: record.capabilities.clone(),
+            registered_at: record.registered_at,
+            last_heartbeat_at: record.last_heartbeat_at,
+        })?;
         self.data.put_worker_registry_record(&record)?;
         Ok(ClusterWorkerHeartbeatResponse {
             ok: true,
@@ -134,5 +189,15 @@ impl ClusterRegistryService {
             });
         }
         Ok(options)
+    }
+}
+
+trait StringFallbackExt {
+    fn if_empty_then(self, fallback: String) -> String;
+}
+
+impl StringFallbackExt for String {
+    fn if_empty_then(self, fallback: String) -> String {
+        if self.trim().is_empty() { fallback } else { self }
     }
 }
