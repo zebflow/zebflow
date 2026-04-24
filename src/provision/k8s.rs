@@ -546,7 +546,7 @@ fn render_management_config_block(cfg: &ClusterConfig) -> String {
         cfg.managed_workloads.join(",")
     ));
     lines.push(
-        "  MARKETPLACE_DEFAULT_BASE_URL: \"https://marketplace.zebflow.com/api/projects/marketplace/default/marketplace\""
+        "  MARKETPLACE_DEFAULT_BASE_URL: \"https://market.zebflow.com/api\""
             .to_string(),
     );
     lines.push(format!(
