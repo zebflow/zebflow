@@ -33,7 +33,7 @@ const DEFAULT_TOKEN_SCOPES = {
 const DEFAULT_EXTERNAL_REPO = {
   repository_id: "zebflow-com",
   title: "Zebflow Marketplace",
-  base_url: "https://marketplace.zebflow.com/api",
+  base_url: "https://market.zebflow.com/api",
   remote_owner: "marketplace",
   remote_project: "default",
   read_token: "",
@@ -799,7 +799,7 @@ export default function Page(input) {
                           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                             <div>
                               <p className="text-sm font-medium text-ui-text">Default external marketplace</p>
-                              <p className="mt-1 text-xs text-ui-text-soft">Preload the proxied `marketplace.zebflow.com/api` base, then adjust token or remote owner/project if needed. The direct Zebflow form is the full marketplace API base: `http://127.0.0.1:10610/api/projects/superadmin/default/marketplace`.</p>
+                              <p className="mt-1 text-xs text-ui-text-soft">Preload the proxied `market.zebflow.com/api` base, then adjust token or remote owner/project if needed. The direct Zebflow form is the full marketplace API base: `http://127.0.0.1:10610/api/projects/superadmin/default/marketplace`.</p>
                             </div>
                             <Button type="button" variant="outline" size="sm" onClick={applyExternalRepoPreset}>
                               Use Zebflow Marketplace
@@ -815,7 +815,7 @@ export default function Page(input) {
                         <Field label="Base URL">
                           <Input value={repoForm.base_url} onInput={(e) => setRepoForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="http://127.0.0.1:10612/api/projects/superadmin/default/marketplace" />
                         </Field>
-                        <p className="-mt-2 text-xs text-ui-text-soft">Use the exact marketplace base URL prefix here. Direct form: `http://127.0.0.1:10610/api/projects/superadmin/default/marketplace`. Proxied forms: `https://marketplace.zebflow.com/api`, `https://a.com/market`. Zebflow appends the marketplace endpoints under that prefix.</p>
+                        <p className="-mt-2 text-xs text-ui-text-soft">Use the exact marketplace base URL prefix here. Direct form: `http://127.0.0.1:10610/api/projects/superadmin/default/marketplace`. Proxied forms: `https://market.zebflow.com/api`, `https://a.com/market`. Zebflow appends the marketplace endpoints under that prefix.</p>
                         <div className="grid gap-3 md:grid-cols-2">
                           <Field label="Remote Owner">
                             <Input value={repoForm.remote_owner} onInput={(e) => setRepoForm((prev) => ({ ...prev, remote_owner: e.target.value }))} placeholder="superadmin" />

@@ -458,7 +458,7 @@ export default function Page(input) {
                         <Input id="home-marketplace-title" value={sourceForm.title} onInput={(e) => setSourceForm((prev) => ({ ...prev, title: e.target.value }))} placeholder="Demo Source Zebflow" />
                       </Field>
                       <Field label="Base URL" id="home-marketplace-base-url">
-                        <Input id="home-marketplace-base-url" value={sourceForm.base_url} onInput={(e) => setSourceForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://marketplace.zebflow.com/api" required />
+                        <Input id="home-marketplace-base-url" value={sourceForm.base_url} onInput={(e) => setSourceForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://market.zebflow.com/api" required />
                       </Field>
                       <Field label="Read token" id="home-marketplace-read-token">
                         <Input id="home-marketplace-read-token" value={sourceForm.read_token} onInput={(e) => setSourceForm((prev) => ({ ...prev, read_token: e.target.value }))} placeholder="Optional" />

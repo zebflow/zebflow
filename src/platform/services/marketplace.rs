@@ -33,7 +33,7 @@ fn default_marketplace_base_url() -> String {
         .ok()
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "https://marketplace.zebflow.com/api".to_string())
+        .unwrap_or_else(|| "https://market.zebflow.com/api".to_string())
 }
 
 fn preserve_or_replace_token(existing: Option<&str>, incoming: &str) -> String {
