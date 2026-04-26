@@ -24,6 +24,7 @@ use crate::platform::model::{
     ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository, ProjectMember,
     ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy,
     ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    now_ts,
 };
 
 const SCHEMA_SQL: &str = "
@@ -5060,6 +5061,7 @@ impl DataAdapter for SqliteDataAdapter {
         file_rel_path: &str,
         entry: &PipelineInvocationEntry,
         max_n: usize,
+        max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         let trace_json = serde_json::to_string(&entry.trace)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -5081,6 +5083,15 @@ impl DataAdapter for SqliteDataAdapter {
             ],
         )
         .map_err(Self::qe)?;
+        if let Some(max_age_secs) = max_age_secs {
+            let cutoff = entry.at.saturating_sub(max_age_secs.max(0));
+            conn.execute(
+                "DELETE FROM pipeline_invocations
+                 WHERE owner = ?1 AND project = ?2 AND file_rel_path = ?3 AND at < ?4",
+                params![owner, project, file_rel_path, cutoff],
+            )
+            .map_err(Self::qe)?;
+        }
         // Trim rows beyond max_n (keep the most-recent by `at`)
         conn.execute(
             "DELETE FROM pipeline_invocations
@@ -5101,18 +5112,20 @@ impl DataAdapter for SqliteDataAdapter {
         owner: &str,
         project: &str,
         file_rel_path: &str,
+        max_age_secs: Option<i64>,
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
+        let cutoff = max_age_secs.map(|age| now_ts().saturating_sub(age.max(0)));
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = conn
-            .prepare(
-                "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
-                 FROM pipeline_invocations
-                 WHERE owner = ?1 AND project = ?2 AND file_rel_path = ?3
-                 ORDER BY at DESC",
-            )
-            .map_err(Self::qe)?;
-        let items = stmt
-            .query_map(params![owner, project, file_rel_path], |row| {
+        let items = if let Some(cutoff) = cutoff {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
+                     FROM pipeline_invocations
+                     WHERE owner = ?1 AND project = ?2 AND file_rel_path = ?3 AND at >= ?4
+                     ORDER BY at DESC",
+                )
+                .map_err(Self::qe)?;
+            stmt.query_map(params![owner, project, file_rel_path, cutoff], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -5139,7 +5152,45 @@ impl DataAdapter for SqliteDataAdapter {
                     }
                 },
             )
-            .collect();
+            .collect::<Vec<_>>()
+        } else {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
+                     FROM pipeline_invocations
+                     WHERE owner = ?1 AND project = ?2 AND file_rel_path = ?3
+                     ORDER BY at DESC",
+                )
+                .map_err(Self::qe)?;
+            stmt.query_map(params![owner, project, file_rel_path], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .map(
+                |(run_id, at, duration_ms, status, trigger, error, trace_json)| {
+                    let trace = serde_json::from_str(&trace_json).unwrap_or_default();
+                    PipelineInvocationEntry {
+                        run_id,
+                        at,
+                        duration_ms: duration_ms as u64,
+                        status,
+                        trigger,
+                        error,
+                        trace,
+                    }
+                },
+            )
+            .collect::<Vec<_>>()
+        };
         Ok(items)
     }
 }

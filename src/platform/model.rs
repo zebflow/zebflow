@@ -1738,6 +1738,14 @@ fn default_max_asset_size_mb() -> u32 {
     10
 }
 
+fn default_webhook_body_max_mb() -> u32 {
+    100
+}
+
+pub fn default_pipeline_node_timeout_secs() -> u64 {
+    30
+}
+
 impl Default for ZebflowJson {
     fn default() -> Self {
         Self {
@@ -1783,6 +1791,8 @@ pub struct ZebflowJsonConfigs {
 pub struct ZebflowJsonPipelines {
     #[serde(default)]
     pub logging: ZebflowJsonLogging,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_timeout_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub nodes: HashMap<String, Value>,
 }
@@ -1801,6 +1811,13 @@ pub struct ZebflowJsonUploads {
     /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
     #[serde(default = "default_max_asset_size_mb")]
     pub max_asset_size_mb: u32,
+    /// Max allowed size in MB for one webhook request body.
+    ///
+    /// This controls the per-project logical limit enforced by `/wh/...` handlers.
+    /// Route-level Axum buffering still uses a higher fallback ceiling so project
+    /// overrides can be enforced inside the request handler.
+    #[serde(default = "default_webhook_body_max_mb")]
+    pub webhook_body_max_mb: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_size_mb: Option<u32>,
 }
@@ -1808,9 +1825,28 @@ pub struct ZebflowJsonUploads {
 impl Default for ZebflowJsonUploads {
     fn default() -> Self {
         Self {
-            max_asset_size_mb: 10,
+            max_asset_size_mb: default_max_asset_size_mb(),
+            webhook_body_max_mb: default_webhook_body_max_mb(),
             max_file_size_mb: None,
         }
+    }
+}
+
+impl ZebflowJsonUploads {
+    pub fn effective_max_asset_size_mb(&self) -> u32 {
+        self.max_asset_size_mb.clamp(5, 100)
+    }
+
+    pub fn effective_webhook_body_max_mb(&self) -> u32 {
+        self.webhook_body_max_mb.clamp(default_webhook_body_max_mb(), 512)
+    }
+}
+
+impl ZebflowJsonPipelines {
+    pub fn effective_node_timeout_secs(&self) -> u64 {
+        self.node_timeout_secs
+            .unwrap_or_else(default_pipeline_node_timeout_secs)
+            .clamp(5, 3600)
     }
 }
 

@@ -14,6 +14,9 @@ import {
   snippetCompletion,
 } from "./codemirror.bundle.mjs";
 
+let vimModule = null;
+const vimState = new WeakMap();
+
 const JS_LIKE_KINDS = new Set([
   "template",
   "tsx",
@@ -174,6 +177,38 @@ function buildEditorTheme(options = {}) {
   return EditorView.theme(spec);
 }
 
+function createLightweightVimTheme() {
+  return EditorView.theme({
+    "&": {
+      position: "relative",
+    },
+    '&[data-zf-vim-mode="normal"] .cm-cursor, &[data-zf-vim-mode="visual"] .cm-cursor, &[data-zf-vim-mode="visual-line"] .cm-cursor': {
+      borderLeftWidth: "0 !important",
+      width: "0.62ch",
+      backgroundColor: "rgba(251, 146, 60, 0.45)",
+    },
+    '&[data-zf-vim-mode="normal"] .cm-content, &[data-zf-vim-mode="visual"] .cm-content, &[data-zf-vim-mode="visual-line"] .cm-content': {
+      caretColor: "transparent",
+    },
+    "&[data-zf-vim-status]::after": {
+      content: "attr(data-zf-vim-status)",
+      position: "absolute",
+      right: "10px",
+      bottom: "8px",
+      padding: "2px 8px",
+      borderRadius: "999px",
+      backgroundColor: "rgba(15, 23, 42, 0.92)",
+      border: "1px solid rgba(251, 146, 60, 0.38)",
+      color: "#fdba74",
+      fontSize: "11px",
+      fontWeight: "700",
+      letterSpacing: "0.01em",
+      pointerEvents: "none",
+      zIndex: "30",
+    },
+  });
+}
+
 function fnOption(label, detail, info) {
   return {
     label,
@@ -181,6 +216,935 @@ function fnOption(label, detail, info) {
     detail,
     info,
   };
+}
+
+function resolveVimPreference(options = {}) {
+  if (typeof options.vim === "boolean") {
+    return options.vim;
+  }
+  if (typeof window !== "undefined") {
+    if (window.__zf_editor_preferences) {
+      return !!window.__zf_editor_preferences?.vim;
+    }
+    try {
+      const raw = window.localStorage?.getItem?.("zf-editor-preferences");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        window.__zf_editor_preferences = {
+          vim: !!parsed?.vim,
+        };
+        return !!parsed?.vim;
+      }
+    } catch (_) {}
+  }
+  return false;
+}
+
+async function enableVimSupport() {
+  return vimModule;
+}
+
+function getStudioClipboard() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  return window.__zf_clipboard || null;
+}
+
+async function writeStudioClipboardText(text, meta = {}) {
+  const clipboard = getStudioClipboard();
+  if (clipboard && typeof clipboard.writeText === "function") {
+    return clipboard.writeText(text, meta);
+  }
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function readStudioClipboardText() {
+  const clipboard = getStudioClipboard();
+  if (clipboard && typeof clipboard.readText === "function") {
+    return clipboard.readText();
+  }
+  if (typeof navigator !== "undefined" && navigator.clipboard?.readText) {
+    try {
+      return await navigator.clipboard.readText();
+    } catch (_) {}
+  }
+  return "";
+}
+
+function createEmptySelection(pos) {
+  return { anchor: pos, head: pos };
+}
+
+function getDocText(view) {
+  return view.state.doc.toString();
+}
+
+function cloneSelection(view) {
+  const main = view.state.selection.main;
+  return { anchor: main.anchor, head: main.head };
+}
+
+function setSelection(view, anchor, head = anchor) {
+  view.dispatch({ selection: { anchor, head } });
+}
+
+function ensureVimState(view) {
+  let state = vimState.get(view);
+  if (state) return state;
+  state = {
+    mode: "normal",
+    pending: "",
+    count: "",
+    visualAnchor: null,
+    visualLine: false,
+    register: { text: "", linewise: false },
+    search: null,
+    command: null,
+    undo: [],
+    redo: [],
+    internalUndo: false,
+    preferredColumn: null,
+  };
+  vimState.set(view, state);
+  view.dom.setAttribute("data-zf-vim-mode", "normal");
+  return state;
+}
+
+function setVimMode(view, state, mode) {
+  state.mode = mode;
+  state.pending = "";
+  state.count = "";
+  if (mode === "normal") {
+    state.visualAnchor = null;
+    state.visualLine = false;
+    state.preferredColumn = null;
+  }
+  view.dom.setAttribute("data-zf-vim-mode", mode);
+}
+
+function setVimStatus(view, text = "") {
+  if (!text) {
+    view.dom.removeAttribute("data-zf-vim-status");
+    return;
+  }
+  view.dom.setAttribute("data-zf-vim-status", text);
+}
+
+function getLineInfo(state, pos) {
+  const line = state.doc.lineAt(pos);
+  const text = line.text || "";
+  const firstNonSpaceOffset = text.search(/\S/);
+  return {
+    line,
+    lineStart: line.from,
+    lineEnd: line.to,
+    firstNonSpace: line.from + (firstNonSpaceOffset >= 0 ? firstNonSpaceOffset : 0),
+  };
+}
+
+function clampPos(view, pos) {
+  return Math.max(0, Math.min(view.state.doc.length, pos));
+}
+
+function moveToLine(view, pos, delta) {
+  const state = view.state;
+  const current = state.doc.lineAt(pos);
+  const currentColumn = pos - current.from;
+  const nextNumber = Math.max(1, Math.min(state.doc.lines, current.number + delta));
+  const next = state.doc.line(nextNumber);
+  return next.from + Math.min(currentColumn, next.length);
+}
+
+function isWordChar(ch) {
+  return /[A-Za-z0-9_]/.test(ch || "");
+}
+
+function moveWordForward(view, pos) {
+  const text = getDocText(view);
+  let i = clampPos(view, pos);
+  if (i >= text.length) return text.length;
+  const startChar = text[i];
+  if (isWordChar(startChar)) {
+    while (i < text.length && isWordChar(text[i])) i++;
+  }
+  while (i < text.length && !isWordChar(text[i])) i++;
+  return i;
+}
+
+function moveWordBackward(view, pos) {
+  const text = getDocText(view);
+  let i = clampPos(view, pos);
+  if (i <= 0) return 0;
+  i--;
+  while (i > 0 && !isWordChar(text[i])) i--;
+  while (i > 0 && isWordChar(text[i - 1])) i--;
+  return i;
+}
+
+function moveWordEnd(view, pos) {
+  const text = getDocText(view);
+  let i = clampPos(view, pos);
+  if (i >= text.length) return text.length;
+  if (!isWordChar(text[i])) {
+    while (i < text.length && !isWordChar(text[i])) i++;
+  }
+  while (i < text.length && isWordChar(text[i])) i++;
+  return Math.max(0, i - 1);
+}
+
+function lineStartForNumber(view, lineNumber) {
+  const safe = Math.max(1, Math.min(view.state.doc.lines, lineNumber));
+  return view.state.doc.line(safe).from;
+}
+
+function consumeCount(state) {
+  const value = Number.parseInt(state.count || "", 10);
+  state.count = "";
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function applyMotionCount(view, key, count) {
+  let pos = view.state.selection.main.head;
+  for (let index = 0; index < count; index += 1) {
+    const next = resolveMotion(view, key);
+    if (next == null || next === pos) {
+      return pos;
+    }
+    pos = next;
+    setSelection(view, pos);
+  }
+  return pos;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function findCurrentWordBounds(view) {
+  const text = getDocText(view);
+  const pos = clampPos(view, view.state.selection.main.head);
+  if (!text.length) {
+    return null;
+  }
+  let start = pos;
+  let end = pos;
+  if (!isWordChar(text[start])) {
+    if (start > 0 && isWordChar(text[start - 1])) {
+      start -= 1;
+      end = start;
+    } else {
+      return null;
+    }
+  }
+  while (start > 0 && isWordChar(text[start - 1])) start -= 1;
+  while (end < text.length && isWordChar(text[end])) end += 1;
+  if (start === end) {
+    return null;
+  }
+  return { from: start, to: end, word: text.slice(start, end) };
+}
+
+function findSearchMatch(text, query, start, backward = false, wholeWord = false) {
+  if (!query) {
+    return null;
+  }
+  if (!wholeWord) {
+    if (backward) {
+      const before = text.lastIndexOf(query, Math.max(0, start));
+      if (before >= 0) {
+        return { from: before, to: before + query.length };
+      }
+      const wrapped = text.lastIndexOf(query);
+      return wrapped >= 0 ? { from: wrapped, to: wrapped + query.length } : null;
+    }
+    const forward = text.indexOf(query, Math.max(0, start));
+    if (forward >= 0) {
+      return { from: forward, to: forward + query.length };
+    }
+    const wrapped = text.indexOf(query);
+    return wrapped >= 0 ? { from: wrapped, to: wrapped + query.length } : null;
+  }
+
+  const pattern = new RegExp(`\\b${escapeRegExp(query)}\\b`, "g");
+  const matches = [];
+  let match;
+  while ((match = pattern.exec(text))) {
+    matches.push({ from: match.index, to: match.index + match[0].length });
+    if (match.index === pattern.lastIndex) {
+      pattern.lastIndex += 1;
+    }
+  }
+  if (!matches.length) {
+    return null;
+  }
+  if (backward) {
+    for (let index = matches.length - 1; index >= 0; index -= 1) {
+      if (matches[index].from <= start) {
+        return matches[index];
+      }
+    }
+    return matches[matches.length - 1];
+  }
+  for (const found of matches) {
+    if (found.from >= start) {
+      return found;
+    }
+  }
+  return matches[0];
+}
+
+function applySearchMatch(view, found) {
+  if (!found) {
+    return false;
+  }
+  view.dispatch({
+    selection: { anchor: found.from, head: found.to },
+    scrollIntoView: true,
+  });
+  return true;
+}
+
+function runSearch(view, state, search, reverseOverride = null) {
+  if (!search?.query) {
+    return false;
+  }
+  const text = getDocText(view);
+  const selection = view.state.selection.main;
+  const backward = reverseOverride == null ? !!search.backward : !!reverseOverride;
+  const start = backward ? Math.max(0, selection.from - 1) : Math.min(text.length, selection.to + 1);
+  const found = findSearchMatch(text, search.query, start, backward, !!search.wholeWord);
+  if (!found) {
+    return false;
+  }
+  state.search = { ...search, backward };
+  return applySearchMatch(view, found);
+}
+
+function beginVimCommand(view, state, prefix, kind) {
+  state.command = { prefix, kind, value: "" };
+  state.pending = "";
+  state.count = "";
+  setVimStatus(view, prefix);
+}
+
+function finishVimCommand(view, state) {
+  state.command = null;
+  setVimStatus(view, "");
+}
+
+function executeVimCommand(view, state, options = {}) {
+  const command = state.command;
+  finishVimCommand(view, state);
+  if (!command) {
+    return false;
+  }
+  const value = command.value.trim();
+  if (command.kind === "command") {
+    if ((value === "w" || value === "write") && typeof options.onSave === "function") {
+      options.onSave();
+      return true;
+    }
+    return true;
+  }
+  if (!value) {
+    return true;
+  }
+  const search = {
+    query: value,
+    backward: command.prefix === "?",
+    wholeWord: false,
+  };
+  return runSearch(view, state, search, search.backward);
+}
+
+function handleVimCommandKey(view, state, event, options = {}) {
+  const command = state.command;
+  if (!command) {
+    return false;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    finishVimCommand(view, state);
+    return true;
+  }
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    command.value = command.value.slice(0, -1);
+    setVimStatus(view, `${command.prefix}${command.value}`);
+    return true;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    return executeVimCommand(view, state, options);
+  }
+  if (typeof event.key === "string" && event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    event.preventDefault();
+    command.value += event.key;
+    setVimStatus(view, `${command.prefix}${command.value}`);
+    return true;
+  }
+  return false;
+}
+
+function resolveMotion(view, key) {
+  const selection = view.state.selection.main;
+  const pos = selection.head;
+  switch (key) {
+    case "h":
+      return Math.max(0, pos - 1);
+    case "l":
+      return Math.min(view.state.doc.length, pos + 1);
+    case "j":
+      return moveToLine(view, pos, 1);
+    case "k":
+      return moveToLine(view, pos, -1);
+    case "w":
+      return moveWordForward(view, pos);
+    case "b":
+      return moveWordBackward(view, pos);
+    case "e":
+      return moveWordEnd(view, pos);
+    case "0":
+      return getLineInfo(view.state, pos).lineStart;
+    case "^":
+      return getLineInfo(view.state, pos).firstNonSpace;
+    case "$":
+      return getLineInfo(view.state, pos).lineEnd;
+    case "g":
+      return 0;
+    case "G":
+      return view.state.doc.length;
+    default:
+      return null;
+  }
+}
+
+function applyVisualSelection(view, state, head) {
+  if (state.visualAnchor == null) {
+    state.visualAnchor = view.state.selection.main.anchor;
+  }
+  if (state.visualLine) {
+    const anchorLine = view.state.doc.lineAt(state.visualAnchor);
+    const headLine = view.state.doc.lineAt(head);
+    const from = Math.min(anchorLine.from, headLine.from);
+    const toLine = anchorLine.number >= headLine.number ? anchorLine : headLine;
+    const to = toLine.to;
+    setSelection(view, from, to);
+    return;
+  }
+  setSelection(view, state.visualAnchor, head);
+}
+
+function enterNormalMode(view, state) {
+  const selection = view.state.selection.main;
+  let head = selection.head;
+  if (selection.empty && head > 0) {
+    head -= 1;
+  }
+  setSelection(view, head);
+  setVimMode(view, state, "normal");
+  setVimStatus(view, "");
+}
+
+function recordUndoSnapshot(view, state, previousText, previousSelection) {
+  if (state.internalUndo) return;
+  state.undo.push({
+    text: previousText,
+    selection: previousSelection,
+  });
+  if (state.undo.length > 200) {
+    state.undo.shift();
+  }
+  state.redo = [];
+}
+
+function restoreSnapshot(view, state, snapshot, targetStack) {
+  if (!snapshot) return false;
+  const current = {
+    text: getDocText(view),
+    selection: cloneSelection(view),
+  };
+  targetStack.push(current);
+  state.internalUndo = true;
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: snapshot.text },
+    selection: snapshot.selection,
+  });
+  state.internalUndo = false;
+  return true;
+}
+
+function sliceRange(view, from, to) {
+  return view.state.sliceDoc(from, to);
+}
+
+function linewiseTextForLine(view, line) {
+  const next = line.number < view.state.doc.lines ? view.state.doc.line(line.number + 1).from : line.to;
+  return view.state.sliceDoc(line.from, next);
+}
+
+function setRegister(view, state, text, linewise = false) {
+  state.register = { text, linewise };
+  void writeStudioClipboardText(text, {
+    kind: "text/plain",
+    source: "vim-yank",
+    data: { linewise },
+  });
+}
+
+async function pasteRegister(view, state, before = false) {
+  let text = state.register?.text || "";
+  let linewise = !!state.register?.linewise;
+  if (!text) {
+    text = await readStudioClipboardText();
+    linewise = false;
+  }
+  if (!text) return;
+
+  const selection = view.state.selection.main;
+  if (linewise) {
+    const line = view.state.doc.lineAt(selection.head);
+    const insertPos = before ? line.from : (line.number < view.state.doc.lines ? view.state.doc.line(line.number + 1).from : line.to);
+    view.dispatch({
+      changes: { from: insertPos, to: insertPos, insert: text },
+      selection: createEmptySelection(insertPos),
+      userEvent: "input.paste",
+    });
+    return;
+  }
+
+  const insertPos = before ? selection.from : selection.to;
+  view.dispatch({
+    changes: { from: insertPos, to: insertPos, insert: text },
+    selection: createEmptySelection(insertPos + text.length),
+    userEvent: "input.paste",
+  });
+}
+
+function applyRangeOperation(view, state, op, from, to, motionKey = "") {
+  const start = Math.max(0, Math.min(from, to));
+  const end = Math.max(start, Math.max(from, to));
+  if (start === end && op !== "c") return true;
+
+  if (op === "y") {
+    setRegister(view, state, sliceRange(view, start, end), false);
+    setSelection(view, start);
+    setVimMode(view, state, "normal");
+    return true;
+  }
+
+  const removed = sliceRange(view, start, end);
+  setRegister(view, state, removed, false);
+  view.dispatch({
+    changes: { from: start, to: end, insert: "" },
+    selection: createEmptySelection(start),
+    userEvent: op === "c" ? "input.change" : "delete",
+  });
+
+  if (op === "c") {
+    state.visualAnchor = null;
+    state.visualLine = false;
+    setVimMode(view, state, "insert");
+  } else {
+    setVimMode(view, state, "normal");
+  }
+  return true;
+}
+
+function runLinewiseOperation(view, state, op) {
+  const line = view.state.doc.lineAt(view.state.selection.main.head);
+  const text = linewiseTextForLine(view, line);
+  const from = line.from;
+  const to = from + text.length;
+
+  if (op === "y") {
+    setRegister(view, state, text, true);
+    setSelection(view, from);
+    setVimMode(view, state, "normal");
+    return true;
+  }
+
+  setRegister(view, state, text, true);
+  view.dispatch({
+    changes: { from, to, insert: "" },
+    selection: createEmptySelection(from),
+    userEvent: op === "c" ? "input.change" : "delete",
+  });
+  if (op === "c") {
+    setVimMode(view, state, "insert");
+  } else {
+    setVimMode(view, state, "normal");
+  }
+  return true;
+}
+
+function isPlainPrintableKey(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    return false;
+  }
+  return typeof event.key === "string" && event.key.length === 1;
+}
+
+function handleNormalKey(view, state, event, options = {}) {
+  const key = event.key;
+  if (state.command) {
+    return handleVimCommandKey(view, state, event, options);
+  }
+  if (event.metaKey || event.altKey) {
+    return false;
+  }
+  if (event.ctrlKey && key.toLowerCase() !== "r") {
+    return false;
+  }
+
+  if (key === "Control" || key === "Shift" || key === "Alt" || key === "Meta") {
+    return false;
+  }
+
+  if (event.ctrlKey && key.toLowerCase() === "r") {
+    event.preventDefault();
+    return restoreSnapshot(view, state, state.redo.pop(), state.undo);
+  }
+
+  if (state.pending === "g") {
+    state.pending = "";
+    if (key === "g") {
+      event.preventDefault();
+      const count = consumeCount(state);
+      setSelection(view, count > 1 ? lineStartForNumber(view, count) : 0);
+      return true;
+    }
+    if (key === "d") {
+      event.preventDefault();
+      document.execCommand?.("copy");
+      return true;
+    }
+    if (isPlainPrintableKey(event)) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
+
+  if (state.pending === "d" || state.pending === "c" || state.pending === "y") {
+    const op = state.pending;
+    state.pending = "";
+    if (key === op) {
+      event.preventDefault();
+      return runLinewiseOperation(view, state, op);
+    }
+    const target = resolveMotion(view, key);
+    if (target == null) {
+      if (isPlainPrintableKey(event)) {
+        event.preventDefault();
+        return true;
+      }
+      return false;
+    }
+    event.preventDefault();
+    const head = view.state.selection.main.head;
+    const endExclusive = key === "$" || key === "e" ? target + 1 : target;
+    return applyRangeOperation(view, state, op, head, endExclusive, key);
+  }
+
+  switch (key) {
+    case ":":
+      event.preventDefault();
+      beginVimCommand(view, state, ":", "command");
+      return true;
+    case "/":
+      event.preventDefault();
+      beginVimCommand(view, state, "/", "search");
+      return true;
+    case "?":
+      event.preventDefault();
+      beginVimCommand(view, state, "?", "search");
+      return true;
+    case "#": {
+      event.preventDefault();
+      const found = findCurrentWordBounds(view);
+      if (!found?.word) {
+        return true;
+      }
+      state.search = {
+        query: found.word,
+        backward: true,
+        wholeWord: true,
+      };
+      return runSearch(view, state, state.search, true);
+    }
+    case "n":
+      event.preventDefault();
+      return runSearch(view, state, state.search, state.search?.backward);
+    case "N":
+      event.preventDefault();
+      return runSearch(view, state, state.search, !state.search?.backward);
+    case "i":
+    case "a":
+    case "o":
+    case "O": {
+      event.preventDefault();
+      const line = view.state.doc.lineAt(view.state.selection.main.head);
+      if (key === "a") {
+        setSelection(view, Math.min(view.state.doc.length, view.state.selection.main.head + 1));
+      } else if (key === "o") {
+        const insertPos = line.number < view.state.doc.lines ? view.state.doc.line(line.number + 1).from : line.to;
+        view.dispatch({
+          changes: { from: insertPos, to: insertPos, insert: "\n" },
+          selection: createEmptySelection(insertPos + 1),
+          userEvent: "input",
+        });
+      } else if (key === "O") {
+        const insertPos = line.from;
+        view.dispatch({
+          changes: { from: insertPos, to: insertPos, insert: "\n" },
+          selection: createEmptySelection(insertPos),
+          userEvent: "input",
+        });
+      }
+      setVimMode(view, state, "insert");
+      return true;
+    }
+    case "v":
+      event.preventDefault();
+      state.visualAnchor = view.state.selection.main.head;
+      state.visualLine = false;
+      setVimMode(view, state, "visual");
+      return true;
+    case "V":
+      event.preventDefault();
+      state.visualAnchor = view.state.selection.main.head;
+      state.visualLine = true;
+      setVimMode(view, state, "visual-line");
+      applyVisualSelection(view, state, view.state.selection.main.head);
+      return true;
+    case "d":
+    case "c":
+    case "y":
+      event.preventDefault();
+      state.pending = key;
+      return true;
+    case "p":
+      event.preventDefault();
+      void pasteRegister(view, state, false);
+      return true;
+    case "P":
+      event.preventDefault();
+      void pasteRegister(view, state, true);
+      return true;
+    case "x": {
+      event.preventDefault();
+      const pos = view.state.selection.main.head;
+      if (pos >= view.state.doc.length) return true;
+      return applyRangeOperation(view, state, "d", pos, pos + 1);
+    }
+    case "u":
+      event.preventDefault();
+      return restoreSnapshot(view, state, state.undo.pop(), state.redo);
+    case "g":
+      event.preventDefault();
+      state.pending = "g";
+      return true;
+    case "G":
+      event.preventDefault();
+      {
+        const count = consumeCount(state);
+        setSelection(view, count > 1 ? lineStartForNumber(view, count) : view.state.doc.length);
+      }
+      return true;
+    default: {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && /^[1-9]$/.test(key)) {
+        event.preventDefault();
+        state.count += key;
+        setVimStatus(view, state.count);
+        return true;
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && key === "0" && state.count) {
+        event.preventDefault();
+        state.count += key;
+        setVimStatus(view, state.count);
+        return true;
+      }
+      const count = consumeCount(state);
+      if (!state.command) {
+        setVimStatus(view, "");
+      }
+      const target = resolveMotion(view, key);
+      if (target == null) {
+        if (isPlainPrintableKey(event)) {
+          event.preventDefault();
+          return true;
+        }
+        return false;
+      }
+      event.preventDefault();
+      let finalTarget = target;
+      if (count > 1) {
+        finalTarget = applyMotionCount(view, key, count);
+      }
+      setSelection(view, finalTarget);
+      return true;
+    }
+  }
+}
+
+function handleVisualKey(view, state, event) {
+  const key = event.key;
+  if (key === "Escape") {
+    event.preventDefault();
+    setSelection(view, view.state.selection.main.head);
+    setVimMode(view, state, "normal");
+    return true;
+  }
+  if (key === "y") {
+    event.preventDefault();
+    const selection = view.state.selection.main;
+    if (state.visualLine) {
+      const fromLine = view.state.doc.lineAt(Math.min(selection.from, selection.to));
+      const toLine = view.state.doc.lineAt(Math.max(selection.from, selection.to));
+      const text = view.state.sliceDoc(fromLine.from, toLine.to);
+      setRegister(view, state, text, true);
+      setSelection(view, fromLine.from);
+    } else {
+      setRegister(view, state, sliceRange(view, selection.from, selection.to), false);
+      setSelection(view, selection.from);
+    }
+    setVimMode(view, state, "normal");
+    return true;
+  }
+  if (key === "d" || key === "c") {
+    event.preventDefault();
+    const selection = view.state.selection.main;
+    const result = applyRangeOperation(view, state, key, selection.from, selection.to);
+    return result;
+  }
+  const target = resolveMotion(view, key);
+  if (target == null) {
+    if (isPlainPrintableKey(event)) {
+      event.preventDefault();
+      return true;
+    }
+    return false;
+  }
+  event.preventDefault();
+  applyVisualSelection(view, state, target);
+  return true;
+}
+
+function createLightweightVimExtensions(options = {}) {
+  return [
+    createLightweightVimTheme(),
+    EditorView.updateListener.of((update) => {
+      const state = ensureVimState(update.view);
+      if (update.docChanged) {
+        const previousText = update.startState.doc.toString();
+        const previousSelection = {
+          anchor: update.startState.selection.main.anchor,
+          head: update.startState.selection.main.head,
+        };
+        recordUndoSnapshot(update.view, state, previousText, previousSelection);
+      }
+    }),
+    EditorView.domEventHandlers({
+      keydown(event, view) {
+        const state = ensureVimState(view);
+        if (state.mode === "insert") {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            enterNormalMode(view, state);
+            return true;
+          }
+          return false;
+        }
+        if (state.mode === "visual" || state.mode === "visual-line") {
+          return handleVisualKey(view, state, event);
+        }
+        return handleNormalKey(view, state, event, options);
+      },
+    }),
+    EditorView.inputHandler.of((view, _from, _to, _text, _insert) => {
+      const state = ensureVimState(view);
+      if (state.mode === "insert") {
+        return false;
+      }
+      return true;
+    }),
+  ];
+}
+
+function replaceSelectionText(view, text) {
+  const selection = view.state.selection.main;
+  view.dispatch({
+    changes: { from: selection.from, to: selection.to, insert: text },
+    selection: { anchor: selection.from + text.length },
+    userEvent: "input.paste",
+  });
+}
+
+function createClipboardExtensions(options = {}) {
+  return [
+    EditorView.domEventHandlers({
+      copy(event, view) {
+        const selection = view.state.selection.main;
+        if (selection.empty) {
+          return false;
+        }
+        const text = view.state.sliceDoc(selection.from, selection.to);
+        if (event.clipboardData) {
+          event.preventDefault();
+          event.clipboardData.setData("text/plain", text);
+        }
+        void writeStudioClipboardText(text, {
+          kind: "text/plain",
+          source: options.clipboardSource || "codemirror",
+        });
+        return !!event.clipboardData;
+      },
+      cut(event, view) {
+        if (options.readonly) {
+          return false;
+        }
+        const selection = view.state.selection.main;
+        if (selection.empty) {
+          return false;
+        }
+        const text = view.state.sliceDoc(selection.from, selection.to);
+        if (event.clipboardData) {
+          event.preventDefault();
+          event.clipboardData.setData("text/plain", text);
+        }
+        void writeStudioClipboardText(text, {
+          kind: "text/plain",
+          source: options.clipboardSource || "codemirror",
+        });
+        view.dispatch({
+          changes: { from: selection.from, to: selection.to, insert: "" },
+          selection: { anchor: selection.from },
+          userEvent: "delete.cut",
+        });
+        return true;
+      },
+      paste(event, view) {
+        const text = event.clipboardData?.getData("text/plain");
+        if (typeof text !== "string" || text.length === 0) {
+          return false;
+        }
+        event.preventDefault();
+        replaceSelectionText(view, text);
+        void writeStudioClipboardText(text, {
+          kind: "text/plain",
+          source: "system-paste",
+        });
+        return true;
+      },
+    }),
+  ];
 }
 
 function isJavaScriptLikeKind(kind) {
@@ -904,7 +1868,13 @@ function createEditorShortcutExtensions(options = {}) {
 }
 
 function createZebflowEditorExtensions(options = {}) {
-  const extensions = [basicSetup, oneDark];
+  const extensions = [oneDark];
+
+  if (resolveVimPreference(options)) {
+    extensions.push(...createLightweightVimExtensions(options));
+  }
+
+  extensions.push(basicSetup);
 
   const theme = buildEditorTheme(options);
   if (theme) {
@@ -952,6 +1922,7 @@ function createZebflowEditorExtensions(options = {}) {
     extensions.push(...createImportNavigationExtensions(options));
   }
 
+  extensions.push(...createClipboardExtensions(options));
   extensions.push(...createEditorShortcutExtensions(options));
 
   return extensions;
@@ -979,7 +1950,8 @@ const codemirror = {
   setDiagnostics,
   snippetCompletion,
   createZebflowEditorExtensions,
+  enableVimSupport,
 };
 
 export * from "./codemirror.bundle.mjs";
-export { codemirror, createZebflowEditorExtensions, presets };
+export { codemirror, createZebflowEditorExtensions, presets, enableVimSupport };

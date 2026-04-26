@@ -148,12 +148,21 @@ impl MemSubscriber {
                             break;
                         };
 
-                        let log_max_n = zebflow_cfg
-                            .read_or_default(&owner_s, &project_s)
-                            .configs
-                            .pipelines
-                            .logging
-                            .effective_max_invocations();
+                        let project_cfg = zebflow_cfg.read_or_default(&owner_s, &project_s);
+                        let pipeline_retention = compiled
+                            .graph
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.settings.invocation_retention.as_ref());
+                        let log_max_n = pipeline_retention
+                            .and_then(|retention| retention.max_invocations)
+                            .map(|value| value.max(1) as usize)
+                            .unwrap_or_else(|| {
+                                project_cfg.configs.pipelines.logging.effective_max_invocations()
+                            });
+                        let max_age_secs = pipeline_retention
+                            .and_then(|retention| retention.max_age_secs)
+                            .map(|value| value.max(1) as i64);
 
                         let fired_at = chrono::Utc::now();
                         let ctx = PipelineContext {
@@ -196,6 +205,7 @@ impl MemSubscriber {
                                         trace: output.node_trace,
                                     },
                                     log_max_n,
+                                    max_age_secs,
                                 );
                             }
                             Err(e) => {
@@ -222,6 +232,7 @@ impl MemSubscriber {
                                         trace: e.node_trace.clone(),
                                     },
                                     log_max_n,
+                                    max_age_secs,
                                 );
                                 eprintln!(
                                     "❌ MemSubscriber failed {}/{}/{}: {}",

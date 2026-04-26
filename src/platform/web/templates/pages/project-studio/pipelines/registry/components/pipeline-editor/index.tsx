@@ -17,6 +17,10 @@ import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
 import DropdownMenu from "@/components/ui/dropdown-menu";
 import DropdownMenuItem from "@/components/ui/dropdown-menu-item";
+import { Dialog } from "@/components/ui/dialog";
+import DialogContent from "@/components/ui/dialog-content";
+import DialogHeader from "@/components/ui/dialog-header";
+import DialogTitle from "@/components/ui/dialog-title";
 import type { EditorApi, EditorDataState, PipelineNodeData, PipelineMeta, GitFile, NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
 import {
   buildNodeCatalog,
@@ -108,6 +112,41 @@ function PipelineDeleteIcon() {
   );
 }
 
+function PipelineSettingsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3.75 13.84 5a1 1 0 0 0 .98.08l2.04-.86 1.43 2.47-1.63 1.5a1 1 0 0 0-.28.95l.42 2.18 2.08.72v2.93l-2.08.72a1 1 0 0 0-.65.75l-.42 2.18a1 1 0 0 0 .28.95l1.63 1.5-1.43 2.47-2.04-.86a1 1 0 0 0-.98.08L12 20.25l-1.84-1.25a1 1 0 0 0-.98-.08l-2.04.86-1.43-2.47 1.63-1.5a1 1 0 0 0 .28-.95l-.42-2.18a1 1 0 0 0-.65-.75L4.5 13.97v-2.93l2.08-.72a1 1 0 0 0 .65-.75l.42-2.18a1 1 0 0 0-.28-.95L5.74 4.69l1.43-2.47 2.04.86a1 1 0 0 0 .98-.08L12 3.75Z" />
+      <circle cx="12" cy="12" r="3.25" />
+    </svg>
+  );
+}
+
+function sanitizePipelineMetadata(metadata: any, locked: boolean) {
+  const next = { ...(metadata || {}) } as any;
+  next.locked = !!locked;
+  const retention = next?.settings?.invocation_retention || null;
+  const maxInv = Number(retention?.max_invocations ?? 0);
+  const maxAge = Number(retention?.max_age_secs ?? 0);
+  if (maxInv > 0 || maxAge > 0) {
+    next.settings = {
+      ...(next.settings || {}),
+      invocation_retention: {
+        ...(maxInv > 0 ? { max_invocations: maxInv } : {}),
+        ...(maxAge > 0 ? { max_age_secs: maxAge } : {}),
+      },
+    };
+  } else if (next.settings?.invocation_retention) {
+    const settings = { ...(next.settings || {}) };
+    delete settings.invocation_retention;
+    if (Object.keys(settings).length > 0) {
+      next.settings = settings;
+    } else {
+      delete next.settings;
+    }
+  }
+  return next;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // ── PipelineEditor ────────────────────────────────────────────────────────────
@@ -121,6 +160,7 @@ interface PipelineEditorProps {
   graphuiSrc: string;
   snapToGrid?: boolean;
   graphuiPackageLabel?: string;
+  projectDefaultMaxInvocations?: number;
   onDeleteClick?: () => void;
   onLockToggle?: (locked: boolean) => void;
 }
@@ -134,6 +174,7 @@ export default function PipelineEditor({
   graphuiSrc,
   snapToGrid = true,
   graphuiPackageLabel = "Graph UI",
+  projectDefaultMaxInvocations = 20,
   onDeleteClick,
   onLockToggle,
 }: PipelineEditorProps) {
@@ -202,10 +243,15 @@ export default function PipelineEditor({
   const [loadError, setLoadError] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [pipelineMetadata, setPipelineMetadata] = useState<any>({});
 
   // ── Dialog state ────────────────────────────────────────────────────────────
   const [dialogNode, setDialogNode] = useState<PipelineNodeData | null>(null);
   const [webRenderNode, setWebRenderNode] = useState<PipelineNodeData | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [retentionInherit, setRetentionInherit] = useState(true);
+  const [retentionMaxInv, setRetentionMaxInv] = useState("");
+  const [retentionMaxAgeDays, setRetentionMaxAgeDays] = useState("");
 
   // ── Git commit dialog state ─────────────────────────────────────────────────
   const [gitDialogOpen, setGitDialogOpen] = useState(false);
@@ -326,6 +372,7 @@ export default function PipelineEditor({
       }
       graph = normalizeGraphForEditor(graph);
       setCurrentGraph(graph);
+      setPipelineMetadata(graph?.metadata || {});
       setCurrentMeta(payload.meta || null);
       setCurrentLocked(!!payload.locked);
       setHits(payload.hits || null);
@@ -393,10 +440,13 @@ export default function PipelineEditor({
     const rawPipeline = graphRef.current.collectPipeline();
     const graph = {
       ...rawPipeline,
-      metadata: {
-        ...(rawPipeline.metadata || {}),
-        locked: currentLocked,
-      },
+      metadata: sanitizePipelineMetadata(
+        {
+          ...(rawPipeline.metadata || {}),
+          ...(pipelineMetadata || {}),
+        },
+        currentLocked,
+      ),
     };
     const source = JSON.stringify(graph, null, 2);
     const payload = {
@@ -629,6 +679,53 @@ export default function PipelineEditor({
     : hasDraft
       ? "Runs the active version, not the unsaved draft"
       : "Run active manual pipeline";
+  const retention = pipelineMetadata?.settings?.invocation_retention || null;
+  const retentionSummary = retention?.max_age_secs
+    ? `retain for ${Math.max(1, Math.round(Number(retention.max_age_secs) / 86400))} day(s)`
+    : retention?.max_invocations
+      ? `retain last ${retention.max_invocations} run(s)`
+      : `inherit project default (${projectDefaultMaxInvocations})`;
+
+  function openSettingsDialog() {
+    if (!currentMeta) return;
+    const retentionCfg = pipelineMetadata?.settings?.invocation_retention || null;
+    setRetentionInherit(!retentionCfg?.max_invocations && !retentionCfg?.max_age_secs);
+    setRetentionMaxInv(retentionCfg?.max_invocations ? String(retentionCfg.max_invocations) : "");
+    setRetentionMaxAgeDays(
+      retentionCfg?.max_age_secs
+        ? String(Math.max(1, Math.round(Number(retentionCfg.max_age_secs) / 86400)))
+        : ""
+    );
+    setSettingsOpen(true);
+  }
+
+  function closeSettingsDialog() {
+    setSettingsOpen(false);
+  }
+
+  function applyPipelineSettings(e) {
+    e.preventDefault();
+    const maxInv = parseInt(retentionMaxInv || "0", 10);
+    const maxAgeDays = parseInt(retentionMaxAgeDays || "0", 10);
+    const next = { ...(pipelineMetadata || {}) } as any;
+    if (retentionInherit) {
+      if (next.settings?.invocation_retention) {
+        const settings = { ...(next.settings || {}) };
+        delete settings.invocation_retention;
+        next.settings = Object.keys(settings).length > 0 ? settings : undefined;
+      }
+    } else {
+      next.settings = {
+        ...(next.settings || {}),
+        invocation_retention: {
+          ...(maxInv > 0 ? { max_invocations: maxInv } : {}),
+          ...(maxAgeDays > 0 ? { max_age_secs: maxAgeDays * 86400 } : {}),
+        },
+      };
+    }
+    setPipelineMetadata(next);
+    closeSettingsDialog();
+  }
 
 
   // Read PipelineGraph from globalThis after bundle loads
@@ -737,26 +834,16 @@ export default function PipelineEditor({
                   {currentLocked ? <LockIcon /> : <LockOpenIcon />}
                 </Button>
               )}
-              {currentLocked && currentMeta ? (
-                <span
-                  className="inline-flex items-center justify-center text-dark-accent1"
-                  title="Locked — cannot delete"
-                  aria-label="Locked pipeline"
-                >
-                  <LockIcon />
-                </span>
-              ) : onDeleteClick ? (
-                <Button
-                  variant="destructive"
-                  size="icon"
-                  disabled={!currentMeta}
-                  onClick={onDeleteClick}
-                  aria-label="Delete pipeline"
-                  title="Delete pipeline"
-                >
-                  <PipelineDeleteIcon />
-                </Button>
-              ) : null}
+              <Button
+                variant="ghost"
+                size="icon"
+                disabled={!currentMeta}
+                onClick={openSettingsDialog}
+                aria-label="Pipeline settings"
+                title="Pipeline settings"
+              >
+                <PipelineSettingsIcon />
+              </Button>
             </div>
           </div>
         </div>
@@ -954,6 +1041,7 @@ export default function PipelineEditor({
         <span className="pipeline-editor-foot-item">{graphuiPackageLabel}</span>
         <span className="pipeline-editor-foot-item">Success: {successCount}</span>
         <span className="pipeline-editor-foot-item">Failed: {failedCount}</span>
+        <span className="pipeline-editor-foot-item">Retention: {retentionSummary}</span>
         <span className="pipeline-editor-foot-item" title={latestErr}>
           Latest error: {latestErr}
         </span>
@@ -1008,6 +1096,83 @@ export default function PipelineEditor({
         redirectUrl={gitRedirectUrl}
         onClose={() => setGitDialogOpen(false)}
       />
+
+      <Dialog open={settingsOpen} onOpenChange={(v: boolean) => !v && closeSettingsDialog()}>
+        <DialogContent className="max-w-xl border-border bg-surface text-body">
+          <form className="flex flex-col gap-4" onSubmit={applyPipelineSettings}>
+            <DialogHeader className="px-6 pt-6">
+              <DialogTitle>Pipeline Settings</DialogTitle>
+              <p className="text-xs text-body-muted">
+                Pipeline-specific execution log retention and destructive actions.
+              </p>
+            </DialogHeader>
+            <div className="grid gap-3 px-6">
+              <label className="pipeline-editor-field">
+                <span className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={retentionInherit}
+                    onInput={(e) => setRetentionInherit((e.target as HTMLInputElement).checked)}
+                  />
+                  <span>Use project default retention</span>
+                </span>
+                <small className="pipeline-editor-field-help">
+                  Current inherited count limit: {projectDefaultMaxInvocations} invocation(s) per pipeline.
+                </small>
+              </label>
+              <label className="pipeline-editor-field">
+                <span>Max invocation count override</span>
+                <input
+                  className="zf-input"
+                  type="number"
+                  min="1"
+                  placeholder={`${projectDefaultMaxInvocations}`}
+                  value={retentionMaxInv}
+                  disabled={retentionInherit}
+                  onInput={(e) => setRetentionMaxInv((e.target as HTMLInputElement).value)}
+                />
+                <small className="pipeline-editor-field-help">
+                  Optional hard cap on retained runs for this pipeline.
+                </small>
+              </label>
+              <label className="pipeline-editor-field">
+                <span>Max age override (days)</span>
+                <input
+                  className="zf-input"
+                  type="number"
+                  min="1"
+                  placeholder="1"
+                  value={retentionMaxAgeDays}
+                  disabled={retentionInherit}
+                  onInput={(e) => setRetentionMaxAgeDays((e.target as HTMLInputElement).value)}
+                />
+                <small className="pipeline-editor-field-help">
+                  Optional time-based retention. Example: set <code>1</code> for a login pipeline that should keep only one day of runs.
+                </small>
+              </label>
+            </div>
+            <div className="mx-6 flex items-center justify-between gap-3 border-t border-border-soft pt-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-body-muted">Danger Zone</div>
+                <div className="text-xs text-body-muted">Delete this pipeline from the project.</div>
+              </div>
+              {currentLocked ? (
+                <span className="inline-flex items-center justify-center text-dark-accent1" title="Locked — cannot delete" aria-label="Locked pipeline">
+                  <LockIcon />
+                </span>
+              ) : onDeleteClick ? (
+                <Button variant="destructive" size="xs" type="button" onClick={() => { closeSettingsDialog(); onDeleteClick(); }}>
+                  <PipelineDeleteIcon /> Delete Pipeline
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-border px-6 py-4">
+              <Button variant="outline" size="xs" type="button" onClick={closeSettingsDialog}>Cancel</Button>
+              <Button variant="primary" size="xs" type="submit">Apply to Draft</Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
 
     </div>
   );

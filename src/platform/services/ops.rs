@@ -979,7 +979,7 @@ impl PlatformOps {
         match self
             .platform
             .data
-            .get_pipeline_invocations(&self.owner, &self.project, file_rel_path)
+            .get_pipeline_invocations(&self.owner, &self.project, file_rel_path, None)
         {
             Ok(entries) if entries.is_empty() => OpsResult::ok(format!(
                 "No invocations recorded for '{}'.\n\nNote: invocations are stored per pipeline run. Try running or executing the pipeline first.",

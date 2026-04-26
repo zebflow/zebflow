@@ -4,6 +4,7 @@ import Input from "@/components/ui/input";
 import { loadEditorRuntime } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/template-editor-runtime";
 import type { PipelineNodeData } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
 import { ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
+import { subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
 
 interface WebRenderDialogProps {
   nodeData: PipelineNodeData | null;  // null = closed
@@ -26,6 +27,7 @@ export default function WebRenderDialog({
   const editorHostRef = useRef(null);
   const editorViewRef = useRef<any>(null);
   const runtimeRef = useRef<any>(null);
+  const activeNodeIdRef = useRef<string | null>(null);
 
   const config = nodeData?.zfConfig || {};
   const [slugValue, setSlugValue] = useState(nodeData?.zfPipelineNodeId || "");
@@ -36,6 +38,13 @@ export default function WebRenderDialog({
   const [isDirty, setIsDirty] = useState(false);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Idle");
+  const [editorPrefsVersion, setEditorPrefsVersion] = useState(0);
+
+  useEffect(() => {
+    return subscribeEditorPreferences(() => {
+      setEditorPrefsVersion((version) => version + 1);
+    });
+  }, []);
 
   function revealEditorLine(view: any, lineNumber?: number | null) {
     const line = Number(lineNumber || 0);
@@ -83,6 +92,17 @@ export default function WebRenderDialog({
     (async () => {
       setStatus("Loading editor…");
       try {
+        const currentNodeId = String(nodeData?.graphNodeId || "");
+        const initialDoc = activeNodeIdRef.current === currentNodeId
+          ? (editorViewRef.current?.state?.doc?.toString?.() ?? "")
+          : "";
+        if (editorViewRef.current) {
+          editorViewRef.current.destroy();
+          editorViewRef.current = null;
+        }
+        if (editorHostRef.current) {
+          editorHostRef.current.innerHTML = "";
+        }
         let rt = runtimeRef.current;
         if (!rt) {
           rt = await loadEditorRuntime();
@@ -114,11 +134,12 @@ export default function WebRenderDialog({
           presets,
         } = rt.cm;
         const view = new EditorView({
-          doc: "",
+          doc: initialDoc,
           parent: editorHostRef.current,
           extensions: presets.zebflow({
             kind: "template",
             autocomplete: true,
+            clipboardSource: "web-render-template-editor",
             projectFiles: resolvedProjectFiles,
             templateOutlineUrl: api.templateOutline || "",
             onOpenImport: (target: any) => {
@@ -136,13 +157,14 @@ export default function WebRenderDialog({
           }),
         });
         editorViewRef.current = view;
-        setStatus("Choose template");
+        activeNodeIdRef.current = currentNodeId;
+        setStatus(initialDoc ? (isDirty ? "Unsaved" : "Ready") : "Choose template");
 
         // Auto-load if template was pre-selected
         const preSelected = String(
           (nodeData.zfConfig?.template_path || nodeData.zfConfig?.template_rel_path || "") as string
         ).trim();
-        if (preSelected) {
+        if (!initialDoc && preSelected) {
           await doLoadTemplate(preSelected, view);
         }
       } catch (err: any) {
@@ -157,7 +179,7 @@ export default function WebRenderDialog({
         editorViewRef.current = null;
       }
     };
-  }, [nodeData?.graphNodeId]);
+  }, [nodeData?.graphNodeId, editorPrefsVersion]);
 
   // Sync <dialog> open/closed
   useEffect(() => {

@@ -1,0 +1,438 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/insanalamin/zebflow/libraries/zeb/pdf/0.1/ir.schema.json",
+  "title": "Zeb PDF IR",
+  "description": "Canonical authored/extracted document IR shared by zeb/pdf and pdfwrangler.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/document" },
+    { "$ref": "#/$defs/page" },
+    { "$ref": "#/$defs/text" },
+    { "$ref": "#/$defs/image" },
+    { "$ref": "#/$defs/table" },
+    { "$ref": "#/$defs/row" },
+    { "$ref": "#/$defs/cell" },
+    { "$ref": "#/$defs/container" },
+    { "$ref": "#/$defs/columns" },
+    { "$ref": "#/$defs/float" },
+    { "$ref": "#/$defs/absolute" },
+    { "$ref": "#/$defs/relative" },
+    { "$ref": "#/$defs/line" },
+    { "$ref": "#/$defs/rect" },
+    { "$ref": "#/$defs/heading" },
+    { "$ref": "#/$defs/paragraph" },
+    { "$ref": "#/$defs/list" },
+    { "$ref": "#/$defs/list_item" },
+    { "$ref": "#/$defs/math_inline" },
+    { "$ref": "#/$defs/math_block" }
+  ],
+  "$defs": {
+    "styleMap": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "bbox": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number" },
+        "height": { "type": "number" }
+      },
+      "required": ["x", "y", "width", "height"],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string" },
+        "path": { "type": "string" },
+        "page": { "type": "integer", "minimum": 0 },
+        "engine": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "nodeBase": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "className": { "type": "string" },
+        "style": { "$ref": "#/$defs/styleMap" },
+        "bbox": { "$ref": "#/$defs/bbox" },
+        "page_index": { "type": "integer", "minimum": 0 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "engine": { "type": "string" },
+        "reading_order": { "type": "integer", "minimum": 0 },
+        "source": { "$ref": "#/$defs/source" },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "childrenContainer": {
+      "type": "object",
+      "properties": {
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#" }
+        }
+      }
+    },
+    "document": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "document" },
+            "version": { "type": "string" },
+            "meta": { "type": "object", "additionalProperties": true },
+            "settings": { "type": "object", "additionalProperties": true },
+            "styles": { "type": "object", "additionalProperties": true },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type", "children"]
+        }
+      ]
+    },
+    "page": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "page" },
+            "size": {
+              "oneOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "width": { "type": "number" },
+                    "height": { "type": "number" }
+                  },
+                  "required": ["width", "height"],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "orientation": { "type": "string" },
+            "rotate": { "type": "integer" },
+            "margin": { "type": "object", "additionalProperties": true },
+            "header": { "$ref": "#" },
+            "footer": { "$ref": "#" },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type", "children"]
+        }
+      ]
+    },
+    "text": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "text" },
+            "value": { "type": "string" },
+            "runs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": { "type": "string" }
+                },
+                "required": ["text"],
+                "additionalProperties": true
+              }
+            },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "maxWidth": { "type": "number" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "image": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "image" },
+            "data": {
+              "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "integer" } }
+              ]
+            },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" },
+            "format": { "type": "string" }
+          },
+          "required": ["type", "data"]
+        }
+      ]
+    },
+    "table": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "table" },
+            "columnWidths": { "type": "array", "items": { "type": "number" } },
+            "columnAligns": { "type": "array", "items": { "type": "string" } },
+            "header": { "$ref": "#" },
+            "body": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "row": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "row" },
+            "cells": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            },
+            "height": {
+              "oneOf": [
+                { "type": "number" },
+                { "const": "auto" }
+              ]
+            }
+          },
+          "required": ["type", "cells"]
+        }
+      ]
+    },
+    "cell": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "cell" },
+            "value": { "type": "string" },
+            "colspan": { "type": "integer", "minimum": 1 },
+            "rowspan": { "type": "integer", "minimum": 1 },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "container": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        { "$ref": "#/$defs/childrenContainer" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "container" },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "columns": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        { "$ref": "#/$defs/childrenContainer" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "columns" },
+            "widths": { "type": "array", "items": { "type": "number" } },
+            "count": { "type": "integer", "minimum": 1 },
+            "gap": { "type": "number" },
+            "rule": { "type": "boolean" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "float": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        { "$ref": "#/$defs/childrenContainer" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "float" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "absolute": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        { "$ref": "#/$defs/childrenContainer" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "absolute" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "relative": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        { "$ref": "#/$defs/childrenContainer" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "relative" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "line": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "line" },
+            "x1": { "type": "number" },
+            "y1": { "type": "number" },
+            "x2": { "type": "number" },
+            "y2": { "type": "number" }
+          },
+          "required": ["type", "x1", "x2"]
+        }
+      ]
+    },
+    "rect": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "rect" },
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          },
+          "required": ["type", "x", "y", "width", "height"]
+        }
+      ]
+    },
+    "heading": {
+      "allOf": [
+        { "$ref": "#/$defs/text" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "heading" },
+            "level": { "type": "integer", "minimum": 1, "maximum": 6 }
+          },
+          "required": ["type", "value"]
+        }
+      ]
+    },
+    "paragraph": {
+      "allOf": [
+        { "$ref": "#/$defs/text" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "paragraph" }
+          },
+          "required": ["type"]
+        }
+      ]
+    },
+    "list": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "list" },
+            "ordered": { "type": "boolean" },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type", "children"]
+        }
+      ]
+    },
+    "list_item": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "list_item" },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#" }
+            }
+          },
+          "required": ["type", "children"]
+        }
+      ]
+    },
+    "math_inline": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "math_inline" },
+            "value": { "type": "string" }
+          },
+          "required": ["type", "value"]
+        }
+      ]
+    },
+    "math_block": {
+      "allOf": [
+        { "$ref": "#/$defs/nodeBase" },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "math_block" },
+            "value": { "type": "string" }
+          },
+          "required": ["type", "value"]
+        }
+      ]
+    }
+  }
+}

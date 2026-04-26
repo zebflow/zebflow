@@ -6,6 +6,9 @@ pub mod agent;
 pub mod auth_token_create;
 pub mod browser_run;
 pub mod crypto;
+pub mod file_compress;
+pub mod file_decompress;
+pub mod file_pdf_convert;
 pub mod file_save;
 pub mod function_call;
 pub mod http_request;
@@ -37,6 +40,9 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         agent::definition(),
         auth_token_create::definition(),
         browser_run::definition(),
+        file_compress::definition(),
+        file_decompress::definition(),
+        file_pdf_convert::definition(),
         file_save::definition(),
         function_call::definition(),
         img_thumbnail::definition(),

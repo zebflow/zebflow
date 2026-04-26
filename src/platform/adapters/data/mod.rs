@@ -535,6 +535,7 @@ pub trait DataAdapter: Send + Sync {
         _file_rel_path: &str,
         _entry: &PipelineInvocationEntry,
         _max_n: usize,
+        _max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         Ok(())
     }
@@ -546,6 +547,7 @@ pub trait DataAdapter: Send + Sync {
         _owner: &str,
         _project: &str,
         _file_rel_path: &str,
+        _max_age_secs: Option<i64>,
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
         Ok(vec![])
     }

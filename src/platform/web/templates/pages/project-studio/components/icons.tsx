@@ -43,6 +43,14 @@ export function HelpIcon({ className = "w-4 h-4" }) {
   );
 }
 
+export function PreferencesIcon({ className = "w-4 h-4" }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <path d="M4 7h9M17 7h3M4 17h3M15 17h5M13 7a2 2 0 1 1 4 0 2 2 0 0 1-4 0ZM7 17a2 2 0 1 1 4 0 2 2 0 0 1-4 0Z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function SessionIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
