@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "zeb";
+import { cx, useEffect, useRef, useState } from "zeb";
 import Field from "@/components/ui/field";
 import Label from "@/components/ui/label";
 import HelpTooltip from "@/components/ui/help-tooltip";
 import type { SidebarSection } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
+import { prepareCodeMirrorRuntime, subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
 
 // ── Codemirror loader (same dynamic-import pattern as db suite / template runtimes) ─────────
 
@@ -10,7 +11,10 @@ let _cmRuntime: any = null;
 let _cmPromise: Promise<any> | null = null;
 
 async function loadCm() {
-  if (_cmRuntime) return _cmRuntime;
+  if (_cmRuntime) {
+    await prepareCodeMirrorRuntime(_cmRuntime);
+    return _cmRuntime;
+  }
   if (_cmPromise) return _cmPromise;
   _cmPromise = (async () => {
     if (typeof window === "undefined") return null;
@@ -19,6 +23,7 @@ async function loadCm() {
       window.location.origin
     );
     const cm = await import(url.href);
+    await prepareCodeMirrorRuntime(cm);
     _cmRuntime = cm;
     return cm;
   })();
@@ -79,24 +84,38 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
   const viewRef = useRef<any>(null);
   const externalValueRef = useRef<string>(String(value ?? ""));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [editorPrefsVersion, setEditorPrefsVersion] = useState(0);
   const hasSidebar = Array.isArray(field.sidebar) && field.sidebar.length > 0;
+
+  useEffect(() => {
+    return subscribeEditorPreferences(() => {
+      setEditorPrefsVersion((version) => version + 1);
+    });
+  }, []);
 
   // Mount CodeMirror on first render
   useEffect(() => {
     if (!containerRef.current) return;
     let destroyed = false;
+    const initDoc = viewRef.current?.state?.doc?.toString?.() ?? String(value ?? "");
+    externalValueRef.current = initDoc;
+
+    if (viewRef.current) {
+      viewRef.current.destroy();
+      viewRef.current = null;
+    }
+
+    containerRef.current.innerHTML = "";
 
     loadCm().then((cm) => {
       if (destroyed || !containerRef.current || !cm) return;
-
-      const initDoc = String(value ?? "");
-      externalValueRef.current = initDoc;
 
       const view = new cm.EditorView({
         doc: initDoc,
         extensions: cm.presets.zebflow({
           kind: field.language || "text",
           autocomplete: true,
+          clipboardSource: "node-field-code-editor",
           readonly: !!field.readonly,
           minHeight: "160px",
           maxHeight: "320px",
@@ -120,7 +139,7 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [editorPrefsVersion]);
 
   // Sync external value changes (e.g., form reset when different node is opened)
   useEffect(() => {

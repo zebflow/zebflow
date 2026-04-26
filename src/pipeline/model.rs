@@ -440,6 +440,9 @@ pub struct PipelineGraph {
     /// Stored in `.zf.json` and indexed in the catalog for search.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Optional graph-level metadata stored alongside the pipeline source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<PipelineGraphMetadata>,
     /// Explicit entry node ids.  If empty the engine uses nodes with no incoming edges.
     #[serde(default)]
     pub entry_nodes: Vec<String>,
@@ -448,6 +451,28 @@ pub struct PipelineGraph {
     pub nodes: Vec<PipelineNode>,
     /// All directed edges connecting output pins to input pins.
     pub edges: Vec<PipelineEdge>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineGraphMetadata {
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub settings: PipelineGraphSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineGraphSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_retention: Option<PipelineInvocationRetention>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineInvocationRetention {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_invocations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u64>,
 }
 
 /// One node instance inside a [`PipelineGraph`].

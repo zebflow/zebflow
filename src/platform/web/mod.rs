@@ -795,9 +795,21 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_reindex_project),
         )
         .nest("/api/projects/{owner}/{project}/mcp", mcp_service)
-        .route("/wh/{owner}/{project}", any(public_webhook_ingress_root))
-        .route("/wh/{owner}/{project}/", any(public_webhook_ingress_root))
-        .route("/wh/{owner}/{project}/{*tail}", any(public_webhook_ingress))
+        .route(
+            "/wh/{owner}/{project}",
+            any(public_webhook_ingress_root)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
+        .route(
+            "/wh/{owner}/{project}/",
+            any(public_webhook_ingress_root)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
+        .route(
+            "/wh/{owner}/{project}/{*tail}",
+            any(public_webhook_ingress)
+                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
         .route("/ms/{owner}/{project}", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/{*tail}", get(public_mapserver_ingress))
@@ -3596,6 +3608,16 @@ async fn render_project_pipelines_with_tab(
                     })
                     .cloned()
                     .collect::<Vec<_>>();
+                let pipeline_logging_defaults = json!({
+                    "max_invocations": state
+                        .platform
+                        .zebflow_cfg
+                        .read_or_default(&owner, &project)
+                        .configs
+                        .pipelines
+                        .logging
+                        .effective_max_invocations()
+                });
 
                 let selected = wanted_id
                     .as_deref()
@@ -3805,6 +3827,7 @@ async fn render_project_pipelines_with_tab(
                     "selected_graph": graph_json,
                     "parse_error": parse_error,
                     "hits": hit_stats,
+                    "logging_defaults": pipeline_logging_defaults,
                     "pipelines": pipelines,
                     "template_files": editor_template_files,
                     "nodes": node_catalog,
@@ -5395,7 +5418,11 @@ async fn render_settings_tab_page(
                 "assets": {
                     "api": format!("/api/projects/{owner}/{project}/assets"),
                     "settings_api": format!("/api/projects/{owner}/{project}/settings/assets"),
-                    "config": zebflow_cfg.configs.files.uploads
+                    "config": {
+                        "max_asset_size_mb": zebflow_cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                        "webhook_body_max_mb": zebflow_cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                        "pipeline_node_timeout_secs": zebflow_cfg.configs.pipelines.effective_node_timeout_secs()
+                    }
                 },
                 "reindex_api": format!("/api/projects/{owner}/{project}/reindex"),
                 "transfer": {
@@ -9964,14 +9991,8 @@ async fn execute_pipeline_local(
     req: &ExecutePipelineRequest,
 ) -> Response {
     let exec_start = std::time::Instant::now();
-    let log_max_n = state
-        .platform
-        .zebflow_cfg
-        .read_or_default(owner, project)
-        .configs
-        .pipelines
-        .logging
-        .effective_max_invocations();
+    let project_cfg = state.platform.zebflow_cfg.read_or_default(owner, project);
+    let project_retention = resolve_invocation_retention(&project_cfg, None);
     let request_id = format!(
         "pipeline-exec-{}",
         std::time::SystemTime::now()
@@ -10029,7 +10050,8 @@ async fn execute_pipeline_local(
                     error: Some("pipeline must be activated before execution".to_string()),
                     trace: vec![],
                 },
-                log_max_n,
+                project_retention.max_invocations,
+                project_retention.max_age_secs,
             );
             return (
                 StatusCode::CONFLICT,
@@ -10069,7 +10091,8 @@ async fn execute_pipeline_local(
                     error: Some(err.to_string()),
                     trace: vec![],
                 },
-                log_max_n,
+                project_retention.max_invocations,
+                project_retention.max_age_secs,
             );
             return (
                 StatusCode::BAD_REQUEST,
@@ -10080,6 +10103,7 @@ async fn execute_pipeline_local(
                 .into_response();
         }
     };
+    let retention = resolve_invocation_retention(&project_cfg, Some(&graph));
     if let Err(err) = hydrate_template_markup(state, owner, project, &mut graph) {
         state.platform.pipeline_hits.record_failure(
             owner,
@@ -10105,7 +10129,8 @@ async fn execute_pipeline_local(
                 error: Some(err.message.clone()),
                 trace: vec![],
             },
-            log_max_n,
+            retention.max_invocations,
+            retention.max_age_secs,
         );
         return (
             StatusCode::BAD_REQUEST,
@@ -10140,7 +10165,8 @@ async fn execute_pipeline_local(
                 error: Some(message.clone()),
                 trace: vec![],
             },
-            log_max_n,
+            retention.max_invocations,
+            retention.max_age_secs,
         );
         return (
             StatusCode::BAD_REQUEST,
@@ -10201,7 +10227,8 @@ async fn execute_pipeline_local(
                     error: None,
                     trace: output.node_trace.clone(),
                 },
-                log_max_n,
+                retention.max_invocations,
+                retention.max_age_secs,
             );
             Json(json!({
                 "ok": true,
@@ -10237,7 +10264,8 @@ async fn execute_pipeline_local(
                     error: Some(err.message.clone()),
                     trace: err.node_trace.clone(),
                 },
-                log_max_n,
+                retention.max_invocations,
+                retention.max_age_secs,
             );
             (
                 StatusCode::BAD_REQUEST,
@@ -10381,10 +10409,36 @@ async fn api_pipeline_invocations(
             .into_response();
     };
 
+    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let retention = match state
+        .platform
+        .projects
+        .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)
+    {
+        Ok(Some(meta)) => {
+            let source = state
+                .platform
+                .projects
+                .read_active_pipeline_source(&owner, &project, &meta)
+                .or_else(|_| {
+                    state
+                        .platform
+                        .projects
+                        .read_pipeline_source(&owner, &project, file_rel_path)
+                })
+                .ok();
+            let graph = source
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<crate::pipeline::PipelineGraph>(raw).ok());
+            resolve_invocation_retention(&project_cfg, graph.as_ref())
+        }
+        _ => resolve_invocation_retention(&project_cfg, None),
+    };
+
     match state
         .platform
         .data
-        .get_pipeline_invocations(&owner, &project, file_rel_path)
+        .get_pipeline_invocations(&owner, &project, file_rel_path, retention.max_age_secs)
     {
         Ok(entries) => Json(json!({
             "ok": true,
@@ -11829,6 +11883,18 @@ async fn api_get_settings_section(
         "logging" => {
             Json(json!({"ok": true, "section": "logging", "data": cfg.configs.pipelines.logging})).into_response()
         }
+        "assets" => {
+            Json(json!({
+                "ok": true,
+                "section": "assets",
+                "data": {
+                    "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                    "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                    "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
+                }
+            }))
+            .into_response()
+        }
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
@@ -11935,10 +12001,28 @@ async fn api_upsert_settings_section(
                     .data
                     .get("max_asset_size_mb")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(5, 50) as u32)
-                    .unwrap_or(10);
+                    .map(|v| v.clamp(5, 100) as u32)
+                    .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().max_asset_size_mb);
+                let webhook_body_max_mb = req
+                    .data
+                    .get("webhook_body_max_mb")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.clamp(100, 512) as u32)
+                    .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().webhook_body_max_mb);
+                let node_timeout_secs = req
+                    .data
+                    .get("pipeline_node_timeout_secs")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v.clamp(5, 3600))
+                    .unwrap_or_else(crate::platform::model::default_pipeline_node_timeout_secs);
                 cfg.configs.files.uploads.max_asset_size_mb = max_mb;
-                json!(cfg.configs.files.uploads)
+                cfg.configs.files.uploads.webhook_body_max_mb = webhook_body_max_mb;
+                cfg.configs.pipelines.node_timeout_secs = Some(node_timeout_secs);
+                json!({
+                    "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                    "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                    "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
+                })
             }
             _ => return (
                 StatusCode::NOT_FOUND,
@@ -15069,14 +15153,23 @@ async fn public_webhook_ingress(
     let path = format!("/{}", tail.trim_start_matches('/'));
     let method_key = method.as_str().to_ascii_uppercase();
     let exec_start = std::time::Instant::now();
-    let log_max_n = state
-        .platform
-        .zebflow_cfg
-        .read_or_default(&owner, &project)
-        .configs
-        .pipelines
-        .logging
-        .effective_max_invocations();
+    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let webhook_body_max_mb = project_cfg.configs.files.uploads.effective_webhook_body_max_mb();
+    let webhook_body_limit_bytes = (webhook_body_max_mb as usize) * 1024 * 1024;
+    if body.len() > webhook_body_limit_bytes {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({
+                "ok": false,
+                "error": format!(
+                    "webhook body {} bytes exceeds limit of {} MB",
+                    body.len(),
+                    webhook_body_max_mb
+                )
+            })),
+        )
+            .into_response();
+    }
     let request_id = format!(
         "webhook-{}",
         std::time::SystemTime::now()
@@ -15148,6 +15241,7 @@ async fn public_webhook_ingress(
         )
             .into_response();
     };
+    let retention = resolve_invocation_retention(&project_cfg, Some(&selected.compiled.graph));
     // Verify trigger-level auth before executing the pipeline.
     let auth_claims = if has_valid_cluster_token(&state, &headers) {
         Ok(None)
@@ -15240,7 +15334,8 @@ async fn public_webhook_ingress(
                 error: Some(err.message.clone()),
                 trace: vec![],
             },
-            log_max_n,
+            retention.max_invocations,
+            retention.max_age_secs,
         );
         return (
             StatusCode::BAD_REQUEST,
@@ -15324,7 +15419,8 @@ async fn public_webhook_ingress(
                     error: Some(err.message.clone()),
                     trace: err.node_trace.clone(),
                 },
-                log_max_n,
+                retention.max_invocations,
+                retention.max_age_secs,
             );
             if let Some(err_resp) = dispatch_weberror(
                 &state,
@@ -15364,7 +15460,8 @@ async fn public_webhook_ingress(
             error: None,
             trace: output.node_trace.clone(),
         },
-        log_max_n,
+        retention.max_invocations,
+        retention.max_age_secs,
     );
 
     // ── n.web.response — explicit response envelope ───────────────────────────
@@ -16335,6 +16432,33 @@ fn pipeline_source_is_locked(source: &str) -> bool {
         .and_then(Value::as_bool)
         .or_else(|| value.get("locked").and_then(Value::as_bool))
         .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EffectivePipelineInvocationRetention {
+    max_invocations: usize,
+    max_age_secs: Option<i64>,
+}
+
+fn resolve_invocation_retention(
+    project_cfg: &crate::platform::model::ZebflowJson,
+    graph: Option<&crate::pipeline::PipelineGraph>,
+) -> EffectivePipelineInvocationRetention {
+    let project_max_invocations = project_cfg.configs.pipelines.logging.effective_max_invocations();
+    let pipeline_retention = graph
+        .and_then(|graph| graph.metadata.as_ref())
+        .and_then(|metadata| metadata.settings.invocation_retention.as_ref());
+    let max_invocations = pipeline_retention
+        .and_then(|retention| retention.max_invocations)
+        .map(|value| value.max(1) as usize)
+        .unwrap_or(project_max_invocations);
+    let max_age_secs = pipeline_retention
+        .and_then(|retention| retention.max_age_secs)
+        .map(|value| value.max(1) as i64);
+    EffectivePipelineInvocationRetention {
+        max_invocations,
+        max_age_secs,
+    }
 }
 
 fn resolve_pipeline_registry_scope(
@@ -17588,7 +17712,8 @@ async fn api_upload_asset(
         .platform
         .zebflow_cfg
         .read_or_default(&owner_slug, &project_slug);
-    let max_bytes = (cfg.configs.files.uploads.max_asset_size_mb as u64) * 1024 * 1024;
+    let max_asset_size_mb = cfg.configs.files.uploads.effective_max_asset_size_mb();
+    let max_bytes = (max_asset_size_mb as u64) * 1024 * 1024;
 
     let subfolder = query
         .subfolder
@@ -17652,7 +17777,7 @@ async fn api_upload_asset(
     if bytes.len() as u64 > max_bytes {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), cfg.configs.files.uploads.max_asset_size_mb)})),
+            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), max_asset_size_mb)})),
         ).into_response();
     }
 

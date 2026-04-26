@@ -21,6 +21,7 @@ import {
 } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
 import { RegistryInstallCatalog } from "@/pages/project-studio/pipelines/registry/components/registry-install-catalog";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
+import { subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
 
 // ── Asset Manager ─────────────────────────────────────────────────────────────
@@ -351,15 +352,24 @@ export default function UnifiedRegistryEditor(input) {
   const template = input?.template ?? {};
   const templateOutlineUrl = String(template?.api?.outline ?? editorApi?.template_outline ?? "");
   const [templateSaveState, setTemplateSaveState] = useState("Saved");
+  const [editorPrefsVersion, setEditorPrefsVersion] = useState(0);
   const templateEditorHostRef = useRef(null);
   const templateEditorViewRef = useRef(null);
   const templateRuntimeRef = useRef(null);
+  const templateEditorRelPathRef = useRef("");
 
   // ── Doc editor state ──────────────────────────────────────────────────────
   const doc = input?.doc ?? {};
   const [docSaveState, setDocSaveState] = useState("Saved");
   const docEditorHostRef = useRef(null);
   const docEditorViewRef = useRef(null);
+  const docEditorPathRef = useRef("");
+
+  useEffect(() => {
+    return subscribeEditorPreferences(() => {
+      setEditorPrefsVersion((version) => version + 1);
+    });
+  }, []);
 
   // ── Split pane ────────────────────────────────────────────────────────────
   const pipelineEditorRef = useSplitPane({
@@ -520,6 +530,7 @@ export default function UnifiedRegistryEditor(input) {
       height: "100%",
       autocomplete: true,
       diagnostics: true,
+      clipboardSource: "template-editor",
       readonly: !!editorOptions.readonly,
       projectFiles: editorOptions.projectFiles || [],
       templateOutlineUrl: editorOptions.templateOutlineUrl || "",
@@ -535,12 +546,16 @@ export default function UnifiedRegistryEditor(input) {
       extensions,
       parent: templateEditorHostRef.current,
     });
+    templateEditorRelPathRef.current = String(template?.rel_path ?? "");
     revealEditorLine(templateEditorViewRef.current, editorOptions.initialLine);
   }
 
   useEffect(() => {
     if (!isTemplate) return;
-    const content = template?.content ?? "";
+    const relPath = String(template?.rel_path ?? "");
+    const content = templateEditorRelPathRef.current === relPath
+      ? (templateEditorViewRef.current?.state?.doc?.toString?.() ?? template?.content ?? "")
+      : (template?.content ?? "");
     const fileKind = template?.file_kind ?? "template";
     setTemplateSaveState("Loading…");
     (async () => {
@@ -573,7 +588,7 @@ export default function UnifiedRegistryEditor(input) {
         console.error("[EDITOR] template init failed", err);
       }
     })();
-  }, [isTemplate, template?.rel_path, template?.content, template?.file_kind, templateOutlineUrl, selectedLine, selectedTemplateLocked]);
+  }, [isTemplate, template?.rel_path, template?.content, template?.file_kind, templateOutlineUrl, selectedLine, selectedTemplateLocked, editorPrefsVersion]);
 
   async function handleSaveTemplate() {
     if (!templateEditorViewRef.current || selectedTemplateLocked) return;
@@ -593,7 +608,10 @@ export default function UnifiedRegistryEditor(input) {
 
   useEffect(() => {
     if (!isDoc) return;
-    const content = doc?.content ?? "";
+    const docPath = String(doc?.path ?? doc?.rel_path ?? "");
+    const content = docEditorPathRef.current === docPath
+      ? (docEditorViewRef.current?.state?.doc?.toString?.() ?? doc?.content ?? "")
+      : (doc?.content ?? "");
     setDocSaveState("Loading…");
     (async () => {
       try {
@@ -615,6 +633,7 @@ export default function UnifiedRegistryEditor(input) {
             height: "100%",
             autocomplete: true,
             diagnostics: true,
+            clipboardSource: "doc-editor",
             projectFiles: [],
             onSave: () => { void handleSaveDoc(); },
             onDocumentChange: (update) => {
@@ -624,6 +643,7 @@ export default function UnifiedRegistryEditor(input) {
           }),
           parent: docEditorHostRef.current,
         });
+        docEditorPathRef.current = docPath;
         revealEditorLine(docEditorViewRef.current, selectedLine);
         setDocSaveState("Saved");
       } catch (err) {
@@ -631,7 +651,7 @@ export default function UnifiedRegistryEditor(input) {
         console.error("[EDITOR] doc init failed", err);
       }
     })();
-  }, []);
+  }, [isDoc, doc?.path, doc?.content, selectedLine, editorPrefsVersion]);
 
   async function handleSaveDoc() {
     if (!docEditorViewRef.current) return;
@@ -1532,6 +1552,7 @@ export default function UnifiedRegistryEditor(input) {
                 scopePath={currentPath}
                 graphuiSrc={pipeline?.graphui?.runtime_src ?? ""}
                 graphuiPackageLabel={pipeline?.graphui?.package_label ?? "Graph UI"}
+                projectDefaultMaxInvocations={Number(pipeline?.logging_defaults?.max_invocations ?? 20)}
                 onDeleteClick={pipeline?.selected_meta?.is_locked ? undefined : () => {
                   const pName = String(pipeline?.selected_meta?.name
                     ?? (pipeline?.selected_id ?? "").split("/").pop()?.replace(".zf.json", "")

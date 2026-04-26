@@ -1291,6 +1291,8 @@ function LoggingPanel({ api, initialConfig }) {
 
 function RuntimeDefaultsPanel({ api, initialConfig }) {
   const [maxMb, setMaxMb] = useState(Number(initialConfig?.max_asset_size_mb ?? 10));
+  const [webhookMaxMb, setWebhookMaxMb] = useState(Number(initialConfig?.webhook_body_max_mb ?? 100));
+  const [nodeTimeoutSecs, setNodeTimeoutSecs] = useState(Number(initialConfig?.pipeline_node_timeout_secs ?? 30));
   const [statusMsg, setStatusMsg] = useState("Ready.");
   const [statusTone, setStatusTone] = useState("info");
   const [saving, setSaving] = useState(false);
@@ -1299,7 +1301,11 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
 
   function handleSubmit(e) {
     e.preventDefault();
-    setPendingData({ max_asset_size_mb: maxMb });
+    setPendingData({
+      max_asset_size_mb: maxMb,
+      webhook_body_max_mb: webhookMaxMb,
+      pipeline_node_timeout_secs: nodeTimeoutSecs,
+    });
     setCommitOpen(true);
   }
 
@@ -1335,7 +1341,7 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
   return (
     <SettingsSection
       title="Runtime Defaults"
-      description="Upload size and asset serving limits for this project."
+      description="Project-level upload limits and node execution timeout defaults."
       tag="Assets"
     >
       <CommitDialog
@@ -1359,7 +1365,39 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             className="w-full cursor-pointer accent-dark-accent1"
           />
           <small className="pipeline-editor-field-help">
-            Maximum file size per uploaded asset (5–50 MB). Aligns with git hosting soft-warning threshold.
+            Maximum file size per uploaded asset (5–100 MB).
+          </small>
+        </label>
+        <label className="pipeline-editor-field">
+          <span>Webhook body max: <strong>{webhookMaxMb} MB</strong></span>
+          <input
+            type="range"
+            name="webhook_body_max_mb"
+            min={100}
+            max={512}
+            step={1}
+            value={webhookMaxMb}
+            onInput={(e) => setWebhookMaxMb(Number((e.target as HTMLInputElement).value))}
+            className="w-full cursor-pointer accent-dark-accent1"
+          />
+          <small className="pipeline-editor-field-help">
+            Per-project logical request limit for <code>/wh/...</code> uploads (100–512 MB). This should be at least as large as the documents your webhook pipelines need to accept.
+          </small>
+        </label>
+        <label className="pipeline-editor-field">
+          <span>Pipeline node timeout: <strong>{nodeTimeoutSecs} sec</strong></span>
+          <input
+            type="range"
+            name="pipeline_node_timeout_secs"
+            min={5}
+            max={600}
+            step={5}
+            value={nodeTimeoutSecs}
+            onInput={(e) => setNodeTimeoutSecs(Number((e.target as HTMLInputElement).value))}
+            className="w-full cursor-pointer accent-dark-accent1"
+          />
+          <small className="pipeline-editor-field-help">
+            Maximum runtime per node before timeout (5–3600 sec effective). Raise this for heavy transforms like PDF conversion.
           </small>
         </label>
         <div className="flex items-center gap-[0.7rem]">

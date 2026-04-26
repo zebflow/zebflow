@@ -4,16 +4,27 @@
  *
  * Layout uses Tailwind utilities (RWE `data-rwe-tw`); `--studio-*` / `--zf-ui-*` come from `[data-studio-theme]` in `pages/project-studio/styles.css` (SSR-safe).
  */
-import { useState, Link, cx } from "zeb";
+import { useEffect, useState, Link, cx } from "zeb";
 import PlatformSidebar from "@/pages/project-studio/components/platform-sidebar";
 import Button from "@/components/ui/button";
-import { HelpIcon, HomeIcon, MoonIcon, SunIcon, TerminalIcon } from "@/pages/project-studio/components/icons";
+import { HelpIcon, HomeIcon, MoonIcon, PreferencesIcon, SunIcon, TerminalIcon } from "@/pages/project-studio/components/icons";
 import { GitRepoPanel } from "@/pages/project-studio/components/git-repo-panel";
 import { SessionPanel } from "@/pages/project-studio/components/session-panel";
 import { AutoOverlay } from "@/pages/project-studio/components/auto-overlay";
 import { StudioChromeProvider, useStudioChrome } from "@/pages/project-studio/components/studio-chrome-context";
 import { FileSearchProvider } from "@/pages/project-studio/components/file-search-context";
 import ProjectConsole from "@/pages/project-studio/components/project-console";
+import { Dialog } from "@/components/ui/dialog";
+import DialogContent from "@/components/ui/dialog-content";
+import DialogHeader from "@/components/ui/dialog-header";
+import DialogTitle from "@/components/ui/dialog-title";
+import {
+  getDefaultEditorPreferences,
+  readEditorPreferences,
+  subscribeEditorPreferences,
+  writeEditorPreferences,
+} from "@/pages/project-studio/components/editor-preferences";
+import { ensureStudioClipboard } from "@/pages/project-studio/components/studio-clipboard";
 import { renderMarkdown } from "zeb/markdown";
 
 function ConsoleSlot({ owner, project }) {
@@ -225,10 +236,18 @@ function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
 export default function ProjectStudioShell(props) {
   const [theme, setTheme] = useState("dark");
   const [helpOpen, setHelpOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [editorPreferences, setEditorPreferences] = useState(getDefaultEditorPreferences());
   const nav = props?.nav ?? {};
   const owner = props?.owner ?? "";
   const project = props?.project ?? "";
   const isLight = theme === "light";
+
+  useEffect(() => {
+    setEditorPreferences(readEditorPreferences());
+    ensureStudioClipboard();
+    return subscribeEditorPreferences((prefs) => setEditorPreferences(prefs));
+  }, []);
 
   return (
     <div
@@ -298,6 +317,15 @@ export default function ProjectStudioShell(props) {
                 <div className="flex items-center gap-0.5">
                   <button
                     type="button"
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-orange-500 text-white transition-colors hover:bg-orange-400"
+                    onClick={() => setPreferencesOpen(true)}
+                    aria-label="Open preferences"
+                    title="Preferences"
+                  >
+                    <PreferencesIcon className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
                     className={cx(
                       isLight
                         ? "bg-gray-200 text-gray-700"
@@ -327,6 +355,32 @@ export default function ProjectStudioShell(props) {
         <ConsoleSlot owner={owner} project={project} />
 
         <AutoOverlay />
+        <Dialog open={preferencesOpen} onOpenChange={setPreferencesOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Preferences</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 px-6 pb-6">
+              <label className="flex items-start gap-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={!!editorPreferences.vim}
+                  onChange={(event: any) => {
+                    const next = writeEditorPreferences({ vim: !!event?.target?.checked });
+                    setEditorPreferences(next);
+                  }}
+                  className="mt-1 h-4 w-4 accent-orange-500"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-body">Enable Vim mode</span>
+                  <span className="block text-xs text-body-soft">
+                    Applies to project-studio code editors and persists in this browser.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </DialogContent>
+        </Dialog>
         <HelpDialog
           owner={owner}
           project={project}

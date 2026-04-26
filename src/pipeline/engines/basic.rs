@@ -19,8 +19,9 @@ use crate::pipeline::model::{
     PipelineOutput,
 };
 use crate::pipeline::nodes::basic::{
-    agent, auth_token_create, browser_run, crypto, file_save, function_call, http_request,
-    img_thumbnail, logic, mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set,
+    agent, auth_token_create, browser_run, crypto, file_compress, file_decompress, file_pdf_convert,
+    file_save, function_call, http_request, img_thumbnail, logic, mem_del, mem_exists, mem_expire,
+    mem_get, mem_incr, mem_publish, mem_set,
     pg_query, script, sekejap_query, sqlite_mutate, sqlite_query,
     trigger::{function as trigger_function, manual, mapserver, memsubscribe, schedule, weberror, webhook},
     web_response, web_static_generate, ws_emit, ws_sync_state, ws_trigger,
@@ -617,6 +618,48 @@ impl BasicPipelineEngine {
                     platform.clone(),
                 )?))
             }
+            file_compress::NODE_KIND => {
+                let config: file_compress::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FILE_COMPRESS",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::FileCompress(file_compress::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
+            }
+            file_decompress::NODE_KIND => {
+                let config: file_decompress::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FILE_DECOMPRESS",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::FileDecompress(file_decompress::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
+            }
+            file_pdf_convert::NODE_KIND => {
+                let config: file_pdf_convert::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_PDF_CONVERT",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::FilePdfConvert(file_pdf_convert::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
+            }
             img_thumbnail::NODE_KIND => {
                 let config: img_thumbnail::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -897,10 +940,23 @@ impl PipelineEngine for BasicPipelineEngine {
             let input_snapshot = input.payload.clone();
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
-            let node_timeout_secs: u64 = std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30);
+            let node_timeout_secs: u64 = self
+                .platform
+                .as_ref()
+                .map(|platform| {
+                    platform
+                        .zebflow_cfg
+                        .read_or_default(&ctx.owner, &ctx.project)
+                        .configs
+                        .pipelines
+                        .effective_node_timeout_secs()
+                })
+                .or_else(|| {
+                    std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
+                .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
             let exec_fut = async {
                 match dispatch {
                     NodeDispatch::Webhook(node) => node.execute_async(input).await,
@@ -1210,6 +1266,9 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
                     NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
                     NodeDispatch::FileSave(node) => node.execute_async(input).await,
+                    NodeDispatch::FileCompress(node) => node.execute_async(input).await,
+                    NodeDispatch::FileDecompress(node) => node.execute_async(input).await,
+                    NodeDispatch::FilePdfConvert(node) => node.execute_async(input).await,
                     NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
                     NodeDispatch::MemSet(node) => node.execute_async(input).await,
                     NodeDispatch::MemGet(node) => node.execute_async(input).await,
@@ -1550,6 +1609,9 @@ enum NodeDispatch {
     TriggerFunction(trigger_function::Node),
     FunctionCall(function_call::Node),
     FileSave(file_save::Node),
+    FileCompress(file_compress::Node),
+    FileDecompress(file_decompress::Node),
+    FilePdfConvert(file_pdf_convert::Node),
     ImgThumbnail(img_thumbnail::Node),
     MemSet(mem_set::Node),
     MemGet(mem_get::Node),

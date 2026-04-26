@@ -1,9 +1,12 @@
+import { prepareCodeMirrorRuntime, subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
+
 let editorViewCtor = null;
 let codeMirrorRuntime = null;
 let codeMirrorRuntimePromise = null;
 
 async function ensureCodeMirrorRuntime() {
   if (editorViewCtor && codeMirrorRuntime) {
+    await prepareCodeMirrorRuntime(codeMirrorRuntime);
     return codeMirrorRuntime;
   }
   if (codeMirrorRuntimePromise) {
@@ -18,6 +21,7 @@ async function ensureCodeMirrorRuntime() {
       window.location.origin
     );
     const runtime = await import(runtimeUrl.href);
+    await prepareCodeMirrorRuntime(runtime);
     codeMirrorRuntime = runtime;
     editorViewCtor = runtime.EditorView;
     return runtime;
@@ -448,24 +452,43 @@ async function loadTreeData(state) {
   await setSelectedTable(state, target, false);
 }
 
-async function initQueryEditor(state) {
+async function remountQueryEditor(state, initialDoc) {
   if (!state.queryEditorHost) {
     return;
   }
   const runtime = await ensureCodeMirrorRuntime();
-  const initial = (state.queryEditorHost.textContent || "").trim() || "-- Write SQL and click Run Query.";
   state.queryEditorHost.textContent = "";
+  if (state.queryEditor) {
+    state.queryEditor.destroy();
+    state.queryEditor = null;
+  }
   state.queryEditor = new editorViewCtor({
-    doc: initial,
-    extensions: runtime.presets.zebflow({ kind: "sql" }),
+    doc: initialDoc,
+    extensions: runtime.presets.zebflow({ kind: "sql", clipboardSource: "db-suite-query-editor" }),
     parent: state.queryEditorHost,
   });
-  // Expose the CodeMirror EditorView on the host element so the automation
-  // runner can dispatch changes without re-importing the runtime bundle.
   (state.queryEditorHost as any)._cmView = state.queryEditor;
+}
+
+async function initQueryEditor(state) {
+  if (!state.queryEditorHost) {
+    return;
+  }
+  const initial = (state.queryEditorHost.textContent || "").trim() || "-- Write SQL and click Run Query.";
+  await remountQueryEditor(state, initial);
   setQueryStatus(state, "Ready", "neutral");
 
-  if (state.queryRunEl) {
+  if (!state.queryEditorPrefsUnsubscribe) {
+    state.queryEditorPrefsUnsubscribe = subscribeEditorPreferences(() => {
+      const currentDoc = state.queryEditor?.state?.doc?.toString?.() || initial;
+      remountQueryEditor(state, currentDoc).catch((err) => {
+        setQueryStatus(state, `Error · ${String(err?.message || err)}`, "error");
+      });
+    });
+  }
+
+  if (state.queryRunEl && !state.queryRunBound) {
+    state.queryRunBound = true;
     state.queryRunEl.addEventListener("click", () => {
       runQuery(state).catch((err) => {
         setQueryStatus(state, `Error · ${String(err?.message || err)}`, "error");

@@ -594,6 +594,7 @@ export default function LyricPage(input) {
             version: "0.1".to_string(),
             id: "generate-lyric".to_string(),
             description: None,
+            metadata: None,
             entry_nodes: vec!["gen".to_string()],
             nodes: vec![PipelineNode {
                 id: "gen".to_string(),
