@@ -43,7 +43,7 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 ```zf
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
-  [b] logic.switch --expr "input.type" --cases normal,urgent --default unknown \
+  [b] logic.match --expr "$input.type" --cases normal,urgent --default unknown \
   [c] sekejap.mutate -- "INSERT INTO normal_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
   [d] http.request --url https://alerts.api/send --method POST \
   [e] sekejap.mutate -- "INSERT INTO unknown_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
@@ -100,8 +100,6 @@ The engine resolves them **before** the node runs, in a hermetically sandboxed D
 | `$trigger.headers`| Safe subset of request headers (content-type, user-agent, etc.) |
 | `$nodes.id`       | Output payload of a completed upstream node by its graph ID     |
 | `$nodes.id.field` | Specific field from that node's output                          |
-| `$ctx.pipeline`   | Current pipeline identifier                                     |
-| `$ctx.request_id` | Unique execution request id                                     |
 
 > **`$trigger.auth` vs `ctx.auth` in templates**: In script node `{{ expr }}` expressions, `$trigger.auth` holds the full decoded JWT claims (all claims, including private). In templates rendered by `n.web.response`, `ctx.auth` holds only the `:public`-marked claims after filtering. Use `$trigger.auth` in expressions inside script/query configs; use `ctx.auth` in template TSX files.
 
@@ -346,7 +344,7 @@ Any write attempt returns: `credentials can only be managed from the UI`.
 get nodes
 get nodes --filter logic
 describe node n.pg.query        # config shape, input/output pins, description
-n.logic.switch --help           # same
+n.logic.match --help            # same
 ```
 
 ### Data & compute nodes
@@ -358,7 +356,7 @@ n.logic.switch --help           # same
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
-| `web.static.generate` | `n.web.static.generate` | `--template <pages/name> --output-path <path> [--scope public\|private] [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into `files/{scope}/...`; output `{ generated: { status, path, url, route, template, scope, bytes } }` |
+| `web.static.generate` | `n.web.static.generate` | `--template <pages/name.tsx> --output-path <path> [--scope public\|private] [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into `files/{scope}/...`; output `{ generated: { status, path, url, route, template, scope, bytes } }` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
 | `sekejap.query` | `n.sekejap.query` | `-- "SELECT ... FROM collection [WHERE ...] [LIMIT n]"` — raw SQL SELECT/TRAVERSE/VECTOR_NEAR; `{{ expr }}` placeholders resolved before execution; output `{ rows: [...] }` |
 | `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
@@ -367,6 +365,7 @@ n.logic.switch --help           # same
 | `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
 | `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
+| `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <private/path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under project `files/private/`; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.memsubscribe` | `n.trigger.memsubscribe` | `--channel <name>` — subscribes to an in-memory pub/sub channel; fires whenever `mem.publish` sends to that channel |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
@@ -680,9 +679,11 @@ The webhook trigger normalises all request bodies to a flat JSON object:
 | Short name | Full kind | Output pins | Config |
 |---|---|---|---|
 | `logic.if` | `n.logic.if` | `true`, `false` | `--expr <js-expression>` |
-| `logic.switch` | `n.logic.switch` | named cases + default | `--expr <js-expression> --cases a,b,c --default <name>` |
-| `logic.branch` | `n.logic.branch` | named branches | `--fanout a,b,c` or `--expr <js-expression>` |
-| `logic.merge` | `n.logic.merge` | `out` | `--strategy wait_all\|first_completed\|pass_through` |
+| `logic.match` | `n.logic.match` | named cases + default | `--expr <js-expression> --cases a,b,c --default <name>` or repeated `--cases a --cases b` |
+| `logic.collect` | `n.logic.collect` | `out` | none |
+| `logic.foreach` | `n.logic.foreach` | `item` | `--items-path <json-pointer> [--dispatch seq\|parallel] [--chunk-size N]` |
+| `logic.reduce` | `n.logic.reduce` | `out` | `--init-expr <expr> --step-expr <expr>` |
+| `logic.retry` | `n.logic.retry` | `retry`, `failed` | `--max-attempts <n> [--delay-ms <ms>]` |
 
 External nodes use `x.` prefix (e.g. `x.firebase.notify`).
 
@@ -760,7 +761,7 @@ Omitting `:pin` defaults to `out` for the source, `in` for the target.
 register check-status --path /webhooks \
   [a] trigger.webhook --path /status --method GET \
   [b] http.request --url https://example.com --method GET \
-  [c] logic.if --expr "input.status >= 400" \
+  [c] logic.if --expr "$input.status >= 400" \
   [d] http.request --url https://hooks.slack.com/xxx --method POST \
   [a] -> [b] \
   [b] -> [c] \
@@ -769,12 +770,12 @@ register check-status --path /webhooks \
 
 `[c]:false` has no edge → execution stops silently (no error). That's your "do nothing" branch.
 
-### logic.switch — multi-case routing
+### logic.match — multi-case routing
 
 ```zf
 register event-router --path /webhooks \
   [a] trigger.webhook --path /events --method POST \
-  [b] logic.switch --expr "input.type" --cases create,update,delete --default unknown \
+  [b] logic.match --expr "$input.type" --cases create --cases update --cases delete --default unknown \
   [c] script --lang js -- "return handleCreate(input);" \
   [d] script --lang js -- "return handleUpdate(input);" \
   [e] script --lang js -- "return handleDelete(input);" \
@@ -786,40 +787,83 @@ register event-router --path /webhooks \
   [b]:unknown -> [f]
 ```
 
-### logic.branch — parallel fan-out
+Short form is also valid:
+
+```zf
+[b] logic.match --expr "$input.type" --cases create,update,delete --default unknown
+```
+
+### Native 1-M fan-out
 
 ```zf
 register notify-all --path /jobs \
   [a] trigger.schedule --cron "0 9 * * *" --timezone UTC \
   [b] pg.query --credential main-db -- "SELECT * FROM alerts WHERE active = true" \
-  [c] logic.branch --fanout email,sms,slack \
   [d] http.request --url https://email.api/send --method POST \
   [e] http.request --url https://sms.api/send --method POST \
   [f] http.request --url https://hooks.slack.com/xxx --method POST \
   [a] -> [b] \
-  [b] -> [c] \
-  [c]:email -> [d] \
-  [c]:sms   -> [e] \
-  [c]:slack -> [f]
+  [b] -> [d] \
+  [b] -> [e] \
+  [b] -> [f]
 ```
 
-### logic.merge — fan-in
-
-Strategies: `wait_all` (all pins before firing), `first_completed` (first arrival wins), `pass_through` (fires on each, default).
+### logic.collect — explicit together-processing
 
 ```zf
 register parallel-fetch --path /jobs \
   [a] trigger.manual \
   [b] http.request --url https://source-a.com --method GET \
   [c] http.request --url https://source-b.com --method GET \
-  [d] logic.merge --strategy wait_all \
-  [e] script --lang js -- "return combine(input.in_b, input.in_c);" \
+  [d] logic.collect \
+  [e] script --lang js -- "return combine(input.b, input.c);" \
   [a] -> [b] \
   [a] -> [c] \
-  [b]:out -> [d]:in_b \
-  [c]:out -> [d]:in_c \
+  [b] -> [d] \
+  [c] -> [d] \
   [d] -> [e]
 ```
+
+### logic.foreach — ordered multi-emission
+
+```zf
+register emit-rows --path /jobs \
+  [a] trigger.manual \
+  [b] logic.foreach --items-path /rows --dispatch seq \
+  [c] script --lang js -- "return { id: input.item.id, index: input.index };" \
+  [a] -> [b] \
+  [b]:item -> [c]
+```
+
+### logic.reduce — ordered accumulation
+
+```zf
+register sum-rows --path /jobs \
+  [a] trigger.manual \
+  [b] logic.foreach --items-path /rows \
+  [c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }" \
+  [a] -> [b] \
+  [b]:item -> [c]
+```
+
+### logic.retry — bounded retry on `:error`
+
+```zf
+register retry-request --path /jobs \
+  [a] trigger.manual \
+  [b] http.request --url https://api.example.com/work --method POST \
+  [r] logic.retry --max-attempts 3 --delay-ms 250 \
+  [c] script --lang js -- "return input;" \
+  [d] script --lang js -- "return input;" \
+  [a] -> [b] \
+  [b]:error -> [r] \
+  [r]:retry -> [b] \
+  [b] -> [c] \
+  [r]:failed -> [d]
+```
+
+`logic.retry` handles the immediately failing upstream node input. The engine only routes to
+`[node]:error` when that edge exists; otherwise the pipeline fails normally.
 
 ### Loops (back-edges)
 
@@ -828,10 +872,10 @@ register retry-job --path /jobs \
   [a] trigger.manual \
   [b] script --lang js \
        -- "const n=(input.attempts||0)+1; return {...doWork(input), attempts:n};" \
-  [c] logic.switch --expr "input.status" --cases done,failed --default retry \
+  [c] logic.match --expr "$input.status" --cases done,failed --default retry \
   [d] script --lang js -- "return { result: input };" \
   [e] sekejap.mutate -- "INSERT INTO failures (id, attempts) VALUES ('{{ $input.id }}', {{ $input.attempts }})" \
-  [f] logic.if --expr "input.attempts < 5" \
+  [f] logic.if --expr "$input.attempts < 5" \
   [a] -> [b] \
   [b] -> [c] \
   [c]:done   -> [d] \
@@ -889,7 +933,7 @@ Both pipeline modes compile to the same `PipelineGraph` JSON. Edges are pin-to-p
   "entry_nodes": ["a"],
   "nodes": [
     { "id": "a", "kind": "n.trigger.webhook",  "input_pins": [],     "output_pins": ["out"],                        "config": { "path": "/events", "method": "POST" } },
-    { "id": "b", "kind": "n.logic.switch",     "input_pins": ["in"], "output_pins": ["create","update","unknown"],  "config": { "expression": "input.type", "cases": ["create","update"], "default": "unknown" } },
+    { "id": "b", "kind": "n.logic.match",      "input_pins": ["in"], "output_pins": ["create","update","unknown"],  "config": { "expression": "input.type", "cases": ["create","update"], "default": "unknown" } },
     { "id": "c", "kind": "n.script",           "input_pins": ["in"], "output_pins": ["out"],                        "config": { "language": "js", "source": "return handleCreate(input);" } }
   ],
   "edges": [

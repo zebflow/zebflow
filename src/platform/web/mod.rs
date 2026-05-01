@@ -43,13 +43,13 @@ use crate::platform::model::{
     ProjectOperationKind, ProjectRuntimeMaterializationRequest, ProjectTransferArtifactKind,
     QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
     TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
-    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
-    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
-    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpsertPipelineDefinitionRequest,
+    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
+    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
 };
 use crate::platform::sekejap;
-use crate::platform::services::marketplace::RemoteMarketplacePublishRequest;
 use crate::platform::services::PlatformService;
+use crate::platform::services::marketplace::RemoteMarketplacePublishRequest;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
     RenderScriptCache, ScriptCacheConfig, TemplateOptions, TemplateSource,
@@ -557,7 +557,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/files/upload",
-            post(api_files_upload),
+            post(api_files_upload).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/files/rm",
@@ -1947,7 +1947,13 @@ fn asset_response(content_type: &'static str, bytes: &[u8]) -> Response {
 fn query_flag_enabled(value: Option<&str>) -> bool {
     matches!(
         value.map(str::trim),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES") | Some("on") | Some("ON")
+        Some("1")
+            | Some("true")
+            | Some("TRUE")
+            | Some("yes")
+            | Some("YES")
+            | Some("on")
+            | Some("ON")
     )
 }
 
@@ -2064,7 +2070,11 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     let Some(owner) = session_owner(&headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
-    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+    if let Err(err) = state
+        .platform
+        .marketplace
+        .ensure_default_platform_repository(&owner)
+    {
         return internal_error(err);
     }
 
@@ -2631,10 +2641,10 @@ async fn home_clone_project_submit(
     // Save git remote config in zebflow.json.
     // Git author identity is resolved from the acting platform user profile.
     let cred_id = format!("{}-origin", req.provider);
-    let resolved_git = state.platform.git_identity.resolve_for_actor(
-        Some(&owner),
-        &project,
-    );
+    let resolved_git = state
+        .platform
+        .git_identity
+        .resolve_for_actor(Some(&owner), &project);
     let git_name = if req.git_name.trim().is_empty() {
         resolved_git.name.clone()
     } else {
@@ -4572,7 +4582,8 @@ async fn project_marketplace_tab_page(
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
             let tab = normalize_marketplace_tab(&raw_tab);
-            let producer_enabled = is_project_marketplace_producer_enabled(&state, &owner, &project);
+            let producer_enabled =
+                is_project_marketplace_producer_enabled(&state, &owner, &project);
             let route = if tab == "packs" {
                 format!("/projects/{owner}/{project}/marketplace")
             } else {
@@ -4849,7 +4860,8 @@ async fn project_db_suite_page(
                         .into_response();
                 }
                 let nav = nav_classes(&owner, &project, "databases", Some("connections"));
-                let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
+                let route =
+                    format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
                 let base = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}");
                 let suite_tabs = vec![
                     json!({
@@ -4910,7 +4922,12 @@ async fn project_db_suite_page(
                     },
                     "nav": nav,
                 });
-                match render_page(&state, "platform-project-table-connection-mapserver", &route, input) {
+                match render_page(
+                    &state,
+                    "platform-project-table-connection-mapserver",
+                    &route,
+                    input,
+                ) {
                     Ok(html) => return Html(html).into_response(),
                     Err(err) => return internal_error(err),
                 }
@@ -5770,7 +5787,12 @@ fn normalize_marketplace_tab(raw: &str) -> &'static str {
     }
 }
 
-fn marketplace_tab_items(owner: &str, project: &str, active: &str, producer_enabled: bool) -> Vec<Value> {
+fn marketplace_tab_items(
+    owner: &str,
+    project: &str,
+    active: &str,
+    producer_enabled: bool,
+) -> Vec<Value> {
     let base = format!("/projects/{owner}/{project}/marketplace");
     let mut tabs = vec!["packs", "settings"];
     if producer_enabled {
@@ -5826,7 +5848,10 @@ fn marketplace_asset_rows(
     only_mine: bool,
 ) -> Result<Vec<Value>, PlatformError> {
     let packages = if only_mine {
-        state.platform.marketplace.list_asset_packages_by_owner(owner)?
+        state
+            .platform
+            .marketplace
+            .list_asset_packages_by_owner(owner)?
     } else {
         state.platform.marketplace.list_asset_packages()?
     };
@@ -5835,10 +5860,7 @@ fn marketplace_asset_rows(
         if package.authority_owner != owner || package.authority_project != project {
             continue;
         }
-        if !only_mine
-            && package.visibility == "private"
-            && package.publisher_owner != owner
-        {
+        if !only_mine && package.visibility == "private" && package.publisher_owner != owner {
             continue;
         }
         let latest_version = state
@@ -7474,17 +7496,31 @@ async fn api_list_platform_marketplace_repositories(
     Path(owner): Path<String>,
 ) -> Response {
     let Some(session) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
             .into_response();
     };
     if session != owner {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
             .into_response();
     }
-    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+    if let Err(err) = state
+        .platform
+        .marketplace
+        .ensure_default_platform_repository(&owner)
+    {
         return internal_error(err);
     }
-    match state.platform.marketplace.list_platform_repositories(&owner) {
+    match state
+        .platform
+        .marketplace
+        .list_platform_repositories(&owner)
+    {
         Ok(items) => Json(json!({
             "ok": true,
             "items": items.into_iter().map(platform_marketplace_repository_json).collect::<Vec<_>>()
@@ -7501,11 +7537,17 @@ async fn api_upsert_platform_marketplace_repository(
     Json(req): Json<UpsertMarketplaceRepositoryRequest>,
 ) -> Response {
     let Some(session) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
             .into_response();
     };
     if session != owner {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
             .into_response();
     }
     match state.platform.marketplace.upsert_platform_repository(
@@ -7533,11 +7575,17 @@ async fn api_delete_platform_marketplace_repository(
     Path((owner, repository_id)): Path<(String, String)>,
 ) -> Response {
     let Some(session) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
             .into_response();
     };
     if session != owner {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
             .into_response();
     }
     match state
@@ -7556,14 +7604,24 @@ async fn api_list_platform_marketplace_assets(
     Path(owner): Path<String>,
 ) -> Response {
     let Some(session) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
             .into_response();
     };
     if session != owner {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
             .into_response();
     }
-    if let Err(err) = state.platform.marketplace.ensure_default_platform_repository(&owner) {
+    if let Err(err) = state
+        .platform
+        .marketplace
+        .ensure_default_platform_repository(&owner)
+    {
         return internal_error(err);
     }
     match state
@@ -7584,11 +7642,17 @@ async fn api_install_platform_marketplace_project(
     Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
 ) -> Response {
     let Some(session) = session_owner(&headers) else {
-        return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false, "error": "login required"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
             .into_response();
     };
     if session != owner {
-        return (StatusCode::FORBIDDEN, Json(json!({"ok": false, "error": "forbidden"})))
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
             .into_response();
     }
     match state
@@ -8905,32 +8969,31 @@ async fn api_upsert_pipeline_definition(
             &self_file_rel_path,
         ) {
             if !conflicts.is_empty() {
-            let msg = format!(
-                "{} {} is already registered by pipeline '{}'",
-                conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
-            );
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
-                        "message": msg,
-                        "conflicts": conflicts
-                    }
-                })),
-            )
-                .into_response();
-        }
+                let msg = format!(
+                    "{} {} is already registered by pipeline '{}'",
+                    conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
+                );
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
+                            "message": msg,
+                            "conflicts": conflicts
+                        }
+                    })),
+                )
+                    .into_response();
+            }
         }
     }
 
     // Derive trigger_kind from the actual graph entry nodes so that it stays correct
     // even when the user changes the trigger node in the visual editor after creation.
-    let trigger_kind = crate::platform::services::project::derive_trigger_kind_from_source(
-        &req.source,
-    )
-    .unwrap_or_else(|| req.trigger_kind.clone());
+    let trigger_kind =
+        crate::platform::services::project::derive_trigger_kind_from_source(&req.source)
+            .unwrap_or_else(|| req.trigger_kind.clone());
 
     match state.platform.projects.upsert_pipeline_definition(
         &owner,
@@ -9285,7 +9348,11 @@ async fn api_repo_git_health(
             Err(err) => internal_error(err),
         };
     }
-    match state.platform.projects.get_repo_git_health(&owner, &project) {
+    match state
+        .platform
+        .projects
+        .get_repo_git_health(&owner, &project)
+    {
         Ok(health) => Json(json!({ "ok": true, "health": health })).into_response(),
         Err(err) => internal_error(err),
     }
@@ -9833,15 +9900,17 @@ async fn api_activate_pipeline_definition(
         };
     }
 
-    if let Ok(Some(meta)) = state
-        .platform
-        .projects
-        .get_pipeline_meta_by_file_id(&owner, &project, &req.file_rel_path)
-    {
-        if let Ok(source) = state
+    if let Ok(Some(meta)) =
+        state
             .platform
             .projects
-            .read_pipeline_source(&owner, &project, &meta.file_rel_path)
+            .get_pipeline_meta_by_file_id(&owner, &project, &req.file_rel_path)
+    {
+        if let Ok(source) =
+            state
+                .platform
+                .projects
+                .read_pipeline_source(&owner, &project, &meta.file_rel_path)
         {
             if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
                 if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
@@ -9873,7 +9942,11 @@ async fn api_activate_pipeline_definition(
         }
     }
 
-    match state.platform.projects.activate_pipeline_definition(&owner, &project, &req.file_rel_path) {
+    match state
+        .platform
+        .projects
+        .activate_pipeline_definition(&owner, &project, &req.file_rel_path)
+    {
         Ok(meta) => {
             if let Err(err) = state.platform.pipeline_runtime.refresh_pipeline(
                 &owner,
@@ -10410,36 +10483,39 @@ async fn api_pipeline_invocations(
     };
 
     let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
-    let retention = match state
-        .platform
-        .projects
-        .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)
-    {
-        Ok(Some(meta)) => {
-            let source = state
-                .platform
-                .projects
-                .read_active_pipeline_source(&owner, &project, &meta)
-                .or_else(|_| {
-                    state
-                        .platform
-                        .projects
-                        .read_pipeline_source(&owner, &project, file_rel_path)
-                })
-                .ok();
-            let graph = source
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<crate::pipeline::PipelineGraph>(raw).ok());
-            resolve_invocation_retention(&project_cfg, graph.as_ref())
-        }
-        _ => resolve_invocation_retention(&project_cfg, None),
-    };
+    let retention =
+        match state
+            .platform
+            .projects
+            .get_pipeline_meta_by_file_id(&owner, &project, file_rel_path)
+        {
+            Ok(Some(meta)) => {
+                let source = state
+                    .platform
+                    .projects
+                    .read_active_pipeline_source(&owner, &project, &meta)
+                    .or_else(|_| {
+                        state.platform.projects.read_pipeline_source(
+                            &owner,
+                            &project,
+                            file_rel_path,
+                        )
+                    })
+                    .ok();
+                let graph = source.as_deref().and_then(|raw| {
+                    serde_json::from_str::<crate::pipeline::PipelineGraph>(raw).ok()
+                });
+                resolve_invocation_retention(&project_cfg, graph.as_ref())
+            }
+            _ => resolve_invocation_retention(&project_cfg, None),
+        };
 
-    match state
-        .platform
-        .data
-        .get_pipeline_invocations(&owner, &project, file_rel_path, retention.max_age_secs)
-    {
+    match state.platform.data.get_pipeline_invocations(
+        &owner,
+        &project,
+        file_rel_path,
+        retention.max_age_secs,
+    ) {
         Ok(entries) => Json(json!({
             "ok": true,
             "file_rel_path": file_rel_path,
@@ -11574,7 +11650,13 @@ async fn api_mapserver_layers_publish(
     };
     let safe_layer_id = layer_id
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     let artifact_abs_dir = artifact_root.join(&safe_layer_id);
     let artifact_rel_dir = format!("private/mapserver/.artifacts/{instance}/{safe_layer_id}");
@@ -11590,7 +11672,7 @@ async fn api_mapserver_layers_publish(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": err})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let mut items = match read_mapserver_layers(&state, &owner, &project, &instance) {
@@ -11879,22 +11961,23 @@ async fn api_get_settings_section(
     }
     let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
     match section.as_str() {
-        "rwe" => Json(json!({"ok": true, "section": "rwe", "data": cfg.configs.rwe})).into_response(),
+        "rwe" => {
+            Json(json!({"ok": true, "section": "rwe", "data": cfg.configs.rwe})).into_response()
+        }
         "logging" => {
-            Json(json!({"ok": true, "section": "logging", "data": cfg.configs.pipelines.logging})).into_response()
+            Json(json!({"ok": true, "section": "logging", "data": cfg.configs.pipelines.logging}))
+                .into_response()
         }
-        "assets" => {
-            Json(json!({
-                "ok": true,
-                "section": "assets",
-                "data": {
-                    "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
-                    "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
-                    "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
-                }
-            }))
-            .into_response()
-        }
+        "assets" => Json(json!({
+            "ok": true,
+            "section": "assets",
+            "data": {
+                "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
+            }
+        }))
+        .into_response(),
         _ => (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
@@ -11951,87 +12034,90 @@ async fn api_upsert_settings_section(
 
     let mut cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
 
-    let section_data =
-        match section.as_str() {
-            "rwe" => {
-                #[derive(serde::Deserialize)]
-                struct RwePayload {
-                    #[serde(default)]
-                    allow_list: Vec<String>,
-                    #[serde(default)]
-                    minify_html: bool,
-                    #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
-                    strict_mode: bool,
-                    #[serde(default)]
-                    deployment_asset_base: Option<String>,
+    let section_data = match section.as_str() {
+        "rwe" => {
+            #[derive(serde::Deserialize)]
+            struct RwePayload {
+                #[serde(default)]
+                allow_list: Vec<String>,
+                #[serde(default)]
+                minify_html: bool,
+                #[serde(default = "crate::platform::model::default_rwe_strict_mode")]
+                strict_mode: bool,
+                #[serde(default)]
+                deployment_asset_base: Option<String>,
+            }
+            let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
+                Ok(p) => p,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"ok": false, "error": e.to_string()})),
+                    )
+                        .into_response();
                 }
-                let payload: RwePayload = match serde_json::from_value(req.data.clone()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({"ok": false, "error": e.to_string()})),
-                        )
-                            .into_response();
-                    }
-                };
-                cfg.configs.rwe.allow_list = payload.allow_list;
-                cfg.configs.rwe.minify_html = payload.minify_html;
-                cfg.configs.rwe.strict_mode = payload.strict_mode;
-                cfg.configs.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
-                    if s.trim().is_empty() {
-                        None
-                    } else {
-                        Some(s.trim().to_string())
-                    }
-                });
-                json!(cfg.configs.rwe)
-            }
-            "logging" => {
-                let max_inv: Option<u32> = req
-                    .data
-                    .get("max_invocations")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.min(1000) as u32);
-                cfg.configs.pipelines.logging.max_invocations = max_inv;
-                json!(cfg.configs.pipelines.logging)
-            }
-            "assets" => {
-                let max_mb = req
-                    .data
-                    .get("max_asset_size_mb")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(5, 100) as u32)
-                    .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().max_asset_size_mb);
-                let webhook_body_max_mb = req
-                    .data
-                    .get("webhook_body_max_mb")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(100, 512) as u32)
-                    .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().webhook_body_max_mb);
-                let node_timeout_secs = req
-                    .data
-                    .get("pipeline_node_timeout_secs")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.clamp(5, 3600))
-                    .unwrap_or_else(crate::platform::model::default_pipeline_node_timeout_secs);
-                cfg.configs.files.uploads.max_asset_size_mb = max_mb;
-                cfg.configs.files.uploads.webhook_body_max_mb = webhook_body_max_mb;
-                cfg.configs.pipelines.node_timeout_secs = Some(node_timeout_secs);
-                json!({
-                    "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
-                    "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
-                    "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
-                })
-            }
-            _ => return (
+            };
+            cfg.configs.rwe.allow_list = payload.allow_list;
+            cfg.configs.rwe.minify_html = payload.minify_html;
+            cfg.configs.rwe.strict_mode = payload.strict_mode;
+            cfg.configs.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s.trim().to_string())
+                }
+            });
+            json!(cfg.configs.rwe)
+        }
+        "logging" => {
+            let max_inv: Option<u32> = req
+                .data
+                .get("max_invocations")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.min(1000) as u32);
+            cfg.configs.pipelines.logging.max_invocations = max_inv;
+            json!(cfg.configs.pipelines.logging)
+        }
+        "assets" => {
+            let max_mb = req
+                .data
+                .get("max_asset_size_mb")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(5, 100) as u32)
+                .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().max_asset_size_mb);
+            let webhook_body_max_mb = req
+                .data
+                .get("webhook_body_max_mb")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(100, 512) as u32)
+                .unwrap_or(
+                    crate::platform::model::ZebflowJsonUploads::default().webhook_body_max_mb,
+                );
+            let node_timeout_secs = req
+                .data
+                .get("pipeline_node_timeout_secs")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(5, 3600))
+                .unwrap_or_else(crate::platform::model::default_pipeline_node_timeout_secs);
+            cfg.configs.files.uploads.max_asset_size_mb = max_mb;
+            cfg.configs.files.uploads.webhook_body_max_mb = webhook_body_max_mb;
+            cfg.configs.pipelines.node_timeout_secs = Some(node_timeout_secs);
+            json!({
+                "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
+            })
+        }
+        _ => {
+            return (
                 StatusCode::NOT_FOUND,
                 Json(
                     json!({"ok": false, "error": format!("unknown settings section '{section}'")}),
                 ),
             )
-                .into_response(),
-        };
+                .into_response();
+        }
+    };
 
     if let Err(err) = state.platform.zebflow_cfg.write(&owner, &project, &cfg) {
         return internal_error(err);
@@ -12044,8 +12130,7 @@ async fn api_upsert_settings_section(
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
         let actor_user = session_owner(&headers);
-    let identity_args =
-            git_identity_args(&state, actor_user.as_deref(), &project_slug);
+        let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
         match state
             .platform
             .file
@@ -12922,7 +13007,11 @@ async fn api_list_db_connections(
                 "path": format!("/projects/{owner}/{project}/db/mapserver/default-mapserver/layers"),
                 "builtin": true
             })];
-            rows.extend(items.into_iter().filter_map(|item| serde_json::to_value(item).ok()));
+            rows.extend(
+                items
+                    .into_iter()
+                    .filter_map(|item| serde_json::to_value(item).ok()),
+            );
             Json(json!({"ok": true, "items": rows})).into_response()
         }
         Err(err) => internal_error(err),
@@ -13100,7 +13189,11 @@ async fn api_list_marketplace_assets(
         .await
     {
         Ok(remote_rows) => {
-            items.extend(remote_rows.into_iter().filter_map(|item| serde_json::to_value(item).ok()));
+            items.extend(
+                remote_rows
+                    .into_iter()
+                    .filter_map(|item| serde_json::to_value(item).ok()),
+            );
             Json(json!({"ok": true, "items": items})).into_response()
         }
         Err(err) => internal_error(err),
@@ -13121,11 +13214,8 @@ async fn api_get_project_help(
     ) {
         return response;
     }
-    let ops = crate::platform::services::ops::PlatformOps::new(
-        state.platform.clone(),
-        &owner,
-        &project,
-    );
+    let ops =
+        crate::platform::services::ops::PlatformOps::new(state.platform.clone(), &owner, &project);
     Json(json!({
         "ok": true,
         "sections": ops.help_dialog_sections(),
@@ -13251,7 +13341,13 @@ async fn api_get_remote_marketplace_asset(
         .marketplace
         .list_asset_packages()
         .ok()
-        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id && item.authority_owner == owner && item.authority_project == project))
+        .and_then(|items| {
+            items.into_iter().find(|item| {
+                item.package_id == package_id
+                    && item.authority_owner == owner
+                    && item.authority_project == project
+            })
+        })
     else {
         return (
             StatusCode::NOT_FOUND,
@@ -13402,7 +13498,9 @@ async fn api_publish_marketplace_asset(
         &req.visibility,
         req.tags,
     ) {
-        Ok((package, version)) => Json(json!({"ok": true, "package": package, "version": version})).into_response(),
+        Ok((package, version)) => {
+            Json(json!({"ok": true, "package": package, "version": version})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -13521,10 +13619,15 @@ async fn api_create_marketplace_token(
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
-    match state.platform.marketplace.create_token(&owner, &project, &req) {
-        Ok((token, token_value)) => {
-            Json(json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value})).into_response()
-        }
+    match state
+        .platform
+        .marketplace
+        .create_token(&owner, &project, &req)
+    {
+        Ok((token, token_value)) => Json(
+            json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value}),
+        )
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -13546,7 +13649,11 @@ async fn api_delete_marketplace_token(
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
-    match state.platform.marketplace.revoke_token(&owner, &project, &token_id) {
+    match state
+        .platform
+        .marketplace
+        .revoke_token(&owner, &project, &token_id)
+    {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
@@ -13609,7 +13716,9 @@ async fn api_upsert_marketplace_publisher(
         &req.website_url,
         req.enabled,
     ) {
-        Ok(item) => Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response(),
+        Ok(item) => {
+            Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
@@ -13670,14 +13779,20 @@ async fn api_set_marketplace_producer_mode(
         )
             .into_response();
     }
-    if crate::platform::model::slug_segment(&req.project_name) != project_slug || project_slug.is_empty() {
+    if crate::platform::model::slug_segment(&req.project_name) != project_slug
+        || project_slug.is_empty()
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "Project name does not match"})),
         )
             .into_response();
     }
-    match state.platform.users.authenticate(&owner_slug, &req.password) {
+    match state
+        .platform
+        .users
+        .authenticate(&owner_slug, &req.password)
+    {
         Ok(true) => {}
         Ok(false) => {
             return (
@@ -13693,17 +13808,18 @@ async fn api_set_marketplace_producer_mode(
         .zebflow_cfg
         .get_marketplace_distribution(&owner_slug, &project_slug);
     cfg.producer_enabled = req.enabled;
-    match state
-        .platform
-        .zebflow_cfg
-        .set_marketplace_distribution(&owner_slug, &project_slug, cfg.clone())
-    {
-        Ok(()) => match state
-            .platform
-            .marketplace
-            .set_authority_enabled(&owner_slug, &project_slug, req.enabled)
-        {
-            Ok(authority) => Json(json!({"ok": true, "marketplace": cfg, "authority": authority})).into_response(),
+    match state.platform.zebflow_cfg.set_marketplace_distribution(
+        &owner_slug,
+        &project_slug,
+        cfg.clone(),
+    ) {
+        Ok(()) => match state.platform.marketplace.set_authority_enabled(
+            &owner_slug,
+            &project_slug,
+            req.enabled,
+        ) {
+            Ok(authority) => Json(json!({"ok": true, "marketplace": cfg, "authority": authority}))
+                .into_response(),
             Err(err) => internal_error(err),
         },
         Err(err) => internal_error(err),
@@ -13724,7 +13840,11 @@ async fn api_list_marketplace_repositories(
     ) {
         return response;
     }
-    match state.platform.marketplace.list_repositories(&owner, &project) {
+    match state
+        .platform
+        .marketplace
+        .list_repositories(&owner, &project)
+    {
         Ok(items) => Json(json!({
             "ok": true,
             "items": items.into_iter().map(project_marketplace_repository_json).collect::<Vec<_>>()
@@ -13796,7 +13916,13 @@ async fn api_delete_marketplace_repository(
 async fn api_install_remote_marketplace_pack(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Path((owner, project, repository_id, package_id, version)): Path<(String, String, String, String, String)>,
+    Path((owner, project, repository_id, package_id, version)): Path<(
+        String,
+        String,
+        String,
+        String,
+        String,
+    )>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -15154,7 +15280,11 @@ async fn public_webhook_ingress(
     let method_key = method.as_str().to_ascii_uppercase();
     let exec_start = std::time::Instant::now();
     let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
-    let webhook_body_max_mb = project_cfg.configs.files.uploads.effective_webhook_body_max_mb();
+    let webhook_body_max_mb = project_cfg
+        .configs
+        .files
+        .uploads
+        .effective_webhook_body_max_mb();
     let webhook_body_limit_bytes = (webhook_body_max_mb as usize) * 1024 * 1024;
     if body.len() > webhook_body_limit_bytes {
         return (
@@ -15743,7 +15873,7 @@ async fn public_mapserver_ingress(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": "invalid query string"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
@@ -15752,7 +15882,9 @@ async fn public_mapserver_ingress(
             selected.trigger.node_id.clone(),
             selected.trigger.path.clone(),
             match selected.trigger.source_kind.as_str() {
-                "geojson_artifact" => crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
+                "geojson_artifact" => {
+                    crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
+                }
                 _ => crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
             },
             selected.trigger.source_path.clone(),
@@ -15781,7 +15913,19 @@ async fn public_mapserver_ingress(
             Err(err) => return internal_error(err),
         }
     };
-    let Some((layer_id, layer_path, source_kind, source_path, mode, min_zoom, max_zoom, bbox_required, max_features, allowed_properties)) = selected else {
+    let Some((
+        layer_id,
+        layer_path,
+        source_kind,
+        source_path,
+        mode,
+        min_zoom,
+        max_zoom,
+        bbox_required,
+        max_features,
+        allowed_properties,
+    )) = selected
+    else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"ok": false, "error": "map layer not found"})),
@@ -15803,20 +15947,17 @@ async fn public_mapserver_ingress(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": err})),
             )
-                .into_response()
+                .into_response();
         }
     };
-    let limit = match crate::mapserver::infra::http::parse_limit_param(
-        &params,
-        max_features,
-    ) {
+    let limit = match crate::mapserver::infra::http::parse_limit_param(&params, max_features) {
         Ok(v) => v,
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": err})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let zoom = params.get("zoom").and_then(|s| s.parse::<u8>().ok());
@@ -15839,7 +15980,8 @@ async fn public_mapserver_ingress(
         zoom,
         limit: Some(limit),
     };
-    let response_cache_key = crate::mapserver::resolve::cache::response_cache_key(&manifest, &request);
+    let response_cache_key =
+        crate::mapserver::resolve::cache::response_cache_key(&manifest, &request);
     if let Some(body) = crate::mapserver::resolve::cache::get_response_bytes(&response_cache_key) {
         let mut resp = (StatusCode::OK, body).into_response();
         resp.headers_mut().insert(
@@ -15855,16 +15997,16 @@ async fn public_mapserver_ingress(
                 StatusCode::BAD_REQUEST,
                 Json(json!({"ok": false, "error": err})),
             )
-                .into_response()
+                .into_response();
         }
     };
     let payload = json!({
-            "type": "FeatureCollection",
-            "layer": resolved.layer,
-            "count": resolved.count,
-            "truncated": resolved.truncated,
-            "features": resolved.features
-        });
+        "type": "FeatureCollection",
+        "layer": resolved.layer,
+        "count": resolved.count,
+        "truncated": resolved.truncated,
+        "features": resolved.features
+    });
     let body = match serde_json::to_vec(&payload) {
         Ok(body) => body,
         Err(err) => {
@@ -15981,7 +16123,8 @@ fn list_mapserver_source_files(
 ) -> Result<Vec<serde_json::Value>, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     let dir = layout.files_dir.join("private").join("mapserver");
-    std::fs::create_dir_all(&dir).map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         let mut entries: Vec<_> = entries.flatten().collect();
@@ -16308,7 +16451,10 @@ mod preview_sql_tests {
         assert_eq!(content_type, "application/geo+json; charset=utf-8");
         let disposition =
             file_content_disposition(path, content_type, false).expect("inline disposition");
-        assert_eq!(disposition.to_str().unwrap(), "inline; filename=\"roads.geojson\"");
+        assert_eq!(
+            disposition.to_str().unwrap(),
+            "inline; filename=\"roads.geojson\""
+        );
     }
 
     #[test]
@@ -16444,7 +16590,11 @@ fn resolve_invocation_retention(
     project_cfg: &crate::platform::model::ZebflowJson,
     graph: Option<&crate::pipeline::PipelineGraph>,
 ) -> EffectivePipelineInvocationRetention {
-    let project_max_invocations = project_cfg.configs.pipelines.logging.effective_max_invocations();
+    let project_max_invocations = project_cfg
+        .configs
+        .pipelines
+        .logging
+        .effective_max_invocations();
     let pipeline_retention = graph
         .and_then(|graph| graph.metadata.as_ref())
         .and_then(|metadata| metadata.settings.invocation_retention.as_ref());

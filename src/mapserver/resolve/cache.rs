@@ -52,7 +52,10 @@ pub fn cache_key(request: &ResolveRequest) -> String {
     let _ = write!(
         key,
         ":z={}:l={}",
-        request.zoom.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
+        request
+            .zoom
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
         request
             .limit
             .map(|v| v.to_string())

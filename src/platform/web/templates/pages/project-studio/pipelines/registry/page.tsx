@@ -2,8 +2,6 @@ import UnifiedRegistryEditor from "@/pages/project-studio/pipelines/registry/com
 
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
     ],
@@ -12,6 +10,15 @@ export const page = {
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 export default function Page(input) {
   return <UnifiedRegistryEditor {...input} />;

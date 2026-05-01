@@ -368,7 +368,10 @@ impl NodeHandler for Node {
         })
         .await
         .map_err(|err| {
-            PipelineError::new("FW_NODE_PDF_CONVERT", format!("pdf export task failed: {err}"))
+            PipelineError::new(
+                "FW_NODE_PDF_CONVERT",
+                format!("pdf export task failed: {err}"),
+            )
         })?
         .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", err.to_string()))?;
 
@@ -476,8 +479,9 @@ fn prefixed_output_path(output_rel_dir: &str, leaf: &str) -> String {
 }
 
 fn validate_pdf_magic(path: &PathBuf) -> Result<(), PipelineError> {
-    let bytes = std::fs::read(path)
-        .map_err(|err| PipelineError::new("FW_NODE_PDF_CONVERT", format!("read source PDF: {err}")))?;
+    let bytes = std::fs::read(path).map_err(|err| {
+        PipelineError::new("FW_NODE_PDF_CONVERT", format!("read source PDF: {err}"))
+    })?;
     if !bytes.starts_with(b"%PDF-") {
         return Err(PipelineError::new(
             "FW_NODE_PDF_CONVERT",
@@ -595,10 +599,22 @@ mod tests {
         let meta_abs = layout.files_dir.join(format!("{output_dir}/1/page.json"));
         let raster_abs = layout.files_dir.join(format!("{output_dir}/1/page-1.png"));
 
-        assert!(manifest_abs.is_file(), "manifest missing: {}", manifest_abs.display());
+        assert!(
+            manifest_abs.is_file(),
+            "manifest missing: {}",
+            manifest_abs.display()
+        );
         assert!(text_abs.is_file(), "text missing: {}", text_abs.display());
-        assert!(meta_abs.is_file(), "page json missing: {}", meta_abs.display());
-        assert!(raster_abs.is_file(), "raster missing: {}", raster_abs.display());
+        assert!(
+            meta_abs.is_file(),
+            "page json missing: {}",
+            meta_abs.display()
+        );
+        assert!(
+            raster_abs.is_file(),
+            "raster missing: {}",
+            raster_abs.display()
+        );
 
         let text = std::fs::read_to_string(&text_abs).expect("read text");
         assert!(
@@ -617,8 +633,18 @@ mod tests {
         let mut pdf = Vec::new();
         pdf.extend_from_slice(b"%PDF-1.4\n");
         let mut offsets = vec![0usize];
-        push_obj(&mut pdf, &mut offsets, 1, "<< /Type /Catalog /Pages 2 0 R >>");
-        push_obj(&mut pdf, &mut offsets, 2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push_obj(
+            &mut pdf,
+            &mut offsets,
+            1,
+            "<< /Type /Catalog /Pages 2 0 R >>",
+        );
+        push_obj(
+            &mut pdf,
+            &mut offsets,
+            2,
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        );
         push_obj(
             &mut pdf,
             &mut offsets,
@@ -629,7 +655,11 @@ mod tests {
             &mut pdf,
             &mut offsets,
             4,
-            &format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+            &format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            ),
         );
         push_obj(
             &mut pdf,

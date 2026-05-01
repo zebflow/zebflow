@@ -1,12 +1,17 @@
 export const page = {
-  head: {
-    title: "{{input.seo.title}}",
-  },
   html: {
     lang: "en",
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+    },
+  };
+}
 
 export const app = (() => {
 return {

@@ -14,11 +14,19 @@ import { Select, SelectOption } from "@/components/ui/select";
 import Badge from "@/components/ui/badge";
 
 export const page = {
-  head: { title: ctx?.seo?.title ?? "", description: ctx?.seo?.description ?? "" },
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 async function requestJson(url, options: any = {}) {
   return fetch(url, {
@@ -51,10 +59,18 @@ const ALGORITHMS = [
 
 const CREDENTIAL_KINDS = [
   "postgres", "mysql", "openai", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "secure_request", "custom",
+  "jwt_signing_key", "browser_browserless", "secure_request", "tts", "custom",
 ];
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const TTS_PROVIDERS = [{ value: "piper", label: "Piper" }];
+
+function defaultSecretForKind(kind: string): Record<string, any> {
+  if (kind === "tts") {
+    return { provider: "piper" };
+  }
+  return {};
+}
 
 function generateHex(bytes: number): string {
   const arr = new Uint8Array(bytes);
@@ -350,6 +366,40 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
     </div>
   );
 
+  if (kind === "tts") return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+        <p className="text-sm font-medium text-body">Local TTS Runtime Binding</p>
+        <p className="mt-1 text-xs leading-relaxed text-body-soft">
+          These paths are relative to the project <code>files/private/</code> root.
+          For Piper, point to the ONNX model, its JSON config, and the
+          <code>espeak-ng-data</code> directory.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Provider">
+          <Select value={s("provider", "piper")} onChange={(e) => onChange("provider", e.target.value)}>
+            {TTS_PROVIDERS.map((provider) => (
+              <SelectOption key={provider.value} value={provider.value} label={provider.label} />
+            ))}
+          </Select>
+        </Field>
+        <Field label="Voice Label" description="Optional human label for this voice preset.">
+          <Input value={s("voice")} onInput={(e:any)=>onChange("voice", e.target.value)} placeholder="arin" />
+        </Field>
+        <Field label="Model File" className="col-span-2" description="Private-relative ONNX model path. Example: voices/arin/arin-2449.onnx">
+          <Input value={s("model_file")} onInput={(e:any)=>onChange("model_file", e.target.value)} placeholder="voices/arin/arin-2449.onnx" />
+        </Field>
+        <Field label="Config File" className="col-span-2" description="Private-relative Piper JSON config path. Example: voices/arin/arin-2449.onnx.json">
+          <Input value={s("config_file")} onInput={(e:any)=>onChange("config_file", e.target.value)} placeholder="voices/arin/arin-2449.onnx.json" />
+        </Field>
+        <Field label="Espeak Data Dir" className="col-span-2" description="Private-relative directory path to espeak-ng-data. Example: runtime/espeak-ng-data">
+          <Input value={s("espeak_data_dir")} onInput={(e:any)=>onChange("espeak_data_dir", e.target.value)} placeholder="runtime/espeak-ng-data" />
+        </Field>
+      </div>
+    </div>
+  );
+
   if (kind === "secure_request") {
     const request = secret.request && typeof secret.request === "object" ? secret.request : {};
     const variables = Array.isArray(secret.variables) ? secret.variables : [];
@@ -461,7 +511,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
     if (!open) return;
     if (mode === "create") {
       setCredentialId(""); setTitle(""); setKind("postgres");
-      setNotes(""); setSecret({}); setStatus("Fill fields and save."); setStatusTone("info");
+      setNotes(""); setSecret(defaultSecretForKind("postgres")); setStatus("Fill fields and save."); setStatusTone("info");
       return;
     }
     if (!editItem) return;
@@ -547,7 +597,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
               />
             </Field>
             <Field label="Kind">
-              <Select value={kind} onChange={(e) => { setKind(e.target.value); setSecret({}); }} disabled={busy}>
+              <Select value={kind} onChange={(e) => { const nextKind = e.target.value; setKind(nextKind); setSecret(defaultSecretForKind(nextKind)); }} disabled={busy}>
                 {CREDENTIAL_KINDS.map((k) => <SelectOption key={k} value={k} label={k} />)}
               </Select>
             </Field>

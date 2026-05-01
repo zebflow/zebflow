@@ -1,6 +1,6 @@
+use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
 
 pub mod artifact;
 pub mod cache;
@@ -49,12 +49,13 @@ pub fn resolve_features(
         }
     }
     match manifest.source_kind {
-        SourceKind::GeoJsonFile => query::resolve_feature_collection_from_geojson_file(
+        SourceKind::GeoJsonFile => {
+            query::resolve_feature_collection_from_geojson_file(manifest, request)
+        }
+        SourceKind::GeoJsonArtifact => artifact::resolve_from_artifact(
             manifest,
             request,
+            std::path::Path::new(&manifest.source_ref),
         ),
-        SourceKind::GeoJsonArtifact => {
-            artifact::resolve_from_artifact(manifest, request, std::path::Path::new(&manifest.source_ref))
-        }
     }
 }

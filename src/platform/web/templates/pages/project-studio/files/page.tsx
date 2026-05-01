@@ -8,14 +8,19 @@ import CardContent from "@/components/ui/card-content";
 import { initFilesBehavior } from "@/pages/project-studio/files/files-behavior";
 
 export const page = {
-  head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
-  },
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 export default function Page(input) {
   initFilesBehavior();

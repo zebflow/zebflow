@@ -9,7 +9,7 @@
 //! ```text
 //! | n.trigger.webhook --path /blog --method GET
 //! | pg.query --credential main-db -- "SELECT ..."
-//! | n.web.response --template pages/blog-home
+//! | n.web.response --template pages/blog-home.tsx
 //! ```
 
 use crate::pipeline::model::{

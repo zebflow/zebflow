@@ -223,6 +223,7 @@ export default function PipelineEditor({
   // ── Async data state ────────────────────────────────────────────────────────
   const [catalog, setCatalog] = useState<Map<string, NodeCatalogEntry>>(new Map());
   const [dataState, setDataState] = useState<EditorDataState>({
+    allCredentials: [],
     pgCredentials: [],
     jwtCredentials: [],
     browserCredentials: [],
@@ -303,6 +304,7 @@ export default function PipelineEditor({
           const items = Array.isArray(data?.items) ? data.items : [];
           setDataState((prev) => ({
             ...prev,
+            allCredentials: items,
             pgCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "postgres"),
             jwtCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "jwt_signing_key"),
             browserCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase().startsWith("browser_")),

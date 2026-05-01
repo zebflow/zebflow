@@ -14,8 +14,9 @@ use crate::platform::model::{
     DataAdapterKind, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority,
     MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
     PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectMarketplaceRepository,
-    ProjectMember, ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite,
+    ProjectMarketplaceRepository, ProjectMember, ProjectOperationRecord, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -197,7 +198,9 @@ pub trait DataAdapter: Send + Sync {
         ))
     }
     /// List marketplace asset packages.
-    fn list_marketplace_asset_packages(&self) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+    fn list_marketplace_asset_packages(
+        &self,
+    ) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
         Ok(vec![])
     }
     /// Get one marketplace asset package.
@@ -383,7 +386,10 @@ pub trait DataAdapter: Send + Sync {
         Ok(vec![])
     }
     /// Get one office row.
-    fn get_platform_office(&self, office_id: &str) -> Result<Option<PlatformOffice>, PlatformError> {
+    fn get_platform_office(
+        &self,
+        office_id: &str,
+    ) -> Result<Option<PlatformOffice>, PlatformError> {
         let _ = office_id;
         Ok(None)
     }

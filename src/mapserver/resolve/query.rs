@@ -70,7 +70,10 @@ fn prune_feature_properties(mut feature: Value, allowed: &[String]) -> Value {
     let Some(feature_obj) = feature.as_object_mut() else {
         return feature;
     };
-    let Some(props) = feature_obj.get_mut("properties").and_then(Value::as_object_mut) else {
+    let Some(props) = feature_obj
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
         return feature;
     };
     props.retain(|key, _| allowed.iter().any(|candidate| candidate == key));

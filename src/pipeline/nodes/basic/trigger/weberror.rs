@@ -41,25 +41,25 @@
 //! **Custom 404 page:**
 //! ```text
 //! | n.trigger.weberror --code 404
-//! | n.web.response --template pages/error-404
+//! | n.web.response --template pages/error-404.tsx
 //! ```
 //!
 //! **Custom unauthorized page:**
 //! ```text
 //! | n.trigger.weberror --code 401
-//! | n.web.response --template pages/error-unauthorized
+//! | n.web.response --template pages/error-unauthorized.tsx
 //! ```
 //!
 //! **Catch-all error page (5xx):**
 //! ```text
 //! | n.trigger.weberror --code 5xx
-//! | n.web.response --template pages/error-server
+//! | n.web.response --template pages/error-server.tsx
 //! ```
 //!
 //! **Catch-all fallback:**
 //! ```text
 //! | n.trigger.weberror
-//! | n.web.response --template pages/error-generic
+//! | n.web.response --template pages/error-generic.tsx
 //! ```
 
 use async_trait::async_trait;

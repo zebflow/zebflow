@@ -120,7 +120,9 @@ function enrichFields(
 
     let options = [...(f.options ?? [])];
 
-    if (f.data_source === "credentials_postgres") {
+    if (f.data_source === "credentials_all") {
+      options = buildCredentialOptions(dataState.allCredentials, value as string);
+    } else if (f.data_source === "credentials_postgres") {
       options = buildCredentialOptions(dataState.pgCredentials, value as string);
       if (options.length === 1 && options[0].value === "") {
         options[0].label = "No postgres credential available";

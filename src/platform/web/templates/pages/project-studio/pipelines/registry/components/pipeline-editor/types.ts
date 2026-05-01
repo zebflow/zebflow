@@ -8,7 +8,7 @@ export interface SelectOptionDef {
 
 export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings";
 
-export type NodeFieldDataSource = "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
+export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
 
 export interface SidebarItem {
   label: string;
@@ -58,6 +58,7 @@ export interface NodeCatalogEntry {
 }
 
 export interface EditorDataState {
+  allCredentials: any[];
   pgCredentials: any[];
   jwtCredentials: any[];
   browserCredentials: any[];

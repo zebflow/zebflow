@@ -19,12 +19,15 @@ use crate::pipeline::model::{
     PipelineOutput,
 };
 use crate::pipeline::nodes::basic::{
-    agent, auth_token_create, browser_run, crypto, file_compress, file_decompress, file_pdf_convert,
-    file_save, function_call, http_request, img_thumbnail, logic, mem_del, mem_exists, mem_expire,
-    mem_get, mem_incr, mem_publish, mem_set,
-    pg_query, script, sekejap_query, sqlite_mutate, sqlite_query,
-    trigger::{function as trigger_function, manual, mapserver, memsubscribe, schedule, weberror, webhook},
-    web_response, web_static_generate, ws_emit, ws_sync_state, ws_trigger,
+    agent, ai_tts, auth_token_create, browser_run, crypto, file_compress, file_decompress,
+    file_pdf_convert, file_save, function_call, http_request, img_thumbnail, logic, mem_del,
+    mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
+    sekejap_query, sqlite_mutate, sqlite_query,
+    trigger::{
+        function as trigger_function, manual, mapserver, memsubscribe, schedule, weberror, webhook,
+    },
+    web_docs_generate, web_response, web_static_generate, web_static_site, ws_emit, ws_sync_state,
+    ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::platform::services::CredentialService;
@@ -70,6 +73,15 @@ pub fn evict_template_cache_by_path(cache: &TemplateCache, abs_path: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .retain(|_, entry| !entry.dependencies.contains(abs_path));
 }
+
+#[derive(Debug, Clone, Default)]
+struct ReducePendingState {
+    acc: Option<Value>,
+    received: usize,
+    expected: Option<usize>,
+}
+
+const RETRY_STATE_KEY: &str = "__zf_retry";
 
 fn hash_markup(s: &str) -> u64 {
     let mut h = DefaultHasher::new();
@@ -133,6 +145,7 @@ fn take_private_redact_tokens(payload: &mut Value) -> Vec<String> {
     take_private_tokens(payload, "__zf_private_redact")
 }
 
+#[cfg(test)]
 fn take_private_trace_redact_tokens(payload: &mut Value) -> Vec<String> {
     take_private_tokens(payload, "__zf_private_trace_redact")
 }
@@ -141,26 +154,31 @@ fn take_private_redact_except_paths(payload: &mut Value) -> Vec<Vec<String>> {
     take_private_paths(payload, "__zf_private_redact_except_paths")
 }
 
-fn take_private_trace_redact_except_paths(payload: &mut Value) -> Vec<Vec<String>> {
-    take_private_paths(payload, "__zf_private_trace_redact_except_paths")
+fn retry_attempt_from_payload(payload: &Value) -> usize {
+    payload
+        .get(RETRY_STATE_KEY)
+        .and_then(|value| value.get("attempt"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(0)
 }
 
-fn extend_unique_strings(target: &mut Vec<String>, extra: Vec<String>) {
-    for item in extra {
-        if target.iter().any(|existing| existing == &item) {
-            continue;
+fn build_retry_error_payload(input_payload: &Value, error: &PipelineError) -> Value {
+    let attempt = retry_attempt_from_payload(input_payload) + 1;
+    json!({
+        "input": input_payload,
+        "error": {
+            "code": error.code,
+            "message": error.message,
+            "node_id": error.node_id,
+            "node_kind": error.node_kind,
+        },
+        RETRY_STATE_KEY: {
+            "attempt": attempt,
+            "failing_node_id": error.node_id,
+            "failing_node_kind": error.node_kind,
         }
-        target.push(item);
-    }
-}
-
-fn extend_unique_paths(target: &mut Vec<Vec<String>>, extra: Vec<Vec<String>>) {
-    for item in extra {
-        if target.iter().any(|existing| existing == &item) {
-            continue;
-        }
-        target.push(item);
-    }
+    })
 }
 
 fn is_sensitive_trace_config_key(key: &str) -> bool {
@@ -500,6 +518,22 @@ impl BasicPipelineEngine {
                     config,
                 })
             }
+            web_docs_generate::NODE_KIND => {
+                if self.data_root.is_none() {
+                    return Err(PipelineError::new(
+                        "FW_NODE_WEB_DOCS_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
+                    ));
+                }
+                let config: web_docs_generate::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| {
+                        PipelineError::new("FW_NODE_WEB_DOCS_CONFIG", err.to_string())
+                    })?;
+                Ok(NodeDispatch::InlineWebDocsGenerate {
+                    node_id: node.id.clone(),
+                    config,
+                })
+            }
             agent::NODE_KIND => {
                 let config: agent::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -509,30 +543,49 @@ impl BasicPipelineEngine {
                     self.platform.clone(),
                 )))
             }
+            ai_tts::NODE_KIND => {
+                let config: ai_tts::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new("FW_NODE_AI_TTS_CONFIG", err.to_string()))?;
+                Ok(NodeDispatch::AiTts(ai_tts::Node::new(
+                    config,
+                    self.credentials.clone(),
+                    self.platform.clone(),
+                    self.language.clone(),
+                )))
+            }
             logic::if_::NODE_KIND => Ok(NodeDispatch::LogicIf(logic::if_::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone())
                     .map_err(|e| PipelineError::new("FW_NODE_LOGIC_IF_CONFIG", e.to_string()))?,
                 self.language.clone(),
             )?)),
-            logic::switch::NODE_KIND => Ok(NodeDispatch::LogicSwitch(logic::switch::Node::new(
+            logic::match_::NODE_KIND => Ok(NodeDispatch::LogicMatch(logic::match_::Node::new(
                 &node.id,
-                serde_json::from_value(node.config.clone()).map_err(|e| {
-                    PipelineError::new("FW_NODE_LOGIC_SWITCH_CONFIG", e.to_string())
-                })?,
-                self.language.clone(),
-            )?)),
-            logic::branch::NODE_KIND => Ok(NodeDispatch::LogicBranch(logic::branch::Node::new(
-                &node.id,
-                serde_json::from_value(node.config.clone()).map_err(|e| {
-                    PipelineError::new("FW_NODE_LOGIC_BRANCH_CONFIG", e.to_string())
-                })?,
-                self.language.clone(),
-            )?)),
-            logic::merge::NODE_KIND => Ok(NodeDispatch::LogicMerge(logic::merge::Node::new(
                 serde_json::from_value(node.config.clone())
-                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_MERGE_CONFIG", e.to_string()))?,
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_MATCH_CONFIG", e.to_string()))?,
+                self.language.clone(),
+            )?)),
+            logic::collect::NODE_KIND => Ok(NodeDispatch::LogicCollect(logic::collect::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|e| {
+                    PipelineError::new("FW_NODE_LOGIC_COLLECT_CONFIG", e.to_string())
+                })?,
             ))),
+            logic::foreach_::NODE_KIND => Ok(NodeDispatch::LogicForeach(
+                logic::foreach_::Node::new(serde_json::from_value(node.config.clone()).map_err(
+                    |e| PipelineError::new("FW_NODE_LOGIC_FOREACH_CONFIG", e.to_string()),
+                )?),
+            )),
+            logic::reduce::NODE_KIND => Ok(NodeDispatch::LogicReduce(logic::reduce::Node::new(
+                &node.id,
+                serde_json::from_value(node.config.clone()).map_err(|e| {
+                    PipelineError::new("FW_NODE_LOGIC_REDUCE_CONFIG", e.to_string())
+                })?,
+                self.language.clone(),
+            )?)),
+            logic::retry::NODE_KIND => Ok(NodeDispatch::LogicRetry(logic::retry::Node::new(
+                serde_json::from_value(node.config.clone())
+                    .map_err(|e| PipelineError::new("FW_NODE_LOGIC_RETRY_CONFIG", e.to_string()))?,
+            )?)),
             auth_token_create::NODE_KIND => {
                 let Some(credentials) = &self.credentials else {
                     return Err(PipelineError::new(
@@ -817,7 +870,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
                 )
             })?;
-            if !from.output_pins.iter().any(|p| p == &edge.from_pin) {
+            if !from.output_pins.iter().any(|p| p == &edge.from_pin) && edge.from_pin != "error" {
                 return Err(PipelineError::new(
                     "FW_EDGE_FROM_PIN",
                     format!(
@@ -860,11 +913,13 @@ impl PipelineEngine for BasicPipelineEngine {
             .map(|node| (node.id.as_str(), node))
             .collect();
         let mut outgoing: HashMap<(&str, &str), Vec<(&str, &str)>> = HashMap::new();
+        let mut incoming_counts: HashMap<&str, usize> = HashMap::new();
         for edge in &graph.edges {
             outgoing
                 .entry((edge.from_node.as_str(), edge.from_pin.as_str()))
                 .or_default()
                 .push((edge.to_node.as_str(), edge.to_pin.as_str()));
+            *incoming_counts.entry(edge.to_node.as_str()).or_default() += 1;
         }
 
         let start_nodes = if graph.entry_nodes.is_empty() {
@@ -904,9 +959,8 @@ impl PipelineEngine for BasicPipelineEngine {
         let mut last_value = Value::Null;
         let mut node_trace: Vec<NodeTraceEntry> = Vec::new();
         // merge_pending: node_id -> { pin_name -> payload }
-        let mut merge_pending: HashMap<String, HashMap<String, Value>> = HashMap::new();
-        // first_fired: tracks merge nodes that already fired (first_completed strategy)
-        let mut first_fired: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut collect_pending: HashMap<String, HashMap<String, Value>> = HashMap::new();
+        let mut reduce_pending: HashMap<String, ReducePendingState> = HashMap::new();
 
         while let Some(input) = queue.pop_front() {
             let node = node_map.get(input.node_id.as_str()).ok_or_else(|| {
@@ -957,19 +1011,36 @@ impl PipelineEngine for BasicPipelineEngine {
                         .and_then(|s| s.parse().ok())
                 })
                 .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
+            let mut input_for_exec = input.clone();
+            if node.kind == logic::reduce::NODE_KIND
+                && let Some(acc) = reduce_pending
+                    .get(node.id.as_str())
+                    .and_then(|state| state.acc.clone())
+                && let Some(map) = input_for_exec.metadata.as_object_mut()
+            {
+                map.insert("reduce_acc".to_string(), acc);
+            }
             let exec_fut = async {
                 match dispatch {
-                    NodeDispatch::Webhook(node) => node.execute_async(input).await,
-                    NodeDispatch::Schedule(node) => node.execute_async(input).await,
-                    NodeDispatch::Manual(node) => node.execute_async(input).await,
-                    NodeDispatch::Mapserver(node) => node.execute_async(input).await,
-                    NodeDispatch::Script(node) => node.execute_async(input).await,
-                    NodeDispatch::HttpRequest(node) => node.execute_async(input).await,
-                    NodeDispatch::BrowserRun(node) => node.execute_async(input).await,
-                    NodeDispatch::SqliteQuery(node) => node.execute_async(input).await,
-                    NodeDispatch::SekejapQuery(node) => node.execute_async(input).await,
-                    NodeDispatch::SqliteMutate(node) => node.execute_async(input).await,
-                    NodeDispatch::Postgres(node) => node.execute_async(input).await,
+                    NodeDispatch::Webhook(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Schedule(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Manual(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Mapserver(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Script(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::HttpRequest(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::BrowserRun(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::SqliteQuery(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::SekejapQuery(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::SqliteMutate(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::Postgres(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::InlineWebResponse { node_id, config } => {
                         let markup = config.markup.as_deref().unwrap_or("").trim();
                         if markup.is_empty() {
@@ -1075,15 +1146,292 @@ impl PipelineEngine for BasicPipelineEngine {
                                 "compiled_scripts": render_out.payload.get("compiled_scripts"),
                                 "hydration_payload": render_out.payload.get("hydration_payload"),
                             });
-                            Ok(NodeExecutionOutput {
+                            Ok(vec![NodeExecutionOutput {
                                 output_pins: render_out.output_pins,
                                 payload: serde_json::json!({ "__zf_response": envelope }),
                                 trace: render_out.trace,
-                            })
+                            }])
                         })
                         }
                     }
-                    NodeDispatch::WebResponse(node) => node.execute_async(input).await,
+                    NodeDispatch::WebResponse(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::InlineWebDocsGenerate { node_id, config } => {
+                        let Some(data_root) = &self.data_root else {
+                            return Err(PipelineError::new(
+                                "FW_NODE_WEB_DOCS_UNAVAILABLE",
+                                "data_root is not configured on this pipeline engine",
+                            ));
+                        };
+                        let Some(template_root) = &self.template_root else {
+                            return Err(PipelineError::new(
+                                "FW_NODE_WEB_DOCS_TEMPLATE_ROOT",
+                                "template_root is not configured on this pipeline engine",
+                            ));
+                        };
+
+                        let site = web_docs_generate::load_site(&config, template_root)?;
+                        let options = crate::rwe::ReactiveWebOptions {
+                            templates: crate::rwe::TemplateOptions {
+                                template_root: self.template_root.clone(),
+                                style_entries: Vec::new(),
+                            },
+                            processors: vec!["tailwind".to_string(), "markdown".to_string()],
+                            ..Default::default()
+                        };
+                        let key = hash_markup(&site.template_source.markup);
+                        let cached = self.template_cache.as_ref().and_then(|c| {
+                            c.read()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(&key)
+                                .map(|e| e.page.clone())
+                        });
+                        let compiled_result: Result<Arc<_>, PipelineError> =
+                            if let Some(hit) = cached {
+                                Ok(hit)
+                            } else {
+                                let fresh = web_response::compile_page(
+                                    &node_id,
+                                    &site.template_source,
+                                    &options,
+                                    self.rwe.as_ref(),
+                                    self.language.as_ref(),
+                                )
+                                .map(Arc::new);
+                                if let Ok(ref fresh_arc) = fresh
+                                    && let Some(cache) = &self.template_cache
+                                {
+                                    let deps = fresh_arc.template.dependency_paths.clone();
+                                    cache.write().unwrap_or_else(|e| e.into_inner()).insert(
+                                        key,
+                                        CacheEntry {
+                                            page: fresh_arc.clone(),
+                                            dependencies: deps,
+                                        },
+                                    );
+                                }
+                                fresh
+                            };
+
+                        compiled_result.and_then(|compiled| {
+                            let mut generated_files = 0usize;
+                            let mut skipped_files = 0usize;
+                            let mut urls = Vec::new();
+                            let asset_group = web_static_site::asset_group_id(
+                                &site.template_rel_path,
+                                &site.template_source.markup,
+                            );
+                            let mut page_records = Vec::new();
+                            let mut asset_records = Vec::new();
+                            let site_root_abs = data_root
+                                .join("users")
+                                .join(&ctx.owner)
+                                .join(&ctx.project)
+                                .join("files")
+                                .join(&site.site_root_rel);
+                            let project_asset_root = self
+                                .template_root
+                                .as_deref()
+                                .map(|root| root.join("assets"));
+
+                            let enabled_libraries: Vec<String> = self
+                                .platform
+                                .as_ref()
+                                .and_then(|p| {
+                                    p.zebflow_cfg
+                                        .get_rwe_libraries(&ctx.owner, &ctx.project)
+                                        .ok()
+                                })
+                                .map(|libs| libs.into_keys().collect())
+                                .unwrap_or_default();
+
+                            for (page_index, page) in site.pages.iter().enumerate() {
+                                let mut metadata = input.metadata.clone();
+                                if let Some(map) = metadata.as_object_mut() {
+                                    map.insert(
+                                        "route".to_string(),
+                                        Value::String(web_docs_generate::default_route(page)),
+                                    );
+                                }
+                                let payload = web_docs_generate::page_payload(
+                                    &site,
+                                    page_index,
+                                    input.payload.clone(),
+                                )?;
+                                let render_out = web_response::render_compiled_page(
+                                    &compiled,
+                                    payload,
+                                    metadata,
+                                    self.rwe.as_ref(),
+                                    self.language.as_ref(),
+                                    &ctx.request_id,
+                                    enabled_libraries.clone(),
+                                )?;
+                                let html = render_out
+                                    .payload
+                                    .get("html")
+                                    .and_then(Value::as_str)
+                                    .ok_or_else(|| {
+                                        PipelineError::new(
+                                            "FW_NODE_WEB_DOCS_RENDER",
+                                            format!("node '{node_id}' did not return rendered html"),
+                                        )
+                                    })?
+                                    .to_string();
+                                let hydration_payload = render_out
+                                    .payload
+                                    .get("hydration_payload")
+                                    .cloned()
+                                    .unwrap_or(Value::Null);
+                                let compiled_scripts = render_out
+                                    .payload
+                                    .get("compiled_scripts")
+                                    .cloned()
+                                    .and_then(|value| serde_json::from_value::<Vec<crate::rwe::CompiledScript>>(value).ok())
+                                    .unwrap_or_default();
+                                let final_html = web_static_generate::build_static_html(
+                                    html,
+                                    &hydration_payload,
+                                    &compiled_scripts,
+                                    self.template_root.as_deref(),
+                                );
+                                let localized = web_static_site::localize_static_html_assets(
+                                    &site_root_abs,
+                                    &page.output_rel_path,
+                                    &final_html,
+                                    web_static_site::StaticAssetSources {
+                                        owner: Some(&ctx.owner),
+                                        project: Some(&ctx.project),
+                                        project_asset_root_abs: project_asset_root.as_deref(),
+                                    },
+                                    &asset_group,
+                                )?;
+                                asset_records.extend(localized.assets.iter().cloned());
+                                let final_html = web_docs_generate::apply_page_seo(
+                                    localized.html,
+                                    &site,
+                                    page_index,
+                                );
+                                let rel_path =
+                                    web_docs_generate::output_rel_path(page, &site.site_root_rel)?;
+                                let abs_path = data_root
+                                    .join("users")
+                                    .join(&ctx.owner)
+                                    .join(&ctx.project)
+                                    .join("files")
+                                    .join(&rel_path);
+                                let status = web_static_generate::write_generated_html(
+                                    &abs_path,
+                                    &final_html,
+                                    "overwrite",
+                                )?;
+                                if status == "skipped" || status == "unchanged" {
+                                    skipped_files += 1;
+                                } else {
+                                    generated_files += 1;
+                                }
+                                urls.push(page.route_path.clone());
+                                page_records.push(web_static_site::StaticPageRecord {
+                                    path: page.output_rel_path.clone(),
+                                    route: page.route_path.clone(),
+                                    template: site.template_rel_path.clone(),
+                                    asset_group: asset_group.clone(),
+                                    generator: web_docs_generate::NODE_KIND.to_string(),
+                                });
+                            }
+
+                            if !site.sitemap_xml.trim().is_empty() {
+                                let sitemap_rel =
+                                    web_docs_generate::sitemap_rel_path(&site.site_root_rel);
+                                let sitemap_abs = data_root
+                                    .join("users")
+                                    .join(&ctx.owner)
+                                    .join(&ctx.project)
+                                    .join("files")
+                                    .join(&sitemap_rel);
+                                let status = web_static_generate::write_generated_html(
+                                    &sitemap_abs,
+                                    &site.sitemap_xml,
+                                    "overwrite",
+                                )?;
+                                if status == "skipped" || status == "unchanged" {
+                                    skipped_files += 1;
+                                } else {
+                                    generated_files += 1;
+                                }
+                            }
+
+                            let search_index_rel =
+                                web_docs_generate::search_index_rel_path(&site.site_root_rel);
+                            let search_index_abs = data_root
+                                .join("users")
+                                .join(&ctx.owner)
+                                .join(&ctx.project)
+                                .join("files")
+                                .join(&search_index_rel);
+                            let status = web_static_generate::write_generated_html(
+                                &search_index_abs,
+                                &site.search_index_json,
+                                "overwrite",
+                            )?;
+                            if status == "skipped" || status == "unchanged" {
+                                skipped_files += 1;
+                            } else {
+                                generated_files += 1;
+                            }
+
+                            let manifest_rel =
+                                web_static_site::site_manifest_rel_path(&site.site_root_rel);
+                            let manifest_abs = data_root
+                                .join("users")
+                                .join(&ctx.owner)
+                                .join(&ctx.project)
+                                .join("files")
+                                .join(&manifest_rel);
+                            let _manifest = web_static_site::update_site_manifest(
+                                &manifest_abs,
+                                &site.site_root_rel,
+                                site.deploy_base_url.as_deref(),
+                                &site.deploy_base_path,
+                                web_docs_generate::NODE_KIND,
+                                &site.template_rel_path,
+                                &asset_group,
+                                &page_records,
+                                &asset_records,
+                                true,
+                            )?;
+
+                            Ok(vec![NodeExecutionOutput {
+                                output_pins: vec![web_docs_generate::OUTPUT_PIN_OUT.to_string()],
+                                payload: json!({
+                                    "docs_generated": {
+                                        "status": "ok",
+                                        "site_title": site.site_title,
+                                        "template": site.template_rel_path,
+                                        "docs_root": config.docs_root,
+                                        "output_dir": config.output_dir,
+                                        "site_root": site.site_root_rel,
+                                        "deploy_base_url": site.deploy_base_url,
+                                        "deploy_base_path": site.deploy_base_path,
+                                        "manifest_path": manifest_rel,
+                                        "asset_group": asset_group,
+                                        "page_count": site.pages.len(),
+                                        "generated_files": generated_files,
+                                        "skipped_files": skipped_files,
+                                        "sitemap_path": if site.sitemap_xml.trim().is_empty() { Value::Null } else { Value::String(web_docs_generate::sitemap_rel_path(&site.site_root_rel)) },
+                                        "search_index_path": search_index_rel,
+                                        "urls": urls,
+                                    }
+                                }),
+                                trace: vec![
+                                    format!("node={node_id}"),
+                                    format!("node_kind={}", web_docs_generate::NODE_KIND),
+                                    format!("pages={}", site.pages.len()),
+                                ],
+                            }])
+                        })
+                    }
                     NodeDispatch::InlineWebStaticGenerate { node_id, config } => {
                         let Some(data_root) = &self.data_root else {
                             return Err(PipelineError::new(
@@ -1141,27 +1489,34 @@ impl PipelineEngine for BasicPipelineEngine {
                             };
 
                         compiled_result.and_then(|compiled| {
-                            let rel_path = web_static_generate::normalize_output_rel_path(
-                                &config.scope,
-                                &config.output_path,
-                            )?;
+                            let rel_path = web_static_generate::effective_output_rel_path(&config)?;
                             let abs_path = data_root
                                 .join("users")
                                 .join(&ctx.owner)
                                 .join(&ctx.project)
                                 .join("files")
                                 .join(&rel_path);
-                            let route = config
-                                .route
-                                .clone()
-                                .filter(|s| !s.trim().is_empty())
-                                .unwrap_or_else(|| {
+                            let route =
+                                if let Some(explicit_route) =
+                                    config.route.clone().filter(|s| !s.trim().is_empty())
+                                {
+                                    explicit_route
+                                } else if let Some(deploy_base_path) =
+                                    web_static_generate::effective_deploy_base_path(&config)?
+                                {
+                                    let page_output_path =
+                                        web_static_generate::effective_page_output_path(&config)?;
+                                    web_static_site::route_path_for_output_path(
+                                        &deploy_base_path,
+                                        &page_output_path,
+                                    )?
+                                } else {
                                     web_static_generate::default_route(
                                         &ctx.owner,
                                         &ctx.project,
                                         &rel_path,
                                     )
-                                });
+                                };
 
                             let mut metadata = input.metadata.clone();
                             if let Some(map) = metadata.as_object_mut() {
@@ -1222,20 +1577,119 @@ impl PipelineEngine for BasicPipelineEngine {
                                 &compiled_scripts,
                                 self.template_root.as_deref(),
                             );
+                            let asset_group = web_static_site::asset_group_id(
+                                &template_source.id,
+                                &template_source.markup,
+                            );
+                            let project_asset_root = self
+                                .template_root
+                                .as_deref()
+                                .map(|root| root.join("assets"));
+                            let localized = if let Some(site_root_rel) =
+                                web_static_generate::effective_site_root_rel_path(&config)?
+                            {
+                                let site_root_abs = data_root
+                                    .join("users")
+                                    .join(&ctx.owner)
+                                    .join(&ctx.project)
+                                    .join("files")
+                                    .join(&site_root_rel);
+                                web_static_site::localize_static_html_assets(
+                                    &site_root_abs,
+                                    &web_static_site::normalize_page_output_path(
+                                        &config.output_path,
+                                    )?,
+                                    &final_html,
+                                    web_static_site::StaticAssetSources {
+                                        owner: Some(&ctx.owner),
+                                        project: Some(&ctx.project),
+                                        project_asset_root_abs: project_asset_root.as_deref(),
+                                    },
+                                    &asset_group,
+                                )?
+                            } else {
+                                let page_dir_abs =
+                                    abs_path.parent().unwrap_or(abs_path.as_path()).to_path_buf();
+                                let page_file_name = abs_path
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .ok_or_else(|| {
+                                        PipelineError::new(
+                                            "FW_NODE_WEB_STATIC_OUTPUT_NAME",
+                                            format!(
+                                                "node '{node_id}' produced an invalid output path '{}'",
+                                                abs_path.display()
+                                            ),
+                                        )
+                                    })?
+                                    .to_string();
+                                web_static_site::localize_static_html_assets(
+                                    &page_dir_abs,
+                                    &page_file_name,
+                                    &final_html,
+                                    web_static_site::StaticAssetSources {
+                                        owner: Some(&ctx.owner),
+                                        project: Some(&ctx.project),
+                                        project_asset_root_abs: project_asset_root.as_deref(),
+                                    },
+                                    &asset_group,
+                                )?
+                            };
                             let status = web_static_generate::write_generated_html(
                                 &abs_path,
-                                &final_html,
+                                &localized.html,
                                 &config.on_conflict,
                             )?;
-                            let bytes = final_html.as_bytes().len() as u64;
+                            let bytes = localized.html.as_bytes().len() as u64;
                             let url = format!("/files/{}/{}/{}", ctx.owner, ctx.project, rel_path);
+                            let site_root_rel =
+                                web_static_generate::effective_site_root_rel_path(&config)?;
+                            let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
+                            {
+                                let manifest_rel =
+                                    web_static_site::site_manifest_rel_path(site_root_rel);
+                                let manifest_abs = data_root
+                                    .join("users")
+                                    .join(&ctx.owner)
+                                    .join(&ctx.project)
+                                    .join("files")
+                                    .join(&manifest_rel);
+                                let page_path = web_static_site::normalize_page_output_path(
+                                    &config.output_path,
+                                )?;
+                                let page_record = web_static_site::StaticPageRecord {
+                                    path: page_path,
+                                    route: route.clone(),
+                                    template: template_source.id.clone(),
+                                    asset_group: asset_group.clone(),
+                                    generator: web_static_generate::NODE_KIND.to_string(),
+                                };
+                                let _manifest = web_static_site::update_site_manifest(
+                                    &manifest_abs,
+                                    site_root_rel,
+                                    web_static_generate::effective_deploy_base_url(&config)
+                                        .as_deref(),
+                                    web_static_generate::effective_deploy_base_path(&config)?
+                                        .as_deref()
+                                        .unwrap_or("/"),
+                                    web_static_generate::NODE_KIND,
+                                    &template_source.id,
+                                    &asset_group,
+                                    &[page_record],
+                                    &localized.assets,
+                                    false,
+                                )?;
+                                Some(manifest_rel)
+                            } else {
+                                None
+                            };
 
                             let mut trace = render_out.trace;
                             trace.push(format!("node_kind={}", web_static_generate::NODE_KIND));
                             trace.push(format!("generated_path={rel_path}"));
                             trace.push(format!("generated_status={status}"));
 
-                            Ok(NodeExecutionOutput {
+                            Ok(vec![NodeExecutionOutput {
                                 output_pins: vec![web_static_generate::OUTPUT_PIN_OUT.to_string()],
                                 payload: json!({
                                     "generated": {
@@ -1243,45 +1697,77 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "path": rel_path,
                                         "url": url,
                                         "route": route,
+                                        "deploy_base_url": web_static_generate::effective_deploy_base_url(&config),
+                                        "deploy_base_path": web_static_generate::effective_deploy_base_path(&config)?,
                                         "template": template_source.id,
+                                        "site_root": site_root_rel,
+                                        "manifest_path": manifest_rel,
+                                        "asset_group": asset_group,
                                         "scope": config.scope,
                                         "bytes": bytes,
                                     }
                                 }),
                                 trace,
-                            })
+                            }])
                         })
                     }
-                    NodeDispatch::Agent(node) => node.execute_async(input).await,
-                    NodeDispatch::LogicIf(node) => node.execute_async(input).await,
-                    NodeDispatch::LogicSwitch(node) => node.execute_async(input).await,
-                    NodeDispatch::LogicBranch(node) => node.execute_async(input).await,
-                    NodeDispatch::LogicMerge(node) => node.execute_async(input).await,
-                    NodeDispatch::AuthTokenCreate(node) => node.execute_async(input).await,
-                    NodeDispatch::WebError(node) => node.execute_async(input).await,
-                    NodeDispatch::WsTrigger(node) => node.execute_async(input).await,
-                    NodeDispatch::WsSyncState(node) => node.execute_async(input).await,
-                    NodeDispatch::WsEmit(node) => node.execute_async(input).await,
-                    NodeDispatch::Crypto(node) => node.execute_async(input).await,
-                    NodeDispatch::TriggerFunction(node) => node.execute_async(input).await,
-                    NodeDispatch::FunctionCall(node) => node.execute_async(input).await,
-                    NodeDispatch::FileSave(node) => node.execute_async(input).await,
-                    NodeDispatch::FileCompress(node) => node.execute_async(input).await,
-                    NodeDispatch::FileDecompress(node) => node.execute_async(input).await,
-                    NodeDispatch::FilePdfConvert(node) => node.execute_async(input).await,
-                    NodeDispatch::ImgThumbnail(node) => node.execute_async(input).await,
-                    NodeDispatch::MemSet(node) => node.execute_async(input).await,
-                    NodeDispatch::MemGet(node) => node.execute_async(input).await,
-                    NodeDispatch::MemDel(node) => node.execute_async(input).await,
-                    NodeDispatch::MemExists(node) => node.execute_async(input).await,
-                    NodeDispatch::MemExpire(node) => node.execute_async(input).await,
-                    NodeDispatch::MemIncr(node) => node.execute_async(input).await,
-                    NodeDispatch::MemPublish(node) => node.execute_async(input).await,
-                    NodeDispatch::MemSubscribe(node) => node.execute_async(input).await,
+                    NodeDispatch::Agent(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::AiTts(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::LogicIf(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::LogicMatch(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::LogicCollect(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::LogicForeach(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::LogicReduce(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::LogicRetry(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::AuthTokenCreate(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::WebError(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::WsTrigger(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::WsSyncState(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::WsEmit(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::Crypto(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::TriggerFunction(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::FunctionCall(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::FileSave(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::FileCompress(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::FileDecompress(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::FilePdfConvert(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::ImgThumbnail(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::MemSet(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemGet(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemDel(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemExists(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemExpire(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemIncr(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemPublish(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MemSubscribe(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
-            let exec_result: Result<NodeExecutionOutput, PipelineError> =
+            let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> =
                 tokio::time::timeout(std::time::Duration::from_secs(node_timeout_secs), exec_fut)
                     .await
                     .unwrap_or_else(|_| {
@@ -1294,77 +1780,57 @@ impl PipelineEngine for BasicPipelineEngine {
                         ))
                     });
 
-            let output = match exec_result {
-                Ok(mut out) => {
-                    let mut output_payload = out.payload.clone();
-                    let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
-                    let payload_redact_except_paths =
-                        take_private_redact_except_paths(&mut output_payload);
-                    let mut trace_redact_tokens = payload_redact_tokens.clone();
-                    extend_unique_strings(
-                        &mut trace_redact_tokens,
-                        take_private_trace_redact_tokens(&mut output_payload),
-                    );
-                    let mut trace_redact_except_paths = payload_redact_except_paths.clone();
-                    extend_unique_paths(
-                        &mut trace_redact_except_paths,
-                        take_private_trace_redact_except_paths(&mut output_payload),
-                    );
-                    let payload_output = if payload_redact_tokens.is_empty() {
-                        output_payload
-                    } else {
-                        redact_json_value(
-                            &output_payload,
-                            &payload_redact_tokens,
-                            &payload_redact_except_paths,
-                            &[],
-                        )
-                    };
-                    let redacted_input = if trace_redact_tokens.is_empty() {
-                        input_snapshot
-                    } else {
-                        redact_json_value(
-                            &input_snapshot,
-                            &trace_redact_tokens,
-                            &trace_redact_except_paths,
-                            &[],
-                        )
-                    };
-                    let redacted_output = if trace_redact_tokens.is_empty() {
-                        payload_output.clone()
-                    } else {
-                        redact_json_value(
-                            &payload_output,
-                            &trace_redact_tokens,
-                            &trace_redact_except_paths,
-                            &[],
-                        )
-                    };
-                    let redacted_config = base_trace_config.as_ref().map(|config| {
-                        if trace_redact_tokens.is_empty() {
-                            config.clone()
+            let outputs = match exec_result {
+                Ok(mut outs) => {
+                    let mut processed_payloads: Vec<Value> = Vec::new();
+                    let mut redacted_outputs: Vec<Value> = Vec::new();
+                    let redacted_input = input_snapshot.clone();
+
+                    for out in &mut outs {
+                        let mut output_payload = out.payload.clone();
+                        let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
+                        let payload_redact_except_paths =
+                            take_private_redact_except_paths(&mut output_payload);
+                        let payload_output = if payload_redact_tokens.is_empty() {
+                            output_payload
                         } else {
                             redact_json_value(
-                                config,
-                                &trace_redact_tokens,
-                                &trace_redact_except_paths,
+                                &output_payload,
+                                &payload_redact_tokens,
+                                &payload_redact_except_paths,
                                 &[],
                             )
-                        }
-                    });
-                    // Record this node's output so downstream nodes can access it via $nodes.
-                    nodes_output.insert(trace_node_id.clone(), payload_output.clone());
+                        };
+                        processed_payloads.push(payload_output.clone());
+                        redacted_outputs.push(payload_output.clone());
+                        out.payload = payload_output;
+                    }
+
+                    let redacted_config = base_trace_config.clone();
+                    let node_output_value = if redacted_outputs.len() == 1 {
+                        redacted_outputs[0].clone()
+                    } else {
+                        json!({
+                            "count": redacted_outputs.len(),
+                            "emissions": redacted_outputs,
+                        })
+                    };
+                    let nodes_output_value = if processed_payloads.len() == 1 {
+                        processed_payloads[0].clone()
+                    } else {
+                        Value::Array(processed_payloads)
+                    };
+                    nodes_output.insert(trace_node_id.clone(), nodes_output_value);
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id,
                         node_kind: trace_node_kind,
                         config: redacted_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: redacted_input,
-                        output: redacted_output.clone(),
+                        output: node_output_value,
                         error: None,
                     });
-                    out.payload = payload_output;
-                    out
+                    outs
                 }
                 Err(mut e) => {
                     node_trace.push(NodeTraceEntry {
@@ -1372,7 +1838,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node_kind: trace_node_kind.clone(),
                         config: base_trace_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: input_snapshot,
+                        input: input_snapshot.clone(),
                         output: Value::Null,
                         error: Some(e.message.clone()),
                     });
@@ -1381,29 +1847,79 @@ impl PipelineEngine for BasicPipelineEngine {
                         e.node_id = Some(trace_node_id);
                         e.node_kind = Some(trace_node_kind);
                     }
+                    if let Some(next_edges) = outgoing.get(&(node.id.as_str(), "error")) {
+                        let error_payload = build_retry_error_payload(&input_snapshot, &e);
+                        for (to_node, to_pin) in next_edges {
+                            queue.push_back(NodeExecutionInput {
+                                node_id: (*to_node).to_string(),
+                                input_pin: (*to_pin).to_string(),
+                                payload: error_payload.clone(),
+                                metadata: json!({
+                                    "owner": ctx.owner,
+                                    "project": ctx.project,
+                                    "pipeline": ctx.pipeline,
+                                    "request_id": ctx.request_id,
+                                    "route": ctx.route,
+                                    "trigger": ctx.trigger,
+                                    "nodes": Value::Object(nodes_output.clone()),
+                                }),
+                                step_tx: step_tx.clone(),
+                            });
+                        }
+                        continue;
+                    }
                     e.node_trace = node_trace.clone();
                     return Err(e);
                 }
             };
-            trace.extend(output.trace.clone());
-            last_value = output.payload.clone();
+            let outputs = if node.kind == logic::reduce::NODE_KIND {
+                let mut final_outputs = Vec::new();
+                if let Some(last_output) = outputs.last() {
+                    let state = reduce_pending.entry(node.id.clone()).or_default();
+                    state.acc = Some(last_output.payload.clone());
+                    state.received += 1;
+                    if state.expected.is_none() {
+                        state.expected = input_snapshot
+                            .get("count")
+                            .and_then(Value::as_u64)
+                            .map(|n| n as usize);
+                    }
+                    let expected = state.expected.unwrap_or(1);
+                    if state.received >= expected {
+                        final_outputs.push(last_output.clone());
+                        reduce_pending.remove(node.id.as_str());
+                    }
+                }
+                final_outputs
+            } else {
+                outputs
+            };
 
-            for emitted_pin in &output.output_pins {
-                if let Some(next_edges) = outgoing.get(&(node.id.as_str(), emitted_pin.as_str())) {
-                    for (to_node, to_pin) in next_edges {
-                        let target = node_map.get(to_node).ok_or_else(|| {
-                            PipelineError::new(
-                                "FW_EXEC_EDGE",
-                                format!("target node '{}' missing", to_node),
-                            )
-                        })?;
-                        let merge_strategy = logic_merge_strategy(target);
-                        match merge_strategy {
-                            Some(MergeStrategy::WaitAll) => {
+            for output in outputs {
+                trace.extend(output.trace.clone());
+                last_value = output.payload.clone();
+
+                for emitted_pin in &output.output_pins {
+                    if let Some(next_edges) =
+                        outgoing.get(&(node.id.as_str(), emitted_pin.as_str()))
+                    {
+                        for (to_node, to_pin) in next_edges {
+                            let target = node_map.get(to_node).ok_or_else(|| {
+                                PipelineError::new(
+                                    "FW_EXEC_EDGE",
+                                    format!("target node '{}' missing", to_node),
+                                )
+                            })?;
+                            if is_logic_collect(target) {
                                 let pending =
-                                    merge_pending.entry((*to_node).to_string()).or_default();
-                                pending.insert((*to_pin).to_string(), output.payload.clone());
-                                let expected = target.input_pins.len();
+                                    collect_pending.entry((*to_node).to_string()).or_default();
+                                let key = if emitted_pin == "out" {
+                                    node.id.clone()
+                                } else {
+                                    format!("{}:{}", node.id, emitted_pin)
+                                };
+                                pending.insert(key, output.payload.clone());
+                                let expected = incoming_counts.get(*to_node).copied().unwrap_or(1);
                                 if pending.len() >= expected {
                                     let combined = Value::Object(
                                         pending
@@ -1411,7 +1927,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                             .map(|(k, v)| (k.clone(), v.clone()))
                                             .collect(),
                                     );
-                                    merge_pending.remove(*to_node);
+                                    collect_pending.remove(*to_node);
                                     queue.push_back(NodeExecutionInput {
                                         node_id: (*to_node).to_string(),
                                         input_pin: (*to_pin).to_string(),
@@ -1428,27 +1944,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                         step_tx: step_tx.clone(),
                                     });
                                 }
-                            }
-                            Some(MergeStrategy::FirstCompleted) => {
-                                if first_fired.insert((*to_node).to_string()) {
-                                    queue.push_back(NodeExecutionInput {
-                                        node_id: (*to_node).to_string(),
-                                        input_pin: (*to_pin).to_string(),
-                                        payload: output.payload.clone(),
-                                        metadata: json!({
-                                            "owner": ctx.owner,
-                                            "project": ctx.project,
-                                            "pipeline": ctx.pipeline,
-                                            "request_id": ctx.request_id,
-                                            "route": ctx.route,
-                                            "trigger": ctx.trigger,
-                                            "nodes": Value::Object(nodes_output.clone()),
-                                        }),
-                                        step_tx: step_tx.clone(),
-                                    });
-                                }
-                            }
-                            None | Some(MergeStrategy::PassThrough) => {
+                            } else {
                                 queue.push_back(NodeExecutionInput {
                                     node_id: (*to_node).to_string(),
                                     input_pin: (*to_pin).to_string(),
@@ -1484,9 +1980,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        redact_json_value, take_private_redact_except_paths, take_private_redact_tokens,
-        take_private_trace_redact_tokens, trace_config_snapshot,
+        BasicPipelineEngine, PipelineContext, redact_json_value, take_private_redact_except_paths,
+        take_private_redact_tokens, take_private_trace_redact_tokens, trace_config_snapshot,
     };
+    use crate::pipeline::interface::PipelineEngine;
+    use crate::platform::shell::parser::build_pipeline_graph;
 
     #[test]
     fn private_redact_tokens_are_removed_and_applied_recursively() {
@@ -1572,6 +2070,280 @@ mod tests {
         assert_eq!(snapshot["password"], "••••••");
         assert_eq!(snapshot["headers"]["authorization"], "••••••");
     }
+
+    #[tokio::test]
+    async fn logic_collect_groups_multiple_upstreams_before_continuing() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { user: { id: 'u_42' } };"
+[c] script -- "return { orders: [{ id: 'o_1' }] };"
+[d] logic.collect
+[e] script -- "return input;"
+
+[a] -> [b]
+[a] -> [c]
+[b] -> [d]
+[c] -> [d]
+[d] -> [e]
+"#;
+
+        let graph = build_pipeline_graph("logic-collect-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-collect-test".to_string(),
+                    request_id: "req-1".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["b"]["user"]["id"], "u_42");
+        assert_eq!(out.value["c"]["orders"][0]["id"], "o_1");
+    }
+
+    #[tokio::test]
+    async fn logic_if_supports_dsl_input_scope() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { type: 'billing' };"
+[c] logic.if --expr "$input.type == 'billing'"
+[d] script -- "return { branch: 'true' };"
+[e] script -- "return { branch: 'false' };"
+
+[a] -> [b]
+[b] -> [c]
+[c]:true -> [d]
+[c]:false -> [e]
+"#;
+
+        let graph = build_pipeline_graph("logic-if-scope-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-if-scope-test".to_string(),
+                    request_id: "req-if".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["branch"], "true");
+    }
+
+    #[tokio::test]
+    async fn logic_match_supports_dsl_nodes_scope() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { kind: 'billing' };"
+[c] logic.match --expr "$nodes.b.kind" --cases billing,technical --default default
+[d] script -- "return { lane: 'billing' };"
+[e] script -- "return { lane: 'technical' };"
+[f] script -- "return { lane: 'default' };"
+
+[a] -> [b]
+[b] -> [c]
+[c]:billing -> [d]
+[c]:technical -> [e]
+[c]:default -> [f]
+"#;
+
+        let graph = build_pipeline_graph("logic-match-scope-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-match-scope-test".to_string(),
+                    request_id: "req-match".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["lane"], "billing");
+    }
+
+    #[tokio::test]
+    async fn logic_foreach_emits_one_run_per_item() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --items-path /rows
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("logic-foreach-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-foreach-test".to_string(),
+                    request_id: "req-2".to_string(),
+                    route: String::new(),
+                    input: json!({
+                        "rows": [
+                            { "id": "r1" },
+                            { "id": "r2" }
+                        ]
+                    }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        let foreach_trace = out
+            .node_trace
+            .iter()
+            .find(|entry| entry.node_kind == "n.logic.foreach")
+            .expect("foreach trace");
+        assert_eq!(foreach_trace.output["count"], 2);
+        assert_eq!(foreach_trace.output["emissions"][0]["item"]["id"], "r1");
+        assert_eq!(foreach_trace.output["emissions"][1]["item"]["id"], "r2");
+        assert_eq!(out.value["item"]["id"], "r2");
+        assert_eq!(out.value["index"], 1);
+        assert_eq!(out.value["count"], 2);
+    }
+
+    #[tokio::test]
+    async fn logic_reduce_accumulates_foreach_series() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --items-path /rows
+[c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"
+
+[a] -> [b]
+[b]:item -> [c]
+"#;
+
+        let graph = build_pipeline_graph("logic-reduce-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-reduce-test".to_string(),
+                    request_id: "req-3".to_string(),
+                    route: String::new(),
+                    input: json!({
+                        "rows": [
+                            { "amount": 10 },
+                            { "amount": 15 },
+                            { "amount": 7 }
+                        ]
+                    }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["total"], 32);
+    }
+
+    #[tokio::test]
+    async fn logic_retry_retries_until_success() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "const attempt = input.__zf_retry?.attempt ?? 0; if (attempt < 2) { throw new Error('retry me'); } return { ok: true, attempt };"
+[r] logic.retry --max-attempts 3
+[c] script -- "return input;"
+[d] script -- "return input;"
+
+[a] -> [b]
+[b]:error -> [r]
+[r]:retry -> [b]
+[b] -> [c]
+[r]:failed -> [d]
+"#;
+
+        let graph = build_pipeline_graph("logic-retry-success-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-retry-success-test".to_string(),
+                    request_id: "req-4".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["ok"], true);
+        assert_eq!(out.value["attempt"], 2);
+    }
+
+    #[tokio::test]
+    async fn logic_retry_routes_to_failed_after_budget() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "throw new Error('always fail');"
+[r] logic.retry --max-attempts 2
+[c] script -- "return input;"
+
+[a] -> [b]
+[b]:error -> [r]
+[r]:retry -> [b]
+[r]:failed -> [c]
+"#;
+
+        let graph = build_pipeline_graph("logic-retry-failed-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-retry-failed-test".to_string(),
+                    request_id: "req-5".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert!(
+            out.value["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("always fail")
+        );
+        assert_eq!(out.value["__zf_retry"]["attempt"], 2);
+    }
 }
 
 enum NodeDispatch {
@@ -1594,12 +2366,19 @@ enum NodeDispatch {
         node_id: String,
         config: web_static_generate::Config,
     },
+    InlineWebDocsGenerate {
+        node_id: String,
+        config: web_docs_generate::Config,
+    },
     WebResponse(web_response::Node),
     Agent(agent::Node),
+    AiTts(ai_tts::Node),
     LogicIf(logic::if_::Node),
-    LogicSwitch(logic::switch::Node),
-    LogicBranch(logic::branch::Node),
-    LogicMerge(logic::merge::Node),
+    LogicMatch(logic::match_::Node),
+    LogicCollect(logic::collect::Node),
+    LogicForeach(logic::foreach_::Node),
+    LogicReduce(logic::reduce::Node),
+    LogicRetry(logic::retry::Node),
     AuthTokenCreate(auth_token_create::Node),
     WebError(weberror::Node),
     WsTrigger(ws_trigger::Node),
@@ -1623,24 +2402,6 @@ enum NodeDispatch {
     MemSubscribe(memsubscribe::Node),
 }
 
-enum MergeStrategy {
-    WaitAll,
-    FirstCompleted,
-    PassThrough,
-}
-
-fn logic_merge_strategy(node: &PipelineNode) -> Option<MergeStrategy> {
-    if node.kind != logic::merge::NODE_KIND {
-        return None;
-    }
-    let strategy = node
-        .config
-        .get("strategy")
-        .and_then(|v| v.as_str())
-        .unwrap_or("pass_through");
-    Some(match strategy {
-        "wait_all" => MergeStrategy::WaitAll,
-        "first_completed" => MergeStrategy::FirstCompleted,
-        _ => MergeStrategy::PassThrough,
-    })
+fn is_logic_collect(node: &PipelineNode) -> bool {
+    node.kind == logic::collect::NODE_KIND
 }

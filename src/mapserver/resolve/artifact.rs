@@ -97,7 +97,10 @@ fn prune_feature_properties(mut feature: Value, allowed: &[String]) -> Value {
     let Some(feature_obj) = feature.as_object_mut() else {
         return feature;
     };
-    let Some(props) = feature_obj.get_mut("properties").and_then(Value::as_object_mut) else {
+    let Some(props) = feature_obj
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    else {
         return feature;
     };
     props.retain(|key, _| allowed.iter().any(|candidate| candidate == key));
@@ -114,7 +117,9 @@ mod tests {
     use sysinfo::{ProcessesToUpdate, System};
 
     use crate::mapserver::publish::build::build_geojson_artifact;
-    use crate::mapserver::publish::manifest::{ArtifactChunkRecord, GeoJsonArtifactManifest, SourceKind};
+    use crate::mapserver::publish::manifest::{
+        ArtifactChunkRecord, GeoJsonArtifactManifest, SourceKind,
+    };
 
     use super::*;
 
@@ -251,10 +256,7 @@ mod tests {
 
         eprintln!(
             "MAPSERVER_BENCH before_kib={before} after_build_kib={after_build} after_query_kib={after_query} chunks={} features={} returned={} truncated={}",
-            build.chunk_count,
-            build.feature_count,
-            resolved.count,
-            resolved.truncated
+            build.chunk_count, build.feature_count, resolved.count, resolved.truncated
         );
     }
 

@@ -8,6 +8,7 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
     SourceKind,
 };
+use crate::pipeline::expr::build_expression_scope_input;
 use crate::pipeline::PipelineError;
 
 pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), PipelineError> {
@@ -90,7 +91,18 @@ pub fn eval_deno_expr(
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     expr.hash(&mut hasher);
-    let source = format!("return ({expr});");
+    let source = format!(
+        "var __scope = input;\n\
+         var $input = __scope.$input;\n\
+         var $item = __scope.$item;\n\
+         var $index = __scope.$index;\n\
+         var $count = __scope.$count;\n\
+         var $trigger = __scope.$trigger || null;\n\
+         var $nodes = __scope.$nodes || {{}};\n\
+         return ((function(input, $input, $item, $index, $count, $trigger, $nodes) {{\n\
+           return ({expr});\n\
+         }})($input, $input, $item, $index, $count, $trigger, $nodes));"
+    );
     let module = ModuleSource {
         id: format!("pipeline:binding:{:x}", hasher.finish()),
         source_path: None,
@@ -130,7 +142,7 @@ pub fn eval_deno_expr(
         metadata: metadata.clone(),
     };
     language
-        .run(&compiled, input.clone(), &ctx)
+        .run(&compiled, build_expression_scope_input(input, metadata), &ctx)
         .map(|out| out.value)
         .map_err(|err| PipelineError::new("FW_NODE_BINDING_RUN", err.to_string()))
 }

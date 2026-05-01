@@ -292,6 +292,8 @@ impl Default for NodeFieldType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeFieldDataSource {
+    /// All live project credentials regardless of kind.
+    CredentialsAll,
     /// Live project Postgres credentials.
     CredentialsPostgres,
     /// Live project JWT credentials.
@@ -607,7 +609,7 @@ pub struct NodeAiToolDefinition {
 /// # Pin Declarations
 ///
 /// `input_pins` and `output_pins` list the pin names this kind exposes.  Trigger nodes have
-/// empty `input_pins`.  Logic nodes like `n.logic.branch` have dynamic `output_pins` (empty
+/// empty `input_pins`.  Logic nodes like `n.logic.match` have dynamic `output_pins` (empty
 /// here, populated per instance in the graph).
 ///
 /// # Usage Dimensions
@@ -662,7 +664,7 @@ pub struct NodeDefinition {
     #[serde(default)]
     pub input_pins: Vec<String>,
     /// Output pin names declared by this kind.  Common values: `["out"]`, `["out", "error"]`,
-    /// `["true", "false"]`.  Empty for dynamic-pin nodes like `n.logic.branch` — pins are
+    /// `["true", "false"]`.  Empty for dynamic-pin nodes like `n.logic.match` — pins are
     /// defined per instance in the graph.
     #[serde(default)]
     pub output_pins: Vec<String>,

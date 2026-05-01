@@ -18,12 +18,12 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher,
-    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta, PlatformMarketplaceRepository,
-    PlatformOffice, PlatformOfficeNode, PlatformProject, PlatformUser, PlatformUserLocalAuth,
-    ProjectAccessRolePreset, ProjectCapability, ProjectCredential, ProjectDbConnection,
-    ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository, ProjectMember,
-    ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy,
-    ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
+    PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
+    PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability,
+    ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectInviteStatus,
+    ProjectMarketplaceRepository, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
+    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
     now_ts,
 };
 
@@ -456,7 +456,7 @@ impl SqliteDataAdapter {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
         )
-            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
         Self::run_migrations(&mut conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -649,7 +649,9 @@ CREATE TABLE IF NOT EXISTS user_local_auth (
                 )
                 .map_err(Self::qe)?;
             let items = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(Self::qe)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(Self::qe)?;
@@ -711,7 +713,9 @@ CREATE TABLE IF NOT EXISTS user_local_auth (
                 )
                 .map_err(Self::qe)?;
             let items = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(Self::qe)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(Self::qe)?;
@@ -778,14 +782,44 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         )
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
 
-        Self::ensure_table_column(tx, "worker_registry", "office_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "worker_registry", "office_slug", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_runtime_placements", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            tx,
+            "worker_registry",
+            "office_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "worker_registry",
+            "office_slug",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_runtime_placements",
+            "project_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         Self::ensure_table_column(tx, "project_runtime_placements", "target_office_id", "TEXT")?;
         Self::ensure_table_column(tx, "project_runtime_placements", "target_node_id", "TEXT")?;
-        Self::ensure_table_column(tx, "project_runtime_placements", "resource_profile", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_runtime_placements", "desired_replicas", "INTEGER NOT NULL DEFAULT 1")?;
-        Self::ensure_table_column(tx, "project_runtime_placements", "effective_state", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            tx,
+            "project_runtime_placements",
+            "resource_profile",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_runtime_placements",
+            "desired_replicas",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_runtime_placements",
+            "effective_state",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
 
         tx.execute(
             "UPDATE worker_registry
@@ -900,15 +934,60 @@ CREATE TABLE IF NOT EXISTS office_nodes (
     fn apply_migration_0006_marketplace_and_operations_internal_ids(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
-        Self::ensure_table_column(tx, "marketplace_publishers", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_publishers", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_tokens", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_tokens", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_asset_packages", "package_pk", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_asset_packages", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_asset_packages", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "marketplace_asset_versions", "package_pk", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_operations", "project_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "authority_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "publisher_pk",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_tokens",
+            "authority_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_tokens",
+            "publisher_pk",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_asset_packages",
+            "package_pk",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_asset_packages",
+            "authority_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_asset_packages",
+            "publisher_pk",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_asset_versions",
+            "package_pk",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_operations",
+            "project_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
 
         tx.execute(
             "UPDATE marketplace_publishers
@@ -1093,12 +1172,42 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         Self::ensure_table_column(tx, "projects", "owner_user_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "platform_marketplace_repositories", "source_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "platform_marketplace_repositories", "owner_user_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_policies", "project_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_policy_bindings", "project_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_members", "project_id", "TEXT NOT NULL DEFAULT ''")?;
-        Self::ensure_table_column(tx, "project_members", "created_by_user_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            tx,
+            "platform_marketplace_repositories",
+            "source_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "platform_marketplace_repositories",
+            "owner_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_policies",
+            "project_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_policy_bindings",
+            "project_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_members",
+            "project_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "project_members",
+            "created_by_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
 
         tx.execute(
             "UPDATE projects
@@ -1120,7 +1229,9 @@ CREATE TABLE IF NOT EXISTS office_nodes (
                 )
                 .map_err(Self::qe)?;
             let items = stmt
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(Self::qe)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(Self::qe)?;
@@ -1332,7 +1443,12 @@ CREATE TABLE user_local_auth (
         ON UPDATE CASCADE
         ON DELETE CASCADE
 )",
-            &["user_id", "password_hash", "password_alg", "password_updated_at"],
+            &[
+                "user_id",
+                "password_hash",
+                "password_alg",
+                "password_updated_at",
+            ],
         )?;
         Self::rebuild_table(
             tx,
@@ -1350,7 +1466,14 @@ CREATE TABLE projects (
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
-            &["owner", "project", "project_id", "owner_user_id", "created_at", "updated_at"],
+            &[
+                "owner",
+                "project",
+                "project_id",
+                "owner_user_id",
+                "created_at",
+                "updated_at",
+            ],
         )?;
         Self::rebuild_table(
             tx,
@@ -1778,9 +1901,7 @@ CREATE TABLE project_operations (
         .map_err(Self::qe)?;
         Self::apply_migration_0008_constraint_and_uniqueness_hardening(tx)?;
         let violations = {
-            let mut stmt = tx
-                .prepare("PRAGMA foreign_key_check")
-                .map_err(Self::qe)?;
+            let mut stmt = tx.prepare("PRAGMA foreign_key_check").map_err(Self::qe)?;
             stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1809,7 +1930,12 @@ CREATE TABLE project_operations (
     ) -> Result<(), PlatformError> {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
             .map_err(Self::qe)?;
-        Self::ensure_table_column(tx, "project_members", "member_user_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            tx,
+            "project_members",
+            "member_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
 
         tx.execute(
             "UPDATE project_members
@@ -1969,9 +2095,7 @@ CREATE TABLE project_members (
         .map_err(Self::qe)?;
 
         let violations = {
-            let mut stmt = tx
-                .prepare("PRAGMA foreign_key_check")
-                .map_err(Self::qe)?;
+            let mut stmt = tx.prepare("PRAGMA foreign_key_check").map_err(Self::qe)?;
             stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2000,9 +2124,24 @@ CREATE TABLE project_members (
     ) -> Result<(), PlatformError> {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
             .map_err(Self::qe)?;
-        Self::ensure_table_column(tx, "marketplace_tokens", "scope_read", "INTEGER NOT NULL DEFAULT 0")?;
-        Self::ensure_table_column(tx, "marketplace_tokens", "scope_publish", "INTEGER NOT NULL DEFAULT 0")?;
-        Self::ensure_table_column(tx, "marketplace_tokens", "scope_manage", "INTEGER NOT NULL DEFAULT 0")?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_tokens",
+            "scope_read",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_tokens",
+            "scope_publish",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_tokens",
+            "scope_manage",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
 
         if Self::table_has_column(tx, "marketplace_tokens", "scopes_json")? {
             tx.execute(
@@ -2025,8 +2164,10 @@ CREATE TABLE project_members (
         }
 
         let old_table = "marketplace_tokens__old";
-        tx.execute_batch(&format!("ALTER TABLE marketplace_tokens RENAME TO {old_table};"))
-            .map_err(Self::qe)?;
+        tx.execute_batch(&format!(
+            "ALTER TABLE marketplace_tokens RENAME TO {old_table};"
+        ))
+        .map_err(Self::qe)?;
         tx.execute_batch(
             "
 CREATE TABLE marketplace_tokens (
@@ -2108,9 +2249,7 @@ CREATE TABLE marketplace_tokens (
         .map_err(Self::qe)?;
 
         let violations = {
-            let mut stmt = tx
-                .prepare("PRAGMA foreign_key_check")
-                .map_err(Self::qe)?;
+            let mut stmt = tx.prepare("PRAGMA foreign_key_check").map_err(Self::qe)?;
             stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -2160,12 +2299,8 @@ CREATE TABLE marketplace_tokens (
         table: &str,
         column: &str,
     ) -> Result<(), PlatformError> {
-        let sql = format!(
-            "SELECT COUNT(1) FROM {table} WHERE COALESCE(TRIM({column}), '') = ''"
-        );
-        let count: i64 = tx
-            .query_row(&sql, [], |row| row.get(0))
-            .map_err(Self::qe)?;
+        let sql = format!("SELECT COUNT(1) FROM {table} WHERE COALESCE(TRIM({column}), '') = ''");
+        let count: i64 = tx.query_row(&sql, [], |row| row.get(0)).map_err(Self::qe)?;
         if count > 0 {
             return Err(PlatformError::new(
                 "PLATFORM_SQLITE_FK_REBUILD_BLOCKED",
@@ -3212,7 +3347,9 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_marketplace_asset_packages(&self) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+    fn list_marketplace_asset_packages(
+        &self,
+    ) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
@@ -3239,7 +3376,8 @@ impl DataAdapter for SqliteDataAdapter {
                     title: row.get(12)?,
                     description: row.get(13)?,
                     visibility: row.get(14)?,
-                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?).unwrap_or_default(),
+                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?)
+                        .unwrap_or_default(),
                     created_at: row.get(16)?,
                     updated_at: row.get(17)?,
                 })
@@ -3278,7 +3416,8 @@ impl DataAdapter for SqliteDataAdapter {
                 title: row.get(12)?,
                 description: row.get(13)?,
                 visibility: row.get(14)?,
-                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?).unwrap_or_default(),
+                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?)
+                    .unwrap_or_default(),
                 created_at: row.get(16)?,
                 updated_at: row.get(17)?,
             })
@@ -3363,7 +3502,8 @@ impl DataAdapter for SqliteDataAdapter {
                     source_ref: row.get(10)?,
                     artifact_rel_path: row.get(11)?,
                     artifact_sha256: row.get(12)?,
-                    manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?).unwrap_or(Value::Null),
+                    manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?)
+                        .unwrap_or(Value::Null),
                     created_at: row.get(14)?,
                 })
             })
@@ -3400,7 +3540,8 @@ impl DataAdapter for SqliteDataAdapter {
                 source_ref: row.get(10)?,
                 artifact_rel_path: row.get(11)?,
                 artifact_sha256: row.get(12)?,
-                manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?).unwrap_or(Value::Null),
+                manifest: serde_json::from_str::<Value>(&row.get::<_, String>(13)?)
+                    .unwrap_or(Value::Null),
                 created_at: row.get(14)?,
             })
         }) {
@@ -3461,7 +3602,10 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn get_marketplace_token(&self, token_id: &str) -> Result<Option<MarketplaceToken>, PlatformError> {
+    fn get_marketplace_token(
+        &self,
+        token_id: &str,
+    ) -> Result<Option<MarketplaceToken>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
@@ -3470,37 +3614,31 @@ impl DataAdapter for SqliteDataAdapter {
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![token_id], |row| {
-            {
-                let scope_read = row.get::<_, i64>(11)? != 0;
-                let scope_publish = row.get::<_, i64>(12)? != 0;
-                let scope_manage = row.get::<_, i64>(13)? != 0;
-                Ok(MarketplaceToken {
-                    token_id: row.get(0)?,
-                    authority_id: row.get(1)?,
-                    publisher_pk: row.get(2)?,
-                    owner: row.get(3)?,
-                    project: row.get(4)?,
-                    publisher_id: row.get(5)?,
-                    publisher_display_name: row.get(6)?,
-                    publisher_url: row.get(7)?,
-                    publisher_email: row.get(8)?,
-                    title: row.get(9)?,
-                    secret_hash: row.get(10)?,
-                    scopes: Self::marketplace_token_scopes(
-                        scope_read,
-                        scope_publish,
-                        scope_manage,
-                    ),
-                    scope_read,
-                    scope_publish,
-                    scope_manage,
-                    expires_at: row.get(14)?,
-                    last_used_at: row.get(15)?,
-                    revoked_at: row.get(16)?,
-                    created_at: row.get(17)?,
-                    updated_at: row.get(18)?,
-                })
-            }
+            let scope_read = row.get::<_, i64>(11)? != 0;
+            let scope_publish = row.get::<_, i64>(12)? != 0;
+            let scope_manage = row.get::<_, i64>(13)? != 0;
+            Ok(MarketplaceToken {
+                token_id: row.get(0)?,
+                authority_id: row.get(1)?,
+                publisher_pk: row.get(2)?,
+                owner: row.get(3)?,
+                project: row.get(4)?,
+                publisher_id: row.get(5)?,
+                publisher_display_name: row.get(6)?,
+                publisher_url: row.get(7)?,
+                publisher_email: row.get(8)?,
+                title: row.get(9)?,
+                secret_hash: row.get(10)?,
+                scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                scope_read,
+                scope_publish,
+                scope_manage,
+                expires_at: row.get(14)?,
+                last_used_at: row.get(15)?,
+                revoked_at: row.get(16)?,
+                created_at: row.get(17)?,
+                updated_at: row.get(18)?,
+            })
         }) {
             Ok(item) => Ok(Some(item)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -3523,37 +3661,31 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner, project], |row| {
-                {
-                    let scope_read = row.get::<_, i64>(11)? != 0;
-                    let scope_publish = row.get::<_, i64>(12)? != 0;
-                    let scope_manage = row.get::<_, i64>(13)? != 0;
-                    Ok(MarketplaceToken {
-                        token_id: row.get(0)?,
-                        authority_id: row.get(1)?,
-                        publisher_pk: row.get(2)?,
-                        owner: row.get(3)?,
-                        project: row.get(4)?,
-                        publisher_id: row.get(5)?,
-                        publisher_display_name: row.get(6)?,
-                        publisher_url: row.get(7)?,
-                        publisher_email: row.get(8)?,
-                        title: row.get(9)?,
-                        secret_hash: row.get(10)?,
-                        scopes: Self::marketplace_token_scopes(
-                            scope_read,
-                            scope_publish,
-                            scope_manage,
-                        ),
-                        scope_read,
-                        scope_publish,
-                        scope_manage,
-                        expires_at: row.get(14)?,
-                        last_used_at: row.get(15)?,
-                        revoked_at: row.get(16)?,
-                        created_at: row.get(17)?,
-                        updated_at: row.get(18)?,
-                    })
-                }
+                let scope_read = row.get::<_, i64>(11)? != 0;
+                let scope_publish = row.get::<_, i64>(12)? != 0;
+                let scope_manage = row.get::<_, i64>(13)? != 0;
+                Ok(MarketplaceToken {
+                    token_id: row.get(0)?,
+                    authority_id: row.get(1)?,
+                    publisher_pk: row.get(2)?,
+                    owner: row.get(3)?,
+                    project: row.get(4)?,
+                    publisher_id: row.get(5)?,
+                    publisher_display_name: row.get(6)?,
+                    publisher_url: row.get(7)?,
+                    publisher_email: row.get(8)?,
+                    title: row.get(9)?,
+                    secret_hash: row.get(10)?,
+                    scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                    scope_read,
+                    scope_publish,
+                    scope_manage,
+                    expires_at: row.get(14)?,
+                    last_used_at: row.get(15)?,
+                    revoked_at: row.get(16)?,
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
+                })
             })
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
@@ -3715,7 +3847,17 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?
             .filter_map(|r| r.ok())
             .filter_map(
-                |(project_id, owner, project, policy_id, title, caps_json, managed, created_at, updated_at)| {
+                |(
+                    project_id,
+                    owner,
+                    project,
+                    policy_id,
+                    title,
+                    caps_json,
+                    managed,
+                    created_at,
+                    updated_at,
+                )| {
                     let capabilities: Vec<ProjectCapability> =
                         serde_json::from_str(&caps_json).unwrap_or_default();
                     Some(ProjectPolicy {
@@ -4329,7 +4471,10 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn get_platform_office(&self, office_id: &str) -> Result<Option<PlatformOffice>, PlatformError> {
+    fn get_platform_office(
+        &self,
+        office_id: &str,
+    ) -> Result<Option<PlatformOffice>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
             "SELECT office_id, office_slug, label, office_kind, base_url, status, created_at, updated_at
@@ -4719,7 +4864,9 @@ impl DataAdapter for SqliteDataAdapter {
                         .unwrap_or(ProjectRuntimePlacementTarget::Local),
                     target_office_id: row.get(5)?,
                     target_node_id: row.get(6)?,
-                    worker_id: row.get::<_, Option<String>>(7)?.or_else(|| row.get::<_, Option<String>>(6).ok().flatten()),
+                    worker_id: row
+                        .get::<_, Option<String>>(7)?
+                        .or_else(|| row.get::<_, Option<String>>(6).ok().flatten()),
                     resource_profile: row.get(8)?,
                     desired_replicas: row.get::<_, i64>(9)?.max(0) as u32,
                     effective_state: row.get(10)?,

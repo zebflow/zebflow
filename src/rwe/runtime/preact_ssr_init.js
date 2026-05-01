@@ -29,6 +29,39 @@
       .replace(/"/g, "&quot;");
   }
 
+  function base64EncodeUtf8(text) {
+    if (typeof btoa !== "undefined") {
+      return btoa(unescape(encodeURIComponent(text)));
+    }
+    if (typeof Buffer !== "undefined") {
+      return Buffer.from(text, "utf-8").toString("base64");
+    }
+    var encodedText = encodeURIComponent(String(text || ""));
+    var bytes = [];
+    for (var j = 0; j < encodedText.length; j++) {
+      var ch = encodedText.charAt(j);
+      if (ch === "%") {
+        bytes.push(parseInt(encodedText.slice(j + 1, j + 3), 16));
+        j += 2;
+      } else {
+        bytes.push(encodedText.charCodeAt(j));
+      }
+    }
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var out = "";
+    for (var i = 0; i < bytes.length; i += 3) {
+      var b1 = bytes[i];
+      var b2 = i + 1 < bytes.length ? bytes[i + 1] : 0;
+      var b3 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      var triplet = (b1 << 16) | (b2 << 8) | b3;
+      out += chars[(triplet >> 18) & 63];
+      out += chars[(triplet >> 12) & 63];
+      out += i + 1 < bytes.length ? chars[(triplet >> 6) & 63] : "=";
+      out += i + 2 < bytes.length ? chars[triplet & 63] : "=";
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------------------
   // Void elements (self-closing in HTML5)
   // ---------------------------------------------------------------------------
@@ -586,11 +619,11 @@
   // ---------------------------------------------------------------------------
   globalThis.Markdown = function(props) {
     var text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';
-    var encoded = typeof btoa !== 'undefined' ? btoa(unescape(encodeURIComponent(text))) : text;
+    var encoded = base64EncodeUtf8(text);
     return h('div', {
       'data-zeb-lib': 'markdown',
-      'data-encoded': encoded,
-      className: props && props.className,
+      'data-rwe-md': encoded,
+      className: 'rwe-md-placeholder' + ((props && props.className) ? (' ' + props.className) : ''),
     });
   };
 

@@ -82,10 +82,12 @@ impl ChunkWriterPool {
         }
         if let Some(entry) = self.open.get_mut(chunk_id) {
             entry.last_used_tick = self.tick;
-            entry.writer
+            entry
+                .writer
                 .write_all(line.as_bytes())
                 .map_err(|err| format!("failed writing chunk {chunk_id}: {err}"))?;
-            entry.writer
+            entry
+                .writer
                 .write_all(b"\n")
                 .map_err(|err| format!("failed writing chunk newline {chunk_id}: {err}"))?;
         }
@@ -105,7 +107,8 @@ impl ChunkWriterPool {
             return Ok(());
         };
         if let Some(mut entry) = self.open.remove(&key) {
-            entry.writer
+            entry
+                .writer
                 .flush()
                 .map_err(|err| format!("failed flushing chunk writer {key}: {err}"))?;
         }
@@ -114,7 +117,8 @@ impl ChunkWriterPool {
 
     fn flush_all(mut self) -> Result<(), String> {
         for (key, mut entry) in self.open.drain() {
-            entry.writer
+            entry
+                .writer
                 .flush()
                 .map_err(|err| format!("failed flushing chunk writer {key}: {err}"))?;
         }
@@ -131,8 +135,12 @@ pub fn build_geojson_artifact(
     let parent = artifact_abs_dir
         .parent()
         .ok_or_else(|| "artifact dir missing parent".to_string())?;
-    fs::create_dir_all(parent)
-        .map_err(|err| format!("failed creating artifact parent {}: {err}", parent.display()))?;
+    fs::create_dir_all(parent).map_err(|err| {
+        format!(
+            "failed creating artifact parent {}: {err}",
+            parent.display()
+        )
+    })?;
     let tmp_dir = tempfile::tempdir_in(parent)
         .map_err(|err| format!("failed creating temp artifact dir: {err}"))?;
     let chunks_dir = tmp_dir.path().join("chunks");
@@ -262,14 +270,23 @@ fn repartition_oversized_chunks(
         let chunk_path = chunks_dir.join(format!("{}.ndjson", chunk.chunk_id));
         let size = fs::metadata(&chunk_path)
             .map(|meta| meta.len())
-            .map_err(|err| format!("failed reading chunk metadata {}: {err}", chunk_path.display()))?;
+            .map_err(|err| {
+                format!(
+                    "failed reading chunk metadata {}: {err}",
+                    chunk_path.display()
+                )
+            })?;
         if size <= MAX_CHUNK_BYTES && chunk.item_count <= MAX_CHUNK_ITEMS {
             next_chunks.push(chunk);
             continue;
         }
         let items = read_chunk_items(&chunk_path)?;
-        fs::remove_file(&chunk_path)
-            .map_err(|err| format!("failed removing oversized chunk {}: {err}", chunk_path.display()))?;
+        fs::remove_file(&chunk_path).map_err(|err| {
+            format!(
+                "failed removing oversized chunk {}: {err}",
+                chunk_path.display()
+            )
+        })?;
         let split_chunks = split_chunk_records(chunks_dir, &chunk.chunk_id, items, 0)?;
         next_chunks.extend(split_chunks);
     }
@@ -278,8 +295,8 @@ fn repartition_oversized_chunks(
 }
 
 fn read_chunk_items(path: &Path) -> Result<Vec<ChunkItemRecord>, String> {
-    let file =
-        File::open(path).map_err(|err| format!("failed opening chunk {}: {err}", path.display()))?;
+    let file = File::open(path)
+        .map_err(|err| format!("failed opening chunk {}: {err}", path.display()))?;
     let reader = BufReader::new(file);
     let mut items = Vec::new();
     for line in reader.lines() {
@@ -390,8 +407,8 @@ fn write_chunk_records(
     bbox: [f64; 4],
 ) -> Result<Vec<ArtifactChunkRecord>, String> {
     let path = chunks_dir.join(format!("{chunk_id}.ndjson"));
-    let file =
-        File::create(&path).map_err(|err| format!("failed creating chunk {}: {err}", path.display()))?;
+    let file = File::create(&path)
+        .map_err(|err| format!("failed creating chunk {}: {err}", path.display()))?;
     let mut writer = BufWriter::new(file);
     let item_count = items.len();
     for item in items {
@@ -454,8 +471,13 @@ mod tests {
         )
         .expect("write source");
         let artifact_dir = tmp.path().join("artifact");
-        let out = build_geojson_artifact(&source, "sample", &artifact_dir, "private/mapserver/.artifacts/sample")
-            .expect("build artifact");
+        let out = build_geojson_artifact(
+            &source,
+            "sample",
+            &artifact_dir,
+            "private/mapserver/.artifacts/sample",
+        )
+        .expect("build artifact");
         assert_eq!(out.feature_count, 2);
         assert!(out.chunk_count >= 1);
         assert!(artifact_dir.join("manifest.json").exists());
@@ -504,6 +526,11 @@ mod tests {
         assert!(out.chunk_count > 1);
         let raw = fs::read_to_string(artifact_dir.join("manifest.json")).expect("manifest");
         let manifest: GeoJsonArtifactManifest = serde_json::from_str(&raw).expect("parse manifest");
-        assert!(manifest.chunks.iter().all(|chunk| chunk.item_count <= MAX_CHUNK_ITEMS));
+        assert!(
+            manifest
+                .chunks
+                .iter()
+                .all(|chunk| chunk.item_count <= MAX_CHUNK_ITEMS)
+        );
     }
 }

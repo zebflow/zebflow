@@ -8,14 +8,19 @@ import CardHeader from "@/components/ui/card-header";
 import CardContent from "@/components/ui/card-content";
 
 export const page = {
-  head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
-  },
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 export const app = {};
 

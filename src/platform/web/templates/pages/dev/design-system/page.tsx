@@ -44,6 +44,17 @@ export const page = {
   navigation: "history",
 };
 
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "Design System · Zebflow",
+      description:
+        input?.seo?.description ??
+        "Platform UI reference for platform developers and agents",
+    },
+  };
+}
+
 
 // ── Page-local helpers ────────────────────────────────────────────────────────
 

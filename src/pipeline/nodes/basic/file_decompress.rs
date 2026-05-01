@@ -102,14 +102,17 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--source-key".to_string(),
                 config_key: "source_key".to_string(),
-                description: "Dot-path to the source archive path in payload (default: saved.path)".to_string(),
+                description: "Dot-path to the source archive path in payload (default: saved.path)"
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
                 flag: "--output-dir".to_string(),
                 config_key: "output_dir".to_string(),
-                description: "Destination directory under files/{access}/. Defaults to extracted/<archive>".to_string(),
+                description:
+                    "Destination directory under files/{access}/. Defaults to extracted/<archive>"
+                        .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -133,7 +136,10 @@ pub fn definition() -> NodeDefinition {
                 name: "source_key".to_string(),
                 label: "Source Key".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Dot-path to the project-relative archive path in the input payload.".to_string()),
+                help: Some(
+                    "Dot-path to the project-relative archive path in the input payload."
+                        .to_string(),
+                ),
                 default_value: Some(json!("saved.path")),
                 ..Default::default()
             },
@@ -141,7 +147,10 @@ pub fn definition() -> NodeDefinition {
                 name: "output_dir".to_string(),
                 label: "Output Dir".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Destination under files/{access}/. Leave blank to use extracted/<archive>.".to_string()),
+                help: Some(
+                    "Destination under files/{access}/. Leave blank to use extracted/<archive>."
+                        .to_string(),
+                ),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -365,7 +374,10 @@ fn validate_format(format: &str) -> Result<(), PipelineError> {
     } else {
         Err(PipelineError::new(
             "FW_NODE_FILE_DECOMPRESS",
-            format!("unsupported archive format '{}'; first slice supports only tar.gz", format),
+            format!(
+                "unsupported archive format '{}'; first slice supports only tar.gz",
+                format
+            ),
         ))
     }
 }

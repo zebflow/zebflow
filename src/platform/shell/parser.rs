@@ -109,7 +109,7 @@ pub fn tokenize(s: &str) -> Vec<String> {
 /// Split DSL string into individual commands.
 /// Joins `\` line continuations and splits on `&&`.
 pub fn split_commands(dsl: &str) -> Vec<String> {
-    let joined = dsl.replace("\\\n", " ").replace("\\\r\n", " ");
+    let joined = dsl.replace("\\\r\n", "\n").replace("\\\n", "\n");
     joined
         .split("&&")
         .map(|s| s.trim().to_string())
@@ -128,18 +128,22 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "script" | "n.script" => Some("n.script"),
         "web.response" | "n.web.response" => Some("n.web.response"),
         "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
+        "web.docs.generate" | "n.web.docs.generate" => Some("n.web.docs.generate"),
         "http.request" | "n.http.request" => Some("n.http.request"),
-        "fanout" | "n.fanout" | "logic.branch" | "n.logic.branch" => Some("n.logic.branch"),
         "zebtune" | "n.zebtune" => Some("n.zebtune"),
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
-        "logic.switch" | "n.logic.switch" => Some("n.logic.switch"),
-        "logic.merge" | "n.logic.merge" => Some("n.logic.merge"),
+        "logic.match" | "n.logic.match" => Some("n.logic.match"),
+        "logic.collect" | "n.logic.collect" => Some("n.logic.collect"),
+        "logic.foreach" | "n.logic.foreach" => Some("n.logic.foreach"),
+        "logic.reduce" | "n.logic.reduce" => Some("n.logic.reduce"),
+        "logic.retry" | "n.logic.retry" => Some("n.logic.retry"),
         "trigger.ws" | "n.trigger.ws" => Some("n.trigger.ws"),
         "ws.emit" | "n.ws.emit" => Some("n.ws.emit"),
         "ws.sync_state" | "n.ws.sync_state" => Some("n.ws.sync_state"),
         "auth.token.create" | "n.auth.token.create" => Some("n.auth.token.create"),
         "crypto" | "n.crypto" => Some("n.crypto"),
         "ai.agent" | "n.ai.agent" => Some("n.ai.agent"),
+        "ai.tts" | "n.ai.tts" => Some("n.ai.tts"),
         "browser.run" | "n.browser.run" => Some("n.browser.run"),
         "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
         "trigger.function" | "n.trigger.function" => Some("n.trigger.function"),
@@ -166,14 +170,20 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             (vec![], vec!["out".to_string()])
         }
         "n.pg.query" | "n.sekejap.query" | "n.script" | "n.http.request" | "n.zebtune"
-        | "n.logic.branch" | "n.logic.merge" => (vec!["in".to_string()], vec!["out".to_string()]),
+        | "n.logic.collect" | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
+        "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "n.logic.retry" => (
+            vec!["in".to_string()],
+            vec!["retry".to_string(), "failed".to_string()],
+        ),
         "n.logic.if" => (
             vec!["in".to_string()],
             vec!["true".to_string(), "false".to_string()],
         ),
-        // n.logic.switch: output pins are dynamic (set per-instance from cases config).
+        // n.logic.match: output pins are dynamic (set per-instance from cases config).
         // Return just ["default"] as the fallback; actual pins are set after config is parsed.
-        "n.logic.switch" => (vec!["in".to_string()], vec!["default".to_string()]),
+        "n.logic.match" => (vec!["in".to_string()], vec!["default".to_string()]),
         "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.trigger.ws" => (vec![], vec!["out".to_string()]),
         "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
@@ -280,8 +290,18 @@ pub fn parse_node_config(
                 }
                 DslFlagKind::CommaSeparatedList => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
-                    let arr: Vec<Value> = val.split(',').map(|s| json!(s.trim())).collect();
-                    config.insert(dsl_flag.config_key.clone(), Value::Array(arr));
+                    let arr: Vec<Value> = val
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| json!(s))
+                        .collect();
+                    let entry = config
+                        .entry(dsl_flag.config_key.clone())
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Value::Array(existing) = entry {
+                        existing.extend(arr);
+                    }
                     i += 2;
                 }
                 DslFlagKind::Bool => {
@@ -496,7 +516,10 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
             // Extract body from raw string to preserve quoted values.
             let body = match find_first_pipe_in_raw(cmd) {
                 Some(pos) => cmd[pos..].to_string(),
-                None => String::new(),
+                None => cmd
+                    .find('[')
+                    .map(|pos| cmd[pos..].to_string())
+                    .unwrap_or_default(),
             };
             DslVerb::Run { body, dry_run }
         }
@@ -622,6 +645,68 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{DslVerb, build_pipeline_graph, parse_one_command, split_commands};
+
+    #[test]
+    fn logic_match_cases_accept_repeated_and_compact_forms() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.match --expr "$input.type" --cases create --cases update,delete --default unknown
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("parser-match-cases-test", dsl).expect("graph");
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "b")
+            .expect("match node");
+
+        assert_eq!(
+            node.config.get("cases"),
+            Some(&json!(["create", "update", "delete"]))
+        );
+        assert_eq!(
+            node.output_pins,
+            vec![
+                "create".to_string(),
+                "update".to_string(),
+                "delete".to_string(),
+                "unknown".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn split_commands_preserves_graph_mode_lines_for_run() {
+        let dsl = r#"
+run \
+  [a] trigger.manual \
+  [b] script -- "return { ok: true };" \
+  [a] -> [b]
+"#;
+
+        let commands = split_commands(dsl);
+        assert_eq!(commands.len(), 1);
+
+        let verb = parse_one_command(&commands[0]);
+        match verb {
+            DslVerb::Run { body, dry_run } => {
+                assert!(!dry_run);
+                let graph = build_pipeline_graph("graph-run-test", &body).expect("graph");
+                assert_eq!(graph.nodes.len(), 2);
+                assert_eq!(graph.edges.len(), 1);
+            }
+            other => panic!("expected run verb, got {other:?}"),
+        }
+    }
+}
+
 fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
     let rest = line
         .strip_prefix('[')
@@ -654,7 +739,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
             "n.script" => "source",
-            "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
+            "n.logic.match" | "n.logic.if" => "expression",
             "n.browser.run" => "code",
             _ => "body",
         };
@@ -662,8 +747,8 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
             map.insert(body_key.to_string(), json!(bval));
         }
     }
-    // For logic.switch, output pins are dynamic: the declared cases + the default pin.
-    if full_kind == "n.logic.switch" {
+    // For logic.match, output pins are dynamic: the declared cases + the default pin.
+    if full_kind == "n.logic.match" {
         if let Value::Object(ref map) = config {
             let cases: Vec<String> = map
                 .get("cases")
@@ -843,7 +928,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
         "n.pg.query" => "query",
         "n.sekejap.query" => "query",
         "n.script" => "source",
-        "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
+        "n.logic.match" | "n.logic.if" => "expression",
         _ => "body",
     };
     if let Some(body) = node.config.get(body_key).and_then(|v| v.as_str()) {
@@ -883,7 +968,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
             "n.script" => "source",
-            "n.logic.switch" | "n.logic.if" | "n.logic.branch" => "expression",
+            "n.logic.match" | "n.logic.if" => "expression",
             _ => "body",
         };
         if flag.config_key == body_key {
@@ -1067,8 +1152,8 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
             }
         }
 
-        // For logic.switch, output pins are dynamic: the declared cases + the default pin.
-        if full_kind == "n.logic.switch" {
+        // For logic.match, output pins are dynamic: the declared cases + the default pin.
+        if full_kind == "n.logic.match" {
             if let Value::Object(ref map) = config {
                 let cases: Vec<String> = map
                     .get("cases")

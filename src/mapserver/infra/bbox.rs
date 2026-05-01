@@ -31,12 +31,9 @@ pub fn geometry_bbox(geometry: &Value) -> Option<[f64; 4]> {
     let mut state: Option<[f64; 4]> = None;
     visit_coords(coords, &mut |lon, lat| {
         state = Some(match state {
-            Some([minx, miny, maxx, maxy]) => [
-                minx.min(lon),
-                miny.min(lat),
-                maxx.max(lon),
-                maxy.max(lat),
-            ],
+            Some([minx, miny, maxx, maxy]) => {
+                [minx.min(lon), miny.min(lat), maxx.max(lon), maxy.max(lat)]
+            }
             None => [lon, lat, lon, lat],
         });
     });

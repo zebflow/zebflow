@@ -8,14 +8,21 @@ import { useEffect, useState } from "zeb";
 
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
     links: [{ rel: "stylesheet", href: "/assets/platform/db-suite.css" }],
   },
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 const SOURCE_TYPES = [
   { value: "pipeline_with_dependencies", label: "Pipeline with dependencies", note: "Exports the pipeline plus referenced templates and local imports." },

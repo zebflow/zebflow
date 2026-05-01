@@ -103,7 +103,9 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> ZebflowJsonDistributionMarketplace {
-        self.read_or_default(owner, project).distribution.marketplace
+        self.read_or_default(owner, project)
+            .distribution
+            .marketplace
     }
 
     pub fn set_marketplace_distribution(
@@ -223,7 +225,10 @@ impl ZebflowJsonService {
         rel_path: &str,
     ) -> Result<bool, PlatformError> {
         let cfg = self.read_or_default(owner, project);
-        Ok(is_template_path_locked(&cfg.configs.locks.templates, rel_path))
+        Ok(is_template_path_locked(
+            &cfg.configs.locks.templates,
+            rel_path,
+        ))
     }
 
     /// Adds or removes `rel_path` from the locked templates list.

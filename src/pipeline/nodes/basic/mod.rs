@@ -3,6 +3,7 @@
 use crate::pipeline::NodeDefinition;
 
 pub mod agent;
+pub mod ai_tts;
 pub mod auth_token_create;
 pub mod browser_run;
 pub mod crypto;
@@ -28,8 +29,10 @@ pub mod sqlite_mutate;
 pub mod sqlite_query;
 pub mod trigger;
 mod util;
+pub mod web_docs_generate;
 pub mod web_response;
 pub mod web_static_generate;
+pub mod web_static_site;
 pub mod ws_emit;
 pub mod ws_sync_state;
 pub mod ws_trigger;
@@ -38,6 +41,7 @@ pub mod ws_trigger;
 pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
     let mut items = vec![
         agent::definition(),
+        ai_tts::definition(),
         auth_token_create::definition(),
         browser_run::definition(),
         file_compress::definition(),
@@ -67,13 +71,16 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         sqlite_query::definition(),
         pg_query::definition(),
         web_response::definition(),
+        web_docs_generate::definition(),
         web_static_generate::definition(),
         ws_sync_state::definition(),
         ws_emit::definition(),
         logic::if_::definition(),
-        logic::switch::definition(),
-        logic::branch::definition(),
-        logic::merge::definition(),
+        logic::match_::definition(),
+        logic::collect::definition(),
+        logic::foreach_::definition(),
+        logic::reduce::definition(),
+        logic::retry::definition(),
         crypto::definition(),
         trigger::weberror::definition(),
     ];
