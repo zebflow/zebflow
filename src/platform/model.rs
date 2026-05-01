@@ -1838,7 +1838,8 @@ impl ZebflowJsonUploads {
     }
 
     pub fn effective_webhook_body_max_mb(&self) -> u32 {
-        self.webhook_body_max_mb.clamp(default_webhook_body_max_mb(), 512)
+        self.webhook_body_max_mb
+            .clamp(default_webhook_body_max_mb(), 512)
     }
 }
 

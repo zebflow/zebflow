@@ -8,14 +8,21 @@ import { useEffect, useState } from "zeb";
 
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
     links: [{ rel: "stylesheet", href: "/assets/platform/db-suite.css" }],
   },
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 function requestJson(url, options = {}) {
   return fetch(url, {

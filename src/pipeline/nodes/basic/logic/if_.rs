@@ -1,6 +1,6 @@
 //! `n.logic.if` — binary branch node.
 //!
-//! Evaluates a JS expression against the input payload.
+//! Evaluates a DSL expression against the current execution scope.
 //! Emits to the `true` pin when truthy, `false` pin otherwise.
 
 use async_trait::async_trait;
@@ -10,6 +10,7 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
 };
+use crate::pipeline::expr::build_expression_scope_input;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -26,7 +27,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "If".to_string(),
         description:
-            "Evaluates a JS expression. Routes to `true` pin when truthy, `false` otherwise."
+            "Evaluates a DSL expression using $input/$trigger/$nodes. Routes to `true` pin when truthy, `false` otherwise."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
@@ -91,7 +92,16 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        let source = format!("return Boolean({});", config.expression);
+        let source = format!(
+            "var $input = input.$input;\n\
+             var $item = input.$item;\n\
+             var $index = input.$index;\n\
+             var $count = input.$count;\n\
+             var $trigger = input.$trigger || null;\n\
+             var $nodes = input.$nodes || {{}};\n\
+             return Boolean({});",
+            config.expression
+        );
         let module = ModuleSource {
             id: format!("logic.if:{node_id}"),
             source_path: None,
@@ -147,7 +157,7 @@ impl NodeHandler for Node {
             .language
             .run(
                 &self.compiled,
-                input.payload.clone(),
+                build_expression_scope_input(&input.payload, &input.metadata),
                 &crate::language::ExecutionContext {
                     project: input
                         .metadata

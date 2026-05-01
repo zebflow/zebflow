@@ -106,7 +106,7 @@ Label each node with `[id]`, then declare edges with `->`. Use for conditional r
 
 ```zf
 [a] trigger.webhook --path /ingest --method POST
-[b] logic.switch --expr "input.type" --cases normal,urgent --default other
+[b] logic.match --expr "input.type" --cases normal,urgent --default other
 [c] sekejap.query --table normal_queue --op upsert
 [d] http.request --url https://alert.svc/send --method POST
 [e] sekejap.query --table other_queue --op upsert

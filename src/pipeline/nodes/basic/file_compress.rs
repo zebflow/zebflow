@@ -286,7 +286,9 @@ impl NodeHandler for Node {
             if extra_rel.is_empty() {
                 return Err(PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
-                    format!("resolved extra source path is empty after sanitization for key '{extra_key}'"),
+                    format!(
+                        "resolved extra source path is empty after sanitization for key '{extra_key}'"
+                    ),
                 ));
             }
             if !source_paths.iter().any(|existing| existing == &extra_rel) {
@@ -328,16 +330,26 @@ impl NodeHandler for Node {
         let archive_abs_for_task = archive_abs.clone();
         let files_root_for_task = layout.files_dir.clone();
         tokio::task::spawn_blocking(move || {
-            compress_tar_gz(&files_root_for_task, &source_rels_for_task, &archive_abs_for_task)
+            compress_tar_gz(
+                &files_root_for_task,
+                &source_rels_for_task,
+                &archive_abs_for_task,
+            )
         })
         .await
         .map_err(|err| {
-            PipelineError::new("FW_NODE_FILE_COMPRESS", format!("archive task failed: {err}"))
+            PipelineError::new(
+                "FW_NODE_FILE_COMPRESS",
+                format!("archive task failed: {err}"),
+            )
         })??;
 
         let size = std::fs::metadata(&archive_abs)
             .map_err(|err| {
-                PipelineError::new("FW_NODE_FILE_COMPRESS", format!("read archive metadata: {err}"))
+                PipelineError::new(
+                    "FW_NODE_FILE_COMPRESS",
+                    format!("read archive metadata: {err}"),
+                )
             })?
             .len();
 
@@ -375,7 +387,11 @@ fn compress_tar_gz(
         ));
     }
     let mut command = Command::new("tar");
-    command.arg("-czf").arg(archive_abs).arg("-C").arg(files_root);
+    command
+        .arg("-czf")
+        .arg(archive_abs)
+        .arg("-C")
+        .arg(files_root);
     for source_rel in source_rels {
         command.arg(source_rel);
     }
@@ -408,7 +424,10 @@ fn validate_format(format: &str) -> Result<(), PipelineError> {
     } else {
         Err(PipelineError::new(
             "FW_NODE_FILE_COMPRESS",
-            format!("unsupported archive format '{}'; first slice supports only tar.gz", format),
+            format!(
+                "unsupported archive format '{}'; first slice supports only tar.gz",
+                format
+            ),
         ))
     }
 }
@@ -455,7 +474,10 @@ fn resolve_archive_leaf(configured: &str, source_rel_path: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or("bundle");
     let stem = sanitize_filename_stem(source_leaf);
-    format!("archives/{}.tar.gz", if stem.is_empty() { "bundle" } else { &stem })
+    format!(
+        "archives/{}.tar.gz",
+        if stem.is_empty() { "bundle" } else { &stem }
+    )
 }
 
 #[cfg(test)]

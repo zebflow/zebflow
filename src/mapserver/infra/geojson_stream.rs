@@ -78,7 +78,9 @@ where
             }
         }
         if !saw_type {
-            return Err(serde::de::Error::custom("GeoJSON missing type=FeatureCollection"));
+            return Err(serde::de::Error::custom(
+                "GeoJSON missing type=FeatureCollection",
+            ));
         }
         if !saw_features {
             return Err(serde::de::Error::custom("GeoJSON missing features array"));

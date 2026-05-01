@@ -50,7 +50,11 @@ impl GitIdentityService {
             };
             (name, email, source)
         } else {
-            (fallback_name(project_slug), fallback_email(project_slug), GitIdentitySource::Fallback)
+            (
+                fallback_name(project_slug),
+                fallback_email(project_slug),
+                GitIdentitySource::Fallback,
+            )
         };
 
         ResolvedGitIdentity {

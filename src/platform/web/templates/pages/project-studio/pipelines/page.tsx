@@ -11,8 +11,6 @@ import Checkbox from "@/components/ui/checkbox";
 import Badge from "@/components/ui/badge";
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
     ],
@@ -25,6 +23,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 
 function PipelineIcon({ className = "w-4 h-4" }) {

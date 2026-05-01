@@ -25,7 +25,7 @@ pub struct NodeExecutionInput {
 #[derive(Debug, Clone)]
 pub struct NodeExecutionOutput {
     /// Output pin(s) to route next edges.
-    /// Single-output nodes return one entry. Fanout nodes (e.g. logic.branch) return many.
+    /// Single-output nodes return one entry. Choice nodes return one named output pin.
     pub output_pins: Vec<String>,
     /// Output payload for downstream nodes.
     pub payload: Value,
@@ -48,6 +48,17 @@ pub trait NodeHandler: Send + Sync {
         &self,
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError>;
+
+    /// Executes node business logic and may emit multiple downstream outputs from one input.
+    ///
+    /// Default behavior wraps `execute_async` as a single emission so existing nodes do not
+    /// need any changes. Nodes like `n.logic.foreach` override this to emit many item runs.
+    async fn execute_many_async(
+        &self,
+        input: NodeExecutionInput,
+    ) -> Result<Vec<NodeExecutionOutput>, PipelineError> {
+        Ok(vec![self.execute_async(input).await?])
+    }
 
     /// Blocking wrapper for non-async call sites.
     fn execute(&self, input: NodeExecutionInput) -> Result<NodeExecutionOutput, PipelineError> {

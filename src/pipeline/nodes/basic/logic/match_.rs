@@ -1,6 +1,6 @@
-//! `n.logic.switch` — multi-case routing node.
+//! `n.logic.match` — multi-case routing node.
 //!
-//! Evaluates a JS expression to get a string value.
+//! Evaluates a DSL expression to get a string value.
 //! Routes to the matching case pin, or the default pin if no case matches.
 
 use async_trait::async_trait;
@@ -10,26 +10,27 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
     SourceKind,
 };
+use crate::pipeline::expr::build_expression_scope_input;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.logic.switch";
+pub const NODE_KIND: &str = "n.logic.match";
 pub const INPUT_PIN_IN: &str = "in";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Switch".to_string(),
+        title: "Match".to_string(),
         description:
-            "Evaluates expression to a string and routes to matching case pin, or default."
+            "Evaluates a DSL expression using $input/$trigger/$nodes and routes to matching case pin, or default."
                 .to_string(),
         input_schema: serde_json::json!({ "type": "object" }),
         output_schema: serde_json::json!({ "type": "object" }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
-        output_pins: vec![], // dynamic — defined per instance in the graph
+        output_pins: vec![],
         script_available: false,
         script_bridge: None,
         config_schema: Default::default(),
@@ -131,16 +132,25 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        let source = format!("return String({});", config.expression);
+        let source = format!(
+            "var $input = input.$input;\n\
+             var $item = input.$item;\n\
+             var $index = input.$index;\n\
+             var $count = input.$count;\n\
+             var $trigger = input.$trigger || null;\n\
+             var $nodes = input.$nodes || {{}};\n\
+             return String({});",
+            config.expression
+        );
         let module = ModuleSource {
-            id: format!("logic.switch:{node_id}"),
+            id: format!("logic.match:{node_id}"),
             source_path: None,
             kind: SourceKind::Tsx,
             code: source,
         };
         let ir = language.parse(&module).map_err(|e| {
             PipelineError::new(
-                "FW_NODE_LOGIC_SWITCH_PARSE",
+                "FW_NODE_LOGIC_MATCH_PARSE",
                 format!("node '{}': {}", node_id, e),
             )
         })?;
@@ -155,7 +165,7 @@ impl Node {
             )
             .map_err(|e| {
                 PipelineError::new(
-                    "FW_NODE_LOGIC_SWITCH_COMPILE",
+                    "FW_NODE_LOGIC_MATCH_COMPILE",
                     format!("node '{}': {}", node_id, e),
                 )
             })?;
@@ -188,7 +198,7 @@ impl NodeHandler for Node {
             .language
             .run(
                 &self.compiled,
-                input.payload.clone(),
+                build_expression_scope_input(&input.payload, &input.metadata),
                 &crate::language::ExecutionContext {
                     project: input
                         .metadata
@@ -218,7 +228,7 @@ impl NodeHandler for Node {
             )
             .map_err(|e| {
                 PipelineError::new(
-                    "FW_NODE_LOGIC_SWITCH_RUN",
+                    "FW_NODE_LOGIC_MATCH_RUN",
                     format!("node '{}': {}", self.node_id, e),
                 )
             })?;

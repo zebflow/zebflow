@@ -2,8 +2,6 @@ import { usePageState } from 'zeb';
 
 export const page = {
   head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
     scripts: [
       { src: "https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js" }
     ]
@@ -16,6 +14,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 export const app = (() => {
 function setInstall(ctx, tab, cmd) {

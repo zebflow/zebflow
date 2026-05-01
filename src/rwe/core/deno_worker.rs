@@ -20,12 +20,12 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use deno_core::v8;
 use deno_core::{
     FastString, JsRuntime, ModuleId, ModuleLoadOptions, ModuleLoadReferrer, ModuleLoadResponse,
     ModuleLoader, ModuleSource, ModuleSourceCode, ModuleSpecifier, ModuleType,
     PollEventLoopOptions, ResolutionKind, RuntimeOptions,
 };
-use deno_core::v8;
 use deno_error::JsErrorBox;
 use serde_json::Value;
 
@@ -301,11 +301,26 @@ async fn do_render_ssr(
            if (!__ns || typeof __ns.default !== 'function') {{ \
              throw new Error('RWE render target missing default export'); \
            }} \
+           function __mergePageConfig(base, dynamic) {{ \
+             if (!base || typeof base !== 'object') return dynamic; \
+             if (!dynamic || typeof dynamic !== 'object') return base; \
+             var out = {{}}; \
+             var key; \
+             for (key in base) out[key] = base[key]; \
+             for (key in dynamic) out[key] = dynamic[key]; \
+             if (base.head || dynamic.head) out.head = Object.assign({{}}, base.head || {{}}, dynamic.head || {{}}); \
+             if (base.html || dynamic.html) out.html = Object.assign({{}}, base.html || {{}}, dynamic.html || {{}}); \
+             if (base.body || dynamic.body) out.body = Object.assign({{}}, base.body || {{}}, dynamic.body || {{}}); \
+             return out; \
+           }} \
            var __html = globalThis.__rweRenderToString(\
              globalThis.__rweWrapWithPageState(__ns.default, {ctx_json})\
            ); \
-           var __cfg = (typeof __ns.page !== 'undefined' && __ns.page !== null) \
+           var __baseCfg = (typeof __ns.page !== 'undefined' && __ns.page !== null) \
              ? __ns.page : null; \
+           var __dynCfg = (typeof __ns.getPage === 'function') \
+             ? __ns.getPage(globalThis.input) : null; \
+           var __cfg = __mergePageConfig(__baseCfg, __dynCfg); \
            Deno.core.ops.op_rwe_store_result(JSON.stringify({{html: __html, page_config: __cfg}})); \
          }})()"
     );
@@ -653,6 +668,52 @@ mod tests {
         let second_render = render_ssr(second, &json!({}), 10_000).expect("second render");
         assert!(second_render.html.contains("SECOND_PAGE_ONLY"));
         assert!(!second_render.html.contains("FIRST_PAGE_ONLY"));
-        assert_eq!(second_render.page_config, Some(json!({ "title": "Second" })));
+        assert_eq!(
+            second_render.page_config,
+            Some(json!({ "title": "Second" }))
+        );
+    }
+
+    #[test]
+    fn render_ssr_merges_static_page_with_get_page_input() {
+        let source = r#"
+            export const page = {
+                html: { lang: "en" },
+                body: { className: "base-body" },
+                navigation: "history",
+            };
+            export function getPage(input) {
+                return {
+                    head: {
+                        title: `${input.artist} — ${input.song}`,
+                        description: `Lyrics for ${input.song}`,
+                    },
+                    body: { className: "dynamic-body" },
+                };
+            }
+            export default function Page(input) {
+                return <main>{input.song}</main>;
+            }
+        "#;
+
+        let render = render_ssr(
+            source,
+            &json!({ "artist": "Aurora", "song": "Runaway" }),
+            10_000,
+        )
+        .expect("render");
+        assert!(render.html.contains("Runaway"));
+        assert_eq!(
+            render.page_config,
+            Some(json!({
+                "head": {
+                    "title": "Aurora — Runaway",
+                    "description": "Lyrics for Runaway"
+                },
+                "html": { "lang": "en" },
+                "body": { "className": "dynamic-body" },
+                "navigation": "history"
+            }))
+        );
     }
 }

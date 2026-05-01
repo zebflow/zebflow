@@ -337,6 +337,19 @@ fn build_zeb_preamble(detected_libs: &[String], enabled_libraries: &[String]) ->
             out.push_str(&format!(
                 "const __{var} = await import('{url}');\nObject.assign(globalThis, __{var});\n"
             ));
+            if lib == "zeb/markdown" {
+                out.push_str(
+                    "globalThis.Markdown = function Markdown(props) {\n\
+                     const text = (props && props.content) || (typeof (props && props.children) === 'string' ? props.children : '') || '';\n\
+                     const extra = (props && (props.className || props.class)) || '';\n\
+                     const className = 'prose' + (extra ? ' ' + extra : '');\n\
+                     return h('div', {\n\
+                       className,\n\
+                       dangerouslySetInnerHTML: { __html: globalThis.renderMarkdown ? globalThis.renderMarkdown(text) : '' }\n\
+                     });\n\
+                   };\n",
+                );
+            }
         }
     }
     out

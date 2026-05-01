@@ -72,7 +72,10 @@ impl ClusterRegistryService {
             office_kind: "office".to_string(),
             base_url: record.base_url.clone(),
             status: record.status.clone(),
-            created_at: existing.as_ref().map(|value| value.registered_at).unwrap_or(now),
+            created_at: existing
+                .as_ref()
+                .map(|value| value.registered_at)
+                .unwrap_or(now),
             updated_at: now,
         })?;
         self.data.put_platform_office_node(&PlatformOfficeNode {
@@ -198,6 +201,10 @@ trait StringFallbackExt {
 
 impl StringFallbackExt for String {
     fn if_empty_then(self, fallback: String) -> String {
-        if self.trim().is_empty() { fallback } else { self }
+        if self.trim().is_empty() {
+            fallback
+        } else {
+            self
+        }
     }
 }

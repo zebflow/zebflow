@@ -20,10 +20,6 @@ const GITHUB_TOKEN_HELP =
   "In GitHub: Settings → Developer settings → Personal access tokens → Tokens (classic). Select the repo scope.";
 
 export const page = {
-  head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
-  },
   html: {
     lang: "en",
   },
@@ -32,6 +28,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 export default function Page(input) {
   const initialProjects = Array.isArray(input?.projects) ? input.projects : [];

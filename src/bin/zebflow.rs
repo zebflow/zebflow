@@ -21,10 +21,10 @@ use serde_json::Value;
 use zebflow::infra::cluster::config::ClusterRole;
 use zebflow::infra::execution::sync::ProjectBootstrapPlan;
 use zebflow::platform::model::CreateProjectRequest;
+use zebflow::platform::services::PlatformService;
 use zebflow::platform::services::project::{
     derive_trigger_kind_from_source, webhook_triggers_from_source,
 };
-use zebflow::platform::services::PlatformService;
 use zebflow::platform::web;
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
 use zebflow::provision::k8s as k8s_provision;
@@ -273,7 +273,9 @@ fn parse_remote_asset_ref(raw: &str) -> Option<RemoteAssetRef> {
         .path_segments()?
         .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
-    let remote_idx = segments.windows(2).position(|window| window == ["remote", "assets"])?;
+    let remote_idx = segments
+        .windows(2)
+        .position(|window| window == ["remote", "assets"])?;
     let package_id = segments.get(remote_idx + 2)?.to_string();
     let version = segments.get(remote_idx + 3)?.to_string();
     Some(RemoteAssetRef {
@@ -426,7 +428,12 @@ async fn install_remote_project_asset(
     let files = artifact
         .get("files")
         .and_then(Value::as_array)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "artifact.files must be an array"))?;
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "artifact.files must be an array",
+            )
+        })?;
 
     platform.projects.create_or_update_project(
         owner,
@@ -444,7 +451,12 @@ async fn install_remote_project_asset(
         let rel_path_raw = entry
             .get("rel_path")
             .and_then(Value::as_str)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "artifact entry missing rel_path"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "artifact entry missing rel_path",
+                )
+            })?;
         let rel_path = repo_rel_path(rel_path_raw)?;
         let dest_abs = layout.repo_dir.join(&rel_path);
         if let Some(parent) = dest_abs.parent() {
@@ -498,7 +510,8 @@ async fn install_remote_project_asset(
 }
 
 async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_platform_config_with_default_password(ClusterRole::Standalone, Some("secret"))?;
+    let config =
+        load_platform_config_with_default_password(ClusterRole::Standalone, Some("secret"))?;
 
     let remote = parse_remote_asset_ref(&req.target);
     let owner = req
@@ -545,7 +558,11 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     let port = configured_port();
     let app_url = format!(
         "http://{}:{}/wh/{owner}/{project}{}",
-        if host == "0.0.0.0" { "127.0.0.1" } else { host.as_str() },
+        if host == "0.0.0.0" {
+            "127.0.0.1"
+        } else {
+            host.as_str()
+        },
         port,
         public_path
     );

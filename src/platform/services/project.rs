@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::pipeline::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
@@ -23,7 +24,6 @@ use crate::platform::model::{
 };
 use crate::platform::services::project_config::ZebflowJsonService;
 use crate::platform::services::zeb_lock::ZebLockService;
-use crate::pipeline::PipelineGraph;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWebhookTrigger {
@@ -127,7 +127,9 @@ pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookT
                 node.config.get("path").and_then(serde_json::Value::as_str),
             ),
             method: canonical_webhook_method(
-                node.config.get("method").and_then(serde_json::Value::as_str),
+                node.config
+                    .get("method")
+                    .and_then(serde_json::Value::as_str),
             ),
         })
         .collect()
@@ -236,7 +238,10 @@ impl ProjectService {
         rel_path: &str,
         action: &str,
     ) -> Result<(), PlatformError> {
-        if self.zebflow_cfg.is_template_locked(owner, project, rel_path)? {
+        if self
+            .zebflow_cfg
+            .is_template_locked(owner, project, rel_path)?
+        {
             return Err(PlatformError::new(
                 "PLATFORM_TEMPLATE_LOCKED",
                 format!("template '{}' is locked and cannot be {}", rel_path, action),
@@ -471,7 +476,8 @@ impl ProjectService {
             if normalize_pipeline_file_rel_path(&meta.file_rel_path) == self_file_rel_path {
                 continue;
             }
-            let Ok(source) = self.read_pipeline_source(&owner, &project, &meta.file_rel_path) else {
+            let Ok(source) = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)
+            else {
                 continue;
             };
             let Some(existing) = webhook_triggers_from_source(&source) else {
@@ -1554,7 +1560,8 @@ impl ProjectService {
             Err(err) => (false, err.to_string()),
         };
         let branch = if is_work_tree {
-            self.get_repo_git_branch(&owner, &project).unwrap_or_default()
+            self.get_repo_git_branch(&owner, &project)
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -1608,9 +1615,7 @@ impl ProjectService {
             }
             ProjectGitRepairMode::Reinitialize | ProjectGitRepairMode::Reset => {
                 if layout.repo_git_dir.exists() {
-                    let backup = layout
-                        .root
-                        .join(format!("repo.git.broken.{}", now_ts()));
+                    let backup = layout.root.join(format!("repo.git.broken.{}", now_ts()));
                     fs::rename(&layout.repo_git_dir, backup)?;
                 }
                 init_git_repo(&layout.repo_dir)?;
@@ -2841,11 +2846,21 @@ mod tests {
         let runtime_pages = layout.data_runtime_pipelines_dir.join("pages");
         let files = std::fs::read_dir(&runtime_pages)
             .expect("runtime pages dir")
-            .map(|entry| entry.expect("dir entry").file_name().to_string_lossy().to_string())
+            .map(|entry| {
+                entry
+                    .expect("dir entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
             .filter(|name| name.starts_with("home."))
             .collect::<Vec<_>>();
 
-        assert_eq!(files.len(), 1, "expected exactly one runtime snapshot, got {files:?}");
+        assert_eq!(
+            files.len(),
+            1,
+            "expected exactly one runtime snapshot, got {files:?}"
+        );
         assert!(
             files[0].contains(meta_b.active_hash.as_deref().unwrap_or("")),
             "remaining snapshot should be the newest active hash"
@@ -3010,14 +3025,14 @@ mod tests {
         .expect("save first");
         let err = svc
             .upsert_pipeline_definition(
-            "superadmin",
-            "default",
-            "pipelines/pages/b.zf.json",
-            "B",
-            "",
-            "webhook",
-            source,
-        )
+                "superadmin",
+                "default",
+                "pipelines/pages/b.zf.json",
+                "B",
+                "",
+                "webhook",
+                source,
+            )
             .expect_err("second save should conflict");
         assert_eq!(err.code, "PLATFORM_PIPELINE_WEBHOOK_CONFLICT");
         assert!(err.message.contains("POST /same"));
@@ -3050,16 +3065,17 @@ mod tests {
   "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
 }"#;
 
-        let meta_a = svc.upsert_pipeline_definition(
-            "superadmin",
-            "default",
-            "pipelines/pages/a.zf.json",
-            "A",
-            "",
-            "webhook",
-            source,
-        )
-        .expect("save first");
+        let meta_a = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "pipelines/pages/a.zf.json",
+                "A",
+                "",
+                "webhook",
+                source,
+            )
+            .expect("save first");
 
         let layout = svc
             .file

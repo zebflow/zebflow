@@ -1,20 +1,23 @@
 export const page = {
-  head: {
-    title: "{{input.seo.title}}",
-    description: "{{input.seo.description}}",
-    links: [
-      { rel: "canonical", href: "{{input.seo.canonical}}" }
-    ],
-    meta: [
-      { property: "og:title", content: "{{input.seo.title}}" },
-      { property: "og:description", content: "{{input.seo.description}}" }
-    ]
-  },
   html: {
     lang: "en",
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+      canonical: input?.seo?.canonical ?? "",
+      og: {
+        title: input?.seo?.title ?? "",
+        description: input?.seo?.description ?? "",
+      },
+    },
+  };
+}
 
 export const app = (() => {
 return {

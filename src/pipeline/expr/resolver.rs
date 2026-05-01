@@ -15,9 +15,11 @@
 //! | Variable    | Contents                                                   |
 //! |-------------|-------------------------------------------------------------|
 //! | `$input`    | Current node's input payload                               |
+//! | `$item`     | Current foreach item (`input.item` when present)           |
+//! | `$index`    | Current foreach index (`input.index` when present)         |
+//! | `$count`    | Current foreach count (`input.count` when present)         |
 //! | `$trigger`  | Immutable trigger snapshot (`auth`, `params`, `query`, `headers`) |
 //! | `$nodes`    | Map of completed node IDs → their output payloads          |
-//! | `$ctx`      | `{ pipeline, request_id, trigger }`                        |
 //!
 //! # Type preservation
 //!
@@ -36,6 +38,18 @@ use crate::language::{
     SourceKind,
 };
 use crate::pipeline::PipelineError;
+
+/// Build the flat DSL expression scope used by config expressions and logic nodes.
+pub fn build_expression_scope_input(input: &Value, metadata: &Value) -> Value {
+    json!({
+        "$input":   input,
+        "$item":    input.get("item").cloned().unwrap_or(Value::Null),
+        "$index":   input.get("index").cloned().unwrap_or(Value::Null),
+        "$count":   input.get("count").cloned().unwrap_or(Value::Null),
+        "$trigger": metadata.get("trigger").cloned().unwrap_or(Value::Null),
+        "$nodes":   metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+    })
+}
 
 /// Resolve all `{{ expr }}` expressions in `config` and return the mutated copy.
 ///
@@ -69,9 +83,11 @@ pub fn resolve_config_expressions(
     // instrumentation.
     let mut body = String::from(
         "var $input = input.$input;\n\
+         var $item = input.$item;\n\
+         var $index = input.$index;\n\
+         var $count = input.$count;\n\
          var $trigger = input.$trigger || null;\n\
-         var $nodes = input.$nodes || {};\n\
-         var $ctx = input.$ctx || {};\n",
+         var $nodes = input.$nodes || {};\n",
     );
     for (i, expr) in exprs.iter().enumerate() {
         body.push_str(&format!("var _e{i} = null;\n"));
@@ -107,16 +123,7 @@ pub fn resolve_config_expressions(
 
     // Build the scope input: all variables are namespaced under `$` keys so
     // they don't collide with any `input` fields the user might have.
-    let scope_input = json!({
-        "$input":   input,
-        "$trigger": metadata.get("trigger").cloned().unwrap_or(Value::Null),
-        "$nodes":   metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
-        "$ctx": {
-            "pipeline":   metadata.get("pipeline").and_then(Value::as_str).unwrap_or_default(),
-            "request_id": metadata.get("request_id").and_then(Value::as_str).unwrap_or_default(),
-            "trigger":    metadata.get("trigger").cloned().unwrap_or(Value::Null),
-        },
-    });
+    let scope_input = build_expression_scope_input(input, metadata);
 
     // Build execution context with expression-mode sandbox patch.
     // capabilities: [] → n is Object.freeze({}) — no n.* bridge at all.

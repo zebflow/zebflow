@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 
 pub fn parse_bbox_param(params: &HashMap<String, String>) -> Result<Option<[f64; 4]>, String> {
-    let Some(raw) = params.get("bbox").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+    let Some(raw) = params
+        .get("bbox")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
         return Ok(None);
     };
     let parts = raw
@@ -20,8 +24,13 @@ pub fn parse_limit_param(
     params: &HashMap<String, String>,
     default_limit: usize,
 ) -> Result<usize, String> {
-    let Some(raw) = params.get("limit").map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+    let Some(raw) = params
+        .get("limit")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    else {
         return Ok(default_limit);
     };
-    raw.parse::<usize>().map_err(|_| "invalid limit".to_string())
+    raw.parse::<usize>()
+        .map_err(|_| "invalid limit".to_string())
 }

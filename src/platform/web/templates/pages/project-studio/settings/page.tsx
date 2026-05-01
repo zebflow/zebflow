@@ -16,10 +16,6 @@ import Field from "@/components/ui/field";
 import { Select, SelectOption } from "@/components/ui/select";
 
 export const page = {
-  head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
-  },
   html: {
     lang: "en",
   },
@@ -28,6 +24,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
 

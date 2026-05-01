@@ -104,12 +104,19 @@ impl PlatformOps {
         );
 
         fn doc(path: &str) -> String {
-            crate::platform::help::get_help(path)
-                .unwrap_or_else(|err| format!("# Missing Help\n\nRequested `{path}` but failed to load it.\n\n```\n{err}\n```"))
+            crate::platform::help::get_help(path).unwrap_or_else(|err| {
+                format!(
+                    "# Missing Help\n\nRequested `{path}` but failed to load it.\n\n```\n{err}\n```"
+                )
+            })
         }
 
         fn join_docs(paths: &[&str]) -> String {
-            paths.iter().map(|path| doc(path)).collect::<Vec<_>>().join("\n\n---\n\n")
+            paths
+                .iter()
+                .map(|path| doc(path))
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
         }
 
         fn section(
@@ -133,14 +140,24 @@ impl PlatformOps {
                 doc("guide"),
                 vec![
                     section("start-here", "Start Here", start_here, vec![]),
-                    section("zebflow-overview", "Zebflow Overview", doc("guide/overview"), vec![]),
+                    section(
+                        "zebflow-overview",
+                        "Zebflow Overview",
+                        doc("guide/overview"),
+                        vec![],
+                    ),
                     section(
                         "pipelines-and-templates",
                         "Pipelines + Templates",
                         join_docs(&["guide/pipelines-templates", "pipeline/index"]),
                         vec![],
                     ),
-                    section("simple-blog", "Simple Blog", doc("guide/simple-blog"), vec![]),
+                    section(
+                        "simple-blog",
+                        "Simple Blog",
+                        doc("guide/simple-blog"),
+                        vec![],
+                    ),
                 ],
             ),
             section(
@@ -177,12 +194,7 @@ impl PlatformOps {
                 "Databases",
                 join_docs(&["db/index"]),
                 vec![
-                    section(
-                        "sekejap",
-                        "Sekejap",
-                        join_docs(&["db/sekejap"]),
-                        vec![],
-                    ),
+                    section("sekejap", "Sekejap", join_docs(&["db/sekejap"]), vec![]),
                     section("sqlite", "SQLite", doc("guide/sqlite"), vec![]),
                     section("mapserver", "MapServer", doc("guide/mapserver"), vec![]),
                 ],
@@ -976,11 +988,12 @@ impl PlatformOps {
     }
 
     pub fn pipeline_get_invocations(&self, file_rel_path: &str) -> OpsResult {
-        match self
-            .platform
-            .data
-            .get_pipeline_invocations(&self.owner, &self.project, file_rel_path, None)
-        {
+        match self.platform.data.get_pipeline_invocations(
+            &self.owner,
+            &self.project,
+            file_rel_path,
+            None,
+        ) {
             Ok(entries) if entries.is_empty() => OpsResult::ok(format!(
                 "No invocations recorded for '{}'.\n\nNote: invocations are stored per pipeline run. Try running or executing the pipeline first.",
                 file_rel_path
@@ -1987,7 +2000,7 @@ fn extract_pipeline_node(source: &str, node_id: &str, file_rel_path: &str) -> Op
 /// Format a DB describe result as compact LLM-readable text.
 ///
 /// Output example:
-/// ```
+/// ```text
 /// # mydb (postgresql) — scope: tables
 ///
 /// public.users

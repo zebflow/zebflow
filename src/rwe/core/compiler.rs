@@ -1291,10 +1291,8 @@ export default function DemoPage() {
 
     #[test]
     fn prepare_path_rewrite_is_not_required_for_zeb_imports() {
-        let root = std::env::temp_dir().join(format!(
-            "rwe-zeb-rewrite-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rwe-zeb-rewrite-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create temp root");
 
@@ -1316,17 +1314,18 @@ export default function Page() { return <div />; }"#;
     #[cfg(unix)]
     #[test]
     fn canonical_module_identity_collapses_symlink_aliases() {
-        let root = std::env::temp_dir().join(format!(
-            "rwe-canonical-module-test-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rwe-canonical-module-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("create temp root");
 
         let target = root.join("real.tsx");
         let alias = root.join("alias.tsx");
-        fs::write(&target, "export default function Real() { return <div />; }")
-            .expect("write real file");
+        fs::write(
+            &target,
+            "export default function Real() { return <div />; }",
+        )
+        .expect("write real file");
         symlink(&target, &alias).expect("create symlink");
 
         let real = canonical_module_identity(target.to_str().expect("real path utf8"))

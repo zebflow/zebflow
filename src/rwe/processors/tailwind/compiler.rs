@@ -2642,7 +2642,9 @@ mod tests {
     #[test]
     fn font_display_utility_uses_global_font_token() {
         let css = token_css_rule("font-display").expect("font-display rule");
-        assert!(css.contains(".font-display{font-family:var(--font-display, ui-sans-serif, system-ui, sans-serif);}"));
+        assert!(css.contains(
+            ".font-display{font-family:var(--font-display, ui-sans-serif, system-ui, sans-serif);}"
+        ));
         assert!(!css.contains("--zebflow-font-display"));
         assert!(!css.contains(", display)"));
     }

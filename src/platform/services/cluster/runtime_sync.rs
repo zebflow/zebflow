@@ -18,8 +18,8 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, PlatformUser, PlatformUserLocalAuth, ProjectRuntimeMaterializationRequest,
-    StoredUser, now_ts, slug_segment,
+    CreateProjectRequest, PlatformUser, PlatformUserLocalAuth,
+    ProjectRuntimeMaterializationRequest, StoredUser, now_ts, slug_segment,
 };
 use crate::platform::services::{PipelineRuntimeService, ProjectService, ZebflowJsonService};
 

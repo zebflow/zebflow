@@ -163,7 +163,11 @@ impl PipelineScheduler {
                     .and_then(|retention| retention.max_invocations)
                     .map(|value| value.max(1) as usize)
                     .unwrap_or_else(|| {
-                        project_cfg.configs.pipelines.logging.effective_max_invocations()
+                        project_cfg
+                            .configs
+                            .pipelines
+                            .logging
+                            .effective_max_invocations()
                     });
                 let max_age_secs = pipeline_retention
                     .and_then(|retention| retention.max_age_secs)

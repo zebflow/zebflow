@@ -16,8 +16,6 @@ import ConfirmDialog from "@/components/ui/confirm-dialog";
 
 export const page = {
   head: {
-    title: ctx?.seo?.title ?? "",
-    description: ctx?.seo?.description ?? "",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-suite.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
@@ -31,6 +29,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "",
+      description: input?.seo?.description ?? "",
+    },
+  };
+}
 
 const INDEX_OPTIONS_BY_KIND = {
   string: [

@@ -345,9 +345,9 @@ impl MarketplaceService {
                 "token title and publisher id must not be empty",
             ));
         }
-        let Some(publisher) = self
-            .data
-            .get_marketplace_publisher(&owner, &project, &publisher_id)?
+        let Some(publisher) =
+            self.data
+                .get_marketplace_publisher(&owner, &project, &publisher_id)?
         else {
             return Err(PlatformError::new(
                 "MARKETPLACE_PUBLISHER_MISSING",
@@ -391,13 +391,22 @@ impl MarketplaceService {
         Ok((token, plain))
     }
 
-    pub fn list_tokens(&self, owner: &str, project: &str) -> Result<Vec<MarketplaceToken>, PlatformError> {
+    pub fn list_tokens(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<MarketplaceToken>, PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.data.list_marketplace_tokens(&owner, &project)
     }
 
-    pub fn revoke_token(&self, owner: &str, project: &str, token_id: &str) -> Result<(), PlatformError> {
+    pub fn revoke_token(
+        &self,
+        owner: &str,
+        project: &str,
+        token_id: &str,
+    ) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let Some(mut token) = self.data.get_marketplace_token(token_id)? else {
@@ -452,7 +461,8 @@ impl MarketplaceService {
             ));
         }
         let uses_direct_base = is_direct_marketplace_base(base_url);
-        if !uses_direct_base && (remote_owner.trim().is_empty() || remote_project.trim().is_empty()) {
+        if !uses_direct_base && (remote_owner.trim().is_empty() || remote_project.trim().is_empty())
+        {
             return Err(PlatformError::new(
                 "MARKETPLACE_REPOSITORY_INVALID",
                 "remote owner and project are required unless base_url already points to /api/projects/{owner}/{project}/marketplace",
@@ -488,8 +498,16 @@ impl MarketplaceService {
                 title.trim().to_string()
             },
             base_url: base_url.trim().trim_end_matches('/').to_string(),
-            remote_owner: if uses_direct_base { String::new() } else { slug_segment(remote_owner) },
-            remote_project: if uses_direct_base { String::new() } else { slug_segment(remote_project) },
+            remote_owner: if uses_direct_base {
+                String::new()
+            } else {
+                slug_segment(remote_owner)
+            },
+            remote_project: if uses_direct_base {
+                String::new()
+            } else {
+                slug_segment(remote_project)
+            },
             read_token: preserve_or_replace_token(
                 existing.as_ref().map(|item| item.read_token.as_str()),
                 read_token,
@@ -519,7 +537,10 @@ impl MarketplaceService {
             return Ok(());
         }
         let existing = self.data.list_platform_marketplace_repositories(&owner)?;
-        if existing.iter().any(|item| item.repository_id == "zebflow-com") {
+        if existing
+            .iter()
+            .any(|item| item.repository_id == "zebflow-com")
+        {
             return Ok(());
         }
         let now = now_ts();
@@ -528,20 +549,21 @@ impl MarketplaceService {
             .get_user_auth(&owner)?
             .map(|user| user.profile.user_id)
             .ok_or_else(|| PlatformError::new("PLATFORM_USER_NOT_FOUND", "owner user not found"))?;
-        self.data.put_platform_marketplace_repository(&PlatformMarketplaceRepository {
-            source_id: format!("pmr_{}", random_hex(8)),
-            owner_user_id,
-            owner,
-            repository_id: "zebflow-com".to_string(),
-            title: "Zebflow Marketplace".to_string(),
-            base_url: default_marketplace_base_url(),
-            remote_owner: String::new(),
-            remote_project: String::new(),
-            read_token: String::new(),
-            enabled: true,
-            created_at: now,
-            updated_at: now,
-        })?;
+        self.data
+            .put_platform_marketplace_repository(&PlatformMarketplaceRepository {
+                source_id: format!("pmr_{}", random_hex(8)),
+                owner_user_id,
+                owner,
+                repository_id: "zebflow-com".to_string(),
+                title: "Zebflow Marketplace".to_string(),
+                base_url: default_marketplace_base_url(),
+                remote_owner: String::new(),
+                remote_project: String::new(),
+                read_token: String::new(),
+                enabled: true,
+                created_at: now,
+                updated_at: now,
+            })?;
         Ok(())
     }
 
@@ -571,7 +593,8 @@ impl MarketplaceService {
             ));
         }
         let uses_direct_base = is_direct_marketplace_base(base_url);
-        if !uses_direct_base && (remote_owner.trim().is_empty() || remote_project.trim().is_empty()) {
+        if !uses_direct_base && (remote_owner.trim().is_empty() || remote_project.trim().is_empty())
+        {
             return Err(PlatformError::new(
                 "MARKETPLACE_REPOSITORY_INVALID",
                 "remote owner and project are required unless base_url already points to /api/projects/{owner}/{project}/marketplace",
@@ -593,8 +616,16 @@ impl MarketplaceService {
                 title.trim().to_string()
             },
             base_url: base_url.trim().trim_end_matches('/').to_string(),
-            remote_owner: if uses_direct_base { String::new() } else { slug_segment(remote_owner) },
-            remote_project: if uses_direct_base { String::new() } else { slug_segment(remote_project) },
+            remote_owner: if uses_direct_base {
+                String::new()
+            } else {
+                slug_segment(remote_owner)
+            },
+            remote_project: if uses_direct_base {
+                String::new()
+            } else {
+                slug_segment(remote_project)
+            },
             read_token: preserve_or_replace_token(
                 existing.as_ref().map(|item| item.read_token.as_str()),
                 read_token,
@@ -627,13 +658,19 @@ impl MarketplaceService {
     ) -> Result<MarketplaceToken, PlatformError> {
         let token_value = bearer_token.trim();
         if token_value.is_empty() {
-            return Err(PlatformError::new("MARKETPLACE_TOKEN_INVALID", "token missing"));
+            return Err(PlatformError::new(
+                "MARKETPLACE_TOKEN_INVALID",
+                "token missing",
+            ));
         }
         let token_hash = sha256_hex(token_value.as_bytes());
         let mut matched = None;
         for owner in self.data.list_users()? {
             for project in self.data.list_projects(&owner.owner)? {
-                for token in self.data.list_marketplace_tokens(&owner.owner, &project.project)? {
+                for token in self
+                    .data
+                    .list_marketplace_tokens(&owner.owner, &project.project)?
+                {
                     if token.secret_hash == token_hash {
                         matched = Some(token);
                         break;
@@ -648,19 +685,31 @@ impl MarketplaceService {
             }
         }
         let Some(mut token) = matched else {
-            return Err(PlatformError::new("MARKETPLACE_TOKEN_INVALID", "token not found"));
+            return Err(PlatformError::new(
+                "MARKETPLACE_TOKEN_INVALID",
+                "token not found",
+            ));
         };
         if token.revoked_at.is_some() {
-            return Err(PlatformError::new("MARKETPLACE_TOKEN_REVOKED", "token revoked"));
+            return Err(PlatformError::new(
+                "MARKETPLACE_TOKEN_REVOKED",
+                "token revoked",
+            ));
         }
         if let Some(expires_at) = token.expires_at
             && expires_at > 0
             && expires_at <= now_ts()
         {
-            return Err(PlatformError::new("MARKETPLACE_TOKEN_EXPIRED", "token expired"));
+            return Err(PlatformError::new(
+                "MARKETPLACE_TOKEN_EXPIRED",
+                "token expired",
+            ));
         }
         if !token.grants_scope(required_scope) {
-            return Err(PlatformError::new("MARKETPLACE_TOKEN_FORBIDDEN", "scope missing"));
+            return Err(PlatformError::new(
+                "MARKETPLACE_TOKEN_FORBIDDEN",
+                "scope missing",
+            ));
         }
         token.last_used_at = Some(now_ts());
         token.updated_at = now_ts();
@@ -754,8 +803,12 @@ impl MarketplaceService {
         let source_type = normalize_source_type(source_type);
         let layout = self.projects.project_layout(&owner, &project)?;
         match source_type.as_str() {
-            "pipeline_with_dependencies" => self.preview_pipeline(&owner, &project, &layout, source_ref),
-            "template_with_dependencies" => self.preview_template(&owner, &project, &layout, source_ref),
+            "pipeline_with_dependencies" => {
+                self.preview_pipeline(&owner, &project, &layout, source_ref)
+            }
+            "template_with_dependencies" => {
+                self.preview_template(&owner, &project, &layout, source_ref)
+            }
             "folder_files" => self.preview_folder(&layout, source_ref),
             "project_files" => self.preview_project(&layout),
             _ => Err(PlatformError::new(
@@ -806,9 +859,11 @@ impl MarketplaceService {
                 "authority, publisher, and source must not be empty",
             ));
         }
-        let Some(publisher) = self
-            .data
-            .get_marketplace_publisher(&authority_owner, &authority_project, &publisher_id)?
+        let Some(publisher) = self.data.get_marketplace_publisher(
+            &authority_owner,
+            &authority_project,
+            &publisher_id,
+        )?
         else {
             return Err(PlatformError::new(
                 "MARKETPLACE_PUBLISHER_MISSING",
@@ -942,7 +997,10 @@ impl MarketplaceService {
     ) -> Result<MarketplaceInstallResult, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
-        let Some(version_row) = self.data.get_marketplace_asset_version(package_id, version)? else {
+        let Some(version_row) = self
+            .data
+            .get_marketplace_asset_version(package_id, version)?
+        else {
             return Err(PlatformError::new(
                 "MARKETPLACE_ASSET_MISSING",
                 "asset version not found",
@@ -952,7 +1010,9 @@ impl MarketplaceService {
         let raw = fs::read_to_string(&artifact_abs)?;
         let payload: MarketplaceArtifact = serde_json::from_str(&raw)
             .map_err(|err| PlatformError::new("MARKETPLACE_INSTALL", err.to_string()))?;
-        let layout = self.projects.project_layout(&target_owner, &target_project)?;
+        let layout = self
+            .projects
+            .project_layout(&target_owner, &target_project)?;
 
         let mut pipelines_registered = Vec::new();
         for entry in &payload.files {
@@ -992,7 +1052,10 @@ impl MarketplaceService {
         package_id: &str,
         version: &str,
     ) -> Result<(MarketplaceAssetVersion, Value), PlatformError> {
-        let Some(version_row) = self.data.get_marketplace_asset_version(package_id, version)? else {
+        let Some(version_row) = self
+            .data
+            .get_marketplace_asset_version(package_id, version)?
+        else {
             return Err(PlatformError::new(
                 "MARKETPLACE_ASSET_MISSING",
                 "asset version not found",
@@ -1030,9 +1093,11 @@ impl MarketplaceService {
                 "authority, publisher, package id, and version must not be empty",
             ));
         }
-        let Some(publisher) = self
-            .data
-            .get_marketplace_publisher(&authority_owner, &authority_project, &publisher_id)?
+        let Some(publisher) = self.data.get_marketplace_publisher(
+            &authority_owner,
+            &authority_project,
+            &publisher_id,
+        )?
         else {
             return Err(PlatformError::new(
                 "MARKETPLACE_PUBLISHER_MISSING",
@@ -1151,24 +1216,29 @@ impl MarketplaceService {
                 .json()
                 .await
                 .map_err(|err| PlatformError::new("MARKETPLACE_REMOTE_FETCH", err.to_string()))?;
-            out.extend(payload.items.into_iter().map(|item| MarketplaceRemotePackRow {
-                repository_id: repo.repository_id.clone(),
-                repository_title: repo.title.clone(),
-                package_id: item.package_id,
-                publisher_owner: item.publisher_owner,
-                publisher_id: item.publisher_id,
-                publisher_display_name: item.publisher_display_name,
-                publisher_url: item.publisher_url,
-                publisher_email: item.publisher_email,
-                asset_kind: item.asset_kind,
-                title: item.title,
-                description: item.description,
-                visibility: item.visibility,
-                tags: item.tags,
-                latest_version: item.latest_version,
-                updated_at: item.updated_at,
-                source: "remote".to_string(),
-            }));
+            out.extend(
+                payload
+                    .items
+                    .into_iter()
+                    .map(|item| MarketplaceRemotePackRow {
+                        repository_id: repo.repository_id.clone(),
+                        repository_title: repo.title.clone(),
+                        package_id: item.package_id,
+                        publisher_owner: item.publisher_owner,
+                        publisher_id: item.publisher_id,
+                        publisher_display_name: item.publisher_display_name,
+                        publisher_url: item.publisher_url,
+                        publisher_email: item.publisher_email,
+                        asset_kind: item.asset_kind,
+                        title: item.title,
+                        description: item.description,
+                        visibility: item.visibility,
+                        tags: item.tags,
+                        latest_version: item.latest_version,
+                        updated_at: item.updated_at,
+                        source: "remote".to_string(),
+                    }),
+            );
         }
         Ok(out)
     }
@@ -1197,24 +1267,30 @@ impl MarketplaceService {
                 Ok(payload) => payload,
                 Err(_) => continue,
             };
-            out.extend(payload.items.into_iter().filter(|item| item.asset_kind == "project_bundle").map(|item| MarketplaceRemotePackRow {
-                repository_id: repo.repository_id.clone(),
-                repository_title: repo.title.clone(),
-                package_id: item.package_id,
-                publisher_owner: item.publisher_owner,
-                publisher_id: item.publisher_id,
-                publisher_display_name: item.publisher_display_name,
-                publisher_url: item.publisher_url,
-                publisher_email: item.publisher_email,
-                asset_kind: item.asset_kind,
-                title: item.title,
-                description: item.description,
-                visibility: item.visibility,
-                tags: item.tags,
-                latest_version: item.latest_version,
-                updated_at: item.updated_at,
-                source: "remote".to_string(),
-            }));
+            out.extend(
+                payload
+                    .items
+                    .into_iter()
+                    .filter(|item| item.asset_kind == "project_bundle")
+                    .map(|item| MarketplaceRemotePackRow {
+                        repository_id: repo.repository_id.clone(),
+                        repository_title: repo.title.clone(),
+                        package_id: item.package_id,
+                        publisher_owner: item.publisher_owner,
+                        publisher_id: item.publisher_id,
+                        publisher_display_name: item.publisher_display_name,
+                        publisher_url: item.publisher_url,
+                        publisher_email: item.publisher_email,
+                        asset_kind: item.asset_kind,
+                        title: item.title,
+                        description: item.description,
+                        visibility: item.visibility,
+                        tags: item.tags,
+                        latest_version: item.latest_version,
+                        updated_at: item.updated_at,
+                        source: "remote".to_string(),
+                    }),
+            );
         }
         Ok(out)
     }
@@ -1232,15 +1308,11 @@ impl MarketplaceService {
             .list_repositories(target_owner, target_project)?
             .into_iter()
             .find(|item| item.repository_id == repository_id)
-            .ok_or_else(|| PlatformError::new("MARKETPLACE_REPOSITORY_MISSING", "repository not found"))?;
-        let url = remote_marketplace_url(
-            &repo,
-            &format!(
-                "remote/assets/{}/{}",
-                package_id,
-                version
-            ),
-        );
+            .ok_or_else(|| {
+                PlatformError::new("MARKETPLACE_REPOSITORY_MISSING", "repository not found")
+            })?;
+        let url =
+            remote_marketplace_url(&repo, &format!("remote/assets/{}/{}", package_id, version));
         let mut req = http_client.get(url);
         if !repo.read_token.trim().is_empty() {
             req = req.bearer_auth(repo.read_token.trim());
@@ -1360,7 +1432,9 @@ impl MarketplaceService {
             .list_platform_repositories(&owner)?
             .into_iter()
             .find(|item| item.repository_id == repository_id)
-            .ok_or_else(|| PlatformError::new("MARKETPLACE_REPOSITORY_MISSING", "repository not found"))?;
+            .ok_or_else(|| {
+                PlatformError::new("MARKETPLACE_REPOSITORY_MISSING", "repository not found")
+            })?;
         let url = remote_marketplace_url_for_platform(
             &repo,
             &format!("remote/assets/{}/{}", package_id, version),
@@ -1549,7 +1623,10 @@ impl MarketplaceService {
             "template_with_dependencies".to_string(),
             selected.rel_path.clone(),
             selected.name,
-            format!("Template export with {} local dependencies", entries.len().saturating_sub(1)),
+            format!(
+                "Template export with {} local dependencies",
+                entries.len().saturating_sub(1)
+            ),
             entries,
             warnings,
         ))
@@ -1636,7 +1713,10 @@ impl MarketplaceService {
                 )?,
                 None => {
                     if src.starts_with("@/") || src.starts_with('.') {
-                        warnings.push(format!("Skipped unresolved local import '{}' from '{}'", src, normalized));
+                        warnings.push(format!(
+                            "Skipped unresolved local import '{}' from '{}'",
+                            src, normalized
+                        ));
                     }
                 }
             }
@@ -1751,7 +1831,6 @@ fn sanitize_install_repo_path(
     Ok(abs)
 }
 
-
 fn build_preview(
     asset_kind: String,
     source_type: String,
@@ -1849,7 +1928,10 @@ fn sha256_hex(input: &[u8]) -> String {
 }
 
 fn normalize_repo_rel(input: &str) -> String {
-    let trimmed = input.trim().trim_start_matches("./").trim_start_matches('/');
+    let trimmed = input
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/');
     trimmed.replace('\\', "/")
 }
 
@@ -1904,8 +1986,7 @@ fn list_repo_folders(layout: &ProjectFileLayout) -> Result<Vec<String>, Platform
 }
 
 fn walk_dirs(root: &Path, current: &Path, out: &mut Vec<String>) -> Result<(), PlatformError> {
-    let mut entries = fs::read_dir(current)?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|item| item.path());
     for entry in entries {
         let path = entry.path();
@@ -1953,14 +2034,13 @@ fn collect_tree_entries(
 
 fn walk_files(root: &Path, current: &Path, out: &mut Vec<String>) -> Result<(), PlatformError> {
     if current.is_file() {
-        let rel = current
-            .strip_prefix(root)
-            .map_err(|_| PlatformError::new("MARKETPLACE_SOURCE_INVALID", "path escaped repo root"))?;
+        let rel = current.strip_prefix(root).map_err(|_| {
+            PlatformError::new("MARKETPLACE_SOURCE_INVALID", "path escaped repo root")
+        })?;
         out.push(rel.to_string_lossy().replace('\\', "/"));
         return Ok(());
     }
-    let mut entries = fs::read_dir(current)?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(|item| item.path());
     for entry in entries {
         let path = entry.path();
@@ -1989,7 +2069,9 @@ fn resolve_local_import(
     let candidates = if let Some(rest) = import_src.strip_prefix("@/") {
         candidate_paths(rest)
     } else if import_src.starts_with('.') {
-        let parent = Path::new(from_rel).parent().unwrap_or_else(|| Path::new(""));
+        let parent = Path::new(from_rel)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
         let joined = parent.join(import_src);
         let rel = joined.to_string_lossy().replace('\\', "/");
         candidate_paths(&rel)
@@ -1998,10 +2080,9 @@ fn resolve_local_import(
     };
     for rel in candidates {
         let rel = normalize_repo_rel(&rel);
-        let abs = layout.repo_pipelines_dir.join(
-            rel.strip_prefix("pipelines/")
-                .unwrap_or(rel.as_str()),
-        );
+        let abs = layout
+            .repo_pipelines_dir
+            .join(rel.strip_prefix("pipelines/").unwrap_or(rel.as_str()));
         if abs.is_file() {
             return Some(normalize_template_repo_rel(&rel));
         }
@@ -2020,7 +2101,13 @@ fn candidate_paths(base: &str) -> Vec<String> {
         for ext in [".tsx", ".ts", ".jsx", ".js", ".css", ".sql", ".json"] {
             out.push(format!("{base}{ext}"));
         }
-        for ext in ["index.tsx", "index.ts", "index.jsx", "index.js", "index.css"] {
+        for ext in [
+            "index.tsx",
+            "index.ts",
+            "index.jsx",
+            "index.js",
+            "index.css",
+        ] {
             out.push(format!("{base}/{ext}"));
         }
     }
@@ -2028,7 +2115,11 @@ fn candidate_paths(base: &str) -> Vec<String> {
 }
 
 fn file_kind_from_path(path: &Path) -> String {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
         "tsx" => "tsx".to_string(),
         "ts" => "ts".to_string(),
         "js" => "js".to_string(),
@@ -2058,7 +2149,10 @@ fn install_rel_path(package_id: &str, rel_path: &str) -> String {
     }
 }
 
-fn write_entry_content(dest_abs: &Path, entry: &MarketplaceExportEntry) -> Result<(), PlatformError> {
+fn write_entry_content(
+    dest_abs: &Path,
+    entry: &MarketplaceExportEntry,
+) -> Result<(), PlatformError> {
     let bytes = if entry.encoding == "base64" {
         base64::engine::general_purpose::STANDARD
             .decode(&entry.content)
@@ -2070,7 +2164,9 @@ fn write_entry_content(dest_abs: &Path, entry: &MarketplaceExportEntry) -> Resul
     Ok(())
 }
 
-fn sanitize_marketplace_export_entries(entries: &mut [MarketplaceExportEntry]) -> Result<(), PlatformError> {
+fn sanitize_marketplace_export_entries(
+    entries: &mut [MarketplaceExportEntry],
+) -> Result<(), PlatformError> {
     for entry in entries.iter_mut() {
         if normalize_repo_rel(&entry.rel_path) != "zebflow.json" || entry.encoding == "base64" {
             continue;

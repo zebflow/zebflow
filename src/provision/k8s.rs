@@ -545,10 +545,7 @@ fn render_management_config_block(cfg: &ClusterConfig) -> String {
         "  MANAGED_WORKLOADS: \"{}\"",
         cfg.managed_workloads.join(",")
     ));
-    lines.push(
-        "  MARKETPLACE_DEFAULT_BASE_URL: \"https://market.zebflow.com/api\""
-            .to_string(),
-    );
+    lines.push("  MARKETPLACE_DEFAULT_BASE_URL: \"https://market.zebflow.com/api\"".to_string());
     lines.push(format!(
         "  AUTO_UPDATE_ENABLED: \"{}\"",
         if cfg.auto_update_enabled {
@@ -840,10 +837,7 @@ fn acquire_cluster_lock(root: &Path) -> Result<ClusterLockGuard, Box<dyn std::er
                 if Instant::now() >= deadline {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
-                        format!(
-                            "timed out waiting for cluster lock {}",
-                            lock_path.display()
-                        ),
+                        format!("timed out waiting for cluster lock {}", lock_path.display()),
                     )
                     .into());
                 }

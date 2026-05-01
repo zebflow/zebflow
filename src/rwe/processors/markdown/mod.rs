@@ -3,6 +3,8 @@
 //! This processor converts `<markdown>...</markdown>` blocks into HTML.
 //! It is designed as an opt-in compile feature via `ReactiveWebOptions.processors`.
 
+use std::collections::HashMap;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use pulldown_cmark::{Options, Parser, html};
 
@@ -126,7 +128,7 @@ pub fn render_markdown_fragment(md: &str) -> String {
     let parser = Parser::new_ext(md, options);
     let mut out = String::new();
     html::push_html(&mut out, parser);
-    strip_script_blocks(&out)
+    add_heading_ids(&strip_script_blocks(&out))
 }
 
 fn strip_script_blocks(input: &str) -> String {
@@ -145,4 +147,105 @@ fn strip_script_blocks(input: &str) -> String {
 
     out.push_str(&input[cursor..]);
     out
+}
+
+fn add_heading_ids(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 64);
+    let mut cursor = 0usize;
+    let mut seen: HashMap<String, usize> = HashMap::new();
+
+    while let Some(start_rel) = input[cursor..].find("<h") {
+        let start = cursor + start_rel;
+        out.push_str(&input[cursor..start]);
+
+        let level_pos = start + 2;
+        let Some(level) = input
+            .get(level_pos..level_pos + 1)
+            .and_then(|s| s.chars().next())
+        else {
+            out.push_str(&input[start..]);
+            return out;
+        };
+        if !('1'..='6').contains(&level) {
+            out.push_str("<h");
+            cursor = level_pos;
+            continue;
+        }
+
+        let Some(tag_end_rel) = input[level_pos + 1..].find('>') else {
+            out.push_str(&input[start..]);
+            return out;
+        };
+        let tag_end = level_pos + 1 + tag_end_rel;
+        let close_tag = format!("</h{level}>");
+        let Some(close_rel) = input[tag_end + 1..].find(&close_tag) else {
+            out.push_str(&input[start..]);
+            return out;
+        };
+        let close_start = tag_end + 1 + close_rel;
+        let inner = &input[tag_end + 1..close_start];
+        let text = strip_html_tags(inner);
+        let base_id = slugify_heading(&text);
+        let heading_id = unique_slug(base_id, &mut seen);
+
+        let opening = &input[start..=tag_end];
+        if opening.contains(" id=") {
+            out.push_str(opening);
+        } else {
+            out.push_str(&format!("<h{level} id=\"{heading_id}\">"));
+        }
+        out.push_str(inner);
+        out.push_str(&close_tag);
+        cursor = close_start + close_tag.len();
+    }
+
+    out.push_str(&input[cursor..]);
+    out
+}
+
+fn strip_html_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn slugify_heading(input: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = true;
+    for ch in input.chars().flat_map(|ch| ch.to_lowercase()) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "section".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn unique_slug(base: String, seen: &mut HashMap<String, usize>) -> String {
+    match seen.get_mut(&base) {
+        Some(count) => {
+            *count += 1;
+            format!("{base}-{}", *count)
+        }
+        None => {
+            seen.insert(base.clone(), 0);
+            base
+        }
+    }
 }

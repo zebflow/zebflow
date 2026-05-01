@@ -2,7 +2,7 @@
 //!
 //! Every string field in a node's `config` object may contain `{{ js_expr }}` placeholders.
 //! Before a node executes, the pipeline engine resolves all such expressions in one Deno
-//! sandbox trip — giving every node access to `$input`, `$trigger`, `$nodes`, and `$ctx`
+//! sandbox trip — giving every node access to `$input`, `$trigger`, and `$nodes`
 //! without any per-node implementation required.
 //!
 //! # Quick reference
@@ -16,9 +16,6 @@
 //! | `$trigger.query` | Query string params (`?page=2` etc.)                    |
 //! | `$nodes.id`      | Output of a completed upstream node by its graph ID     |
 //! | `$nodes.id.field`| Specific field from that node's output                  |
-//! | `$ctx.pipeline`  | Current pipeline identifier                             |
-//! | `$ctx.request_id`| Unique execution request id                             |
-//!
 //! # Examples
 //!
 //! Whole-field expression (preserves native type):
@@ -40,4 +37,4 @@
 pub mod resolver;
 pub mod scanner;
 
-pub use resolver::resolve_config_expressions;
+pub use resolver::{build_expression_scope_input, resolve_config_expressions};

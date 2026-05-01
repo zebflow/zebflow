@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
@@ -9,14 +10,17 @@ use crate::platform::adapters::data::{DataAdapter, build_data_adapter};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
-use crate::platform::model::{CreateProjectRequest, CreateUserRequest, PlatformConfig};
+use crate::platform::model::{
+    CreateProjectRequest, CreateUserRequest, PlatformConfig, PlatformOffice, PlatformOfficeNode,
+    now_ts,
+};
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
-    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService,
-    MarketplaceService, McpSessionService, PipelineHitsService, PipelineRuntimeService,
-    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
-    ProjectTransferService, UserService, ZebLockService, ZebflowJsonService,
+    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService, MarketplaceService,
+    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectInviteService,
+    ProjectMembershipService, ProjectOperationService, ProjectService, ProjectTransferService,
+    UserService, ZebLockService, ZebflowJsonService,
 };
 
 /// Main platform service graph, created once per process.
@@ -183,6 +187,7 @@ impl PlatformService {
             marketplace,
             zeb_lock,
         };
+        svc.bootstrap_local_office()?;
         if !svc.cluster_bootstrap.is_worker() {
             svc.bootstrap_defaults()?;
         }
@@ -199,6 +204,48 @@ impl PlatformService {
             }
         }
         Ok(svc)
+    }
+
+    fn bootstrap_local_office(&self) -> Result<(), PlatformError> {
+        let office_id = self.cluster_bootstrap.node_id();
+        if office_id.trim().is_empty() {
+            return Ok(());
+        }
+        let now = now_ts();
+        let office_kind = if self.cluster_bootstrap.is_standalone() {
+            "standalone"
+        } else if self.cluster_bootstrap.is_master() {
+            "controller"
+        } else {
+            "office"
+        };
+        let base_url = self
+            .cluster_bootstrap
+            .advertise_url()
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string();
+        self.data.put_platform_office(&PlatformOffice {
+            office_id: office_id.clone(),
+            office_slug: office_id.clone(),
+            label: self.cluster_bootstrap.node_label(),
+            office_kind: office_kind.to_string(),
+            base_url: base_url.clone(),
+            status: "online".to_string(),
+            created_at: now,
+            updated_at: now,
+        })?;
+        self.data.put_platform_office_node(&PlatformOfficeNode {
+            office_id,
+            node_id: self.cluster_bootstrap.node_id(),
+            label: self.cluster_bootstrap.node_label(),
+            base_url,
+            status: "online".to_string(),
+            capabilities: RunnerCapabilities::default(),
+            registered_at: now,
+            last_heartbeat_at: now,
+        })?;
+        Ok(())
     }
 
     /// Execute an active function pipeline by slug and return its output value.

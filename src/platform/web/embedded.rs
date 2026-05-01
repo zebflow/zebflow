@@ -6,6 +6,16 @@ pub struct EmbeddedAsset {
     pub bytes: &'static [u8],
 }
 
+const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
+const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
+const PLATFORM_MAIN_CSS: &str = concat!(
+    include_str!("templates/styles/main.css"),
+    "\n\n",
+    include_str!("templates/pages/project-studio/styles.css"),
+);
+const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
+const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
+
 // PLATFORM_TEMPLATE_ASSETS — auto-generated at build time from src/platform/web/templates/.
 // Do not edit manually; add files to that directory and recompile.
 include!(concat!(env!("OUT_DIR"), "/platform_templates_gen.rs"));
@@ -309,4 +319,15 @@ pub fn platform_library_asset(path: &str) -> Option<&'static [u8]> {
         .iter()
         .find(|asset| asset.path == normalized)
         .map(|asset| asset.bytes)
+}
+
+pub fn platform_public_asset(path: &str) -> Option<&'static [u8]> {
+    match path.trim_start_matches('/').replace('\\', "/").as_str() {
+        "branding/logo.svg" => Some(BRAND_LOGO_SVG),
+        "branding/logo.png" => Some(BRAND_LOGO_PNG),
+        "platform/main.css" => Some(PLATFORM_MAIN_CSS.as_bytes()),
+        "platform/db-suite.css" => Some(PLATFORM_DB_SUITE_CSS.as_bytes()),
+        "platform/db-connections.css" => Some(PLATFORM_DB_CONNECTIONS_CSS.as_bytes()),
+        _ => None,
+    }
 }

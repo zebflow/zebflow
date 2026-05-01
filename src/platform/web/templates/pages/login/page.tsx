@@ -1,8 +1,4 @@
 export const page = {
-  head: {
-    title: "Login",
-    description: "Sign in to Zebflow",
-  },
   html: {
     lang: "en",
   },
@@ -12,6 +8,15 @@ export const page = {
   },
   navigation: "history",
 };
+
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "Login",
+      description: input?.seo?.description ?? "Sign in to Zebflow",
+    },
+  };
+}
 
 export default function Page(input) {
   return (

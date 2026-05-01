@@ -5,8 +5,6 @@ import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 
 export const page = {
   head: {
-    title: "Database Connections",
-    description: "Manage project database connections and open DB suite.",
     links: [
       { rel: "stylesheet", href: "/assets/platform/db-connections.css" },
       { rel: "stylesheet", href: "/assets/libraries/zeb/icons/0.1/runtime/devicons.css" },
@@ -21,6 +19,16 @@ export const page = {
   navigation: "history",
 };
 
+export function getPage(input) {
+  return {
+    head: {
+      title: input?.seo?.title ?? "Database Connections",
+      description:
+        input?.seo?.description ??
+        "Manage project database connections and open DB suite.",
+    },
+  };
+}
 
 export default function Page(input) {
   initProjectDbConnectionsBehavior();
