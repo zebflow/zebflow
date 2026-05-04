@@ -16,6 +16,149 @@ const PLATFORM_MAIN_CSS: &str = concat!(
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
 
+pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
+    EmbeddedAsset {
+        path: "manifest.json",
+        bytes: include_bytes!("assets/node-icons/manifest.json"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ai.agent.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ai.agent.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.auth.token.create.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.auth.token.create.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.crypto.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.crypto.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.file.save.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.file.save.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.img.thumbnail.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.img.thumbnail.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.function.call.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.function.call.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.http.request.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.http.request.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.collect.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.collect.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.foreach.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.foreach.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.if.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.if.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.match.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.match.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.reduce.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.reduce.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.logic.retry.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.logic.retry.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.mem.set.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.mem.set.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.pg.query.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.pg.query.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.sekejap.query.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.sekejap.query.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.script.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.script.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.sqlite.mutate.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.sqlite.mutate.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.sqlite.query.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.sqlite.query.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.function.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.function.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.manual.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.manual.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.mapserver.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.mapserver.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.memsubscribe.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.memsubscribe.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.schedule.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.schedule.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.webhook.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.webhook.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.weberror.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.weberror.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.ws.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.ws.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.web.docs.generate.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.web.docs.generate.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.web.response.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.web.response.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.web.static.generate.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.web.static.generate.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ws.emit.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.emit.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ws.sync_state.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.sync_state.svg"),
+    },
+];
+
+pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    PLATFORM_NODE_ICON_ASSETS
+        .iter()
+        .find(|asset| asset.path == normalized)
+        .map(|asset| asset.bytes)
+}
+
 // PLATFORM_TEMPLATE_ASSETS — auto-generated at build time from src/platform/web/templates/.
 // Do not edit manually; add files to that directory and recompile.
 include!(concat!(env!("OUT_DIR"), "/platform_templates_gen.rs"));

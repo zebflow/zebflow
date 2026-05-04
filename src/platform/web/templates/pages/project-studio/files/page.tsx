@@ -46,7 +46,6 @@ export default function Page(input) {
   }
 
   return (
-<Page>
     <ProjectStudioShell
       projectHref={input.project_href}
       projectLabel={input.title}
@@ -152,7 +151,6 @@ export default function Page(input) {
         </section>
       </div>
     </ProjectStudioShell>
-</Page>
   );
 }
 

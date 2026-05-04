@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use axum::http;
+use axum::extract::OriginalUri;
+use axum::http::{self, StatusCode, header};
+use axum::response::IntoResponse;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::{ServerHandler, tool::Extension};
 use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
@@ -30,6 +32,19 @@ struct PipelineGetParams {
 struct TemplateGetParams {
     /// Relative path to the template file (e.g. "pages/home.tsx").
     rel_path: String,
+    /// 1-based starting line number. Omit to read the full file.
+    #[schemars(with = "u32")]
+    offset: Option<u32>,
+    /// Number of lines to return. Omit to read to the end.
+    #[schemars(with = "u32")]
+    limit: Option<u32>,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateListParams {
+    /// Optional glob to filter files (e.g. "pages/*.tsx", "**/*.tsx"). Omit to list all files.
+    #[schemars(with = "String")]
+    glob: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -64,6 +79,12 @@ struct TemplateSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
+    /// Optional cap on returned matches.
+    #[schemars(with = "u32")]
+    head_limit: Option<u32>,
+    /// Output mode: "content" (default) or "files_with_matches".
+    #[schemars(with = "String")]
+    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -76,6 +97,12 @@ struct PipelineSearchParams {
     /// Number of context lines to include before and after each match. Default 0 (match line only).
     #[schemars(with = "u32")]
     context: Option<u32>,
+    /// Optional cap on returned matches.
+    #[schemars(with = "u32")]
+    head_limit: Option<u32>,
+    /// Output mode: "content" (default) or "files_with_matches".
+    #[schemars(with = "String")]
+    output_mode: Option<String>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -86,6 +113,34 @@ struct TemplateEditParams {
     old_string: String,
     /// Replacement string.
     new_string: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateOutlineParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateDepsParams {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateBatchEditItem {
+    /// Relative path to the template file (e.g. "pages/home.tsx").
+    rel_path: String,
+    /// Exact string to find. Must match exactly once in the file.
+    old_string: String,
+    /// Replacement string.
+    new_string: String,
+}
+
+#[derive(serde::Deserialize, JsonSchema)]
+struct TemplateBatchEditParams {
+    /// Edits to apply. Fails fast on the first edit error.
+    edits: Vec<TemplateBatchEditItem>,
 }
 
 #[derive(serde::Deserialize, JsonSchema)]
@@ -321,8 +376,8 @@ impl ZebflowMcpHandler {
 
     #[tool(
         description = "Call this first. Returns Zebflow platform overview, project name, \
-        project docs list, AGENTS.md content (if exists), DB connections, template tree, \
-        and which help tools to call next. Your orientation before building anything."
+        project docs list, AGENTS.md/MEMORY.md content, DB connections, template tree, \
+        and the next MCP tools to call. Your orientation before building anything."
     )]
     async fn start_here(
         &self,
@@ -418,8 +473,8 @@ impl ZebflowMcpHandler {
             &params.pattern,
             params.glob.as_deref(),
             params.context.unwrap_or(0) as usize,
-            None,
-            None,
+            params.head_limit,
+            params.output_mode.as_deref(),
         ))
     }
 
@@ -662,19 +717,21 @@ impl ZebflowMcpHandler {
 
     // ── Templates ────────────────────────────────────────────────────────────
 
-    #[tool(description = "List all templates in the project workspace")]
+    #[tool(description = "List templates in the project workspace. Optional glob filters files.")]
     async fn template_list(
         &self,
         Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateListParams>,
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_list")?;
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_list(None);
+        let result = ops.template_list(params.glob.as_deref());
         ok_or_err(result)
     }
 
-    #[tool(description = "Get a specific template by relative path")]
+    #[tool(description = "Get a specific template by relative path. \
+                       Use offset and limit to read a line-numbered slice instead of the full file.")]
     async fn template_get(
         &self,
         Extension(parts): Extension<http::request::Parts>,
@@ -689,7 +746,7 @@ impl ZebflowMcpHandler {
             ));
         }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
-        let result = ops.template_get(&params.rel_path, None, None);
+        let result = ops.template_get(&params.rel_path, params.offset, params.limit);
         ok_or_err(result)
     }
 
@@ -775,8 +832,8 @@ impl ZebflowMcpHandler {
             &params.pattern,
             params.glob.as_deref(),
             params.context.unwrap_or(0) as usize,
-            None,
-            None,
+            params.head_limit,
+            params.output_mode.as_deref(),
         ))
     }
 
@@ -791,6 +848,12 @@ impl ZebflowMcpHandler {
     ) -> Result<CallToolResult, McpError> {
         let session = self.get_session_from_http_parts(&parts)?;
         self.check_tool_capability(&session, "template_edit")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
         let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
         let result = ops.template_edit(&params.rel_path, &params.old_string, &params.new_string);
         if !result.text.starts_with("Error:") {
@@ -803,6 +866,104 @@ impl ZebflowMcpHandler {
                     &self.template_cache,
                     &abs.to_string_lossy(),
                 );
+            }
+        }
+        ok_or_err(result)
+    }
+
+    #[tool(
+        description = "Parse a template file and return its code outline: imports, exports, \
+                       functions, classes, types, interfaces, and line numbers. \
+                       Use this before template_get when orienting on a large TSX/TS file."
+    )]
+    async fn template_outline(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateOutlineParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_outline")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.template_outline(&params.rel_path);
+        ok_or_err(result)
+    }
+
+    #[tool(
+        description = "Show a template dependency graph: imports used by this file and \
+                       other project templates that import it. Use before refactoring shared UI."
+    )]
+    async fn template_deps(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateDepsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_deps")?;
+        if self.template_locked(&session.owner, &session.project, &params.rel_path) {
+            return Err(McpError::invalid_params(
+                "This template is locked by the project owner and cannot be accessed by agents. Ask the owner to unlock it.",
+                None,
+            ));
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let result = ops.template_deps(&params.rel_path);
+        ok_or_err(result)
+    }
+
+    #[tool(
+        description = "Apply multiple exact string edits across template files in one call. \
+                       Each edit is rel_path + old_string + new_string. \
+                       Evicts template cache for edited files when the batch succeeds."
+    )]
+    async fn template_batch_edit(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<TemplateBatchEditParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = self.get_session_from_http_parts(&parts)?;
+        self.check_tool_capability(&session, "template_batch_edit")?;
+        for edit in &params.edits {
+            if self.template_locked(&session.owner, &session.project, &edit.rel_path) {
+                return Err(McpError::invalid_params(
+                    format!("Template '{}' is locked", edit.rel_path),
+                    None,
+                ));
+            }
+        }
+        let ops = PlatformOps::new(self.platform.clone(), &session.owner, &session.project);
+        let edits: Vec<(String, String, String)> = params
+            .edits
+            .iter()
+            .map(|edit| {
+                (
+                    edit.rel_path.clone(),
+                    edit.old_string.clone(),
+                    edit.new_string.clone(),
+                )
+            })
+            .collect();
+        let result = ops.template_batch_edit(&edits);
+        if result.text.contains("ERROR:") {
+            return Err(McpError::invalid_params(result.text, None));
+        }
+        if !result.text.starts_with("Error:") {
+            for edit in &params.edits {
+                if let Ok(abs) = self.platform.projects.resolve_template_abs_path(
+                    &session.owner,
+                    &session.project,
+                    &edit.rel_path,
+                ) {
+                    crate::pipeline::engines::basic::evict_template_cache_by_path(
+                        &self.template_cache,
+                        &abs.to_string_lossy(),
+                    );
+                }
             }
         }
         ok_or_err(result)
@@ -1181,21 +1342,98 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
             move |mut req: axum::extract::Request, next: middleware::Next| {
                 let platform = platform_for_middleware.clone();
                 async move {
-                    let token = req
+                    let Some(token) = req
                         .headers()
-                        .get("authorization")
+                        .get(header::AUTHORIZATION)
                         .and_then(|h| h.to_str().ok())
-                        .and_then(|s| s.strip_prefix("Bearer "))
-                        .unwrap_or("");
+                        .and_then(parse_bearer_token)
+                    else {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    };
 
-                    if !token.is_empty() {
-                        if let Some(session) = platform.mcp_sessions.lookup(token) {
-                            req.extensions_mut().insert(session);
-                        }
+                    let Some(session) = platform.mcp_sessions.lookup(token) else {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    };
+
+                    let Some((owner, project)) = mcp_project_scope_from_request(&req) else {
+                        return StatusCode::BAD_REQUEST.into_response();
+                    };
+                    if crate::platform::model::slug_segment(&session.owner)
+                        != crate::platform::model::slug_segment(&owner)
+                        || crate::platform::model::slug_segment(&session.project)
+                            != crate::platform::model::slug_segment(&project)
+                    {
+                        return StatusCode::FORBIDDEN.into_response();
                     }
+
+                    req.extensions_mut().insert(session);
 
                     next.run(req).await
                 }
             },
         ))
+}
+
+fn parse_bearer_token(header_value: &str) -> Option<&str> {
+    let token = header_value.trim().strip_prefix("Bearer ")?.trim();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+fn mcp_project_scope_from_request(req: &axum::extract::Request) -> Option<(String, String)> {
+    if let Some(original_uri) = req.extensions().get::<OriginalUri>()
+        && let Some(scope) = mcp_project_scope_from_path(original_uri.path())
+    {
+        return Some(scope);
+    }
+    mcp_project_scope_from_path(req.uri().path())
+}
+
+fn mcp_project_scope_from_path(path: &str) -> Option<(String, String)> {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() < 5 {
+        return None;
+    }
+    for index in 0..=(segments.len() - 5) {
+        if segments[index] == "api"
+            && segments[index + 1] == "projects"
+            && segments[index + 4] == "mcp"
+        {
+            return Some((
+                segments[index + 2].to_string(),
+                segments[index + 3].to_string(),
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mcp_project_scope_from_path, parse_bearer_token};
+
+    #[test]
+    fn parse_bearer_token_rejects_missing_or_empty_tokens() {
+        assert_eq!(parse_bearer_token("Bearer abc123"), Some("abc123"));
+        assert_eq!(parse_bearer_token("Bearer   abc123  "), Some("abc123"));
+        assert_eq!(parse_bearer_token("Bearer "), None);
+        assert_eq!(parse_bearer_token("Basic abc123"), None);
+        assert_eq!(parse_bearer_token(""), None);
+    }
+
+    #[test]
+    fn mcp_project_scope_is_extracted_from_project_url() {
+        assert_eq!(
+            mcp_project_scope_from_path("/api/projects/alice/my-app/mcp"),
+            Some(("alice".to_string(), "my-app".to_string()))
+        );
+        assert_eq!(
+            mcp_project_scope_from_path("/api/projects/alice/my-app/mcp/"),
+            Some(("alice".to_string(), "my-app".to_string()))
+        );
+        assert_eq!(mcp_project_scope_from_path("/api/projects/alice"), None);
+        assert_eq!(mcp_project_scope_from_path("/mcp"), None);
+    }
 }

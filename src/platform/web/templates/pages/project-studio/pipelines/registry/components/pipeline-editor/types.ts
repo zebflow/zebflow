@@ -6,9 +6,9 @@ export interface SelectOptionDef {
   label: string;
 }
 
-export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings";
+export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings" | "match_cases";
 
-export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
+export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "credentials_http_auth" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
 
 export interface SidebarItem {
   label: string;
@@ -49,6 +49,7 @@ export interface NodeCatalogEntry {
   kind: string;
   title: string;
   description?: string;
+  icon?: string;
   input_pins?: string[];
   output_pins?: string[];
   color?: string;
@@ -64,6 +65,7 @@ export interface EditorDataState {
   browserCredentials: any[];
   openaiCredentials: any[];
   secureRequestCredentials: any[];
+  httpAuthCredentials: any[];
   aiTools: any[];
   pageTemplates: any[];
   functionPipelines: any[];

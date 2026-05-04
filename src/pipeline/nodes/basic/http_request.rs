@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,12 +23,22 @@ pub const NODE_KIND: &str = "n.http.request";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
 
+fn default_response_type() -> String {
+    "json".to_string()
+}
+fn default_body_type() -> String {
+    "json".to_string()
+}
+
 /// Unified node-definition metadata for `n.http.request`.
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "HTTP Request".to_string(),
-        description: "Perform HTTP call and return normalized response envelope.".to_string(),
+        description: "Perform HTTP call with support for JSON, text, and binary (bytes) responses. \
+            Supports JSON, raw text, and multipart form-data request bodies including __zf_bytes file parts. \
+            Returns normalized { request, response } envelope."
+            .to_string(),
         input_schema: serde_json::json!({
             "type":"object",
             "description":"Input context used for optional body binding."
@@ -48,7 +59,7 @@ pub fn definition() -> NodeDefinition {
         }),
         config_schema: Default::default(),
         dsl_flags: vec![
-            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Optional secure_request credential profile used to build the request from placeholders and bindings.".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--credential".to_string(), config_key: "credential_id".to_string(), description: "Optional credential for HTTP auth. secure_request: template-driven. oauth2: auto-refresh Bearer token.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--bind".to_string(), config_key: "request_bindings".to_string(), description: "Binding expression for one secure_request variable. Repeatable: --bind USER_ID=input.player_id".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
             DslFlag { flag: "--url".to_string(), config_key: "url".to_string(), description: "Target URL for the HTTP request.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--url-expr".to_string(), config_key: "url_expr".to_string(), description: "JS expression returning the target URL. Evaluated against input payload at runtime.".to_string(), kind: DslFlagKind::Scalar, required: false },
@@ -59,30 +70,57 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--header".to_string(), config_key: "headers".to_string(), description: "Static request header. Repeat for each header. Format: Header-Name=value. e.g. --header Content-Type=application/json".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
             DslFlag { flag: "--headers-expr".to_string(), config_key: "headers_expr".to_string(), description: "JS expression returning an object of request headers. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Request timeout in milliseconds (default 10000, max 120000).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--merge-input".to_string(), config_key: "merge_input".to_string(), description: "When true, merges the original input payload into the output alongside request/response. Useful for preserving upstream context.".to_string(), kind: DslFlagKind::Bool, required: false },
+            DslFlag { flag: "--response-type".to_string(), config_key: "response_type".to_string(), description: "How to read the response: json (default, parses body as JSON), text (raw string), bytes (base64-encoded binary with __zf_bytes convention).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--body-type".to_string(), config_key: "body_type".to_string(), description: "How to send the request body: json (default), text (raw string), form-data (multipart with __zf_bytes support).".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
                 NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "credential_id".to_string(), label: "Request Profile".to_string(), field_type: NodeFieldType::Select, data_source: Some(crate::pipeline::model::NodeFieldDataSource::CredentialsSecureRequest), help: Some("Optional secure_request credential. When selected, its method/url/header/body template drives the request.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "credential_id".to_string(), label: "Request Profile".to_string(), field_type: NodeFieldType::Select, data_source: Some(crate::pipeline::model::NodeFieldDataSource::CredentialsHttpAuth), help: Some("Credential for HTTP authentication. secure_request: template-driven request. oauth2: Bearer token auto-refresh.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "request_bindings".to_string(), label: "Profile Bindings".to_string(), field_type: NodeFieldType::SecureRequestBindings, help: Some("JS expressions for the variables declared by the selected secure_request profile. Example: input.player_id or ctx.nodes.n3.unit.code".to_string()), span: Some("full".to_string()), ..Default::default() },
                 NodeFieldDef { name: "url".to_string(), label: "URL".to_string(), field_type: NodeFieldType::Text, help: Some("Fallback URL when url_expr is empty.".to_string()), default_value: Some(serde_json::json!("https://example.com")), ..Default::default() },
                 NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::Select, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("Fallback HTTP method when method_expr is empty.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "timeout_ms".to_string(), label: "Timeout (ms)".to_string(), field_type: NodeFieldType::Text, help: Some("Request timeout in milliseconds.".to_string()), ..Default::default() },
+                NodeFieldDef {
+                    name: "response_type".to_string(),
+                    label: "Response Type".to_string(),
+                    field_type: NodeFieldType::Select,
+                    options: vec![
+                        SelectOptionDef { value: "json".to_string(), label: "JSON (parse body)".to_string() },
+                        SelectOptionDef { value: "text".to_string(), label: "Text (raw string)".to_string() },
+                        SelectOptionDef { value: "bytes".to_string(), label: "Bytes (base64 binary)".to_string() },
+                    ],
+                    help: Some("How to read the response body. 'bytes' returns __zf_bytes convention for binary pipelines.".to_string()),
+                    default_value: Some(json!("json")),
+                    ..Default::default()
+                },
+                NodeFieldDef {
+                    name: "body_type".to_string(),
+                    label: "Body Type".to_string(),
+                    field_type: NodeFieldType::Select,
+                    options: vec![
+                        SelectOptionDef { value: "json".to_string(), label: "JSON".to_string() },
+                        SelectOptionDef { value: "text".to_string(), label: "Text (raw string)".to_string() },
+                        SelectOptionDef { value: "form-data".to_string(), label: "Form Data (multipart)".to_string() },
+                    ],
+                    help: Some("How to send the request body. 'form-data' supports __zf_bytes objects as file parts.".to_string()),
+                    default_value: Some(json!("json")),
+                    ..Default::default()
+                },
                 NodeFieldDef { name: "headers".to_string(), label: "Static Headers".to_string(), field_type: NodeFieldType::KeyValuePairs, help: Some("Static request headers. Overridden by headers_expr if set.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "url_expr".to_string(), label: "URL Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string URL.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "method_expr".to_string(), label: "Method Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(3), help: Some("Optional JS expression returning string method.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "body_path".to_string(), label: "Body Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path used as request body when body_expr is empty.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "headers_expr".to_string(), label: "Headers Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning header object. Overrides static headers.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "body_expr".to_string(), label: "Body Expr".to_string(), field_type: NodeFieldType::Textarea, rows: Some(4), help: Some("JS expression returning request body value.".to_string()), ..Default::default() },
-                NodeFieldDef { name: "merge_input".to_string(), label: "Merge Input".to_string(), field_type: NodeFieldType::Checkbox, help: Some("When enabled, merges the original input payload into the output alongside request/response.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
             LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("credential_id".to_string())] },
             LayoutItem::Field("request_bindings".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("method".to_string()), LayoutItem::Field("timeout_ms".to_string())] },
+            LayoutItem::Row { row: vec![LayoutItem::Field("response_type".to_string()), LayoutItem::Field("body_type".to_string())] },
             LayoutItem::Field("url".to_string()),
             LayoutItem::Field("headers".to_string()),
             LayoutItem::Field("body_path".to_string()),
@@ -90,19 +128,20 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("method_expr".to_string()),
             LayoutItem::Field("headers_expr".to_string()),
             LayoutItem::Field("body_expr".to_string()),
-            LayoutItem::Field("merge_input".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "http_request".to_string(),
-            tool_description: "Make an HTTP request. Args: url (required), method (GET/POST/etc.), body (string), headers (object).".to_string(),
+            tool_description: "Make an HTTP request. Args: url (required), method (GET/POST/etc.), body (string), headers (object), response_type (json/text/bytes), body_type (json/text/form-data).".to_string(),
             tool_input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "url":     { "type": "string", "description": "Target URL" },
                     "method":  { "type": "string", "description": "HTTP method (default GET)" },
                     "body":    { "type": "string", "description": "Request body (optional)" },
-                    "headers": { "type": "object", "description": "Additional headers (optional)" }
+                    "headers": { "type": "object", "description": "Additional headers (optional)" },
+                    "response_type": { "type": "string", "description": "json (default), text, or bytes" },
+                    "body_type": { "type": "string", "description": "json (default), text, or form-data" }
                 },
                 "required": ["url"]
             }),
@@ -134,9 +173,12 @@ pub struct Config {
     pub headers_expr: Option<String>,
     #[serde(default)]
     pub body_expr: Option<String>,
-    /// When true, original input payload is merged into the output alongside request/response.
-    #[serde(default)]
-    pub merge_input: bool,
+    /// How to read the response: "json" (default), "text", "bytes".
+    #[serde(default = "default_response_type")]
+    pub response_type: String,
+    /// How to send the request body: "json" (default), "text", "form-data".
+    #[serde(default = "default_body_type")]
+    pub body_type: String,
 }
 
 impl Default for Config {
@@ -153,7 +195,8 @@ impl Default for Config {
             method_expr: None,
             headers_expr: None,
             body_expr: None,
-            merge_input: false,
+            response_type: default_response_type(),
+            body_type: default_body_type(),
         }
     }
 }
@@ -301,23 +344,93 @@ impl NodeHandler for Node {
                         format!("credential '{}' not found", credential_id),
                     )
                 })?;
-            if credential.kind != "secure_request" {
-                return Err(PipelineError::new(
-                    "FW_NODE_HTTP_REQUEST_CREDENTIAL_KIND",
-                    format!(
-                        "credential '{}' has kind '{}' — expected secure_request",
-                        credential.credential_id, credential.kind
-                    ),
-                ));
+            match credential.kind.as_str() {
+                "secure_request" => {
+                    build_request_from_secure_credential(
+                        credential_id,
+                        self.language.as_ref(),
+                        &self.config,
+                        &credential.secret,
+                        &input.payload,
+                        &input.metadata,
+                    )?
+                }
+                "oauth2" => {
+                    // Get a valid access token, auto-refreshing if expired.
+                    let token = credentials
+                        .get_valid_oauth2_token(owner, project, credential_id)
+                        .await
+                        .map_err(|err| {
+                            PipelineError::new("FW_NODE_HTTP_REQUEST_OAUTH2", err.to_string())
+                        })?;
+                    // Resolve URL/method/headers/body from node config (not from credential template).
+                    let url = resolve_http_string_binding(
+                        self.language.as_ref(),
+                        &input.payload,
+                        &input.metadata,
+                        self.config.url_expr.as_deref(),
+                        &self.config.url,
+                        "url",
+                    )?;
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        return Err(PipelineError::new(
+                            "FW_NODE_HTTP_REQUEST_CONFIG",
+                            "resolved url must start with http:// or https://",
+                        ));
+                    }
+                    let method = resolve_http_string_binding(
+                        self.language.as_ref(),
+                        &input.payload,
+                        &input.metadata,
+                        self.config.method_expr.as_deref(),
+                        &self.config.method,
+                        "method",
+                    )?
+                    .to_uppercase();
+                    let mut headers = if let Some(expr) = self.config.headers_expr.as_deref() {
+                        let value = eval_deno_expr(
+                            self.language.as_ref(),
+                            expr,
+                            &input.payload,
+                            &input.metadata,
+                        )?;
+                        parse_headers(value)?
+                    } else {
+                        self.config.headers.clone()
+                    };
+                    // Inject Bearer token as Authorization header.
+                    headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+                    let body_value = if let Some(expr) = self.config.body_expr.as_deref() {
+                        Some(eval_deno_expr(
+                            self.language.as_ref(),
+                            expr,
+                            &input.payload,
+                            &input.metadata,
+                        )?)
+                    } else {
+                        resolve_path_cloned(&input.payload, self.config.body_path.as_deref())
+                    };
+                    PreparedRequest {
+                        visible_url: url.clone(),
+                        url,
+                        visible_method: method.clone(),
+                        method,
+                        headers,
+                        body: body_value,
+                        redact_tokens: vec![token],
+                        credential_id: Some(credential_id.to_string()),
+                    }
+                }
+                other => {
+                    return Err(PipelineError::new(
+                        "FW_NODE_HTTP_REQUEST_CREDENTIAL_KIND",
+                        format!(
+                            "credential '{}' has kind '{}' — expected secure_request or oauth2",
+                            credential.credential_id, other
+                        ),
+                    ));
+                }
             }
-            build_request_from_secure_credential(
-                credential_id,
-                self.language.as_ref(),
-                &self.config,
-                &credential.secret,
-                &input.payload,
-                &input.metadata,
-            )?
         } else {
             let url = resolve_http_string_binding(
                 self.language.as_ref(),
@@ -378,70 +491,112 @@ impl NodeHandler for Node {
         let request_visible_url = prepared.visible_url.clone();
         let request_method = prepared.visible_method.clone();
         let request_credential_id = prepared.credential_id.clone();
+        crate::pipeline::security::validate_outbound_http_url(&prepared.url, NODE_KIND)?;
+
+        // ── Build reqwest client + request ───────────────────────────────────────
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|e| PipelineError::new("FW_NODE_HTTP_REQUEST_CLIENT", e.to_string()))?;
+
+        let method_parsed = reqwest::Method::from_bytes(prepared.method.as_bytes())
+            .map_err(|e| PipelineError::new("FW_NODE_HTTP_REQUEST_METHOD", e.to_string()))?;
+
+        let mut req = client.request(method_parsed.clone(), &prepared.url);
+        for (key, value) in &prepared.headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        // ── Send body based on body_type ─────────────────────────────────────────
+        let body_type = self.config.body_type.trim().to_lowercase();
+        let has_body = !matches!(
+            method_parsed.as_str(),
+            "GET" | "HEAD" | "DELETE" | "OPTIONS"
+        );
+
+        if has_body {
+            if let Some(body) = &prepared.body {
+                match body_type.as_str() {
+                    "form-data" => {
+                        req = build_multipart_request(req, body)?;
+                    }
+                    "text" => {
+                        let body_str = match body {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        // Only set content-type if not already in headers
+                        if !prepared.headers.keys().any(|k| k.to_lowercase() == "content-type") {
+                            req = req.header("content-type", "text/plain");
+                        }
+                        req = req.body(body_str);
+                    }
+                    _ => {
+                        // "json" (default)
+                        let body_str = match body {
+                            Value::String(s) => s.clone(),
+                            other => other.to_string(),
+                        };
+                        if !prepared.headers.keys().any(|k| k.to_lowercase() == "content-type") {
+                            req = req.header("content-type", "application/json");
+                        }
+                        req = req.body(body_str);
+                    }
+                }
+            }
+        }
+
+        // ── Execute request ──────────────────────────────────────────────────────
         let transport_visible_url = prepared.visible_url.clone();
         let transport_raw_url = prepared.url.clone();
-        let response = tokio::task::spawn_blocking(move || {
-            let agent: ureq::Agent = ureq::AgentBuilder::new()
-                .timeout(Duration::from_millis(timeout_ms))
-                .build();
-            let mut request = agent.request(&prepared.method, &prepared.url);
-            for (key, value) in &prepared.headers {
-                request = request.set(key, value);
+
+        let resp = req.send().await.map_err(|err| {
+            let mut message = err.to_string();
+            if transport_raw_url != transport_visible_url && !transport_visible_url.is_empty() {
+                message = message.replace(&transport_raw_url, &transport_visible_url);
             }
+            PipelineError::new("FW_NODE_HTTP_REQUEST_TRANSPORT", message)
+        })?;
 
-            let response = match prepared.body {
-                Some(body)
-                    if !matches!(
-                        prepared.method.as_str(),
-                        "GET" | "HEAD" | "DELETE" | "OPTIONS"
-                    ) =>
-                {
-                    let body_str = match body {
-                        Value::String(s) => s,
-                        other => other.to_string(),
-                    };
-                    request.send_string(&body_str)
-                }
-                _ => request.call(),
-            };
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
 
-            let response = match response {
-                Ok(resp) => resp,
-                Err(ureq::Error::Status(_status, resp)) => resp,
-                Err(ureq::Error::Transport(err)) => {
-                    let mut message = err.to_string();
-                    if transport_raw_url != transport_visible_url
-                        && !transport_visible_url.is_empty()
-                    {
-                        message = message.replace(&transport_raw_url, &transport_visible_url);
-                    }
-                    return Err(PipelineError::new(
-                        "FW_NODE_HTTP_REQUEST_TRANSPORT",
-                        message,
-                    ));
-                }
-            };
+        // ── Read response based on response_type ─────────────────────────────────
+        let response_type = self.config.response_type.trim().to_lowercase();
+        let body: Value = match response_type.as_str() {
+            "bytes" => {
+                let bytes = resp.bytes().await.map_err(|err| {
+                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
+                })?;
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                json!({
+                    "__zf_bytes": encoded,
+                    "__zf_mime": content_type,
+                    "__zf_size": bytes.len()
+                })
+            }
+            "text" => {
+                let text = resp.text().await.map_err(|err| {
+                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
+                })?;
+                Value::String(text)
+            }
+            _ => {
+                // "json" (default): try parse, fall back to string
+                let text = resp.text().await.map_err(|err| {
+                    PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
+                })?;
+                serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text))
+            }
+        };
 
-            let status = response.status();
-            let content_type = response
-                .header("content-type")
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            let body_text = response.into_string().map_err(|err| {
-                PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
-            })?;
-            Ok::<(u16, String, String), PipelineError>((status, content_type, body_text))
-        })
-        .await
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_HTTP_REQUEST_JOIN",
-                format!("blocking request task failed: {err}"),
-            )
-        })??;
-        let (status, content_type, body_text) = response;
-        let body = serde_json::from_str::<Value>(&body_text).unwrap_or(Value::String(body_text));
-
+        // ── Build output ─────────────────────────────────────────────────────────
         let request_obj = if let Some(credential_id) = request_credential_id {
             json!({
                 "credential_id": credential_id,
@@ -463,22 +618,7 @@ impl NodeHandler for Node {
             "content_type": content_type,
             "body": body
         });
-        let payload = if self.config.merge_input {
-            let mut merged = match input.payload {
-                Value::Object(m) => m,
-                other => {
-                    let mut m = serde_json::Map::new();
-                    m.insert("_input".to_string(), other);
-                    m
-                }
-            };
-            merged.insert("request".to_string(), request_obj);
-            merged.insert("response".to_string(), response_obj);
-            Value::Object(merged)
-        } else {
-            json!({ "request": request_obj, "response": response_obj })
-        };
-        let mut payload = payload;
+        let mut payload = json!({ "request": request_obj, "response": response_obj });
         if !prepared.redact_tokens.is_empty() {
             if let Value::Object(map) = &mut payload {
                 map.insert(
@@ -503,6 +643,93 @@ impl NodeHandler for Node {
             trace: vec![format!("node_kind={NODE_KIND}")],
         })
     }
+}
+
+/// Build a multipart/form-data request from a JSON value.
+/// - Scalar fields become text parts.
+/// - Objects with `__zf_bytes` become file parts (base64-decoded).
+fn build_multipart_request(
+    req: reqwest::RequestBuilder,
+    body: &Value,
+) -> Result<reqwest::RequestBuilder, PipelineError> {
+    let map = match body {
+        Value::Object(m) => m,
+        _ => {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_REQUEST_BODY",
+                "form-data body_type requires an object value (from body_path or body_expr)",
+            ));
+        }
+    };
+
+    let mut form = reqwest::multipart::Form::new();
+    for (key, value) in map {
+        match value {
+            Value::Object(obj) if obj.contains_key("__zf_bytes") => {
+                let b64 = obj
+                    .get("__zf_bytes")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let mime = obj
+                    .get("__zf_mime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/octet-stream");
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_HTTP_REQUEST_BODY",
+                            format!("form-data: base64 decode error for field '{key}': {e}"),
+                        )
+                    })?;
+                let filename = derive_filename_from_mime(mime);
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(filename)
+                    .mime_str(mime)
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_HTTP_REQUEST_BODY",
+                            format!("form-data: invalid mime for field '{key}': {e}"),
+                        )
+                    })?;
+                form = form.part(key.clone(), part);
+            }
+            Value::String(s) => {
+                form = form.text(key.clone(), s.clone());
+            }
+            Value::Number(n) => {
+                form = form.text(key.clone(), n.to_string());
+            }
+            Value::Bool(b) => {
+                form = form.text(key.clone(), b.to_string());
+            }
+            Value::Null => {}
+            other => {
+                form = form.text(key.clone(), other.to_string());
+            }
+        }
+    }
+    Ok(req.multipart(form))
+}
+
+fn derive_filename_from_mime(mime: &str) -> String {
+    let base = mime.split(';').next().unwrap_or("").trim();
+    let ext = match base {
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/mp4" | "audio/m4a" => "m4a",
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "application/pdf" => "pdf",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "application/octet-stream" => "bin",
+        _ => "bin",
+    };
+    format!("download.{ext}")
 }
 
 fn resolve_http_string_binding(
@@ -722,7 +949,7 @@ mod tests {
     use super::{Config, INPUT_PIN_IN, Node, build_request_from_secure_credential};
 
     #[tokio::test(flavor = "current_thread")]
-    async fn self_call_succeeds_from_same_server_request_handler() {
+    async fn self_call_to_private_network_is_blocked_from_same_server_request_handler() {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind test server");
@@ -750,7 +977,7 @@ mod tests {
                             )
                             .expect("build http.request node");
 
-                            let output = node
+                            let err = node
                                 .execute_async(NodeExecutionInput {
                                     node_id: "n0".to_string(),
                                     input_pin: INPUT_PIN_IN.to_string(),
@@ -759,9 +986,9 @@ mod tests {
                                     step_tx: None,
                                 })
                                 .await
-                                .expect("self-call should succeed");
+                                .expect_err("self-call should be blocked");
 
-                            Json(output.payload)
+                            Json(json!({ "code": err.code, "message": err.message }))
                         }
                     }
                 }),
@@ -785,8 +1012,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let payload: Value = response.json().await.expect("decode response payload");
-        assert_eq!(payload["response"]["status"], 200);
-        assert_eq!(payload["response"]["body"]["ok"], true);
+        assert_eq!(payload["code"], "FW_EGRESS_DENIED");
 
         server.abort();
     }

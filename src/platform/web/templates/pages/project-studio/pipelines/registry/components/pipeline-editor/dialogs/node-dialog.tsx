@@ -41,6 +41,13 @@ export default function NodeDialog({
       __node_slug: nodeData?.zfPipelineNodeId || "",
     };
     serverFields.forEach((f) => {
+      if (f.type === "match_cases") {
+        s[f.name] = {
+          cases: Array.isArray(config.cases) ? config.cases : [],
+          default: config.default !== undefined ? config.default : { pin: "default", label: "Default" },
+        };
+        return;
+      }
       s[f.name] = config[f.name] !== undefined
         ? config[f.name]
         : f.default_value !== undefined
@@ -62,7 +69,7 @@ export default function NodeDialog({
       setFormState(initFormState());
       setFunctionParams(null);
     }
-  }, [nodeData?.graphNodeId, nodeData?.zfKind]);
+  }, [nodeData]);
 
   // Load function params when the selected function changes (n.function.call only)
   useEffect(() => {

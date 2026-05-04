@@ -280,6 +280,9 @@ pub enum NodeFieldType {
     /// Shows the required variable slots declared by the selected credential and stores
     /// a JSON object mapping variable name → JS expression string.
     SecureRequestBindings,
+    /// Specialized route editor for `n.logic.match`.
+    /// Config value is normalized into `cases` plus `default` route metadata.
+    MatchCases,
 }
 
 impl Default for NodeFieldType {
@@ -315,6 +318,9 @@ pub enum NodeFieldDataSource {
     /// Roles registered in the JWT credential selected in the sibling `auth_credential` field.
     /// Reads `auth_roles` from that credential's list item. Used by `n.trigger.webhook`.
     CredentialJwtRoles,
+    /// Credentials usable as HTTP auth: `secure_request` and `oauth2` kinds.
+    /// Used by `n.http.request` credential_id field.
+    CredentialsHttpAuth,
 }
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.

@@ -36,6 +36,8 @@ const BASE_STYLE = `
   background: var(--zgu-bg-color);
   color: #fff;
   font-family: system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .zgu-header {
   position: absolute;
@@ -114,8 +116,44 @@ const BASE_STYLE = `
   position: absolute;
   inset: 0;
   cursor: grab;
+  touch-action: none;
 }
 .zgu-workspace:active { cursor: grabbing; }
+.zgu-edge-style-control {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px;
+  background: rgba(18,18,18,.88);
+  box-shadow: 0 8px 24px rgba(0,0,0,.34);
+  backdrop-filter: blur(8px);
+}
+.zgu-edge-style-button {
+  height: 24px;
+  min-width: 42px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+.zgu-edge-style-button:hover {
+  color: #e2e8f0;
+  background: rgba(148,163,184,.12);
+}
+.zgu-edge-style-button.is-active {
+  color: #06281e;
+  background: var(--zgu-wire-active);
+}
 .zgu-grid {
   position: absolute;
   inset: 0;
@@ -162,6 +200,39 @@ const BASE_STYLE = `
   stroke-dasharray: 6 6;
   pointer-events: none;
 }
+.zgu-dangling-plus {
+  cursor: pointer;
+  pointer-events: all;
+}
+.zgu-dangling-wire {
+  fill: none;
+  stroke: var(--zgu-wire-color);
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-dasharray: 4 4;
+  opacity: .62;
+}
+.zgu-dangling-circle {
+  fill: #171717;
+  stroke: #64748b;
+  stroke-width: 1.6px;
+  transition: fill .14s, stroke .14s;
+}
+.zgu-dangling-plus:hover .zgu-dangling-wire {
+  stroke: var(--zgu-wire-active);
+  opacity: .95;
+}
+.zgu-dangling-plus:hover .zgu-dangling-circle {
+  fill: #1f2937;
+  stroke: var(--zgu-wire-active);
+}
+.zgu-dangling-mark {
+  stroke: #cbd5e1;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+.zgu-dangling-plus:hover .zgu-dangling-mark { stroke: var(--zgu-wire-active); }
 .zgu-wire.animated {
   animation: zgu-flow var(--zgu-anim-speed, 1s) linear infinite;
 }
@@ -172,88 +243,190 @@ const BASE_STYLE = `
 .zgu-nodes { position: absolute; inset: 0; }
 .zgu-node {
   position: absolute;
-  min-width: 180px;
-  max-width: 300px;
-  border-radius: 8px;
-  border: 1px solid #444;
-  background: #222;
-  box-shadow: 0 10px 15px -3px rgba(0,0,0,.5);
+  --zgu-node-width: 84px;
+  --zgu-label-max: 126px;
+  width: 84px;
+  min-height: 84px;
+  border-radius: 10px;
+  border: 1.5px solid #475569;
+  background: #18181b;
+  box-shadow: 0 8px 20px rgba(0,0,0,.42);
   user-select: none;
   z-index: 10;
+  cursor: grab;
+  -webkit-user-drag: none;
+  touch-action: none;
+  will-change: transform;
+}
+.zgu-node:active { cursor: grabbing; }
+.zgu-node.trigger {
+  --zgu-node-width: 102px;
+  --zgu-label-max: 153px;
+  width: 102px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 .zgu-node.selected {
-  border-color: #fff;
-  box-shadow: 0 0 0 2px rgba(255,255,255,.18);
+  border-color: var(--zgu-wire-active);
+  box-shadow: 0 0 0 2px rgba(52,211,153,.18), 0 8px 20px rgba(0,0,0,.42);
   z-index: 20;
 }
-.zgu-node-header {
-  padding: 8px 12px;
-  border-radius: 8px 8px 0 0;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
+.zgu-node.trigger.selected {
+  border-color: transparent;
+  box-shadow: none;
 }
-.zgu-node-body { padding: 12px; position: relative; }
-.zgu-port-list { display: flex; flex-direction: column; gap: 10px; }
-.zgu-port-row {
-  display: flex;
-  align-items: center;
+.zgu-node-core {
   position: relative;
-  font-size: 11px;
-  color: #a3a3a3;
-}
-.zgu-port-row.out { justify-content: flex-end; }
-/* Paired rows: same index input/output share one vertical slot (node-editor style) */
-.zgu-port-list.zgu-port-pairs { gap: 10px; }
-.zgu-port-row.zgu-pair {
+  min-height: 76px;
+  padding: 0;
   display: flex;
-  flex-direction: row;
-  align-items: stretch;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.zgu-node.trigger .zgu-node-core {
+  padding-right: 18px;
+  background: transparent;
+  border: 0;
+  clip-path: none;
+}
+.zgu-trigger-shape {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  min-height: 22px;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 8px 18px rgba(0,0,0,.42));
 }
-.zgu-pair-in,
-.zgu-pair-out {
+.zgu-trigger-path {
+  fill: #18181b;
+  stroke: #475569;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.zgu-node.trigger.selected .zgu-trigger-path {
+  stroke: var(--zgu-wire-active);
+}
+.zgu-node.expanded .zgu-node-core {
+  justify-content: flex-start;
+  padding-top: 18px;
+}
+.zgu-node.expanded.trigger .zgu-node-core {
+  padding-top: 18px;
+  padding-right: 18px;
+}
+.zgu-node-icon {
   position: relative;
-  flex: 1 1 0;
-  min-width: 0;
+  z-index: 1;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+.zgu-node-icon-fallback {
+  position: relative;
+  z-index: 1;
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(52,211,153,.22), rgba(59,130,246,.16));
+  border: 1px solid rgba(255,255,255,.1);
+}
+.zgu-node-label {
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 50%;
+  width: max-content;
+  max-width: var(--zgu-label-max);
+  transform: translateX(-50%);
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.18;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: normal;
+  word-break: normal;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,.8);
+}
+.zgu-port-list {
+  position: absolute;
+  top: 0;
+  bottom: 0;
   display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.zgu-port-list.in {
+  left: 0;
+}
+.zgu-port-list.out {
+  right: 0;
+}
+.zgu-port-wrap {
+  position: relative;
   align-items: center;
-  font-size: 11px;
-  color: #a3a3a3;
+  display: flex;
+  width: 1px;
+  min-height: 24px;
 }
-.zgu-pair-in { justify-content: flex-start; }
-.zgu-pair-out { justify-content: flex-end; }
-/* Same vertical axis for in/out on one row: stretch columns, center pins on row midline */
-.zgu-pair-in .zgu-port.in {
-  left: -18px;
-  top: 50%;
-  transform: translateY(-50%);
+.zgu-port-wrap.in { justify-content: flex-start; }
+.zgu-port-wrap.out { justify-content: flex-end; }
+.zgu-port-pin-label {
+  position: absolute;
+  color: #cbd5e1;
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
 }
-.zgu-pair-out .zgu-port.out {
-  right: -18px;
-  top: 50%;
-  transform: translateY(-50%);
+.zgu-port-pin-label.out {
+  left: 18px;
+  top: -2px;
+  transform: translateY(-100%);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 .zgu-port {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid #222;
-  background: #555;
+  top: 50%;
+  border: 2px solid #18181b;
+  background: #64748b;
   position: absolute;
   cursor: crosshair;
+  pointer-events: all;
+  transition: background .12s, transform .12s;
 }
 .zgu-port:hover { background: var(--zgu-wire-active); }
-.zgu-port-row:not(.zgu-pair) .zgu-port:hover { transform: scale(1.5); }
-.zgu-pair-in .zgu-port.in:hover,
-.zgu-pair-out .zgu-port.out:hover {
-  transform: translateY(-50%) scale(1.5);
+.zgu-port.in {
+  left: -5px;
+  width: 10px;
+  height: 22px;
+  border-radius: 2px;
+  transform: translateY(-50%);
 }
-.zgu-port.in { left: -18px; }
-.zgu-port.out { right: -18px; }
+.zgu-port.out {
+  right: -7.5px;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+.zgu-port.in:hover { transform: translateY(-50%) scale(1.12); }
+.zgu-port.out:hover { transform: translateY(-50%) scale(1.3); }
 .zgu-custom-input { width: 100%; accent-color: #10b981; }
 .zgu-data-display {
   background: #000;
@@ -287,6 +460,30 @@ function setThemeVars(root, theme) {
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+function triggerShapePath(width, height) {
+  const w = Math.max(48, Number(width) || 102);
+  const h = Math.max(48, Number(height) || 84);
+  const point = Math.min(18, w * 0.25);
+  const bodyRight = w - point;
+  const r = Math.min(9, h * 0.12, bodyRight * 0.15);
+  const join = Math.min(5, point * 0.32);
+  const mid = h / 2;
+  return [
+    `M ${r} 0.75`,
+    `L ${bodyRight - join} 0.75`,
+    `Q ${bodyRight + join * 0.25} 0.75 ${bodyRight + join * 0.75} ${join}`,
+    `L ${w - 1.25} ${mid - join}`,
+    `Q ${w + 0.2} ${mid} ${w - 1.25} ${mid + join}`,
+    `L ${bodyRight + join * 0.75} ${h - join}`,
+    `Q ${bodyRight + join * 0.25} ${h - 0.75} ${bodyRight - join} ${h - 0.75}`,
+    `L ${r} ${h - 0.75}`,
+    `Q 0.75 ${h - 0.75} 0.75 ${h - r}`,
+    `L 0.75 ${r}`,
+    `Q 0.75 0.75 ${r} 0.75`,
+    "Z",
+  ].join(" ");
 }
 
 export class GraphStore {
@@ -361,12 +558,13 @@ export class GraphStore {
 }
 
 export class GraphNode {
-  constructor({ title, x = 0, y = 0, color = "#334155" }) {
+  constructor({ title, x = 0, y = 0, color = "#334155", icon = "" }) {
     this.id = 0;
     this.title = title;
     this.x = x;
     this.y = y;
     this.color = color;
+    this.icon = icon;
     this.inputs = [];
     this.outputs = [];
     this.el = null;
@@ -391,67 +589,100 @@ export class GraphNode {
     node.className = "zgu-node";
     node.dataset.id = String(this.id);
     node.style.transform = `translate(${this.x}px, ${this.y}px)`;
-
-    const header = document.createElement("div");
-    header.className = "zgu-node-header";
-    header.style.backgroundColor = this.color;
-    header.textContent = this.title;
-    node.appendChild(header);
-
-    const body = document.createElement("div");
-    body.className = "zgu-node-body";
-
-    const custom = document.createElement("div");
-    this.buildCustomHTML(custom);
-    const customVisible = custom.innerHTML.trim() !== "";
-    if (customVisible) {
-      custom.style.margin = "10px 0";
+    node.draggable = false;
+    node.addEventListener("dragstart", (event) => event.preventDefault());
+    const kind = String(this.zfKind || "");
+    if (kind.startsWith("n.trigger.")) {
+      node.classList.add("trigger");
     }
-    const outputsOnly = this.inputs.length === 0 && this.outputs.length > 0;
 
     const pinCount = Math.max(this.inputs.length, this.outputs.length);
-    const list = document.createElement("div");
-    if (pinCount > 0) {
-      list.className = "zgu-port-list zgu-port-pairs";
-      for (let i = 0; i < pinCount; i++) {
-        const row = document.createElement("div");
-        row.className = "zgu-port-row zgu-pair";
+    const nodeHeight = Math.max(84, 52 + Math.max(1, pinCount) * 26);
+    if (pinCount > 2) {
+      node.classList.add("expanded");
+    }
+    node.style.minHeight = `${nodeHeight}px`;
 
-        const left = document.createElement("div");
-        left.className = "zgu-pair-in";
-        if (i < this.inputs.length) {
-          const input = this.inputs[i];
-          left.innerHTML = `<div class="zgu-port in" data-type="in" data-index="${i}"></div><span>${input.name}</span>`;
-        } else {
-          left.innerHTML = '<span class="zgu-pair-placeholder" aria-hidden="true">\u00a0</span>';
+    const core = document.createElement("div");
+    core.className = "zgu-node-core";
+    core.style.minHeight = `${nodeHeight - 2}px`;
+    if (kind.startsWith("n.trigger.")) {
+      const svgNS = "http://www.w3.org/2000/svg";
+      const shape = document.createElementNS(svgNS, "svg");
+      shape.classList.add("zgu-trigger-shape");
+      shape.setAttribute("viewBox", `0 0 102 ${nodeHeight}`);
+      shape.setAttribute("preserveAspectRatio", "none");
+      shape.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(svgNS, "path");
+      path.classList.add("zgu-trigger-path");
+      path.setAttribute("d", triggerShapePath(102, nodeHeight));
+      shape.appendChild(path);
+      core.appendChild(shape);
+    }
+    if (this.icon) {
+      const icon = document.createElement("img");
+      icon.className = "zgu-node-icon";
+      icon.src = this.icon;
+      icon.alt = "";
+      icon.decoding = "async";
+      icon.draggable = false;
+      icon.addEventListener("dragstart", (event) => event.preventDefault());
+      core.appendChild(icon);
+    } else {
+      const fallback = document.createElement("div");
+      fallback.className = "zgu-node-icon-fallback";
+      core.appendChild(fallback);
+    }
+
+    node.appendChild(core);
+
+    if (this.inputs.length > 0) {
+      const list = document.createElement("div");
+      list.className = "zgu-port-list in";
+      this.inputs.forEach((input, index) => {
+        const wrap = document.createElement("div");
+        wrap.className = "zgu-port-wrap in";
+        const port = document.createElement("div");
+        port.className = "zgu-port in";
+        port.dataset.type = "in";
+        port.dataset.index = String(index);
+        wrap.appendChild(port);
+        list.appendChild(wrap);
+      });
+      node.appendChild(list);
+    }
+
+    if (this.outputs.length > 0) {
+      const list = document.createElement("div");
+      list.className = "zgu-port-list out";
+      this.outputs.forEach((output, index) => {
+        const wrap = document.createElement("div");
+        wrap.className = "zgu-port-wrap out";
+        const displayLabel = String(this.zfOutputLabels?.[output.name] || output.label || output.name || "").trim();
+        if (displayLabel && (this.outputs.length > 1 || String(this.zfKind || "") === "n.logic.match")) {
+          const pinLabel = document.createElement("div");
+          pinLabel.className = "zgu-port-pin-label out";
+          pinLabel.textContent = displayLabel;
+          wrap.appendChild(pinLabel);
         }
-
-        const right = document.createElement("div");
-        right.className = "zgu-pair-out";
-        if (i < this.outputs.length) {
-          const output = this.outputs[i];
-          right.innerHTML = `<span>${output.name}</span><div class="zgu-port out" data-type="out" data-index="${i}"></div>`;
-        } else {
-          right.innerHTML = '<span class="zgu-pair-placeholder" aria-hidden="true">\u00a0</span>';
+        const port = document.createElement("div");
+        port.className = "zgu-port out";
+        port.dataset.type = "out";
+        port.dataset.index = String(index);
+        if (displayLabel) {
+          port.title = displayLabel;
         }
-
-        row.appendChild(left);
-        row.appendChild(right);
-        list.appendChild(row);
-      }
+        wrap.appendChild(port);
+        list.appendChild(wrap);
+      });
+      node.appendChild(list);
     }
 
-    if (outputsOnly && customVisible) {
-      body.appendChild(custom);
-    }
-    if (pinCount > 0) {
-      body.appendChild(list);
-    }
-    if (!outputsOnly && customVisible) {
-      body.appendChild(custom);
-    }
+    const label = document.createElement("div");
+    label.className = "zgu-node-label";
+    label.textContent = this.title;
+    node.appendChild(label);
 
-    node.appendChild(body);
     container.appendChild(node);
     this.el = node;
     return node;
@@ -459,8 +690,8 @@ export class GraphNode {
 }
 
 export class CustomNode extends GraphNode {
-  constructor({ title, x = 0, y = 0, color = "#334155", inputs = [], outputs = [] }) {
-    super({ title, x, y, color });
+  constructor({ title, x = 0, y = 0, color = "#334155", icon = "", inputs = [], outputs = [] }) {
+    super({ title, x, y, color, icon });
     inputs.forEach((name) => this.addInput(name));
     outputs.forEach((name) => this.addOutput(name));
   }
@@ -559,6 +790,7 @@ export class GraphCanvasUI {
     this.gridSize = Number.isFinite(Number(options.gridSize)) && Number(options.gridSize) > 0
       ? Number(options.gridSize)
       : 30;
+    this.edgeStyle = this.resolveInitialEdgeStyle(options.edgeStyle);
 
     this.transform = { x: 0, y: 0, k: 1 };
 
@@ -566,10 +798,13 @@ export class GraphCanvasUI {
     this.panning = false;
     this.connecting = false;
     this.connectOrigin = null;
+    this.pendingDangling = null;
     this.selectedNode = null;
     this.selectedLink = null;
     this.startPos = { x: 0, y: 0 };
     this.initialTransform = { x: 0, y: 0 };
+    this.activePointerId = null;
+    this.wireUpdateFrame = null;
 
     this.pointerDownHandler = this.onPointerDown.bind(this);
     this.pointerMoveHandler = this.onPointerMove.bind(this);
@@ -581,6 +816,17 @@ export class GraphCanvasUI {
     this.mountDom();
     this.initEvents();
     this.updateTransform();
+  }
+
+  resolveInitialEdgeStyle(rawStyle) {
+    const valid = new Set(["bezier", "straight", "elbow", "rounded-elbow"]);
+    const fromOption = String(rawStyle || "").trim();
+    if (valid.has(fromOption)) return fromOption;
+    try {
+      const stored = window.localStorage?.getItem("zebflow.graph.edgeStyle") || "";
+      if (valid.has(stored)) return stored;
+    } catch (_err) {}
+    return "bezier";
   }
 
   mountDom() {
@@ -638,10 +884,60 @@ export class GraphCanvasUI {
     this.transformEl.appendChild(this.svgEl);
     this.transformEl.appendChild(this.nodesEl);
     this.workspaceEl.appendChild(this.transformEl);
+    this.mountEdgeStyleControl();
 
     this.root.appendChild(this.headerEl);
     this.root.appendChild(this.toolboxEl);
     this.root.appendChild(this.workspaceEl);
+  }
+
+  mountEdgeStyleControl() {
+    const styles = [
+      ["bezier", "Curve"],
+      ["straight", "Line"],
+      ["elbow", "Elbow"],
+      ["rounded-elbow", "Round"],
+    ];
+    this.edgeStyleControlEl = document.createElement("div");
+    this.edgeStyleControlEl.className = "zgu-edge-style-control";
+    this.edgeStyleControlEl.setAttribute("data-zgu-nodrag", "true");
+    this.edgeStyleControlEl.setAttribute("aria-label", "Edge style");
+    this.edgeStyleControlEl.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+    styles.forEach(([style, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "zgu-edge-style-button";
+      button.dataset.edgeStyle = style;
+      button.textContent = label;
+      button.title = `${label} connector`;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setEdgeStyle(style);
+      });
+      this.edgeStyleControlEl.appendChild(button);
+    });
+    this.workspaceEl.appendChild(this.edgeStyleControlEl);
+    this.updateEdgeStyleButtons();
+  }
+
+  setEdgeStyle(style) {
+    const valid = new Set(["bezier", "straight", "elbow", "rounded-elbow"]);
+    if (!valid.has(style) || this.edgeStyle === style) return;
+    this.edgeStyle = style;
+    try {
+      window.localStorage?.setItem("zebflow.graph.edgeStyle", style);
+    } catch (_err) {}
+    this.updateEdgeStyleButtons();
+    this.updateWires();
+  }
+
+  updateEdgeStyleButtons() {
+    this.edgeStyleControlEl?.querySelectorAll(".zgu-edge-style-button").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.edgeStyle === this.edgeStyle);
+    });
   }
 
   initEvents() {
@@ -660,6 +956,10 @@ export class GraphCanvasUI {
     this.workspaceEl.removeEventListener("wheel", this.wheelHandler);
     window.removeEventListener("keydown", this.keyHandler);
     this.workspaceEl.removeEventListener("contextmenu", this.contextHandler);
+    if (this.wireUpdateFrame != null) {
+      window.cancelAnimationFrame(this.wireUpdateFrame);
+      this.wireUpdateFrame = null;
+    }
   }
 
   resetCamera() {
@@ -679,17 +979,180 @@ export class GraphCanvasUI {
 
   clearSVG() {
     this.svgEl.querySelectorAll(".zgu-wire:not(.temp)").forEach((path) => path.remove());
+    this.svgEl.querySelectorAll(".zgu-dangling-plus").forEach((group) => group.remove());
   }
 
   updateTransform() {
-    this.transformEl.style.transform = `translate(${this.transform.x}px, ${this.transform.y}px) scale(${this.transform.k})`;
-    this.gridEl.style.backgroundPosition = `${this.transform.x}px ${this.transform.y}px`;
-    this.gridEl.style.backgroundSize = `${30 * this.transform.k}px ${30 * this.transform.k}px`;
+    const dpr = window.devicePixelRatio || 1;
+    const snap = (value) => Math.round(value * dpr) / dpr;
+    const x = snap(this.transform.x);
+    const y = snap(this.transform.y);
+    const gridSize = snap(30 * this.transform.k);
+    this.transformEl.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${this.transform.k})`;
+    this.gridEl.style.backgroundPosition = `${x}px ${y}px`;
+    this.gridEl.style.backgroundSize = `${gridSize}px ${gridSize}px`;
   }
 
   drawBezier(x1, y1, x2, y2) {
     const dist = Math.max(Math.abs(x2 - x1) * 0.5, 50);
     return `M ${x1} ${y1} C ${x1 + dist} ${y1}, ${x2 - dist} ${y2}, ${x2} ${y2}`;
+  }
+
+  drawStraight(x1, y1, x2, y2) {
+    return `M ${x1} ${y1} L ${x2} ${y2}`;
+  }
+
+  elementWorldRect(el) {
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const transformRect = this.transformEl.getBoundingClientRect();
+    return {
+      left: (rect.left - transformRect.left) / this.transform.k,
+      right: (rect.right - transformRect.left) / this.transform.k,
+      top: (rect.top - transformRect.top) / this.transform.k,
+      bottom: (rect.bottom - transformRect.top) / this.transform.k,
+      width: rect.width / this.transform.k,
+      height: rect.height / this.transform.k,
+    };
+  }
+
+  nodeObstacleRect(nodeEl) {
+    const node = this.elementWorldRect(nodeEl);
+    if (!node) return null;
+    const label = this.elementWorldRect(nodeEl.querySelector(".zgu-node-label"));
+    if (!label) return node;
+    return {
+      left: Math.min(node.left, label.left),
+      right: Math.max(node.right, label.right),
+      top: Math.min(node.top, label.top),
+      bottom: Math.max(node.bottom, label.bottom),
+      width: Math.max(node.right, label.right) - Math.min(node.left, label.left),
+      height: Math.max(node.bottom, label.bottom) - Math.min(node.top, label.top),
+    };
+  }
+
+  elbowPoints(x1, y1, x2, y2, sourceEl = null, targetEl = null) {
+    const exit = 56;
+    const entry = 36;
+    const laneGap = 48;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const sourceRect = this.nodeObstacleRect(sourceEl);
+    const targetRect = this.nodeObstacleRect(targetEl);
+    const sourceNodeRect = this.elementWorldRect(sourceEl);
+    const exitX = sourceRect ? sourceRect.right + laneGap : x1 + exit;
+    const entryX = targetRect ? targetRect.left - laneGap : x2 - entry;
+    const sourceHeight = sourceNodeRect?.height || sourceRect?.height || 84;
+    const significantGap = sourceHeight * 0.75;
+    const targetFarAbove = Boolean(sourceRect && targetRect && targetRect.bottom < sourceRect.top - significantGap);
+    const targetFarBelow = Boolean(sourceRect && targetRect && targetRect.top > sourceRect.bottom + significantGap);
+    const verticalOverlap = sourceRect && targetRect
+      ? Math.min(sourceRect.bottom, targetRect.bottom) - Math.max(sourceRect.top, targetRect.top)
+      : 0;
+    const nearVerticalBand = verticalOverlap > -sourceHeight * 0.75;
+    const needsLane = dx < exit + entry || Boolean(sourceRect && targetRect && targetRect.left < sourceRect.right && nearVerticalBand);
+    const needsGapLane = Boolean(sourceRect && targetRect && (targetFarAbove || targetFarBelow));
+
+    if (needsGapLane) {
+      const laneY = targetFarAbove
+        ? (targetRect.bottom + sourceRect.top) / 2
+        : (sourceRect.bottom + targetRect.top) / 2;
+      return [
+        { x: x1, y: y1 },
+        { x: exitX, y: y1 },
+        { x: exitX, y: laneY },
+        { x: entryX, y: laneY },
+        { x: entryX, y: y2 },
+        { x: x2, y: y2 },
+      ];
+    }
+
+    if (needsLane) {
+      const laneY = dy < 0
+        ? Math.min(sourceRect?.top ?? y1, targetRect?.top ?? y2) - laneGap
+        : Math.max(sourceRect?.bottom ?? y1, targetRect?.bottom ?? y2) + laneGap;
+      return [
+        { x: x1, y: y1 },
+        { x: exitX, y: y1 },
+        { x: exitX, y: laneY },
+        { x: entryX, y: laneY },
+        { x: entryX, y: y2 },
+        { x: x2, y: y2 },
+      ];
+    }
+
+    const midX = sourceRect && targetRect
+      ? (sourceRect.right + targetRect.left) / 2
+      : x1 + dx / 2;
+    return [
+      { x: x1, y: y1 },
+      { x: midX, y: y1 },
+      { x: midX, y: y2 },
+      { x: x2, y: y2 },
+    ];
+  }
+
+  drawElbow(x1, y1, x2, y2, sourceEl = null, targetEl = null) {
+    const points = this.elbowPoints(x1, y1, x2, y2, sourceEl, targetEl);
+    return points
+      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+      .join(" ");
+  }
+
+  drawRoundedPolyline(points, radius = 12) {
+    const cleaned = points.filter((point, index) => {
+      if (index === 0) return true;
+      const prev = points[index - 1];
+      return prev.x !== point.x || prev.y !== point.y;
+    });
+    if (cleaned.length < 3) {
+      return cleaned
+        .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+        .join(" ");
+    }
+    const parts = [`M ${cleaned[0].x} ${cleaned[0].y}`];
+    for (let i = 1; i < cleaned.length - 1; i++) {
+      const prev = cleaned[i - 1];
+      const current = cleaned[i];
+      const next = cleaned[i + 1];
+      const prevDist = Math.hypot(current.x - prev.x, current.y - prev.y);
+      const nextDist = Math.hypot(next.x - current.x, next.y - current.y);
+      const r = Math.min(radius, prevDist / 2, nextDist / 2);
+      if (r <= 0) {
+        parts.push(`L ${current.x} ${current.y}`);
+        continue;
+      }
+      const before = {
+        x: current.x + ((prev.x - current.x) / prevDist) * r,
+        y: current.y + ((prev.y - current.y) / prevDist) * r,
+      };
+      const after = {
+        x: current.x + ((next.x - current.x) / nextDist) * r,
+        y: current.y + ((next.y - current.y) / nextDist) * r,
+      };
+      parts.push(`L ${before.x} ${before.y}`);
+      parts.push(`Q ${current.x} ${current.y} ${after.x} ${after.y}`);
+    }
+    const last = cleaned[cleaned.length - 1];
+    parts.push(`L ${last.x} ${last.y}`);
+    return parts.join(" ");
+  }
+
+  drawRoundedElbow(x1, y1, x2, y2, sourceEl = null, targetEl = null) {
+    return this.drawRoundedPolyline(this.elbowPoints(x1, y1, x2, y2, sourceEl, targetEl), 12);
+  }
+
+  drawEdgePath(x1, y1, x2, y2, sourceEl = null, targetEl = null) {
+    if (this.edgeStyle === "straight") {
+      return this.drawStraight(x1, y1, x2, y2);
+    }
+    if (this.edgeStyle === "elbow") {
+      return this.drawElbow(x1, y1, x2, y2, sourceEl, targetEl);
+    }
+    if (this.edgeStyle === "rounded-elbow") {
+      return this.drawRoundedElbow(x1, y1, x2, y2, sourceEl, targetEl);
+    }
+    return this.drawBezier(x1, y1, x2, y2);
   }
 
   getPortCenter(nodeEl, type, index) {
@@ -764,8 +1227,177 @@ export class GraphCanvasUI {
       }
       const start = this.getPortCenter(source.el, "out", link.fromSlot);
       const end = this.getPortCenter(target.el, "in", link.toSlot);
-      path.setAttribute("d", this.drawBezier(start.x, start.y, end.x, end.y));
+      path.setAttribute("d", this.drawEdgePath(start.x, start.y, end.x, end.y, source.el, target.el));
     });
+    this.updateDanglingPlus();
+  }
+
+  scheduleWiresUpdate() {
+    if (this.wireUpdateFrame != null) {
+      return;
+    }
+    this.wireUpdateFrame = window.requestAnimationFrame(() => {
+      this.wireUpdateFrame = null;
+      this.updateWires();
+    });
+  }
+
+  getConnectedOutputKeys() {
+    const keys = new Set();
+    this.graph.links.forEach((link) => {
+      keys.add(`${link.fromNode}:${link.fromSlot}`);
+    });
+    return keys;
+  }
+
+  clientToWorld(clientX, clientY) {
+    const rect = this.transformEl.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) / this.transform.k,
+      y: (clientY - rect.top) / this.transform.k,
+    };
+  }
+
+  makeOutputAddPayload(node, slot, position = null) {
+    const output = Array.isArray(node.outputs) ? node.outputs[slot] : null;
+    return {
+      graphNodeId: node.id,
+      zfKind: node.zfKind || "",
+      zfPipelineNodeId: node.zfPipelineNodeId || "",
+      title: node.title,
+      x: Number.isFinite(Number(position?.x)) ? Number(position.x) : node.x,
+      y: Number.isFinite(Number(position?.y)) ? Number(position.y) : node.y,
+      outputSlot: slot,
+      outputPin: output?.name || "out",
+      _raw: node,
+    };
+  }
+
+  startConnectionFromOutput(node, slot, danglingEl = null) {
+    if (!node?.el) return;
+    const start = this.getPortCenter(node.el, "out", slot);
+    this.connecting = true;
+    this.connectOrigin = {
+      nodeId: node.id,
+      slot,
+      el: node.el,
+      fromDangling: danglingEl,
+    };
+    if (danglingEl) {
+      danglingEl.style.display = "none";
+    }
+    this.tempWire.style.display = "block";
+    this.tempWire.setAttribute("d", this.drawEdgePath(start.x, start.y, start.x, start.y));
+  }
+
+  updateDanglingPlus() {
+    const onOutputAdd = this.options.onOutputAdd;
+    const readOnly = this.readOnly || typeof onOutputAdd !== "function";
+    const svgNS = "http://www.w3.org/2000/svg";
+    const connected = this.getConnectedOutputKeys();
+    const valid = new Set();
+    const stubLen = 50;
+    const plusRadius = 10;
+
+    if (readOnly) {
+      this.svgEl.querySelectorAll(".zgu-dangling-plus").forEach((group) => group.remove());
+      return;
+    }
+
+    this.graph.nodes.forEach((node) => {
+      if (!node?.el || !Array.isArray(node.outputs)) return;
+      node.outputs.forEach((_output, slot) => {
+        const key = `${node.id}:${slot}`;
+        if (connected.has(key)) return;
+        const center = this.getPortCenter(node.el, "out", slot);
+        if (!Number.isFinite(center.x) || !Number.isFinite(center.y)) return;
+        valid.add(key);
+
+        const endX = center.x + stubLen;
+        const endY = center.y;
+        let group = this.svgEl.querySelector(`.zgu-dangling-plus[data-key="${CSS.escape(key)}"]`);
+        if (!group) {
+          group = document.createElementNS(svgNS, "g");
+          group.classList.add("zgu-dangling-plus");
+          group.dataset.key = key;
+
+          const wire = document.createElementNS(svgNS, "path");
+          wire.classList.add("zgu-dangling-wire");
+          group.appendChild(wire);
+
+          const circle = document.createElementNS(svgNS, "circle");
+          circle.classList.add("zgu-dangling-circle");
+          circle.setAttribute("r", String(plusRadius));
+          group.appendChild(circle);
+
+          const hLine = document.createElementNS(svgNS, "line");
+          hLine.classList.add("zgu-dangling-mark");
+          hLine.dataset.axis = "h";
+          group.appendChild(hLine);
+
+          const vLine = document.createElementNS(svgNS, "line");
+          vLine.classList.add("zgu-dangling-mark");
+          vLine.dataset.axis = "v";
+          group.appendChild(vLine);
+
+          group.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const [nodeIdRaw, slotRaw] = String(group.dataset.key || "").split(":");
+            const source = this.graph.nodes.find((next) => next.id === Number(nodeIdRaw));
+            if (!source) return;
+            this.pendingDangling = {
+              node: source,
+              slot: Number(slotRaw),
+              group,
+              x: event.clientX,
+              y: event.clientY,
+              world: this.clientToWorld(event.clientX, event.clientY),
+            };
+          });
+
+          this.svgEl.appendChild(group);
+        }
+
+        group.querySelector(".zgu-dangling-wire").setAttribute("d", `M ${center.x} ${center.y} L ${endX} ${endY}`);
+        group.querySelector(".zgu-dangling-circle").setAttribute("cx", String(endX));
+        group.querySelector(".zgu-dangling-circle").setAttribute("cy", String(endY));
+        const hLine = group.querySelector('.zgu-dangling-mark[data-axis="h"]');
+        const vLine = group.querySelector('.zgu-dangling-mark[data-axis="v"]');
+        hLine.setAttribute("x1", String(endX - 4));
+        hLine.setAttribute("y1", String(endY));
+        hLine.setAttribute("x2", String(endX + 4));
+        hLine.setAttribute("y2", String(endY));
+        vLine.setAttribute("x1", String(endX));
+        vLine.setAttribute("y1", String(endY - 4));
+        vLine.setAttribute("x2", String(endX));
+        vLine.setAttribute("y2", String(endY + 4));
+      });
+    });
+
+    this.svgEl.querySelectorAll(".zgu-dangling-plus").forEach((group) => {
+      if (!valid.has(group.dataset.key || "")) {
+        group.remove();
+      }
+    });
+  }
+
+  capturePointer(event) {
+    if (event.pointerId != null && typeof this.workspaceEl.setPointerCapture === "function") {
+      try {
+        this.workspaceEl.setPointerCapture(event.pointerId);
+        this.activePointerId = event.pointerId;
+      } catch (_err) {}
+    }
+  }
+
+  releasePointer() {
+    if (this.activePointerId != null && typeof this.workspaceEl.releasePointerCapture === "function") {
+      try {
+        this.workspaceEl.releasePointerCapture(this.activePointerId);
+      } catch (_err) {}
+    }
+    this.activePointerId = null;
   }
 
   onPointerDown(event) {
@@ -783,6 +1415,7 @@ export class GraphCanvasUI {
         return;
       }
       this.panning = true;
+      this.capturePointer(event);
       this.startPos = { x: event.clientX, y: event.clientY };
       this.initialTransform = { ...this.transform };
       this.clearSelection();
@@ -818,13 +1451,9 @@ export class GraphCanvasUI {
       event.preventDefault();
       event.stopPropagation();
       const nodeEl = target.closest(".zgu-node");
-      this.connecting = true;
-      this.connectOrigin = {
-        nodeId: Number(nodeEl.dataset.id),
-        slot: Number(target.dataset.index),
-        el: nodeEl,
-      };
-      this.tempWire.style.display = "block";
+      const node = this.graph.nodes.find((next) => next.id === Number(nodeEl.dataset.id));
+      this.capturePointer(event);
+      this.startConnectionFromOutput(node, Number(target.dataset.index));
       return;
     }
 
@@ -834,7 +1463,10 @@ export class GraphCanvasUI {
 
     const nodeEl = target.closest(".zgu-node");
     if (nodeEl) {
+      event.preventDefault();
+      event.stopPropagation();
       this.draggingNode = this.graph.nodes.find((node) => node.id === Number(nodeEl.dataset.id));
+      this.capturePointer(event);
       this.startPos = { x: event.clientX, y: event.clientY };
       this.clearSelection();
       this.selectedNode = this.draggingNode;
@@ -844,18 +1476,35 @@ export class GraphCanvasUI {
     }
 
     this.panning = true;
+    this.capturePointer(event);
     this.startPos = { x: event.clientX, y: event.clientY };
     this.initialTransform = { ...this.transform };
     this.clearSelection();
   }
 
   onPointerMove(event) {
+    if (this.activePointerId != null && event.pointerId != null && event.pointerId !== this.activePointerId) {
+      return;
+    }
+
+    if (this.pendingDangling) {
+      const dx = event.clientX - this.pendingDangling.x;
+      const dy = event.clientY - this.pendingDangling.y;
+      if (Math.abs(dx) >= 4 || Math.abs(dy) >= 4) {
+        const pending = this.pendingDangling;
+        this.pendingDangling = null;
+        this.startConnectionFromOutput(pending.node, pending.slot, pending.group);
+      } else {
+        return;
+      }
+    }
+
     if (this.connecting) {
       const rect = this.transformEl.getBoundingClientRect();
       const mouseX = (event.clientX - rect.left) / this.transform.k;
       const mouseY = (event.clientY - rect.top) / this.transform.k;
       const start = this.getPortCenter(this.connectOrigin.el, "out", this.connectOrigin.slot);
-      this.tempWire.setAttribute("d", this.drawBezier(start.x, start.y, mouseX, mouseY));
+      this.tempWire.setAttribute("d", this.drawEdgePath(start.x, start.y, mouseX, mouseY));
       return;
     }
 
@@ -865,7 +1514,7 @@ export class GraphCanvasUI {
       this.draggingNode.x += dx;
       this.draggingNode.y += dy;
       this.draggingNode.el.style.transform = `translate(${this.draggingNode.x}px, ${this.draggingNode.y}px)`;
-      this.updateWires();
+      this.scheduleWiresUpdate();
       this.startPos = { x: event.clientX, y: event.clientY };
       return;
     }
@@ -880,9 +1529,24 @@ export class GraphCanvasUI {
   }
 
   onPointerUp(event) {
+    if (this.activePointerId != null && event.pointerId != null && event.pointerId !== this.activePointerId) {
+      return;
+    }
+
+    if (this.pendingDangling) {
+      const pending = this.pendingDangling;
+      this.pendingDangling = null;
+      if (!this.readOnly && typeof this.options.onOutputAdd === "function") {
+        this.options.onOutputAdd(this.makeOutputAddPayload(pending.node, pending.slot, pending.world));
+      }
+      this.releasePointer();
+      return;
+    }
+
     if (this.connecting) {
       this.connecting = false;
       this.tempWire.style.display = "none";
+      let connected = false;
       const droppedOn = document.elementFromPoint(event.clientX, event.clientY);
       if (droppedOn?.classList.contains("zgu-port") && droppedOn.classList.contains("in")) {
         const targetNodeEl = droppedOn.closest(".zgu-node");
@@ -891,6 +1555,19 @@ export class GraphCanvasUI {
         if (targetId !== this.connectOrigin.nodeId) {
           this.graph.connect(this.connectOrigin.nodeId, this.connectOrigin.slot, targetId, targetSlot, this.options.defaultManualLinkOptions || {});
           this.updateWires();
+          connected = true;
+        }
+      }
+      if (!connected && this.connectOrigin?.fromDangling) {
+        this.connectOrigin.fromDangling.style.display = "";
+        if (!this.readOnly && typeof this.options.onOutputAdd === "function") {
+          this.options.onOutputAdd(
+            this.makeOutputAddPayload(
+              this.graph.nodes.find((node) => node.id === this.connectOrigin.nodeId),
+              this.connectOrigin.slot,
+              this.clientToWorld(event.clientX, event.clientY)
+            )
+          );
         }
       }
       this.connectOrigin = null;
@@ -903,6 +1580,7 @@ export class GraphCanvasUI {
       this.updateWires();
     }
     this.panning = false;
+    this.releasePointer();
   }
 
   onWheel(event) {
@@ -918,6 +1596,7 @@ export class GraphCanvasUI {
     this.transform.x = mouseX - worldX * nextScale;
     this.transform.y = mouseY - worldY * nextScale;
     this.updateTransform();
+    this.updateWires();
   }
 
   onKeyDown(event) {
@@ -1118,6 +1797,106 @@ function resolveNodeColor(kind, colorMap, fallbackColor) {
   return fallbackColor;
 }
 
+function resolveNodeTitle(kind, config) {
+  const cfg = config && typeof config === "object" ? config : {};
+  if (cfg.title) {
+    return String(cfg.title);
+  }
+  if (kind === "n.trigger.webhook") {
+    const method = String(cfg.method || "GET").toUpperCase();
+    const path = String(cfg.path || "/").trim() || "/";
+    return `${method} ${path}`;
+  }
+  if (kind === "n.logic.match") {
+    return "Match";
+  }
+  return kind;
+}
+
+function slugifyPinName(raw, fallback = "case") {
+  const out = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return out || fallback;
+}
+
+function normalizeMatchCase(item, index) {
+  if (typeof item === "string") {
+    const value = item.trim();
+    return value ? { value, pin: slugifyPinName(value, `case-${index + 1}`), label: value } : null;
+  }
+  const source = item && typeof item === "object" ? item : {};
+  const value = String(source.value || "").trim();
+  if (!value) return null;
+  return {
+    value,
+    pin: slugifyPinName(source.pin || value, `case-${index + 1}`),
+    label: String(source.label || value).trim() || value,
+  };
+}
+
+function normalizeMatchCases(rawCases) {
+  if (typeof rawCases === "string") {
+    return rawCases.split("\n").map(normalizeMatchCase).filter(Boolean);
+  }
+  if (!Array.isArray(rawCases)) return [];
+  return rawCases.map(normalizeMatchCase).filter(Boolean);
+}
+
+function normalizeMatchDefault(rawDefault) {
+  if (typeof rawDefault === "string") {
+    const pin = slugifyPinName(rawDefault, "default");
+    return { pin, label: pin === "default" ? "Default" : pin };
+  }
+  const source = rawDefault && typeof rawDefault === "object" ? rawDefault : {};
+  return {
+    pin: slugifyPinName(source.pin || "default", "default"),
+    label: String(source.label || "Default").trim() || "Default",
+  };
+}
+
+function deriveOutputPins(kind, config, rawPins, fallback) {
+  if (String(kind || "") !== "n.logic.match") {
+    return sanitizePins(rawPins, fallback);
+  }
+  const pins = [];
+  normalizeMatchCases(config?.cases).forEach((item) => {
+    if (!pins.includes(item.pin)) pins.push(item.pin);
+  });
+  const defaultRoute = normalizeMatchDefault(config?.default);
+  if (!pins.includes(defaultRoute.pin)) pins.push(defaultRoute.pin);
+  return pins.length > 0 ? pins : sanitizePins(rawPins, ["default"]);
+}
+
+function deriveOutputLabels(kind, config, outputPins = []) {
+  const labels = {};
+  if (String(kind || "") !== "n.logic.match") {
+    outputPins.forEach((pin) => {
+      labels[pin] = pin;
+    });
+    return labels;
+  }
+  normalizeMatchCases(config?.cases).forEach((item) => {
+    labels[item.pin] = item.label || item.value || item.pin;
+  });
+  const defaultRoute = normalizeMatchDefault(config?.default);
+  labels[defaultRoute.pin] = defaultRoute.label || defaultRoute.pin;
+  outputPins.forEach((pin) => {
+    if (!labels[pin]) labels[pin] = pin;
+  });
+  return labels;
+}
+
+function defaultConfigForKind(kind) {
+  if (String(kind || "") === "n.logic.match") {
+    return { cases: [], default: { pin: "default", label: "Default" } };
+  }
+  return {};
+}
+
 export function createPipelineScene(pipeline, options = {}) {
   const nodeSpacingX = Number(options.nodeSpacingX || 320);
   const nodeSpacingY = Number(options.nodeSpacingY || 170);
@@ -1125,6 +1904,7 @@ export function createPipelineScene(pipeline, options = {}) {
   const baseY = Number(options.baseY || 120);
   const fallbackNodeColor = options.fallbackNodeColor || "#334155";
   const colorMap = options.kindColors || null;
+  const iconMap = options.kindIcons || null;
   const defaultEdgeOptions = options.defaultEdgeOptions || {};
 
   const graphNodes = Array.isArray(pipeline?.nodes) ? pipeline.nodes : [];
@@ -1145,20 +1925,23 @@ export function createPipelineScene(pipeline, options = {}) {
         const y = Number.isFinite(uiCfg.y) ? uiCfg.y : baseY + row * nodeSpacingY;
 
         const inputs = sanitizePins(node?.input_pins, ["in"]);
-        const outputs = sanitizePins(node?.output_pins, ["out"]);
         const kind = String(node?.kind || "node");
-        const title = cfg.title || kind;
+        const outputs = deriveOutputPins(kind, cfg, node?.output_pins, ["out"]);
+        const title = resolveNodeTitle(kind, cfg);
         const color = resolveNodeColor(kind, colorMap, fallbackNodeColor);
+        const icon = iconMap && iconMap[kind] ? iconMap[kind] : "";
 
         const domNode = app.factory.custom(x, y, {
           title,
           color,
+          icon,
           inputs,
           outputs,
         });
         domNode.zfPipelineNodeId = String(node?.id || "");
         domNode.zfKind = kind;
         domNode.zfConfig = cloneJsonLike(cfg || {});
+        domNode.zfOutputLabels = deriveOutputLabels(kind, cfg, outputs);
         const mounted = app.addNode(domNode);
         nodeMap.set(String(node?.id || ""), mounted);
       });
@@ -1221,6 +2004,60 @@ export function createGraphUI(root, options = {}) {
     addNode(node) {
       graph.add(node);
       ui.addNodeToDOM(node);
+      return node;
+    },
+
+    updateNodePins(node, nextPins = {}) {
+      if (!node || !graph.nodes.includes(node)) {
+        return node;
+      }
+      const oldInputs = (node.inputs || []).map((pin) => pin.name);
+      const oldOutputs = (node.outputs || []).map((pin) => pin.name);
+      const inputNames = Array.isArray(nextPins.inputs)
+        ? sanitizePins(nextPins.inputs, [])
+        : oldInputs;
+      const outputNames = Array.isArray(nextPins.outputs)
+        ? sanitizePins(nextPins.outputs, [])
+        : oldOutputs;
+
+      node.inputs = inputNames.map((name) => {
+        const old = (node.inputs || []).find((pin) => pin.name === name);
+        return { name, value: old?.value || 0 };
+      });
+      node.outputs = outputNames.map((name) => {
+        const old = (node.outputs || []).find((pin) => pin.name === name);
+        return { name, value: old?.value || 0 };
+      });
+
+      graph.links = graph.links
+        .map((link) => {
+          if (link.fromNode === node.id) {
+            const oldName = oldOutputs[link.fromSlot];
+            const nextIndex = outputNames.indexOf(oldName);
+            if (nextIndex < 0) return null;
+            link.fromSlot = nextIndex;
+          }
+          if (link.toNode === node.id) {
+            const oldName = oldInputs[link.toSlot];
+            const nextIndex = inputNames.indexOf(oldName);
+            if (nextIndex < 0) return null;
+            link.toSlot = nextIndex;
+          }
+          return link;
+        })
+        .filter(Boolean);
+
+      const wasSelected = ui.selectedNode?.id === node.id;
+      if (node.el) {
+        node.el.remove();
+        node.el = null;
+      }
+      node.buildDOM(ui.nodesEl);
+      if (wasSelected && node.el) {
+        ui.selectedNode = node;
+        node.el.classList.add("selected");
+      }
+      ui.updateWires();
       return node;
     },
 
@@ -1412,19 +2249,61 @@ export const PipelineGraph = (() => {
     return count <= 0 ? base : `${base}-${count}`;
   }
 
+  function _pgBadgeLabel(index) {
+    const alphabet = "abcdefghijklmnopqrstuvwxyz";
+    const safe = Math.max(0, Number(index) || 0);
+    if (safe < alphabet.length) {
+      return alphabet[safe];
+    }
+    return `${alphabet[safe % alphabet.length]}${Math.floor(safe / alphabet.length) + 1}`;
+  }
+
   function _pgAttachEditButtons(app, onNodeEdit) {
     const root = app.root;
     if (!root) return;
     const readOnly = !!(app.ui && app.ui.readOnly);
     const nodeMap = new Map(app.graph.nodes.map((n) => [String(n.id), n]));
-    root.querySelectorAll(".zgu-node").forEach((el) => {
+    const toNodeEditPayload = (nodeData) => ({
+      graphNodeId: nodeData.id,
+      zfKind: nodeData.zfKind || "",
+      zfPipelineNodeId: nodeData.zfPipelineNodeId || "",
+      zfConfig: nodeData.zfConfig || {},
+      title: nodeData.title,
+      x: nodeData.x,
+      y: nodeData.y,
+      inputs: nodeData.inputs || [],
+      outputs: nodeData.outputs || [],
+      _raw: nodeData,
+    });
+    const emitNodeEdit = (payload, fallback) => {
+      let prevented = false;
+      if (typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+        const event = new CustomEvent("zebflow:pipeline-node-edit", {
+          detail: payload,
+          bubbles: true,
+          cancelable: true,
+        });
+        window.dispatchEvent(event);
+        prevented = event.defaultPrevented;
+      }
+      if (!prevented && fallback) {
+        fallback(payload);
+      }
+    };
+    root.querySelectorAll(".zgu-node").forEach((el, index) => {
       const nodeData = nodeMap.get(el.getAttribute("data-id") || "");
       if (!nodeData) return;
+      const openEdit = () => {
+        const cb = app._pgOnNodeEdit || onNodeEdit;
+        emitNodeEdit(toNodeEditPayload(nodeData), cb);
+      };
 
       const existingButton = el.querySelector(".zf-node-edit");
       if (readOnly || !onNodeEdit) {
         if (existingButton)
           existingButton.remove();
+        el.ondblclick = null;
+        el.__pgOpenNodeEdit = null;
       } else if (!existingButton) {
         const btn = document.createElement("button");
         btn.type = "button";
@@ -1432,24 +2311,43 @@ export const PipelineGraph = (() => {
         btn.setAttribute("data-zgu-nodrag", "true");
         btn.textContent = "E";
         btn.title = "Edit Node";
-        btn.addEventListener("click", (e) => {
+        el.appendChild(btn);
+      }
+      const editButton = el.querySelector(".zf-node-edit");
+      if (!readOnly && onNodeEdit && editButton) {
+        el.__pgOpenNodeEdit = openEdit;
+        if (!el.__pgNodePointerEditHandler) {
+          el.__pgLastNodePointerDown = null;
+          el.__pgNodePointerEditHandler = (e) => {
+            if (e.button !== 0 || e.target?.closest?.("[data-zgu-nodrag='true']")) return;
+            const previous = el.__pgLastNodePointerDown;
+            const now = performance.now();
+            el.__pgLastNodePointerDown = { t: now, x: e.clientX, y: e.clientY };
+            if (
+              previous &&
+              now - previous.t <= 420 &&
+              Math.abs(e.clientX - previous.x) <= 8 &&
+              Math.abs(e.clientY - previous.y) <= 8
+            ) {
+              e.preventDefault();
+              e.stopPropagation();
+              el.__pgLastNodePointerDown = null;
+              el.__pgOpenNodeEdit?.();
+            }
+          };
+          el.addEventListener("pointerdown", el.__pgNodePointerEditHandler);
+        }
+        editButton.onclick = (e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (onNodeEdit)
-            onNodeEdit({
-              graphNodeId: nodeData.id,
-              zfKind: nodeData.zfKind || "",
-              zfPipelineNodeId: nodeData.zfPipelineNodeId || "",
-              zfConfig: nodeData.zfConfig || {},
-              title: nodeData.title,
-              x: nodeData.x,
-              y: nodeData.y,
-              inputs: nodeData.inputs || [],
-              outputs: nodeData.outputs || [],
-              _raw: nodeData,
-            });
-        });
-        el.appendChild(btn);
+          openEdit();
+        };
+        el.ondblclick = (e) => {
+          if (e.target?.closest?.("[data-zgu-nodrag='true']")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          openEdit();
+        };
       }
 
       let badge = el.querySelector(".zf-node-slug");
@@ -1459,25 +2357,59 @@ export const PipelineGraph = (() => {
         el.appendChild(badge);
       }
       const slug = nodeData.zfPipelineNodeId || "";
-      const nextText = slug || "node";
+      const nextText = _pgBadgeLabel(index);
       if (badge.textContent !== nextText)
         badge.textContent = nextText;
+
+      const title = el.querySelector(".zgu-node-label");
+      if (title && title.textContent !== String(nodeData.title || "")) {
+        title.textContent = String(nodeData.title || "");
+      }
     });
   }
 
-  function _pgEnsureObserver(stateRef, app, onNodeEdit) {
+  function _pgAttachContinuationButtons(app, onOutputAdd) {
+    if (!app?.ui) return;
+    app.ui.options.onOutputAdd = onOutputAdd
+      ? (payload) => {
+          let prevented = false;
+          if (typeof window !== "undefined" && typeof window.CustomEvent === "function") {
+            const event = new CustomEvent("zebflow:pipeline-output-add", {
+              detail: payload,
+              bubbles: true,
+              cancelable: true,
+            });
+            window.dispatchEvent(event);
+            prevented = event.defaultPrevented;
+          }
+          if (!prevented) {
+            const cb = app._pgOnOutputAdd || onOutputAdd;
+            if (cb) cb(payload);
+          }
+        }
+      : null;
+    app.ui.updateWires?.();
+  }
+
+  function _pgAttachChrome(app, onNodeEdit, onOutputAdd) {
+    _pgAttachEditButtons(app, onNodeEdit);
+    _pgAttachContinuationButtons(app, onOutputAdd);
+  }
+
+  function _pgEnsureObserver(stateRef, app, onNodeEdit, onOutputAdd) {
     stateRef.current.observer?.disconnect();
     const obs = new MutationObserver(() =>
-      _pgAttachEditButtons(app, onNodeEdit)
+      _pgAttachChrome(app, onNodeEdit, onOutputAdd)
     );
     obs.observe(app.root, { childList: true, subtree: true });
     stateRef.current.observer = obs;
   }
 
-  function _pgLoadScene(app, pipeline, kindColors) {
+  function _pgLoadScene(app, pipeline, kindColors, kindIcons) {
     if (!pipeline) return;
     const scene = createPipelineScene(pipeline, {
       kindColors: { ...DEFAULT_NODE_KIND_COLORS, ...(kindColors || {}) },
+      kindIcons: kindIcons || {},
     });
     app.registerScene("__pg", scene);
     app.loadScene("__pg");
@@ -1558,20 +2490,26 @@ export const PipelineGraph = (() => {
             (-ui.transform.y + ui.workspaceEl.clientHeight / 2) /
               ui.transform.k -
             50;
+          const config = defaultConfigForKind(kind);
           const node = app.factory.custom(x, y, {
             title: entry.title || kind,
             color:
               entry.color ||
               DEFAULT_NODE_KIND_COLORS[kind] ||
               "#334155",
+            icon:
+              entry.icon ||
+              (props.kindIcons && props.kindIcons[kind]) ||
+              "",
             inputs: entry.input_pins || ["in"],
-            outputs: entry.output_pins || ["out"],
+            outputs: deriveOutputPins(kind, config, entry.output_pins, ["out"]),
           });
           node.zfKind = kind;
-          node.zfConfig = {};
+          node.zfConfig = config;
+          node.zfOutputLabels = deriveOutputLabels(kind, config, node.outputs.map((pin) => pin.name));
           node.zfPipelineNodeId = _pgGenerateSlug(kind, app.graph.nodes);
           app.addNode(node);
-          _pgAttachEditButtons(app, props.onNodeEdit);
+          _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
         },
         collectPipeline: function () {
           return _pgCollect(appRef.current);
@@ -1590,20 +2528,27 @@ export const PipelineGraph = (() => {
         readOnly: props.readOnly || false,
         snapToGrid: props.snapToGrid !== false,
         gridSize: props.gridSize || 30,
+        onOutputAdd: props.onOutputAdd || null,
       });
       app._pgId = props.id || "pipeline";
+      app._pgOnNodeEdit = props.onNodeEdit || null;
+      app._pgOnOutputAdd = props.onOutputAdd || null;
       appRef.current = app;
-      _pgLoadScene(app, props.pipeline, props.kindColors);
+      hostRef.current.__zebGraphApp = app;
+      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons);
       setTimeout(function () {
-        _pgAttachEditButtons(app, props.onNodeEdit);
+        _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
       }, 0);
       setTimeout(function () {
-        _pgAttachEditButtons(app, props.onNodeEdit);
+        _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
       }, 120);
-      _pgEnsureObserver(stateRef, app, props.onNodeEdit);
+      _pgEnsureObserver(stateRef, app, props.onNodeEdit, props.onOutputAdd);
       if (props.onReady) props.onReady(app);
       return function () {
         stateRef.current.observer?.disconnect();
+        if (hostRef.current) {
+          delete hostRef.current.__zebGraphApp;
+        }
         app.destroy();
         appRef.current = null;
       };
@@ -1612,13 +2557,23 @@ export const PipelineGraph = (() => {
     _useEffect(function () {
       const app = appRef.current;
       if (!app) return;
+      app._pgOnNodeEdit = props.onNodeEdit || null;
+      app._pgOnOutputAdd = props.onOutputAdd || null;
       app.ui.readOnly = props.readOnly || false;
-      _pgLoadScene(app, props.pipeline, props.kindColors);
+      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons);
       setTimeout(function () {
-        _pgAttachEditButtons(app, props.onNodeEdit);
+        _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
       }, 0);
-      _pgEnsureObserver(stateRef, app, props.onNodeEdit);
-    }, [props.pipeline, props.readOnly]);
+      _pgEnsureObserver(stateRef, app, props.onNodeEdit, props.onOutputAdd);
+    }, [props.pipeline, props.readOnly, props.kindIcons]);
+
+    _useEffect(function () {
+      const app = appRef.current;
+      if (!app) return;
+      app._pgOnNodeEdit = props.onNodeEdit || null;
+      app._pgOnOutputAdd = props.onOutputAdd || null;
+      _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
+    });
 
     return _h("div", {
       ref: hostRef,

@@ -8,8 +8,8 @@ use crate::language::{
     COMPILE_TARGET_BACKEND, CompileOptions, ExecutionContext, LanguageEngine, ModuleSource,
     SourceKind,
 };
-use crate::pipeline::expr::build_expression_scope_input;
 use crate::pipeline::PipelineError;
+use crate::pipeline::expr::build_expression_scope_input;
 
 pub fn metadata_scope(metadata: &Value) -> Result<(&str, &str, &str, &str), PipelineError> {
     let owner = metadata
@@ -142,7 +142,11 @@ pub fn eval_deno_expr(
         metadata: metadata.clone(),
     };
     language
-        .run(&compiled, build_expression_scope_input(input, metadata), &ctx)
+        .run(
+            &compiled,
+            build_expression_scope_input(input, metadata),
+            &ctx,
+        )
         .map(|out| out.value)
         .map_err(|err| PipelineError::new("FW_NODE_BINDING_RUN", err.to_string()))
 }

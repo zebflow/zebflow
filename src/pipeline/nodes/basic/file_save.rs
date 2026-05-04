@@ -437,40 +437,73 @@ impl NodeHandler for Node {
             self.config.field.trim()
         };
 
-        let file_obj = input
+        // Primary source: input.files.{field} (multipart webhook convention)
+        let file_from_webhook = input
             .payload
             .get("files")
-            .and_then(|files| files.get(field))
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_FILE_SAVE",
-                    format!(
-                        "input.files.{field} not found — is this triggered by a multipart webhook?"
-                    ),
-                )
-            })?;
+            .and_then(|files| files.get(field));
 
-        let original_name = file_obj
-            .get("filename")
-            .and_then(|value| value.as_str())
-            .unwrap_or("upload");
+        // Fallback: response.body with __zf_bytes convention (from n.http.request --response-type bytes)
+        let file_obj = match file_from_webhook {
+            Some(obj) => obj,
+            None => {
+                let zf_body = input
+                    .payload
+                    .get("response")
+                    .and_then(|r| r.get("body"))
+                    .filter(|b| b.get("__zf_bytes").is_some());
+                zf_body.ok_or_else(|| {
+                    PipelineError::new(
+                        "FW_NODE_FILE_SAVE",
+                        format!(
+                            "input.files.{field} not found and no __zf_bytes in response.body — \
+                            is this triggered by a multipart webhook or http.request with --response-type bytes?"
+                        ),
+                    )
+                })?
+            }
+        };
 
-        let browser_mime = file_obj
-            .get("content_type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("application/octet-stream");
+        // Determine if this is a __zf_bytes object or a webhook file object
+        let is_zf_bytes = file_obj.get("__zf_bytes").is_some();
 
-        let size = file_obj
-            .get("size")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0) as usize;
-
-        let data_b64 = file_obj
-            .get("data")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| {
-                PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
-            })?;
+        let (original_name, browser_mime, size, data_b64);
+        if is_zf_bytes {
+            original_name = "download";
+            browser_mime = file_obj
+                .get("__zf_mime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("application/octet-stream");
+            size = file_obj
+                .get("__zf_size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            data_b64 = file_obj
+                .get("__zf_bytes")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    PipelineError::new("FW_NODE_FILE_SAVE", "__zf_bytes field is not a string")
+                })?;
+        } else {
+            original_name = file_obj
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("upload");
+            browser_mime = file_obj
+                .get("content_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("application/octet-stream");
+            size = file_obj
+                .get("size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            data_b64 = file_obj
+                .get("data")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
+                })?;
+        }
 
         // ── Validate size (pre-decode, from reported size) ────────────────────
         let max_bytes = (self.config.max_size_mb * 1024.0 * 1024.0) as usize;

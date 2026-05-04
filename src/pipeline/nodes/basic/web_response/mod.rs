@@ -633,4 +633,42 @@ mod tests {
 
         assert_eq!(output.payload["__zf_response"]["body"], input_payload);
     }
+
+    #[test]
+    fn render_boundary_injects_trigger_fields_and_filters_auth_claims() {
+        let state = json!({
+            "title": "Hello",
+            "params": { "slug": "keep-existing" },
+            "auth": null
+        });
+        let metadata = json!({
+            "trigger": {
+                "params": { "slug": "from-trigger" },
+                "query": { "page": "1" },
+                "headers": { "x-request-id": "req-123" },
+                "auth": {
+                    "sub": "user-1",
+                    "role": "admin",
+                    "secret": "internal-only",
+                    "_zf_public": ["sub", "role"]
+                }
+            }
+        });
+
+        let injected = super::inject_trigger_fields(state, &metadata);
+        assert_eq!(injected["params"]["slug"], "keep-existing");
+        assert_eq!(injected["query"]["page"], "1");
+        assert_eq!(injected["headers"]["x-request-id"], "req-123");
+        assert_eq!(injected["auth"]["secret"], "internal-only");
+
+        let filtered = super::strip_private_auth_claims(injected);
+        assert_eq!(
+            filtered["auth"],
+            json!({
+                "sub": "user-1",
+                "role": "admin"
+            })
+        );
+        assert!(filtered["auth"].get("secret").is_none());
+    }
 }

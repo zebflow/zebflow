@@ -1,0 +1,293 @@
+{
+  "icons": {
+    "n.ai.agent": {
+      "label": "AI",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ai.agent.svg",
+      "source_url": "",
+      "supports": [
+        "n.ai.agent"
+      ]
+    },
+    "n.auth.token.create": {
+      "label": "JWT",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.auth.token.create.svg",
+      "source_url": "",
+      "supports": [
+        "n.auth.token.create"
+      ]
+    },
+    "n.crypto": {
+      "label": "HASH",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.crypto.svg",
+      "source_url": "",
+      "supports": [
+        "n.crypto"
+      ]
+    },
+    "n.file.save": {
+      "label": "SAVE",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.file.save.svg",
+      "source_url": "",
+      "supports": [
+        "n.file.save"
+      ]
+    },
+    "n.function.call": {
+      "label": "CALL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.function.call.svg",
+      "source_url": "",
+      "supports": [
+        "n.function.call"
+      ]
+    },
+    "n.http.request": {
+      "label": "HTTP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.http.request.svg",
+      "source_url": "",
+      "supports": [
+        "n.http.request"
+      ]
+    },
+    "n.img.thumbnail": {
+      "label": "IMG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.img.thumbnail.svg",
+      "source_url": "",
+      "supports": [
+        "n.img.thumbnail"
+      ]
+    },
+    "n.logic.collect": {
+      "label": "JOIN",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.collect.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.collect"
+      ]
+    },
+    "n.logic.foreach": {
+      "label": "EACH",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.foreach.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.foreach"
+      ]
+    },
+    "n.logic.if": {
+      "label": "IF",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.if.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.if"
+      ]
+    },
+    "n.logic.match": {
+      "label": "M",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.match.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.match"
+      ]
+    },
+    "n.logic.reduce": {
+      "label": "RED",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.reduce.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.reduce"
+      ]
+    },
+    "n.logic.retry": {
+      "label": "TRY",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.logic.retry.svg",
+      "source_url": "",
+      "supports": [
+        "n.logic.retry"
+      ]
+    },
+    "n.mem.set": {
+      "label": "SET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.mem.set.svg",
+      "source_url": "",
+      "supports": [
+        "n.mem.set"
+      ]
+    },
+    "n.pg.query": {
+      "label": "PG",
+      "method": "official-svg",
+      "path": "/assets/node-icons/zebflow/n.pg.query.svg",
+      "source_url": "https://wiki.postgresql.org/wiki/File:PostgreSQL_logo.3colors.svg",
+      "supports": [
+        "n.pg.query"
+      ]
+    },
+    "n.script": {
+      "label": "JS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.script.svg",
+      "source_url": "",
+      "supports": [
+        "n.script"
+      ]
+    },
+    "n.sekejap.query": {
+      "label": "SJQ",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.sekejap.query.svg",
+      "source_url": "",
+      "supports": [
+        "n.sekejap.query"
+      ]
+    },
+    "n.sqlite.mutate": {
+      "label": "SQL+",
+      "method": "brand-svg+badge",
+      "path": "/assets/node-icons/zebflow/n.sqlite.mutate.svg",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Sqlite-square-icon.svg",
+      "supports": [
+        "n.sqlite.mutate"
+      ]
+    },
+    "n.sqlite.query": {
+      "label": "SQL",
+      "method": "brand-svg",
+      "path": "/assets/node-icons/zebflow/n.sqlite.query.svg",
+      "source_url": "https://commons.wikimedia.org/wiki/File:Sqlite-square-icon.svg",
+      "supports": [
+        "n.sqlite.query"
+      ]
+    },
+    "n.trigger.function": {
+      "label": "FN",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.function.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.function"
+      ]
+    },
+    "n.trigger.manual": {
+      "label": "RUN",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.manual.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.manual"
+      ]
+    },
+    "n.trigger.mapserver": {
+      "label": "MAP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.mapserver"
+      ]
+    },
+    "n.trigger.memsubscribe": {
+      "label": "SUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.memsubscribe"
+      ]
+    },
+    "n.trigger.schedule": {
+      "label": "CRON",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.schedule.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.schedule"
+      ]
+    },
+    "n.trigger.weberror": {
+      "label": "ERR",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.weberror.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.weberror"
+      ]
+    },
+    "n.trigger.webhook": {
+      "label": "WH",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.webhook.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.webhook"
+      ]
+    },
+    "n.trigger.ws": {
+      "label": "WS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.ws.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.ws"
+      ]
+    },
+    "n.web.docs.generate": {
+      "label": "DOCS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.web.docs.generate.svg",
+      "source_url": "",
+      "supports": [
+        "n.web.docs.generate"
+      ]
+    },
+    "n.web.response": {
+      "label": "RESP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.web.response.svg",
+      "source_url": "",
+      "supports": [
+        "n.web.response"
+      ]
+    },
+    "n.web.static.generate": {
+      "label": "SSG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.web.static.generate.svg",
+      "source_url": "",
+      "supports": [
+        "n.web.static.generate"
+      ]
+    },
+    "n.ws.emit": {
+      "label": "EMIT",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ws.emit.svg",
+      "source_url": "",
+      "supports": [
+        "n.ws.emit"
+      ]
+    },
+    "n.ws.sync_state": {
+      "label": "SYNC",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ws.sync_state.svg",
+      "source_url": "",
+      "supports": [
+        "n.ws.sync_state"
+      ]
+    }
+  },
+  "schema": 1
+}

@@ -12,7 +12,8 @@ type MarketplacePackEntry = {
   package_id: string;
   asset_kind: string;
   latest_version?: string;
-  publisher_owner?: string;
+  publisher_id?: string;
+  publisher_display_name?: string;
   repository_title?: string;
   title?: string;
   description?: string;
@@ -34,6 +35,8 @@ export function RegistryInstallCatalog({
   marketplacePacks,
   packSearch,
   setPackSearch,
+  marketplaceInstallMode,
+  setMarketplaceInstallMode,
   onAddPack,
 }: {
   onClose: () => void;
@@ -48,7 +51,9 @@ export function RegistryInstallCatalog({
   marketplacePacks: MarketplacePackEntry[];
   packSearch: string;
   setPackSearch: (value: string) => void;
-  onAddPack: (item: MarketplacePackEntry) => void;
+  marketplaceInstallMode: string;
+  setMarketplaceInstallMode: (value: string) => void;
+  onAddPack: (item: MarketplacePackEntry, installMode: string) => void;
 }) {
   const normalizedQuery = String(packSearch || "").trim().toLowerCase();
   const filteredPacks = marketplacePacks.filter((item) => {
@@ -65,7 +70,8 @@ export function RegistryInstallCatalog({
       item.asset_kind,
       item.title,
       item.description,
-      item.publisher_owner,
+      item.publisher_display_name,
+      item.publisher_id,
       item.repository_title,
     ]
       .filter(Boolean)
@@ -130,8 +136,18 @@ export function RegistryInstallCatalog({
             <div className="install-catalog-tab-panel">
               <div className="space-y-3">
                 <p className="text-xs text-body-soft m-0">
-                  Browse marketplace packs and add them into this project workspace.
+                  Browse marketplace packs and choose how they enter this project workspace.
                 </p>
+                <label className="pipeline-editor-field">
+                  <span>Mode</span>
+                  <select
+                    value={marketplaceInstallMode}
+                    onChange={(e) => setMarketplaceInstallMode((e?.currentTarget as HTMLSelectElement)?.value || "add_to_current_project")}
+                  >
+                    <option value="add_to_current_project">Add to current project</option>
+                    <option value="clone_as_folder">Clone as folder</option>
+                  </select>
+                </label>
                 <Input
                   value={packSearch}
                   onInput={(e) => setPackSearch((e?.currentTarget as HTMLInputElement)?.value || "")}
@@ -146,14 +162,14 @@ export function RegistryInstallCatalog({
                           <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-ui-text-soft">{item.asset_kind}</span>
                         </div>
                         <div className="mt-1 text-xs text-ui-text-soft">
-                          {item.package_id} · {item.latest_version || "-"} · {item.publisher_owner || "-"} · {item.repository_title || "Local"}
+                          {item.package_id} · {item.latest_version || "-"} · {item.publisher_display_name || item.publisher_id || "-"} · {item.repository_title || "Local"}
                         </div>
                         {item.description ? (
                           <p className="mt-1 text-xs text-ui-text-soft">{item.description}</p>
                         ) : null}
                       </div>
-                      <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item)}>
-                        Add
+                      <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item, marketplaceInstallMode)}>
+                        {marketplaceInstallMode === "clone_as_folder" ? "Clone" : "Add"}
                       </Button>
                     </div>
                   )) : (

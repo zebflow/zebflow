@@ -274,15 +274,20 @@ impl PlatformOps {
         let project = &self.project;
         let mut out = String::new();
 
-        // ── Header ────────────────────────────────────────────────────────────
         out.push_str(&format!(
-            "# Project: {owner}/{project}\n\
-             Zebflow: pipeline triggers → nodes → APIs / pages / automations.\n\
-             Webhook base: `/wh/{owner}/{project}{{path}}`\n"
+            "# Zebflow MCP Start Here\n\n\
+             Project scope: `{owner}/{project}`\n\
+             Webhook base: `/wh/{owner}/{project}{{path}}`\n\
+             Mental model: pipelines connect triggers to nodes for APIs, pages, automations, and jobs.\n\n\
+             ## First Moves\n\
+             1. Read the embedded AGENTS.md and MEMORY.md below.\n\
+             2. For pipelines, call `pipeline_list`, then `pipeline_describe file_rel_path=\"...\" compact=true`.\n\
+             3. For templates, call `template_list`, then `template_outline rel_path=\"...\"` before `template_get`.\n\
+             4. For SQL, call `connection_list`, then `connection_describe slug=\"...\" scope=\"tables\"` before writing queries.\n\
+             5. For syntax, call `help topic=\"pipeline/dsl\"`, `help topic=\"web\"`, or `help_search query=\"...\"`.\n"
         ));
 
-        // ── AGENTS.md — project rules for this agent ──────────────────────────
-        out.push_str("\n---\n\n## Instructions (AGENTS.md)\n");
+        out.push_str("\n---\n\n## Project Instructions: AGENTS.md\n");
         match self
             .platform
             .projects
@@ -293,7 +298,6 @@ impl PlatformOps {
                 .push_str("(none — create with `docs_agent_write name=\"AGENTS.md\" content=...`)"),
         }
 
-        // ── SOUL.md — personality / tone (only if customised) ─────────────────
         if let Ok(soul) = self
             .platform
             .projects
@@ -309,8 +313,7 @@ impl PlatformOps {
             }
         }
 
-        // ── MEMORY.md — inline so agent starts with full context ──────────────
-        out.push_str("\n\n## Memory (MEMORY.md)\n");
+        out.push_str("\n\n## Project Memory: MEMORY.md\n");
         match self
             .platform
             .projects
@@ -328,13 +331,12 @@ impl PlatformOps {
             Err(_) => out.push_str("(none)"),
         }
 
-        // ── Docs — read before building ───────────────────────────────────────
-        out.push_str("\n\n---\n\n## Docs  [repo/docs/]  ← READ BEFORE BUILDING\n");
+        out.push_str("\n\n---\n\n## Project Docs\n");
         match self.platform.projects.list_project_docs(owner, project) {
             Ok(docs) if !docs.is_empty() => {
                 for d in &docs {
                     out.push_str(&format!(
-                        "  {} → `docs_project_read(\"{}\")`\n",
+                        "  {} -> `docs_project_read path=\"{}\"`\n",
                         d.path, d.path
                     ));
                 }
@@ -348,10 +350,8 @@ impl PlatformOps {
             Err(e) => out.push_str(&format!("(error: {e})\n")),
         }
 
-        // ── State ─────────────────────────────────────────────────────────────
-        out.push_str("\n---\n\n## State\n");
+        out.push_str("\n---\n\n## Live Project Inventory\n");
 
-        // Pipelines
         match self
             .platform
             .projects
@@ -363,7 +363,7 @@ impl PlatformOps {
                 out.push_str(&format!(
                     "\n### Pipelines [{active} active, {draft} draft]\n"
                 ));
-                for p in &ps {
+                for p in ps.iter().take(60) {
                     let status = if p.active_hash.is_some() {
                         "active"
                     } else {
@@ -376,8 +376,11 @@ impl PlatformOps {
                     };
                     out.push_str(&format!("  {} [{status}{trigger}]\n", p.file_rel_path));
                 }
+                if ps.len() > 60 {
+                    out.push_str(&format!("  ... ({} more)\n", ps.len() - 60));
+                }
                 out.push_str(
-                    "  → `pipeline_describe file_rel_path=\"...\"` for full graph + node IDs\n",
+                    "  -> `pipeline_describe file_rel_path=\"...\" compact=true` for node IDs and key config\n",
                 );
             }
             Ok(_) => {
@@ -386,7 +389,6 @@ impl PlatformOps {
             Err(e) => out.push_str(&format!("\n### Pipelines\n  (error: {e})\n")),
         }
 
-        // Templates — with type hints
         match self
             .platform
             .projects
@@ -409,13 +411,12 @@ impl PlatformOps {
                     if files.len() > 40 {
                         out.push_str(&format!("  ... ({} more)\n", files.len() - 40));
                     }
-                    out.push_str("  → `template_get rel_path=\"...\"` to read\n");
+                    out.push_str("  -> `template_outline rel_path=\"...\"` first, then `template_get rel_path=\"...\"` when content is needed\n");
                 }
             }
             Err(e) => out.push_str(&format!("\n### Templates\n  (error: {e})\n")),
         }
 
-        // Connections & Credentials
         out.push_str("\n### Connections & Credentials\n");
         match self
             .platform
@@ -425,7 +426,7 @@ impl PlatformOps {
             Ok(items) if !items.is_empty() => {
                 for c in &items {
                     out.push_str(&format!(
-                        "  {} ({}) → `connection_describe slug=\"{}\" scope=tables`\n",
+                        "  {} ({}) -> `connection_describe slug=\"{}\" scope=\"tables\"`\n",
                         c.connection_slug, c.database_kind, c.connection_slug
                     ));
                 }
@@ -449,71 +450,36 @@ impl PlatformOps {
             Err(_) => {}
         }
 
-        // ── Recent Activity ───────────────────────────────────────────────────
         let git = self.git_command("log", Some("--oneline -8"), None).await;
         if !git.text.starts_with("Error") && !git.text.trim().is_empty() {
-            out.push_str("\n---\n\n## Recent Activity (git log)\n");
+            out.push_str("\n---\n\n## Recent Git Activity\n");
             for line in git.text.lines().take(8) {
                 out.push_str(&format!("  {line}\n"));
             }
         }
 
-        // ── Platform reference (compact) ──────────────────────────────────────
         let node_count = crate::pipeline::nodes::builtin_node_definitions().len();
         let example_count = crate::platform::help::HELP
             .iter()
             .filter(|n| n.path.starts_with("pipeline/examples/"))
             .count();
         out.push_str(&format!(
-            "\n---\n\n## Platform\n\
-             Nodes ({node_count} built-in): `help(\"pipeline/nodes\")` — full catalog with every flag\n\
-             DSL syntax:                   `help(\"pipeline/dsl\")`\n\
-             TSX templates:                `help(\"web\")`\n\
-             Examples ({example_count}):              `help(\"pipeline/examples\")` — ready-to-use DSL recipes\n\
-             Search anything:              `help_search(\"query\")`\n\
-             Save discoveries:             `docs_agent_write name=\"MEMORY.md\" content=...`\n"
+            "\n---\n\n## MCP Tool Map\n\
+             Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} built-in nodes)\n\
+             Web templates: `help topic=\"web\"`; examples: `help topic=\"pipeline/examples\"` ({example_count} recipes)\n\
+             Search docs: `help_search query=\"...\"`\n\
+             Read/write project docs: `docs_project_list`, `docs_project_read`, `docs_project_write`\n\
+             Read/write agent memory: `docs_agent_read name=\"MEMORY.md\"`, `docs_agent_write name=\"MEMORY.md\" content=...`\n\
+             Inspect code cheaply: `template_outline`, `template_deps`; edit with `template_edit` or `template_batch_edit`\n\
+             Full agent workflow: `help topic=\"platform/workflow\"`\n"
         ));
 
-        // ── Efficiency Tips ───────────────────────────────────────────────────
         out.push_str(
-            "\n---\n\n## Tips — Efficient Development\n\
-             \n\
-             **Debug a pipeline immediately after registering:**\n\
-             `pipeline_execute file_rel_path=\"...\" input={...}` — response includes an inline node trace\n\
-             showing ✓/✗ per node with duration and error. No separate tool call needed.\n\
-             \n\
-             **Debug scheduled or webhook pipelines after the fact:**\n\
-             `pipeline_get_invocations file_rel_path=\"...\"` — returns last N runs with full per-node trace,\n\
-             timestamps, status (ok/error), and error messages. Useful when you can't trigger the pipeline yourself.\n\
-             \n\
-             **Testing function pipelines — always pass input:**\n\
-             `pipeline_execute file_rel_path=\"pipelines/fn/foo.zf.json\" input={\"key\":\"value\"}`\n\
-             Without `input`, a function pipeline receives `{}` and likely does nothing useful.\n\
-             \n\
-             **Before patching a node — read it first:**\n\
-             `pipeline_describe file_rel_path=\"...\"` returns every node_id, kind, and config.\n\
-             `pipeline_patch file_rel_path=\"...\" node_id=\"n1\" body=\"new SQL\"` — no need to re-register.\n\
-             After patching, call `pipeline_activate` to make it live again (status becomes stale).\n\
-             \n\
-             **Template changes not showing? (MCP agents only)**\n\
-             The cache key is a hash of the entry page file. Editing a component (e.g. button.tsx)\n\
-             via `template_write` or `template_edit` does NOT clear the cache — the entry page hash\n\
-             is unchanged, so the old compiled bundle is served.\n\
-             Fix: call `POST /api/projects/{owner}/{project}/rwe/cache/clear` or use\n\
-             Settings → Policy → \"Clear Template Cache\" after editing components.\n\
-             (UI saves via the editor always clear the cache automatically — this only affects agent tool calls.)\n\
-             \n\
-             **Searching before creating:**\n\
-             `pipeline_search pattern=\"/my-path\"` — find which pipeline owns a route\n\
-             `template_search pattern=\"ComponentName\"` — find which templates use a component\n\
-             Both support `glob` for narrowing (e.g. `glob=\"pipelines/api/*.zf.json\"`).\n\
-             \n\
-             **Efficient patching workflow:**\n\
-             1. `pipeline_describe` → get node IDs\n\
-             2. `pipeline_patch` → update the one node\n\
-             3. `pipeline_activate` → go live\n\
-             4. `pipeline_execute` → verify node trace\n\
-             Skipping re-register saves the full graph round-trip.\n"
+            "\n## Operational Rules\n\
+             - Before patching a pipeline, call `pipeline_describe` and use the returned node IDs.\n\
+             - After `pipeline_register` or `pipeline_patch`, call `pipeline_activate` before expecting traffic to use it.\n\
+             - When testing function pipelines, pass an explicit `input` object.\n\
+             - After meaningful work, update `MEMORY.md` with durable project facts.\n"
         );
 
         OpsResult::ok(out)

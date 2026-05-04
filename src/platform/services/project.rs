@@ -159,6 +159,21 @@ fn canonical_pipeline_node_kind(kind: &str) -> &str {
     kind
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), PlatformError> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ft.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else if ft.is_file() {
+            fs::copy(&entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn init_git_repo(repo_dir: &Path) -> Result<(), PlatformError> {
     let status = Command::new("git")
         .arg("init")
@@ -379,6 +394,99 @@ impl ProjectService {
         self.ensure_default_template_workspace(&layout)?;
 
         Ok((record, layout))
+    }
+
+    /// Transfer project ownership from one user to another within the same office.
+    ///
+    /// Re-keys all catalog records and moves the project directory tree on disk.
+    /// Used for sovereignty recovery after controller dissolution (the "caravanserai" scenario).
+    pub fn transfer_project_owner(
+        &self,
+        old_owner: &str,
+        project: &str,
+        new_owner: &str,
+    ) -> Result<(), PlatformError> {
+        let old_owner = slug_segment(old_owner);
+        let new_owner_slug = slug_segment(new_owner);
+        let project = slug_segment(project);
+
+        if old_owner == new_owner_slug {
+            return Err(PlatformError::new(
+                "PLATFORM_TRANSFER_INVALID",
+                "source and target owners are the same",
+            ));
+        }
+        if old_owner.is_empty() || new_owner_slug.is_empty() || project.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_TRANSFER_INVALID",
+                "owner and project must not be empty",
+            ));
+        }
+
+        // Verify old project exists.
+        let old_project = self.data.get_project(&old_owner, &project)?.ok_or_else(|| {
+            PlatformError::new("PLATFORM_TRANSFER_NOT_FOUND", "source project not found")
+        })?;
+
+        // Verify new_owner is a real user.
+        let new_user = self
+            .data
+            .get_user_auth(&new_owner_slug)?
+            .ok_or_else(|| {
+                PlatformError::new("PLATFORM_TRANSFER_INVALID", "target owner user not found")
+            })?;
+
+        // Verify no conflict — project must not already exist under new_owner.
+        if self
+            .data
+            .get_project(&new_owner_slug, &project)?
+            .is_some()
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_TRANSFER_CONFLICT",
+                "a project with this slug already exists under the target owner",
+            ));
+        }
+
+        let new_owner_user_id = &new_user.profile.user_id;
+
+        // 1. Re-key all catalog records in a single transaction.
+        self.data
+            .transfer_project_owner(&old_owner, &project, &new_owner_slug, new_owner_user_id)?;
+
+        // 2. Move files on disk.
+        let old_layout = self.file.ensure_project_layout(&old_owner, &project)?;
+        // Ensure the new owner's directory exists.
+        let new_layout = self
+            .file
+            .ensure_project_layout(&new_owner_slug, &project)?;
+
+        if old_layout.root.exists() {
+            // Remove the (empty) new layout directory that ensure_project_layout just created,
+            // then rename the old directory into its place.
+            let _ = fs::remove_dir_all(&new_layout.root);
+            if let Err(rename_err) = fs::rename(&old_layout.root, &new_layout.root) {
+                // Rename failed — attempt cross-device copy then remove.
+                if copy_dir_recursive(&old_layout.root, &new_layout.root).is_ok() {
+                    let _ = fs::remove_dir_all(&old_layout.root);
+                } else {
+                    // File move completely failed — reverse the DB transfer.
+                    let old_user_id = &old_project.owner_user_id;
+                    let _ = self.data.transfer_project_owner(
+                        &new_owner_slug,
+                        &project,
+                        &old_owner,
+                        old_user_id,
+                    );
+                    return Err(PlatformError::new(
+                        "PLATFORM_TRANSFER_FS",
+                        format!("failed to move project files: {rename_err}"),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Upserts one pipeline source file + metadata catalog entry.

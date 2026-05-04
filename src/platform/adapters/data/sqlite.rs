@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::infra::cluster::registry::WorkerRegistryRecord;
@@ -20,8 +20,8 @@ use crate::platform::model::{
     MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher,
     MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
     PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability,
-    ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectInviteStatus,
+    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
+    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectInviteStatus,
     ProjectMarketplaceRepository, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
     ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
     now_ts,
@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS project_marketplace_repositories (
     remote_owner  TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token    TEXT NOT NULL DEFAULT '',
+    visibility    TEXT NOT NULL DEFAULT 'public',
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0,
@@ -107,6 +108,7 @@ CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
     remote_owner  TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token    TEXT NOT NULL DEFAULT '',
+    visibility    TEXT NOT NULL DEFAULT 'public',
     enabled       INTEGER NOT NULL DEFAULT 1,
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0,
@@ -141,6 +143,13 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
     icon_url       TEXT NOT NULL DEFAULT '',
     website_url    TEXT NOT NULL DEFAULT '',
     enabled        INTEGER NOT NULL DEFAULT 1,
+    can_read       INTEGER NOT NULL DEFAULT 1,
+    can_publish    INTEGER NOT NULL DEFAULT 1,
+    can_manage     INTEGER NOT NULL DEFAULT 0,
+    max_packages      INTEGER NOT NULL DEFAULT 0,
+    max_package_bytes INTEGER NOT NULL DEFAULT 0,
+    max_media_files   INTEGER NOT NULL DEFAULT 0,
+    max_image_bytes   INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, publisher_id),
@@ -319,6 +328,19 @@ CREATE TABLE IF NOT EXISTS offices (
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS platform_service_instances (
+    service_instance_id TEXT PRIMARY KEY,
+    service_kind        TEXT NOT NULL DEFAULT '',
+    display_label       TEXT NOT NULL DEFAULT '',
+    host_office_id      TEXT NOT NULL DEFAULT '',
+    state_office_id     TEXT NOT NULL DEFAULT '',
+    public_base_url     TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT '',
+    placement_generation INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS office_nodes (
     node_id             TEXT PRIMARY KEY,
     office_id           TEXT NOT NULL DEFAULT '',
@@ -451,13 +473,34 @@ impl SqliteDataAdapter {
     pub fn new(data_root: &Path) -> Result<Self, PlatformError> {
         std::fs::create_dir_all(data_root.join("platform"))?;
         let path = data_root.join("platform").join("catalog.db");
+        Self::new_at_db_path_with_foreign_keys(&path, true)
+    }
+
+    /// Opens or creates an exact SQLite DB path with the same catalog schema.
+    ///
+    /// Platform services use this to keep service-owned operational state under
+    /// their own mounted service root instead of the platform control DB.
+    pub fn new_at_db_path(path: &Path) -> Result<Self, PlatformError> {
+        Self::new_at_db_path_with_foreign_keys(path, false)
+    }
+
+    fn new_at_db_path_with_foreign_keys(
+        path: &Path,
+        foreign_keys: bool,
+    ) -> Result<Self, PlatformError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let mut conn = Connection::open(&path)
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_OPEN", e.to_string()))?;
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
-        )
-        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
+        let foreign_keys_pragma = if foreign_keys { "ON" } else { "OFF" };
+        conn.execute_batch(&format!(
+            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys={foreign_keys_pragma};"
+        ))
+            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
         Self::run_migrations(&mut conn)?;
+        conn.execute_batch(&format!("PRAGMA foreign_keys={foreign_keys_pragma};"))
+            .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -512,7 +555,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 11] {
+    fn migrations() -> [MigrationDef; 14] {
         [
             MigrationDef {
                 version: 1,
@@ -568,6 +611,21 @@ impl SqliteDataAdapter {
                 version: 11,
                 name: "marketplace_token_scope_flags",
                 apply: Self::apply_migration_0011_marketplace_token_scope_flags,
+            },
+            MigrationDef {
+                version: 12,
+                name: "platform_service_instances",
+                apply: Self::apply_migration_0012_platform_service_instances,
+            },
+            MigrationDef {
+                version: 13,
+                name: "marketplace_publisher_limits",
+                apply: Self::apply_migration_0013_marketplace_publisher_limits,
+            },
+            MigrationDef {
+                version: 14,
+                name: "reserved_post_stable_marketplace_schema",
+                apply: Self::apply_migration_0014_reserved_post_stable_marketplace_schema,
             },
         ]
     }
@@ -767,6 +825,19 @@ CREATE TABLE IF NOT EXISTS offices (
     status        TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL DEFAULT 0,
     updated_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS platform_service_instances (
+    service_instance_id TEXT PRIMARY KEY,
+    service_kind        TEXT NOT NULL DEFAULT '',
+    display_label       TEXT NOT NULL DEFAULT '',
+    host_office_id      TEXT NOT NULL DEFAULT '',
+    state_office_id     TEXT NOT NULL DEFAULT '',
+    public_base_url     TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT '',
+    placement_generation INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS office_nodes (
     node_id             TEXT PRIMARY KEY,
@@ -1396,6 +1467,12 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             [],
         )
         .map_err(Self::qe)?;
+        Self::ensure_table_column(
+            tx,
+            "platform_marketplace_repositories",
+            "visibility",
+            "TEXT NOT NULL DEFAULT 'public'",
+        )?;
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_pipeline_meta_project_file
              ON pipeline_meta(owner, project, file_rel_path)",
@@ -1489,6 +1566,7 @@ CREATE TABLE platform_marketplace_repositories (
     remote_owner   TEXT NOT NULL DEFAULT '',
     remote_project TEXT NOT NULL DEFAULT '',
     read_token     TEXT NOT NULL DEFAULT '',
+    visibility     TEXT NOT NULL DEFAULT 'public',
     enabled        INTEGER NOT NULL DEFAULT 1,
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
@@ -1507,6 +1585,7 @@ CREATE TABLE platform_marketplace_repositories (
                 "remote_owner",
                 "remote_project",
                 "read_token",
+                "visibility",
                 "enabled",
                 "created_at",
                 "updated_at",
@@ -1557,6 +1636,13 @@ CREATE TABLE marketplace_publishers (
     icon_url        TEXT NOT NULL DEFAULT '',
     website_url     TEXT NOT NULL DEFAULT '',
     enabled         INTEGER NOT NULL DEFAULT 1,
+    can_read        INTEGER NOT NULL DEFAULT 1,
+    can_publish     INTEGER NOT NULL DEFAULT 1,
+    can_manage      INTEGER NOT NULL DEFAULT 0,
+    max_packages       INTEGER NOT NULL DEFAULT 0,
+    max_package_bytes  INTEGER NOT NULL DEFAULT 0,
+    max_media_files    INTEGER NOT NULL DEFAULT 0,
+    max_image_bytes    INTEGER NOT NULL DEFAULT 0,
     created_at      INTEGER NOT NULL DEFAULT 0,
     updated_at      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, publisher_id),
@@ -1577,6 +1663,13 @@ CREATE TABLE marketplace_publishers (
                 "icon_url",
                 "website_url",
                 "enabled",
+                "can_read",
+                "can_publish",
+                "can_manage",
+                "max_packages",
+                "max_package_bytes",
+                "max_media_files",
+                "max_image_bytes",
                 "created_at",
                 "updated_at",
             ],
@@ -2273,6 +2366,86 @@ CREATE TABLE marketplace_tokens (
         Ok(())
     }
 
+    fn apply_migration_0012_platform_service_instances(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        tx.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS platform_service_instances (
+    service_instance_id TEXT PRIMARY KEY,
+    service_kind        TEXT NOT NULL DEFAULT '',
+    display_label       TEXT NOT NULL DEFAULT '',
+    host_office_id      TEXT NOT NULL DEFAULT '',
+    state_office_id     TEXT NOT NULL DEFAULT '',
+    public_base_url     TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT '',
+    placement_generation INTEGER NOT NULL DEFAULT 0,
+    created_at          INTEGER NOT NULL DEFAULT 0,
+    updated_at          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_platform_service_instances_kind
+    ON platform_service_instances(service_kind);
+CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
+    ON platform_service_instances(host_office_id);
+",
+        )
+        .map_err(Self::qe)
+    }
+
+    fn apply_migration_0013_marketplace_publisher_limits(
+        tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "can_read",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "can_publish",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "can_manage",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "max_packages",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "max_package_bytes",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "max_media_files",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            tx,
+            "marketplace_publishers",
+            "max_image_bytes",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+    }
+
+    fn apply_migration_0014_reserved_post_stable_marketplace_schema(
+        _tx: &Transaction<'_>,
+    ) -> Result<(), PlatformError> {
+        Ok(())
+    }
+
     fn ensure_table_column<C>(
         conn: &C,
         table: &str,
@@ -2348,6 +2521,13 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
     icon_url       TEXT NOT NULL DEFAULT '',
     website_url    TEXT NOT NULL DEFAULT '',
     enabled        INTEGER NOT NULL DEFAULT 1,
+    can_read       INTEGER NOT NULL DEFAULT 1,
+    can_publish    INTEGER NOT NULL DEFAULT 1,
+    can_manage     INTEGER NOT NULL DEFAULT 0,
+    max_packages      INTEGER NOT NULL DEFAULT 0,
+    max_package_bytes INTEGER NOT NULL DEFAULT 0,
+    max_media_files   INTEGER NOT NULL DEFAULT 0,
+    max_image_bytes   INTEGER NOT NULL DEFAULT 0,
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, publisher_id)
@@ -2355,6 +2535,48 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
 ",
         )
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "can_read",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "can_publish",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "can_manage",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "max_packages",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "max_package_bytes",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "max_media_files",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "marketplace_publishers",
+            "max_image_bytes",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Self::ensure_table_column(
             conn,
             "marketplace_asset_packages",
@@ -3080,8 +3302,8 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO platform_marketplace_repositories
-             (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(owner, repository_id) DO UPDATE SET
                  source_id = excluded.source_id,
                  owner_user_id = excluded.owner_user_id,
@@ -3090,6 +3312,7 @@ impl DataAdapter for SqliteDataAdapter {
                  remote_owner = excluded.remote_owner,
                  remote_project = excluded.remote_project,
                  read_token = excluded.read_token,
+                 visibility = excluded.visibility,
                  enabled = excluded.enabled,
                  created_at = excluded.created_at,
                  updated_at = excluded.updated_at",
@@ -3103,6 +3326,7 @@ impl DataAdapter for SqliteDataAdapter {
                 &repository.remote_owner,
                 &repository.remote_project,
                 &repository.read_token,
+                &repository.visibility,
                 if repository.enabled { 1 } else { 0 },
                 repository.created_at,
                 repository.updated_at,
@@ -3119,7 +3343,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
+                "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at
                  FROM platform_marketplace_repositories WHERE owner = ?1
                  ORDER BY title ASC, repository_id ASC",
             )
@@ -3136,9 +3360,10 @@ impl DataAdapter for SqliteDataAdapter {
                     remote_owner: row.get(6)?,
                     remote_project: row.get(7)?,
                     read_token: row.get(8)?,
-                    enabled: row.get::<_, i64>(9)? != 0,
-                    created_at: row.get(10)?,
-                    updated_at: row.get(11)?,
+                    visibility: row.get(9)?,
+                    enabled: row.get::<_, i64>(10)? != 0,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             })
             .map_err(Self::qe)?
@@ -3169,8 +3394,8 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO marketplace_publishers
-             (authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             (authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT(owner, project, publisher_id) DO UPDATE SET
                  authority_id = excluded.authority_id,
                  publisher_pk = excluded.publisher_pk,
@@ -3181,6 +3406,13 @@ impl DataAdapter for SqliteDataAdapter {
                  icon_url = excluded.icon_url,
                  website_url = excluded.website_url,
                  enabled = excluded.enabled,
+                 can_read = excluded.can_read,
+                 can_publish = excluded.can_publish,
+                 can_manage = excluded.can_manage,
+                 max_packages = excluded.max_packages,
+                 max_package_bytes = excluded.max_package_bytes,
+                 max_media_files = excluded.max_media_files,
+                 max_image_bytes = excluded.max_image_bytes,
                  created_at = excluded.created_at,
                  updated_at = excluded.updated_at",
             params![
@@ -3196,6 +3428,13 @@ impl DataAdapter for SqliteDataAdapter {
                 &publisher.icon_url,
                 &publisher.website_url,
                 if publisher.enabled { 1 } else { 0 },
+                if publisher.can_read { 1 } else { 0 },
+                if publisher.can_publish { 1 } else { 0 },
+                if publisher.can_manage { 1 } else { 0 },
+                publisher.max_packages,
+                publisher.max_package_bytes,
+                publisher.max_media_files,
+                publisher.max_image_bytes,
                 publisher.created_at,
                 publisher.updated_at,
             ],
@@ -3212,7 +3451,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at
                  FROM marketplace_publishers WHERE owner = ?1 AND project = ?2
                  ORDER BY display_name ASC, publisher_id ASC",
             )
@@ -3232,8 +3471,15 @@ impl DataAdapter for SqliteDataAdapter {
                     icon_url: row.get(9)?,
                     website_url: row.get(10)?,
                     enabled: row.get::<_, i64>(11)? != 0,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
+                    can_read: row.get::<_, i64>(12)? != 0,
+                    can_publish: row.get::<_, i64>(13)? != 0,
+                    can_manage: row.get::<_, i64>(14)? != 0,
+                    max_packages: row.get(15)?,
+                    max_package_bytes: row.get(16)?,
+                    max_media_files: row.get(17)?,
+                    max_image_bytes: row.get(18)?,
+                    created_at: row.get(19)?,
+                    updated_at: row.get(20)?,
                 })
             })
             .map_err(Self::qe)?
@@ -3251,7 +3497,7 @@ impl DataAdapter for SqliteDataAdapter {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
-                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, created_at, updated_at
+                "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at
                  FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
             )
             .map_err(Self::qe)?;
@@ -3269,8 +3515,15 @@ impl DataAdapter for SqliteDataAdapter {
                 icon_url: row.get(9)?,
                 website_url: row.get(10)?,
                 enabled: row.get::<_, i64>(11)? != 0,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                can_read: row.get::<_, i64>(12)? != 0,
+                can_publish: row.get::<_, i64>(13)? != 0,
+                can_manage: row.get::<_, i64>(14)? != 0,
+                max_packages: row.get(15)?,
+                max_package_bytes: row.get(16)?,
+                max_media_files: row.get(17)?,
+                max_image_bytes: row.get(18)?,
+                created_at: row.get(19)?,
+                updated_at: row.get(20)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -3661,6 +3914,49 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner, project], |row| {
+                let scope_read = row.get::<_, i64>(11)? != 0;
+                let scope_publish = row.get::<_, i64>(12)? != 0;
+                let scope_manage = row.get::<_, i64>(13)? != 0;
+                Ok(MarketplaceToken {
+                    token_id: row.get(0)?,
+                    authority_id: row.get(1)?,
+                    publisher_pk: row.get(2)?,
+                    owner: row.get(3)?,
+                    project: row.get(4)?,
+                    publisher_id: row.get(5)?,
+                    publisher_display_name: row.get(6)?,
+                    publisher_url: row.get(7)?,
+                    publisher_email: row.get(8)?,
+                    title: row.get(9)?,
+                    secret_hash: row.get(10)?,
+                    scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                    scope_read,
+                    scope_publish,
+                    scope_manage,
+                    expires_at: row.get(14)?,
+                    last_used_at: row.get(15)?,
+                    revoked_at: row.get(16)?,
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(items)
+    }
+
+    fn list_all_marketplace_tokens(&self) -> Result<Vec<MarketplaceToken>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
+                 FROM marketplace_tokens
+                 ORDER BY updated_at DESC, token_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
                 let scope_read = row.get::<_, i64>(11)? != 0;
                 let scope_publish = row.get::<_, i64>(12)? != 0;
                 let scope_manage = row.get::<_, i64>(13)? != 0;
@@ -4558,6 +4854,116 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
+    fn get_platform_service_instance(
+        &self,
+        service_instance_id: &str,
+    ) -> Result<Option<PlatformServiceInstance>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let result = conn.query_row(
+            "SELECT service_instance_id, service_kind, display_label, host_office_id, state_office_id, public_base_url, enabled, status, placement_generation, created_at, updated_at
+             FROM platform_service_instances
+             WHERE service_instance_id = ?1",
+            params![service_instance_id],
+            |row| {
+                Ok(PlatformServiceInstance {
+                    service_instance_id: row.get(0)?,
+                    service_kind: row.get(1)?,
+                    display_label: row.get(2)?,
+                    host_office_id: row.get(3)?,
+                    state_office_id: row.get(4)?,
+                    public_base_url: row.get(5)?,
+                    enabled: row.get::<_, i64>(6)? != 0,
+                    status: row.get(7)?,
+                    placement_generation: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => Err(Self::qe(err)),
+        }
+    }
+
+    fn put_platform_service_instance(
+        &self,
+        service: &PlatformServiceInstance,
+    ) -> Result<(), PlatformError> {
+        if service.host_office_id != service.state_office_id {
+            return Err(PlatformError::new(
+                "PLATFORM_SERVICE_STATE_HOST_MISMATCH",
+                "platform service host_office_id and state_office_id must match in v1",
+            ));
+        }
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute(
+            "INSERT INTO platform_service_instances
+             (service_instance_id, service_kind, display_label, host_office_id, state_office_id, public_base_url, enabled, status, placement_generation, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(service_instance_id) DO UPDATE SET
+                 service_kind = excluded.service_kind,
+                 display_label = excluded.display_label,
+                 host_office_id = excluded.host_office_id,
+                 state_office_id = excluded.state_office_id,
+                 public_base_url = excluded.public_base_url,
+                 enabled = excluded.enabled,
+                 status = excluded.status,
+                 placement_generation = excluded.placement_generation,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                &service.service_instance_id,
+                &service.service_kind,
+                &service.display_label,
+                &service.host_office_id,
+                &service.state_office_id,
+                &service.public_base_url,
+                if service.enabled { 1_i64 } else { 0_i64 },
+                &service.status,
+                service.placement_generation,
+                service.created_at,
+                service.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_platform_service_instances(
+        &self,
+    ) -> Result<Vec<PlatformServiceInstance>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare(
+                "SELECT service_instance_id, service_kind, display_label, host_office_id, state_office_id, public_base_url, enabled, status, placement_generation, created_at, updated_at
+                 FROM platform_service_instances
+                 ORDER BY service_kind ASC, service_instance_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(PlatformServiceInstance {
+                    service_instance_id: row.get(0)?,
+                    service_kind: row.get(1)?,
+                    display_label: row.get(2)?,
+                    host_office_id: row.get(3)?,
+                    state_office_id: row.get(4)?,
+                    public_base_url: row.get(5)?,
+                    enabled: row.get::<_, i64>(6)? != 0,
+                    status: row.get(7)?,
+                    placement_generation: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(items)
+    }
+
     fn get_platform_office_node(
         &self,
         node_id: &str,
@@ -5339,5 +5745,69 @@ impl DataAdapter for SqliteDataAdapter {
             .collect::<Vec<_>>()
         };
         Ok(items)
+    }
+
+    fn transfer_project_owner(
+        &self,
+        old_owner: &str,
+        project: &str,
+        new_owner: &str,
+        new_owner_user_id: &str,
+    ) -> Result<(), PlatformError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(Self::qe)?;
+
+        // Core project record — also update owner_user_id.
+        tx.execute(
+            "UPDATE projects SET owner = ?1, owner_user_id = ?2 WHERE owner = ?3 AND project = ?4",
+            params![new_owner, new_owner_user_id, old_owner, project],
+        )
+        .map_err(Self::qe)?;
+
+        // All tables with (owner, project) in their primary key.
+        let rekey_tables = [
+            "project_credentials",
+            "project_db_connections",
+            "project_marketplace_repositories",
+            "marketplace_publishers",
+            "pipeline_meta",
+            "project_policies",
+            "project_policy_bindings",
+            "project_members",
+            "project_invites",
+            "project_runtime_placements",
+            "project_operations",
+            "pipeline_invocations",
+        ];
+        for table in &rekey_tables {
+            tx.execute(
+                &format!("UPDATE {table} SET owner = ?1 WHERE owner = ?2 AND project = ?3"),
+                params![new_owner, old_owner, project],
+            )
+            .map_err(Self::qe)?;
+        }
+
+        // Marketplace asset versions: multiple owner columns that may reference the old owner.
+        for col in &["authority_owner", "publisher_owner", "source_owner"] {
+            tx.execute(
+                &format!(
+                    "UPDATE marketplace_asset_versions SET {col} = ?1 WHERE {col} = ?2 AND source_project = ?3"
+                ),
+                params![new_owner, old_owner, project],
+            )
+            .map_err(Self::qe)?;
+        }
+
+        // Invalidate MCP sessions — force re-auth under new owner.
+        tx.execute(
+            "DELETE FROM mcp_sessions WHERE owner = ?1 AND project = ?2",
+            params![old_owner, project],
+        )
+        .map_err(Self::qe)?;
+
+        tx.commit().map_err(Self::qe)?;
+        Ok(())
     }
 }

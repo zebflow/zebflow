@@ -1,6 +1,6 @@
 import { cx } from "zeb";
 
-export default function DialogContent({ className, children, _isOpen, _onClose, ...rest }: any) {
+export default function DialogContent({ className, children, _isOpen, _onClose, style, ...rest }: any) {
   if (!_isOpen) return null;
 
   return (
@@ -11,12 +11,17 @@ export default function DialogContent({ className, children, _isOpen, _onClose, 
         aria-modal="true"
         className={cx(
           "relative z-50 w-full max-w-lg",
-          "border border-border bg-surface text-body",
+          "border border-border bg-[var(--color-surface,#161616)] text-body",
           "rounded-[0.65rem] shadow-[0_24px_55px_rgba(2,6,23,0.32)]",
           "flex flex-col",
           "max-h-[calc(100vh-2rem)] overflow-y-auto",
           className
         )}
+        style={{
+          ...(style || {}),
+          backgroundColor: style?.backgroundColor || "var(--color-surface, #161616)",
+          opacity: 1,
+        }}
         {...rest}
       >
         {children}

@@ -2,10 +2,10 @@
 
 pub(crate) mod embedded;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fs;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::{Component, Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,12 +14,14 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{
     HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header::CACHE_CONTROL,
-    header::CONTENT_DISPOSITION, header::CONTENT_TYPE, header::LOCATION, header::SET_COOKIE,
+    header::CONTENT_DISPOSITION, header::CONTENT_TYPE, header::HOST, header::LOCATION,
+    header::SET_COOKIE,
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
+use rand::RngExt as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use swc_common::{FileName, SourceMap, sync::Lrc};
@@ -45,7 +47,7 @@ use crate::platform::model::{
     TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
     TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpsertPipelineDefinitionRequest,
     UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -56,12 +58,14 @@ use crate::rwe::{
     resolve_engine_or_default,
 };
 use crate::version::APP_VERSION;
-use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset};
+use embedded::{PLATFORM_TEMPLATE_ASSETS, platform_library_asset, platform_node_icon_asset};
 
 /// Platform login path — used for unauthenticated page redirects and frontend 401 handling.
 const LOGIN_PATH: &str = "/login";
 /// Platform home path — redirect target after successful login.
 const HOME_PATH: &str = "/home";
+const SESSION_COOKIE_NAME: &str = "zebflow_session";
+const SESSION_TTL_SECS: i64 = 86_400;
 /// Shared internal auth header for the first controller/office control-plane slice.
 const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
 
@@ -75,6 +79,32 @@ const PLATFORM_MAIN_CSS: &str = concat!(
 );
 const PLATFORM_DB_SUITE_CSS: &str = include_str!("templates/styles/db-suite.css");
 const PLATFORM_DB_CONNECTIONS_CSS: &str = include_str!("templates/styles/db-connections.css");
+
+fn header_first_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn platform_base_url(headers: &HeaderMap) -> String {
+    if let Ok(value) = std::env::var("ZEBFLOW_PLATFORM_BASE_URL") {
+        let value = value.trim().trim_end_matches('/');
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+    let proto = header_first_value(headers, "x-forwarded-proto").unwrap_or("http");
+    let host = header_first_value(headers, "x-forwarded-host")
+        .or_else(|| headers.get(HOST).and_then(|value| value.to_str().ok()))
+        .unwrap_or("localhost:10610")
+        .trim();
+    format!("{}://{}", proto, host)
+        .trim_end_matches('/')
+        .to_string()
+}
 
 /// In debug builds, set to true when source templates change.
 /// The SSE endpoint consumes this flag and broadcasts a reload to all browser tabs.
@@ -93,6 +123,11 @@ const TEMPLATE_SOURCE_DIR: &str =
 const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ("platform-login", "platform.login", "pages/login/page.tsx"),
     ("platform-home", "platform.home", "pages/home/page.tsx"),
+    (
+        "platform-marketplace",
+        "platform.marketplace",
+        "pages/marketplace/page.tsx",
+    ),
     (
         "platform-project-pipelines",
         "platform.project.pipelines",
@@ -179,9 +214,17 @@ struct PlatformFrontend {
     #[cfg_attr(debug_assertions, allow(dead_code))]
     pages: Arc<std::collections::BTreeMap<&'static str, CompiledTemplate>>,
     /// Template root on disk — used in debug builds for per-request recompilation.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     template_root: PathBuf,
     /// Compile options — cloned per request in debug builds.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
     options: ReactiveWebOptions,
+}
+
+#[derive(Clone)]
+struct PlatformWebSession {
+    owner: String,
+    expires_at: i64,
 }
 
 /// Shared app state used by platform routes.
@@ -201,6 +244,10 @@ pub struct PlatformAppState {
     mem_subscriber: Arc<MemSubscriber>,
     /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
     preview_registry: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Server-side platform web sessions keyed by random cookie token.
+    sessions: Arc<std::sync::Mutex<HashMap<String, PlatformWebSession>>>,
+    /// Per-process random secret for signing OAuth2 state parameters.
+    oauth_state_secret: [u8; 32],
 }
 
 /// Builds Zebflow platform router.
@@ -274,9 +321,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_handler),
         )
+        // OAuth2 credential callback — unauthenticated (provider redirects browser here).
+        .route("/oauth/callback", get(oauth2_callback_handler))
         .route("/", get(root_redirect))
         .route("/assets/branding/{asset}", get(branding_asset))
         .route("/assets/platform/{asset}", get(platform_asset))
+        .route("/assets/node-icons/{*path}", get(node_icon_asset))
         .route("/assets/rwe/scripts/{hash}", get(rwe_script_asset))
         .route(
             "/assets/{owner}/{project}/rwe/scripts/{hash}",
@@ -299,6 +349,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
+        .route("/marketplace", get(platform_marketplace_page))
         .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
@@ -422,16 +473,52 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
                 .post(api_upsert_platform_marketplace_repository),
         )
         .route(
+            "/api/platform/marketplace/repositories",
+            get(api_list_platform_marketplace_sources).post(api_upsert_platform_marketplace_source),
+        )
+        .route(
+            "/api/platform/marketplace/service",
+            get(api_get_platform_marketplace_service).post(api_configure_platform_marketplace_service),
+        )
+        .route(
+            "/api/platform/marketplace/publishers",
+            get(api_list_platform_marketplace_publishers).post(api_upsert_platform_marketplace_publisher),
+        )
+        .route(
+            "/api/platform/marketplace/tokens",
+            get(api_list_platform_marketplace_tokens).post(api_create_platform_marketplace_token),
+        )
+        .route(
+            "/api/platform/marketplace/tokens/{token_id}",
+            delete(api_delete_platform_marketplace_token),
+        )
+        .route(
+            "/api/platform/marketplace/publishers/{publisher_id}",
+            delete(api_delete_platform_marketplace_publisher),
+        )
+        .route(
             "/api/users/{owner}/marketplace/repositories/{repository_id}",
             delete(api_delete_platform_marketplace_repository),
+        )
+        .route(
+            "/api/platform/marketplace/repositories/{repository_id}",
+            delete(api_delete_platform_marketplace_source),
         )
         .route(
             "/api/users/{owner}/marketplace/assets",
             get(api_list_platform_marketplace_assets),
         )
         .route(
+            "/api/platform/marketplace/assets",
+            get(api_list_platform_marketplace_apps),
+        )
+        .route(
             "/api/users/{owner}/marketplace/install",
             post(api_install_platform_marketplace_project),
+        )
+        .route(
+            "/api/platform/marketplace/install",
+            post(api_install_platform_marketplace_app),
         )
         .route(
             "/api/users/{owner}/projects/{project}",
@@ -574,6 +661,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
                 .delete(api_delete_credential),
         )
         .route(
+            "/api/projects/{owner}/{project}/credentials/{credential_id}/oauth/authorize",
+            get(api_oauth2_authorize),
+        )
+        .route(
             "/api/projects/{owner}/{project}/assistant/config",
             get(api_get_project_assistant_config).put(api_upsert_project_assistant_config),
         )
@@ -658,6 +749,22 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/marketplace/remote/assets/{package_id}/{version}",
             get(api_get_remote_marketplace_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/remote/assets/{package_id}/{version}/artifact",
+            get(api_get_remote_marketplace_artifact),
+        )
+        .route(
+            "/api/marketplace/remote/assets",
+            get(api_list_public_marketplace_assets),
+        )
+        .route(
+            "/api/marketplace/remote/assets/{package_id}/{version}",
+            get(api_get_public_marketplace_asset),
+        )
+        .route(
+            "/api/marketplace/remote/assets/{package_id}/{version}/artifact",
+            get(api_get_public_marketplace_artifact),
         )
         .route(
             "/api/projects/{owner}/{project}/marketplace/assets/mine",
@@ -850,6 +957,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/transfer/download/{operation_id}",
             get(api_project_transfer_download),
         )
+        .route(
+            "/api/projects/{owner}/{project}/transfer/owner",
+            post(api_transfer_project_owner),
+        )
         .route("/preview/{owner}/{project}", get(preview_page))
         .route("/ws/preview/{owner}/{project}", get(ws_preview_handler));
 
@@ -862,6 +973,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         scheduler,
         mem_subscriber,
         preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+        sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        oauth_state_secret: {
+            let mut bytes = [0u8; 32];
+            rand::rng().fill(&mut bytes);
+            bytes
+        },
     };
 
     if app_state.platform.cluster_bootstrap.is_worker() {
@@ -1204,17 +1321,17 @@ fn render_page(
         html = ensure_stylesheet_link(html, "/assets/libraries/zeb/icons/0.1/runtime/devicons.css");
     }
 
-    let mut final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None);
+    let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None);
 
     // In debug builds: inject a tiny SSE listener that auto-reloads the page
     // whenever platform template sources change on disk.
     #[cfg(debug_assertions)]
-    {
-        final_html = inject_before_body_end(
+    let final_html = {
+        inject_before_body_end(
             &final_html,
             "<script>(function(){new EventSource('/__dev/reload').onmessage=function(){location.reload()}})();</script>",
-        );
-    }
+        )
+    };
 
     Ok(final_html)
 }
@@ -1244,6 +1361,18 @@ fn ensure_stylesheet_link(mut html: String, href: &str) -> String {
         return html;
     }
     format!("{link}{html}")
+}
+
+fn insert_project_theme_block(mut html: String, style_block: &str) -> String {
+    let pos = html
+        .find("<style data-rwe-style")
+        .or_else(|| html.find("<style data-rwe-tw"))
+        .or_else(|| html.find("</head>"));
+    if let Some(pos) = pos {
+        html.insert_str(pos, style_block);
+        return html;
+    }
+    format!("{style_block}{html}")
 }
 
 fn externalize_rwe_scripts(
@@ -1658,6 +1787,29 @@ async fn platform_asset(Path(asset): Path<String>) -> Response {
     }
 }
 
+async fn node_icon_asset(Path(path): Path<String>) -> Response {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    #[cfg(debug_assertions)]
+    {
+        let source_path = FsPath::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/platform/web/assets/node-icons")
+            .join(&normalized);
+        if source_path.is_file() {
+            match fs::read(&source_path) {
+                Ok(bytes) => {
+                    return asset_response(content_type_for_path(FsPath::new(&normalized)), &bytes);
+                }
+                Err(_) => return (StatusCode::NOT_FOUND, "asset not found").into_response(),
+            }
+        }
+    }
+
+    match platform_node_icon_asset(&normalized) {
+        Some(bytes) => asset_response(content_type_for_path(FsPath::new(&normalized)), bytes),
+        None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
+    }
+}
+
 async fn library_asset(Path(path): Path<String>) -> Response {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     match platform_library_asset(&normalized) {
@@ -1866,7 +2018,7 @@ async fn project_static_asset(
 
 /// Route: GET /files/{owner}/{project}/{*path}
 /// Serves files written by n.file.save from the project's files_dir.
-/// Files under `private/` require a valid session cookie.
+/// Files under `private/` require project file-read capability.
 /// Files under `public/` are served without auth.
 async fn project_file_serve(
     State(state): State<PlatformAppState>,
@@ -1884,14 +2036,40 @@ async fn project_file_serve(
     }
 
     let normalized = path.trim_start_matches('/').replace('\\', "/");
-    if normalized.is_empty() || normalized.contains("..") || normalized.contains('\0') {
+    if normalized.is_empty() || normalized.contains('\0') {
         return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
     }
+    let mut clean_parts = Vec::new();
+    for component in FsPath::new(&normalized).components() {
+        match component {
+            Component::Normal(part) => {
+                let part = part.to_string_lossy();
+                if part.is_empty() {
+                    return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
+                }
+                clean_parts.push(part.into_owned());
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
+            }
+        }
+    }
+    if clean_parts.is_empty() {
+        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
+    }
+    let normalized = clean_parts.join("/");
 
-    // Files under private/ require a valid session
+    // Files under private/ require project-scoped file read access.
     if normalized.starts_with("private/") || normalized == "private" {
-        if session_owner(&headers).is_none() {
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::FilesRead,
+        ) {
+            return response;
         }
     }
 
@@ -1899,11 +2077,31 @@ async fn project_file_serve(
         Ok(l) => l,
         Err(err) => return internal_error(err),
     };
-    let files_root = &layout.files_dir;
-    let abs = files_root.join(&normalized);
+    let files_root = match std::fs::canonicalize(&layout.files_dir) {
+        Ok(root) => root,
+        Err(err) => {
+            return internal_error(PlatformError::new(
+                "PLATFORM_FILE_ROOT_CANONICALIZE",
+                err.to_string(),
+            ));
+        }
+    };
+    let requested = files_root.join(&normalized);
+    if !requested.exists() {
+        return (StatusCode::NOT_FOUND, "file not found").into_response();
+    }
+    let abs = match std::fs::canonicalize(&requested) {
+        Ok(path) => path,
+        Err(err) => {
+            return internal_error(PlatformError::new(
+                "PLATFORM_FILE_SERVE_CANONICALIZE",
+                err.to_string(),
+            ));
+        }
+    };
 
-    // Strict containment check — prevent path traversal
-    if !abs.starts_with(files_root) {
+    // Strict canonical containment check prevents traversal and symlink escapes.
+    if !abs.starts_with(&files_root) {
         return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
     }
     if !abs.is_file() {
@@ -2033,10 +2231,8 @@ async fn login_submit(
     match state.platform.auth.login(&req.identifier, &req.password) {
         Ok(Some(session)) => {
             let mut resp = Redirect::to(HOME_PATH).into_response();
-            let cookie = format!(
-                "zebflow_session={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400",
-                session.owner
-            );
+            let token = issue_session(&state, &session.owner);
+            let cookie = session_cookie_header(&token, SESSION_TTL_SECS);
             if let Ok(v) = HeaderValue::from_str(&cookie) {
                 resp.headers_mut().insert(SET_COOKIE, v);
             }
@@ -2056,24 +2252,28 @@ async fn login_submit(
     }
 }
 
-async fn logout_submit() -> Response {
-    let mut resp = Redirect::to(LOGIN_PATH).into_response();
-    if let Ok(v) =
-        HeaderValue::from_str("zebflow_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+async fn logout_submit(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    if let Some(token) = session_token(&headers)
+        && let Ok(mut sessions) = state.sessions.lock()
     {
+        sessions.remove(&token);
+    }
+    let mut resp = Redirect::to(LOGIN_PATH).into_response();
+    if let Ok(v) = HeaderValue::from_str(&session_cookie_header("", 0)) {
         resp.headers_mut().insert(SET_COOKIE, v);
     }
     resp
 }
 
 async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
-    let Some(owner) = session_owner(&headers) else {
+    let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
-    if let Err(err) = state
-        .platform
-        .marketplace
-        .ensure_default_platform_repository(&owner)
+    if let Some(source_owner) = platform_marketplace_source_owner(&state)
+        && let Err(err) = state
+            .platform
+            .marketplace
+            .ensure_default_platform_repository(&source_owner)
     {
         return internal_error(err);
     }
@@ -2270,6 +2470,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     "owner": owner,
                     "projects": projects,
                     "marketplace_api": {
+                        "service": "/api/platform/marketplace/service",
                         "repositories": format!("/api/users/{}/marketplace/repositories", owner),
                         "assets": format!("/api/users/{}/marketplace/assets", owner),
                         "install": format!("/api/users/{}/marketplace/install", owner),
@@ -2283,6 +2484,132 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                 Err(err) => internal_error(err),
             }
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn platform_marketplace_page(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    let is_superadmin = is_superadmin_owner(&state, &owner);
+    let service = match state.platform.marketplace.get_default_service_instance() {
+        Ok(service) => service,
+        Err(err) => return internal_error(err),
+    };
+    let (source_owner, source_rows) = match visible_platform_marketplace_sources(&state, &owner) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    let repositories = source_rows
+        .clone()
+        .into_iter()
+        .map(platform_marketplace_repository_json)
+        .collect::<Vec<_>>();
+    let remote_apps = state
+        .platform
+        .marketplace
+        .fetch_platform_remote_app_rows_from_repositories(&state.http_client, source_rows)
+        .await
+        .unwrap_or_default();
+    let local_packages = match state.platform.marketplace.list_asset_packages() {
+        Ok(items) => items
+            .into_iter()
+            .filter(|item| item.visibility == "public" || item.visibility == "unlisted")
+            .map(|item| {
+                json!({
+                    "package_id": item.package_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "asset_kind": item.asset_kind,
+                    "publisher_id": item.publisher_id,
+                    "publisher_display_name": item.publisher_display_name,
+                    "visibility": item.visibility,
+                    "updated_at": item.updated_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    let projects = match state.platform.projects.list_projects(&owner) {
+        Ok(items) => items
+            .into_iter()
+            .map(|item| {
+                let producer_enabled =
+                    is_project_marketplace_producer_enabled(&state, &owner, &item.project);
+                json!({
+                    "owner": item.owner,
+                    "project": item.project,
+                    "title": item.title,
+                    "marketplace_href": format!("/projects/{owner}/{}/marketplace", item.project),
+                    "producer_enabled": producer_enabled,
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(err) => return internal_error(err),
+    };
+    let publishers = if is_superadmin {
+        match state
+            .platform
+            .marketplace
+            .list_publishers(&source_owner, "platform")
+        {
+            Ok(items) => items
+                .into_iter()
+                .map(marketplace_publisher_json)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let tokens = if is_superadmin {
+        match state.platform.marketplace.list_all_tokens() {
+            Ok(items) => items
+                .into_iter()
+                .map(marketplace_token_json)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    let offices = platform_office_rows(&state);
+    match render_page(
+        &state,
+        "platform-marketplace",
+        "/marketplace",
+        json!({
+            "seo": {
+                "title": "Zebflow Marketplace",
+                "description": "Platform marketplace management and app explorer."
+            },
+            "owner": owner,
+            "source_owner": source_owner,
+            "is_superadmin": is_superadmin,
+            "service": service,
+            "repositories": repositories,
+            "remote_apps": remote_apps,
+            "local_packages": local_packages,
+            "projects": projects,
+            "publishers": publishers,
+            "tokens": tokens,
+            "offices": offices,
+            "marketplace_api": {
+                "service": "/api/platform/marketplace/service",
+                "repositories": "/api/platform/marketplace/repositories",
+                "assets": "/api/platform/marketplace/assets",
+                "install": "/api/platform/marketplace/install",
+                "publishers": "/api/platform/marketplace/publishers",
+                "tokens": "/api/platform/marketplace/tokens"
+            },
+            "app_version": APP_VERSION,
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -2370,6 +2697,26 @@ fn home_project_card_json(
     })
 }
 
+fn platform_office_rows(state: &PlatformAppState) -> Vec<Value> {
+    let mut rows = vec![json!({
+        "id": state.platform.cluster_bootstrap.node_id(),
+        "label": state.platform.cluster_bootstrap.node_label(),
+    })];
+    let workers = state
+        .platform
+        .cluster_registry
+        .snapshot()
+        .map(|snapshot| snapshot.workers)
+        .unwrap_or_default();
+    for worker in workers {
+        rows.push(json!({
+            "id": worker.node_id,
+            "label": worker.label,
+        }));
+    }
+    rows
+}
+
 fn resolve_project_marketplace_entry_path(
     owner: &str,
     project: &str,
@@ -2431,7 +2778,7 @@ fn require_project_marketplace_producer(
 }
 
 async fn design_system_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
-    let Some(_owner) = session_owner(&headers) else {
+    let Some(_owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
     match render_page(
@@ -2455,7 +2802,7 @@ async fn home_create_project_submit(
     headers: HeaderMap,
     Form(req): Form<CreateProjectRequest>,
 ) -> Response {
-    let Some(owner) = session_owner(&headers) else {
+    let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
 
@@ -2515,7 +2862,7 @@ async fn home_clone_project_submit(
     headers: HeaderMap,
     Form(req): Form<CloneProjectFormRequest>,
 ) -> Response {
-    let Some(owner) = session_owner(&headers) else {
+    let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
 
@@ -4582,14 +4929,19 @@ async fn project_marketplace_tab_page(
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
             let tab = normalize_marketplace_tab(&raw_tab);
-            let producer_enabled =
-                is_project_marketplace_producer_enabled(&state, &owner, &project);
             let route = if tab == "packs" {
                 format!("/projects/{owner}/{project}/marketplace")
             } else {
                 format!("/projects/{owner}/{project}/marketplace/{tab}")
             };
             let nav = nav_classes(&owner, &project, "marketplace", None);
+            if let Err(err) = state
+                .platform
+                .marketplace
+                .ensure_default_project_repository(&owner, &project)
+            {
+                return internal_error(err);
+            }
             let assets = match marketplace_asset_rows(&state, &owner, &project, false) {
                 Ok(items) => items,
                 Err(err) => return internal_error(err),
@@ -4607,14 +4959,6 @@ async fn project_marketplace_tab_page(
                 Ok(items) => items,
                 Err(err) => return internal_error(err),
             };
-            let tokens = match marketplace_token_rows(&state, &owner, &project) {
-                Ok(items) => items,
-                Err(err) => return internal_error(err),
-            };
-            let publishers = match state.platform.marketplace.list_publishers(&owner, &project) {
-                Ok(items) => items,
-                Err(err) => return internal_error(err),
-            };
             let input = json!({
                 "seo": {
                     "title": format!("{} - Marketplace", info.title),
@@ -4625,37 +4969,25 @@ async fn project_marketplace_tab_page(
                 "title": info.title,
                 "project_href": format!("/projects/{owner}/{project}"),
                 "nav": nav,
-                "marketplace_tabs": marketplace_tab_items(&owner, &project, tab, producer_enabled),
+                "marketplace_tabs": marketplace_tab_items(&owner, &project, tab),
                 "marketplace_producer": {
-                    "enabled": producer_enabled,
-                    "can_manage": can_manage_project_marketplace_producer(&state, &owner),
+                    "enabled": true,
                 },
                 "tab_flags": {
                     "packs": tab == "packs",
-                    "my_packs": producer_enabled && tab == "my-packs",
-                    "publish": producer_enabled && tab == "publish",
-                    "tokens": producer_enabled && tab == "tokens",
-                    "settings": tab == "settings",
+                    "my_packs": tab == "my-packs",
+                    "publish": tab == "publish",
                 },
                 "assets": assets,
                 "my_assets": my_assets,
                 "publish_sources": publish_sources,
-                "tokens": tokens,
-                "publishers": publishers.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>(),
-                "repositories": match state.platform.marketplace.list_repositories(&owner, &project) {
-                    Ok(items) => items,
-                    Err(err) => return internal_error(err),
-                },
                 "marketplace_api": {
                     "assets": format!("/api/projects/{owner}/{project}/marketplace/assets"),
                     "my_assets": format!("/api/projects/{owner}/{project}/marketplace/assets/mine"),
                     "publish_sources": format!("/api/projects/{owner}/{project}/marketplace/publish-sources"),
                     "publish_preview": format!("/api/projects/{owner}/{project}/marketplace/publish-preview"),
                     "publish_asset": format!("/api/projects/{owner}/{project}/marketplace/assets/publish"),
-                    "tokens": format!("/api/projects/{owner}/{project}/marketplace/tokens"),
-                    "publishers": format!("/api/projects/{owner}/{project}/marketplace/publishers"),
                     "repositories": format!("/api/projects/{owner}/{project}/marketplace/repositories"),
-                    "producer": format!("/api/projects/{owner}/{project}/marketplace/producer")
                 }
             });
             match render_page(&state, "platform-project-marketplace", &route, input) {
@@ -5453,8 +5785,8 @@ async fn render_settings_tab_page(
                     "operations": transfer_operations,
                 },
                 "mcp": {
-                    "active": mcp_session.is_some(),
-                    "status_label": if mcp_session.is_some() { "active" } else { "inactive" },
+                    "active": mcp_session.as_ref().map(|session| session.enabled).unwrap_or(false),
+                    "status_label": if mcp_session.as_ref().map(|session| session.enabled).unwrap_or(false) { "active" } else { "inactive" },
                     "capabilities": mcp_session
                         .as_ref()
                         .map(|session| session.capabilities.iter().map(|cap| cap.key()).collect::<Vec<_>>())
@@ -5781,31 +6113,19 @@ fn normalize_marketplace_tab(raw: &str) -> &'static str {
         "" | "packs" | "assets" => "packs",
         "my-packs" => "my-packs",
         "publish" => "publish",
-        "tokens" => "tokens",
-        "settings" => "settings",
         _ => "packs",
     }
 }
 
-fn marketplace_tab_items(
-    owner: &str,
-    project: &str,
-    active: &str,
-    producer_enabled: bool,
-) -> Vec<Value> {
+fn marketplace_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     let base = format!("/projects/{owner}/{project}/marketplace");
-    let mut tabs = vec!["packs", "settings"];
-    if producer_enabled {
-        tabs.splice(1..1, ["my-packs", "publish", "tokens"]);
-    }
+    let tabs = vec!["packs", "my-packs", "publish"];
     tabs.into_iter()
         .map(|tab| {
             let label = match tab {
                 "packs" => "Packs",
                 "my-packs" => "My Packs",
                 "publish" => "Publish",
-                "tokens" => "Tokens",
-                "settings" => "Settings",
                 _ => tab,
             };
             let href = if tab == "packs" {
@@ -5844,22 +6164,23 @@ fn marketplace_publish_sources(
 fn marketplace_asset_rows(
     state: &PlatformAppState,
     owner: &str,
-    project: &str,
+    _project: &str,
     only_mine: bool,
 ) -> Result<Vec<Value>, PlatformError> {
-    let packages = if only_mine {
+    let packages = match if only_mine {
         state
             .platform
             .marketplace
-            .list_asset_packages_by_owner(owner)?
+            .list_asset_packages_by_owner(owner)
     } else {
-        state.platform.marketplace.list_asset_packages()?
+        state.platform.marketplace.list_asset_packages()
+    } {
+        Ok(items) => items,
+        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => Vec::new(),
+        Err(err) => return Err(err),
     };
     let mut rows = Vec::new();
     for package in packages {
-        if package.authority_owner != owner || package.authority_project != project {
-            continue;
-        }
         if !only_mine && package.visibility == "private" && package.publisher_owner != owner {
             continue;
         }
@@ -5891,6 +6212,108 @@ fn marketplace_asset_rows(
         }));
     }
     Ok(rows)
+}
+
+fn public_marketplace_asset_item_json(
+    state: &PlatformAppState,
+    package: crate::platform::model::MarketplaceAssetPackage,
+) -> Value {
+    let latest_version = state
+        .platform
+        .marketplace
+        .list_asset_versions(&package.package_id)
+        .ok()
+        .and_then(|items| items.into_iter().next().map(|item| item.version))
+        .unwrap_or_default();
+    json!({
+        "package_id": package.package_id,
+        "publisher_id": package.publisher_id,
+        "publisher_display_name": package.publisher_display_name,
+        "publisher_url": package.publisher_url,
+        "asset_kind": package.asset_kind,
+        "title": package.title,
+        "description": package.description,
+        "visibility": package.visibility,
+        "tags": package.tags,
+        "latest_version": latest_version,
+        "updated_at": package.updated_at,
+        "service_instance_id": crate::platform::services::marketplace::DEFAULT_MARKETPLACE_SERVICE_INSTANCE_ID,
+    })
+}
+
+fn public_marketplace_version_json(
+    package: &crate::platform::model::MarketplaceAssetPackage,
+    version: &crate::platform::model::MarketplaceAssetVersion,
+) -> Value {
+    json!({
+        "package_id": version.package_id,
+        "version": version.version,
+        "publisher_id": package.publisher_id,
+        "publisher_display_name": package.publisher_display_name,
+        "publisher_url": package.publisher_url,
+        "asset_kind": package.asset_kind,
+        "title": package.title,
+        "description": package.description,
+        "visibility": package.visibility,
+        "tags": package.tags,
+        "source_kind": version.source_kind,
+        "artifact_sha256": version.artifact_sha256,
+        "created_at": version.created_at,
+        "manifest": {
+            "asset_kind": package.asset_kind,
+            "title": package.title,
+            "description": package.description,
+            "visibility": package.visibility,
+            "tags": package.tags,
+            "publisher_id": package.publisher_id,
+            "publisher_display_name": package.publisher_display_name,
+            "publisher_url": package.publisher_url,
+        },
+    })
+}
+
+fn public_marketplace_artifact_json(mut artifact: Value) -> Value {
+    if let Some(object) = artifact.as_object_mut() {
+        object.remove("source_owner");
+        object.remove("source_project");
+        object.remove("source_ref");
+        object.remove("publisher_email");
+        object.remove("files");
+    }
+    artifact
+}
+
+fn raw_marketplace_artifact_response_json(
+    package: &crate::platform::model::MarketplaceAssetPackage,
+    version_row: &crate::platform::model::MarketplaceAssetVersion,
+    artifact: Value,
+    artifact_size_bytes: u64,
+) -> Value {
+    json!({
+        "ok": true,
+        "version": public_marketplace_version_json(package, version_row),
+        "artifact_sha256": version_row.artifact_sha256,
+        "artifact_size_bytes": artifact_size_bytes,
+        "artifact": artifact,
+    })
+}
+
+fn require_marketplace_service_enabled(state: &PlatformAppState) -> Result<(), Response> {
+    match state.platform.marketplace.get_default_service_instance() {
+        Ok(Some(service)) if service.enabled => Ok(()),
+        Ok(_) => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "MARKETPLACE_SERVICE_DISABLED",
+                    "message": "marketplace service is not enabled"
+                }
+            })),
+        )
+            .into_response()),
+        Err(err) => Err(internal_error(err)),
+    }
 }
 
 fn marketplace_token_rows(
@@ -6160,8 +6583,8 @@ struct InstalledNpmDependency {
     linked_path: String,
 }
 
-fn npm_store_root(data_root: &FsPath) -> PathBuf {
-    data_root.join("mounted").join("npm-store")
+fn library_store_root(data_root: &FsPath) -> PathBuf {
+    data_root.join("libraries")
 }
 
 fn encode_package_for_path(package: &str) -> String {
@@ -6193,27 +6616,53 @@ fn run_process_capture_stdout(cmd: &mut std::process::Command) -> Result<String,
 }
 
 fn ensure_npm_packaged_dependency(
-    store_root: &FsPath,
+    libraries_root: &FsPath,
     package: &str,
     version: &str,
 ) -> Result<(PathBuf, PathBuf), PlatformError> {
     let encoded = encode_package_for_path(package);
-    let package_dir = store_root
-        .join("packages")
+    let package_dir = libraries_root
+        .join("installed")
+        .join("external")
+        .join("js-registry")
         .join(&encoded)
         .join(version)
         .join("package");
-    let index_path = store_root
+    let index_path = libraries_root
         .join("indexes")
-        .join(format!("{encoded}@{version}.exports.json"));
+        .join("external")
+        .join("js-registry")
+        .join(&encoded)
+        .join(version)
+        .join("exports.json");
     if package_dir.is_dir() && index_path.is_file() {
         return Ok((package_dir, index_path));
     }
 
-    std::fs::create_dir_all(store_root.join("packages").join(&encoded).join(version))?;
-    std::fs::create_dir_all(store_root.join("tarballs"))?;
-    std::fs::create_dir_all(store_root.join("indexes"))?;
-    std::fs::create_dir_all(store_root.join("tmp"))?;
+    let download_dir = libraries_root
+        .join("downloads")
+        .join("external")
+        .join("js-registry");
+    let tmp_root = libraries_root
+        .join("cache")
+        .join("external")
+        .join("js-registry")
+        .join("tmp");
+
+    std::fs::create_dir_all(package_dir.parent().ok_or_else(|| {
+        PlatformError::new(
+            "PLATFORM_LIBRARY_PATH",
+            "failed resolving library package parent directory",
+        )
+    })?)?;
+    std::fs::create_dir_all(&download_dir)?;
+    std::fs::create_dir_all(index_path.parent().ok_or_else(|| {
+        PlatformError::new(
+            "PLATFORM_LIBRARY_PATH",
+            "failed resolving library index parent directory",
+        )
+    })?)?;
+    std::fs::create_dir_all(&tmp_root)?;
 
     let spec = format!("{package}@{version}");
     let npm_path = std::process::Command::new("npm")
@@ -6237,7 +6686,7 @@ fn ensure_npm_packaged_dependency(
             .arg("pack")
             .arg(&spec)
             .arg("--pack-destination")
-            .arg(store_root.join("tarballs")),
+            .arg(&download_dir),
     )?;
     let tarball_name = pack_stdout
         .lines()
@@ -6250,7 +6699,7 @@ fn ensure_npm_packaged_dependency(
                 format!("npm pack produced empty output for '{spec}'"),
             )
         })?;
-    let tarball = store_root.join("tarballs").join(tarball_name);
+    let tarball = download_dir.join(tarball_name);
     if !tarball.is_file() {
         return Err(PlatformError::new(
             "PLATFORM_LIBRARY_NPM_PACK",
@@ -6262,7 +6711,7 @@ fn ensure_npm_packaged_dependency(
         ));
     }
 
-    let tmp_extract_dir = store_root.join("tmp").join(format!(
+    let tmp_extract_dir = tmp_root.join(format!(
         "{}-{}-{}",
         encoded,
         version,
@@ -6546,7 +6995,7 @@ fn ensure_library_npm_dependencies(
     layout: &crate::platform::model::ProjectFileLayout,
     spec: ProjectAssetLibrarySpec,
 ) -> Result<Vec<InstalledNpmDependency>, PlatformError> {
-    let store_root = npm_store_root(data_root);
+    let store_root = library_store_root(data_root);
     std::fs::create_dir_all(&store_root)?;
     let mut installed = Vec::new();
     for (package, version) in spec.npm_deps {
@@ -6965,9 +7414,9 @@ async fn api_meta(State(state): State<PlatformAppState>) -> Response {
 
 // ── System info endpoint ─────────────────────────────────────────────────────
 
-async fn api_system_info(_state: State<PlatformAppState>, headers: HeaderMap) -> Response {
+async fn api_system_info(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
     // Require a logged-in session (not necessarily superadmin)
-    if session_owner(&headers).is_none() {
+    if session_owner(&state, &headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
 
@@ -7338,21 +7787,77 @@ async fn api_list_node_definitions(
 // ── Admin DB endpoints ──────────────────────────────────────────────────────
 
 fn require_superadmin(state: &PlatformAppState, headers: &HeaderMap) -> Result<(), Response> {
-    let Some(owner) = session_owner(headers) else {
+    let Some(owner) = session_owner(state, headers) else {
         return Err(StatusCode::UNAUTHORIZED.into_response());
     };
-    let is_superadmin = state
-        .platform
-        .users
-        .get_user(&owner)
-        .ok()
-        .flatten()
-        .map(|u| u.role == "superadmin")
-        .unwrap_or(false);
-    if !is_superadmin {
+    if !is_superadmin_owner(state, &owner) {
         return Err(StatusCode::FORBIDDEN.into_response());
     }
     Ok(())
+}
+
+fn is_superadmin_owner(state: &PlatformAppState, owner: &str) -> bool {
+    state
+        .platform
+        .users
+        .get_user(owner)
+        .ok()
+        .flatten()
+        .map(|u| u.role == "superadmin")
+        .unwrap_or(false)
+}
+
+fn platform_marketplace_source_owner(state: &PlatformAppState) -> Option<String> {
+    state
+        .platform
+        .users
+        .list_users()
+        .ok()?
+        .into_iter()
+        .find(|user| user.role == "superadmin")
+        .map(|user| user.owner)
+}
+
+fn visible_platform_marketplace_sources(
+    state: &PlatformAppState,
+    session_owner: &str,
+) -> Result<
+    (
+        String,
+        Vec<crate::platform::model::PlatformMarketplaceRepository>,
+    ),
+    PlatformError,
+> {
+    let source_owner =
+        platform_marketplace_source_owner(state).unwrap_or_else(|| slug_segment(session_owner));
+    state
+        .platform
+        .marketplace
+        .ensure_default_platform_repository(&source_owner)?;
+    let mut items = state
+        .platform
+        .marketplace
+        .list_platform_repositories(&source_owner)?;
+    if !is_superadmin_owner(state, session_owner) {
+        items.retain(|item| item.visibility == "public");
+    }
+    Ok((source_owner, items))
+}
+
+fn require_owner_or_superadmin(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+) -> Result<String, Response> {
+    let Some(session) = session_owner(state, headers) else {
+        return Err(StatusCode::UNAUTHORIZED.into_response());
+    };
+    let session_slug = crate::platform::model::slug_segment(&session);
+    let owner_slug = crate::platform::model::slug_segment(owner);
+    if session_slug == owner_slug || is_superadmin_owner(state, &session) {
+        return Ok(session);
+    }
+    Err(StatusCode::FORBIDDEN.into_response())
 }
 
 async fn api_admin_db_list_collections(
@@ -7434,7 +7939,10 @@ async fn api_admin_db_delete_node(
 
 // ────────────────────────────────────────────────────────────────────────────
 
-async fn api_list_users(State(state): State<PlatformAppState>) -> Response {
+async fn api_list_users(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
     match state.platform.users.list_users() {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
@@ -7443,18 +7951,31 @@ async fn api_list_users(State(state): State<PlatformAppState>) -> Response {
 
 async fn api_create_user(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
     Json(req): Json<CreateUserRequest>,
 ) -> Response {
-    match state.platform.users.create_or_update_user(&req) {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.users.create_user(&req) {
         Ok(user) => Json(json!({"ok": true, "user": user})).into_response(),
+        Err(err) if err.code == "PLATFORM_USER_EXISTS" => (
+            StatusCode::CONFLICT,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
 async fn api_list_projects(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
     Path(owner): Path<String>,
 ) -> Response {
+    if let Err(response) = require_owner_or_superadmin(&state, &headers, &owner) {
+        return response;
+    }
     match state.platform.projects.list_projects(&owner) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
@@ -7463,9 +7984,13 @@ async fn api_list_projects(
 
 async fn api_create_project(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
     Path(owner): Path<String>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Response {
+    if let Err(response) = require_owner_or_superadmin(&state, &headers, &owner) {
+        return response;
+    }
     let runtime = req.runtime.clone();
     match state
         .platform
@@ -7495,7 +8020,7 @@ async fn api_list_platform_marketplace_repositories(
     headers: HeaderMap,
     Path(owner): Path<String>,
 ) -> Response {
-    let Some(session) = session_owner(&headers) else {
+    let Some(session) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "login required"})),
@@ -7530,13 +8055,125 @@ async fn api_list_platform_marketplace_repositories(
     }
 }
 
+async fn api_list_platform_marketplace_sources(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    match visible_platform_marketplace_sources(&state, &session) {
+        Ok((_source_owner, items)) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(platform_marketplace_repository_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_platform_marketplace_service(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.marketplace.get_default_service_instance() {
+        Ok(service) => Json(json!({"ok": true, "service": service})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_configure_platform_marketplace_service(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<ConfigurePlatformMarketplaceServiceRequest>,
+) -> Response {
+    let Some(session_owner) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    if !is_superadmin_owner(&state, &session_owner) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "superadmin required"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .users
+        .authenticate(&session_owner, &req.password)
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": "Incorrect password"})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    }
+    match state.platform.marketplace.ensure_default_service_instance(
+        &req.host_office_id,
+        &req.public_base_url,
+        req.enabled,
+    ) {
+        Ok(service) => Json(json!({"ok": true, "service": service})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_platform_marketplace_source(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state.platform.marketplace.upsert_platform_repository(
+        &source_owner,
+        &req.repository_id,
+        &req.title,
+        &req.base_url,
+        &req.remote_owner,
+        &req.remote_project,
+        &req.read_token,
+        &req.visibility,
+        req.enabled,
+    ) {
+        Ok(repository) => Json(json!({
+            "ok": true,
+            "repository": platform_marketplace_repository_json(repository)
+        }))
+        .into_response(),
+        Err(err) => marketplace_api_error(err),
+    }
+}
+
 async fn api_upsert_platform_marketplace_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
     Json(req): Json<UpsertMarketplaceRepositoryRequest>,
 ) -> Response {
-    let Some(session) = session_owner(&headers) else {
+    let Some(session) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "login required"})),
@@ -7558,6 +8195,7 @@ async fn api_upsert_platform_marketplace_repository(
         &req.remote_owner,
         &req.remote_project,
         &req.read_token,
+        &req.visibility,
         req.enabled,
     ) {
         Ok(repository) => Json(json!({
@@ -7565,6 +8203,30 @@ async fn api_upsert_platform_marketplace_repository(
             "repository": platform_marketplace_repository_json(repository)
         }))
         .into_response(),
+        Err(err) => marketplace_api_error(err),
+    }
+}
+
+async fn api_delete_platform_marketplace_source(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(repository_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state
+        .platform
+        .marketplace
+        .delete_platform_repository(&source_owner, &repository_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -7574,7 +8236,7 @@ async fn api_delete_platform_marketplace_repository(
     headers: HeaderMap,
     Path((owner, repository_id)): Path<(String, String)>,
 ) -> Response {
-    let Some(session) = session_owner(&headers) else {
+    let Some(session) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "login required"})),
@@ -7598,12 +8260,38 @@ async fn api_delete_platform_marketplace_repository(
     }
 }
 
+async fn api_list_platform_marketplace_apps(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    let (_source_owner, sources) = match visible_platform_marketplace_sources(&state, &session) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    match state
+        .platform
+        .marketplace
+        .fetch_platform_remote_app_rows_from_repositories(&state.http_client, sources)
+        .await
+    {
+        Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_list_platform_marketplace_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
 ) -> Response {
-    let Some(session) = session_owner(&headers) else {
+    let Some(session) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "login required"})),
@@ -7635,13 +8323,84 @@ async fn api_list_platform_marketplace_assets(
     }
 }
 
+async fn api_install_platform_marketplace_app(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
+) -> Response {
+    let Some(session) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    let (source_owner, sources) = match visible_platform_marketplace_sources(&state, &session) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    if !sources
+        .iter()
+        .any(|item| item.repository_id == req.repository_id && item.enabled)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "marketplace source is not visible"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .install_remote_project_from_platform_source(
+            &state.http_client,
+            &source_owner,
+            &session,
+            &req.repository_id,
+            &req.package_id,
+            &req.version,
+        )
+        .await
+    {
+        Ok((installed_owner, installed_project)) => {
+            if let Err(err) = state
+                .platform
+                .cluster_runtime_sync
+                .refresh_local_repo_state(&installed_owner, &installed_project)
+            {
+                return internal_error(err);
+            }
+            match state
+                .platform
+                .projects
+                .get_project(&installed_owner, &installed_project)
+            {
+                Ok(Some(project)) => Json(json!({
+                    "ok": true,
+                    "owner": installed_owner,
+                    "project": home_project_card_json(&state, &session, &project),
+                }))
+                .into_response(),
+                Ok(None) => Json(json!({
+                    "ok": true,
+                    "owner": installed_owner,
+                    "project_slug": installed_project,
+                }))
+                .into_response(),
+                Err(err) => internal_error(err),
+            }
+        }
+        Err(err) => marketplace_api_error(err),
+    }
+}
+
 async fn api_install_platform_marketplace_project(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
     Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
 ) -> Response {
-    let Some(session) = session_owner(&headers) else {
+    let Some(session) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "login required"})),
@@ -7692,6 +8451,176 @@ async fn api_install_platform_marketplace_project(
                 Err(err) => internal_error(err),
             }
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_platform_marketplace_publishers(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state
+        .platform
+        .marketplace
+        .list_publishers(&source_owner, "platform")
+    {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => {
+            Json(json!({"ok": true, "items": []})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_platform_marketplace_publisher(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<UpsertMarketplacePublisherRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state.platform.marketplace.upsert_publisher(
+        &source_owner,
+        "platform",
+        &req.publisher_id,
+        &req.display_name,
+        &req.publisher_url,
+        &req.email,
+        &req.description,
+        &req.icon_url,
+        &req.website_url,
+        req.enabled,
+        req.can_read,
+        req.can_publish,
+        req.can_manage,
+        req.max_packages,
+        req.max_package_bytes,
+        req.max_media_files,
+        req.max_image_bytes,
+    ) {
+        Ok(item) => {
+            Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_platform_marketplace_publisher(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(publisher_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state
+        .platform
+        .marketplace
+        .delete_publisher(&source_owner, "platform", &publisher_id)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_platform_marketplace_tokens(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.marketplace.list_all_tokens() {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(marketplace_token_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => {
+            Json(json!({"ok": true, "items": []})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_create_platform_marketplace_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<CreatePlatformMarketplaceTokenRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    let owner = if req.owner.trim().is_empty() {
+        source_owner.clone()
+    } else {
+        req.owner
+    };
+    let project = if req.project.trim().is_empty() {
+        "platform".to_string()
+    } else {
+        req.project
+    };
+    match state.platform.marketplace.create_token(
+        &owner,
+        &project,
+        &CreateMarketplaceTokenRequest {
+            publisher_id: req.publisher_id,
+            title: req.title,
+            scopes: req.scopes,
+            expires_at: req.expires_at,
+        },
+    ) {
+        Ok((token, token_value)) => Json(
+            json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value}),
+        )
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_platform_marketplace_token(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(token_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.marketplace.revoke_token_any(&token_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -8462,6 +9391,80 @@ async fn api_project_transfer_download(
     response
 }
 
+/// `POST /api/projects/{owner}/{project}/transfer/owner`
+///
+/// Re-keys all project-scoped catalog records and moves the project directory
+/// tree to the new owner. Superadmin-only.
+async fn api_transfer_project_owner(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let new_owner = match body.get("new_owner").and_then(|v| v.as_str()) {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "new_owner is required"})),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = state
+        .platform
+        .projects
+        .transfer_project_owner(&owner, &project, &new_owner)
+    {
+        return match err.code {
+            "PLATFORM_TRANSFER_INVALID" => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": err.message})),
+            )
+                .into_response(),
+            "PLATFORM_TRANSFER_NOT_FOUND" => (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": err.message})),
+            )
+                .into_response(),
+            "PLATFORM_TRANSFER_CONFLICT" => (
+                StatusCode::CONFLICT,
+                Json(json!({"ok": false, "error": err.message})),
+            )
+                .into_response(),
+            _ => internal_error(err),
+        };
+    }
+
+    // Refresh pipeline runtime under new owner.
+    let _ = state
+        .platform
+        .pipeline_runtime
+        .refresh_project(&new_owner, &project);
+
+    // Clear template cache — dependency paths contain absolute owner paths.
+    if let Ok(mut cache) = state.template_cache.write() {
+        cache.clear();
+    }
+
+    // Revoke in-memory MCP sessions for the old owner/project.
+    let _ = state
+        .platform
+        .mcp_sessions
+        .revoke_for_project(&owner, &project);
+
+    Json(json!({
+        "ok": true,
+        "old_owner": owner,
+        "new_owner": new_owner,
+        "project": project,
+    }))
+    .into_response()
+}
+
 /// Request body for `DELETE /api/users/{owner}/projects/{project}`.
 #[derive(serde::Deserialize)]
 struct DeleteProjectRequest {
@@ -8488,7 +9491,7 @@ async fn api_delete_project(
     Json(req): Json<DeleteProjectRequest>,
 ) -> Response {
     // Must be authenticated as the project owner
-    let Some(session_owner) = session_owner(&headers) else {
+    let Some(session_owner) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "Not authenticated"})),
@@ -8932,7 +9935,7 @@ async fn api_upsert_pipeline_definition(
     Json(req): Json<UpsertPipelineDefinitionRequest>,
 ) -> Response {
     // Milestone 1: allow direct pipeline creation even without authenticated session.
-    if session_owner(&headers).is_some()
+    if session_owner(&state, &headers).is_some()
         && let Err(response) = require_project_api_capability(
             &state,
             &headers,
@@ -9157,7 +10160,7 @@ async fn api_pipeline_lock_toggle(
         .replace(".zf.json", "");
     let verb = if req.locked { "lock" } else { "unlock" };
     let commit_msg = format!("{verb}: pipeline {name}");
-    let actor_user = session_owner(&headers);
+    let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
@@ -9237,7 +10240,7 @@ async fn api_template_lock_toggle(
     };
     let verb = if req.locked { "lock" } else { "unlock" };
     let commit_msg = format!("{verb}: template {}", req.rel_path);
-    let actor_user = session_owner(&headers);
+    let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let _ = {
         let mut add_cmd = std::process::Command::new("git");
@@ -9599,7 +10602,7 @@ async fn api_git_commit(
             .into_response();
     }
     // git commit -m <message>
-    let actor_user = session_owner(&headers);
+    let actor_user = session_owner(&state, &headers);
     let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
     let mut commit_cmd = std::process::Command::new("git");
     for arg in &identity_args {
@@ -11877,6 +12880,240 @@ async fn api_delete_credential(
     }
 }
 
+// ── OAuth2 credential flow ────────────────────────────────────────────────────
+
+/// Initiate OAuth2 authorization — returns the provider's authorize URL.
+async fn api_oauth2_authorize(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, credential_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsWrite,
+    ) {
+        return response;
+    }
+    let credential = match state
+        .platform
+        .credentials
+        .get_project_credential(&owner, &project, &credential_id)
+    {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "credential not found"})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
+    };
+    if credential.kind != "oauth2" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "credential is not oauth2"})),
+        )
+            .into_response();
+    }
+    let secret = &credential.secret;
+    let authorize_url = secret
+        .get("authorize_url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let client_id = secret
+        .get("client_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let scopes = secret
+        .get("scopes")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    if authorize_url.is_empty() || client_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "authorize_url and client_id are required"})),
+        )
+            .into_response();
+    }
+
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
+        "http"
+    } else {
+        "https"
+    };
+    let redirect_uri = format!("{scheme}://{host}/oauth/callback");
+    let oauth_state =
+        sign_oauth_state(&state.oauth_state_secret, &owner, &project, &credential_id);
+
+    let mut url = format!(
+        "{authorize_url}?client_id={}&redirect_uri={}&response_type=code&state={}",
+        url_query_encode(client_id),
+        url_query_encode(&redirect_uri),
+        url_query_encode(&oauth_state),
+    );
+    if !scopes.is_empty() {
+        url.push_str(&format!("&scope={}", url_query_encode(scopes)));
+    }
+    // Request offline access for refresh tokens (Google-specific but harmless elsewhere)
+    url.push_str("&access_type=offline&prompt=consent");
+
+    Json(serde_json::json!({ "redirect_url": url })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct OAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    #[allow(dead_code)]
+    error_description: Option<String>,
+}
+
+/// OAuth2 callback handler — unauthenticated. Provider redirects browser here.
+async fn oauth2_callback_handler(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
+) -> Response {
+    // Provider error (user denied access)
+    if query.error.is_some() {
+        return axum::response::Redirect::to("/home?oauth=denied").into_response();
+    }
+
+    let Some(oauth_state) = &query.state else {
+        return axum::response::Redirect::to("/home?oauth=error").into_response();
+    };
+    let Some(code) = &query.code else {
+        return axum::response::Redirect::to("/home?oauth=error").into_response();
+    };
+
+    let (owner, project, credential_id) =
+        match verify_oauth_state(&state.oauth_state_secret, oauth_state) {
+            Ok(v) => v,
+            Err(_) => {
+                return axum::response::Redirect::to("/home?oauth=error").into_response();
+            }
+        };
+
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
+        "http"
+    } else {
+        "https"
+    };
+    let redirect_uri = format!("{scheme}://{host}/oauth/callback");
+
+    match state
+        .platform
+        .credentials
+        .exchange_oauth2_code(&owner, &project, &credential_id, code, &redirect_uri)
+        .await
+    {
+        Ok(()) => {
+            let target = format!(
+                "/projects/{owner}/{project}/credentials?oauth=success"
+            );
+            axum::response::Redirect::to(&target).into_response()
+        }
+        Err(_err) => {
+            let target = format!(
+                "/projects/{owner}/{project}/credentials?oauth=error"
+            );
+            axum::response::Redirect::to(&target).into_response()
+        }
+    }
+}
+
+fn sign_oauth_state(secret: &[u8; 32], owner: &str, project: &str, credential_id: &str) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let now = crate::platform::model::now_ts();
+    let payload = serde_json::json!({"o": owner, "p": project, "c": credential_id, "t": now});
+    let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(payload.to_string().as_bytes());
+
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key size");
+    mac.update(payload_b64.as_bytes());
+    let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+
+    format!("{payload_b64}.{sig}")
+}
+
+fn verify_oauth_state(
+    secret: &[u8; 32],
+    state: &str,
+) -> Result<(String, String, String), String> {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let parts: Vec<&str> = state.splitn(2, '.').collect();
+    if parts.len() != 2 {
+        return Err("invalid state format".to_string());
+    }
+    let (payload_b64, sig_b64) = (parts[0], parts[1]);
+
+    // Verify HMAC
+    type HmacSha256 = Hmac<Sha256>;
+    let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key size");
+    mac.update(payload_b64.as_bytes());
+    let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sig_b64)
+        .map_err(|e| format!("bad sig encoding: {e}"))?;
+    mac.verify_slice(&sig_bytes)
+        .map_err(|_| "invalid signature".to_string())?;
+
+    // Decode payload
+    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|e| format!("bad payload encoding: {e}"))?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)
+        .map_err(|e| format!("bad payload json: {e}"))?;
+
+    let owner = payload
+        .get("o")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing owner")?
+        .to_string();
+    let project = payload
+        .get("p")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing project")?
+        .to_string();
+    let credential_id = payload
+        .get("c")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing credential_id")?
+        .to_string();
+    let timestamp = payload
+        .get("t")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or("missing timestamp")?;
+
+    // Reject states older than 10 minutes
+    let now = crate::platform::model::now_ts();
+    if (now - timestamp).abs() > 600 {
+        return Err("state expired".to_string());
+    }
+
+    Ok((owner, project, credential_id))
+}
+
 async fn api_get_project_assistant_config(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -12129,7 +13366,7 @@ async fn api_upsert_settings_section(
     let (committed, git_error) = {
         let owner_slug = crate::platform::model::slug_segment(&owner);
         let project_slug = crate::platform::model::slug_segment(&project);
-        let actor_user = session_owner(&headers);
+        let actor_user = session_owner(&state, &headers);
         let identity_args = git_identity_args(&state, actor_user.as_deref(), &project_slug);
         match state
             .platform
@@ -12311,7 +13548,7 @@ async fn api_enable_rwe_library(
         return internal_error(err);
     }
     // Git commit (best-effort).
-    let actor_user = session_owner(&headers);
+    let actor_user = session_owner(&state, &headers);
     let _ = rwe_library_git_commit(
         &state,
         actor_user.as_deref(),
@@ -12367,7 +13604,7 @@ async fn api_disable_rwe_library(
         return internal_error(err);
     }
     // Git commit (best-effort).
-    let actor_user = session_owner(&headers);
+    let actor_user = session_owner(&state, &headers);
     let _ = rwe_library_git_commit(
         &state,
         actor_user.as_deref(),
@@ -13024,7 +14261,8 @@ struct PublishMarketplaceAssetRequest {
     source_ref: String,
     package_id: String,
     version: String,
-    publisher_id: String,
+    #[serde(default)]
+    publisher_token: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -13044,6 +14282,19 @@ struct MarketplacePublishQuery {
 }
 
 #[derive(Debug, Deserialize)]
+struct InstallMarketplaceAssetRequest {
+    #[serde(default)]
+    install_mode: String,
+}
+
+fn normalize_marketplace_install_mode(raw: &str) -> &'static str {
+    match raw.trim() {
+        "clone_as_folder" => "clone_as_folder",
+        _ => "add_to_current_project",
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct UpsertMarketplaceRepositoryRequest {
     repository_id: String,
     title: String,
@@ -13052,8 +14303,28 @@ struct UpsertMarketplaceRepositoryRequest {
     remote_project: String,
     #[serde(default)]
     read_token: String,
+    #[serde(default = "default_public_visibility")]
+    visibility: String,
     #[serde(default = "default_true")]
     enabled: bool,
+}
+
+fn default_public_visibility() -> String {
+    "public".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatePlatformMarketplaceTokenRequest {
+    #[serde(default)]
+    owner: String,
+    #[serde(default)]
+    project: String,
+    publisher_id: String,
+    title: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+    #[serde(default)]
+    expires_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -13073,6 +14344,20 @@ struct UpsertMarketplacePublisherRequest {
     website_url: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    #[serde(default = "default_true")]
+    can_read: bool,
+    #[serde(default = "default_true")]
+    can_publish: bool,
+    #[serde(default)]
+    can_manage: bool,
+    #[serde(default)]
+    max_packages: i64,
+    #[serde(default)]
+    max_package_bytes: i64,
+    #[serde(default)]
+    max_media_files: i64,
+    #[serde(default)]
+    max_image_bytes: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -13080,6 +14365,15 @@ struct InstallPlatformMarketplaceProjectRequest {
     repository_id: String,
     package_id: String,
     version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigurePlatformMarketplaceServiceRequest {
+    host_office_id: String,
+    #[serde(default)]
+    public_base_url: String,
+    password: String,
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -13120,15 +14414,35 @@ fn platform_marketplace_repository_json(
         "remote_project": item.remote_project,
         "read_token": "",
         "has_read_token": !item.read_token.trim().is_empty(),
+        "visibility": item.visibility,
         "enabled": item.enabled,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     })
 }
 
+fn marketplace_api_error(err: PlatformError) -> Response {
+    let status = if err.code == "FW_EGRESS_DENIED"
+        || err.code == "FW_EGRESS_URL_INVALID"
+        || err.code == "FW_EGRESS_DNS"
+        || err.code == "MARKETPLACE_REPOSITORY_INVALID"
+    {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+    )
+        .into_response()
+}
+
 fn marketplace_token_json(item: crate::platform::model::MarketplaceToken) -> Value {
     json!({
         "token_id": item.token_id,
+        "owner": item.owner,
+        "project": item.project,
         "publisher_id": item.publisher_id,
         "publisher_display_name": item.publisher_display_name,
         "publisher_url": item.publisher_url,
@@ -13155,6 +14469,13 @@ fn marketplace_publisher_json(item: crate::platform::model::MarketplacePublisher
         "icon_url": item.icon_url,
         "website_url": item.website_url,
         "enabled": item.enabled,
+        "can_read": item.can_read,
+        "can_publish": item.can_publish,
+        "can_manage": item.can_manage,
+        "max_packages": item.max_packages,
+        "max_package_bytes": item.max_package_bytes,
+        "max_media_files": item.max_media_files,
+        "max_image_bytes": item.max_image_bytes,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     })
@@ -13228,6 +14549,9 @@ async fn api_list_remote_marketplace_assets(
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
@@ -13263,9 +14587,6 @@ async fn api_list_remote_marketplace_assets(
         Ok(packages) => {
             let mut items = Vec::new();
             for package in packages {
-                if package.authority_owner != owner || package.authority_project != project {
-                    continue;
-                }
                 if package.visibility == "private"
                     && requester.as_deref() != Some(package.publisher_owner.as_str())
                 {
@@ -13278,21 +14599,11 @@ async fn api_list_remote_marketplace_assets(
                     .ok()
                     .and_then(|items| items.into_iter().next().map(|v| v.version))
                     .unwrap_or_default();
-                items.push(json!({
-                    "package_id": package.package_id,
-                    "publisher_owner": package.publisher_owner,
-                    "publisher_id": package.publisher_id,
-                    "publisher_display_name": package.publisher_display_name,
-                    "publisher_url": package.publisher_url,
-                    "publisher_email": package.publisher_email,
-                    "asset_kind": package.asset_kind,
-                    "title": package.title,
-                    "description": package.description,
-                    "visibility": package.visibility,
-                    "tags": package.tags,
-                    "latest_version": latest_version,
-                    "updated_at": package.updated_at,
-                }));
+                let mut item = public_marketplace_asset_item_json(&state, package);
+                if let Some(object) = item.as_object_mut() {
+                    object.insert("latest_version".to_string(), json!(latest_version));
+                }
+                items.push(item);
             }
             Json(json!({"ok": true, "items": items})).into_response()
         }
@@ -13305,6 +14616,9 @@ async fn api_get_remote_marketplace_asset(
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
 ) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
@@ -13341,13 +14655,7 @@ async fn api_get_remote_marketplace_asset(
         .marketplace
         .list_asset_packages()
         .ok()
-        .and_then(|items| {
-            items.into_iter().find(|item| {
-                item.package_id == package_id
-                    && item.authority_owner == owner
-                    && item.authority_project == project
-            })
-        })
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
     else {
         return (
             StatusCode::NOT_FOUND,
@@ -13369,8 +14677,216 @@ async fn api_get_remote_marketplace_asset(
         .marketplace
         .get_asset_version_artifact(&package_id, &version)
     {
-        Ok((version_row, artifact)) => {
-            Json(json!({"ok": true, "version": version_row, "artifact": artifact})).into_response()
+        Ok((version_row, artifact)) => Json(json!({
+            "ok": true,
+            "version": public_marketplace_version_json(&package, &version_row),
+            "artifact": public_marketplace_artifact_json(artifact),
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_remote_marketplace_artifact(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
+    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+        return response;
+    }
+    let token = bearer_token_from_headers(&headers);
+    let requester = if let Some(token_value) = token {
+        match state
+            .platform
+            .marketplace
+            .authenticate_token(&token_value, "marketplace:read")
+        {
+            Ok(token) => {
+                if token.owner != owner || token.project != project {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                    )
+                        .into_response();
+                }
+                Some(token.owner)
+            }
+            Err(err) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": err.message, "code": err.code})),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let Some(package) = state
+        .platform
+        .marketplace
+        .list_asset_packages()
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "package not found"})),
+        )
+            .into_response();
+    };
+    if package.visibility == "private"
+        && requester.as_deref() != Some(package.publisher_owner.as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "private package"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .get_asset_version_install_artifact(&package_id, &version)
+    {
+        Ok((version_row, artifact, artifact_size_bytes)) => {
+            Json(raw_marketplace_artifact_response_json(
+                &package,
+                &version_row,
+                artifact,
+                artifact_size_bytes,
+            ))
+            .into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_public_marketplace_assets(State(state): State<PlatformAppState>) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
+    match state.platform.marketplace.list_asset_packages() {
+        Ok(packages) => {
+            let items = packages
+                .into_iter()
+                .filter(|package| package.visibility == "public")
+                .map(|package| public_marketplace_asset_item_json(&state, package))
+                .collect::<Vec<_>>();
+            Json(json!({"ok": true, "items": items})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_public_marketplace_asset(
+    State(state): State<PlatformAppState>,
+    Path((package_id, version)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
+    let Some(package) = state
+        .platform
+        .marketplace
+        .list_asset_packages()
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "package not found"})),
+        )
+            .into_response();
+    };
+    if package.visibility == "private" {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "private package"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .get_asset_version_artifact(&package_id, &version)
+    {
+        Ok((version_row, artifact)) => Json(json!({
+            "ok": true,
+            "version": public_marketplace_version_json(&package, &version_row),
+            "artifact": public_marketplace_artifact_json(artifact),
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_get_public_marketplace_artifact(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((package_id, version)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_marketplace_service_enabled(&state) {
+        return response;
+    }
+    let token = bearer_token_from_headers(&headers);
+    let requester = if let Some(token_value) = token {
+        match state
+            .platform
+            .marketplace
+            .authenticate_token(&token_value, "marketplace:read")
+        {
+            Ok(token) => Some(token.owner),
+            Err(err) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": err.message, "code": err.code})),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    let Some(package) = state
+        .platform
+        .marketplace
+        .list_asset_packages()
+        .ok()
+        .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "package not found"})),
+        )
+            .into_response();
+    };
+    if package.visibility == "private"
+        && requester.as_deref() != Some(package.publisher_owner.as_str())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "private package"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .marketplace
+        .get_asset_version_install_artifact(&package_id, &version)
+    {
+        Ok((version_row, artifact, artifact_size_bytes)) => {
+            Json(raw_marketplace_artifact_response_json(
+                &package,
+                &version_row,
+                artifact,
+                artifact_size_bytes,
+            ))
+            .into_response()
         }
         Err(err) => internal_error(err),
     }
@@ -13388,9 +14904,6 @@ async fn api_list_my_marketplace_assets(
         &project,
         ProjectCapability::PipelinesRead,
     ) {
-        return response;
-    }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
     match marketplace_asset_rows(&state, &owner, &project, true) {
@@ -13412,9 +14925,6 @@ async fn api_list_marketplace_publish_sources(
         &project,
         ProjectCapability::PipelinesRead,
     ) {
-        return response;
-    }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
     }
     match marketplace_publish_sources(
@@ -13447,9 +14957,6 @@ async fn api_preview_marketplace_publish_source(
     ) {
         return response;
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
-        return response;
-    }
     match state.platform.marketplace.preview_publish_source(
         &owner,
         &project,
@@ -13476,17 +14983,56 @@ async fn api_publish_marketplace_asset(
     ) {
         return response;
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
-        return response;
+    let token_value = req.publisher_token.trim().to_string();
+    let token_value = if token_value.is_empty() {
+        bearer_token_from_headers(&headers).unwrap_or_default()
+    } else {
+        token_value
+    };
+    if token_value.is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token is required",
+                "code": "MARKETPLACE_TOKEN_REQUIRED"
+            })),
+        )
+            .into_response();
+    }
+    let token = match state
+        .platform
+        .marketplace
+        .authenticate_token(&token_value, "marketplace:publish")
+    {
+        Ok(token) => token,
+        Err(err) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": err.message, "code": err.code})),
+            )
+                .into_response();
+        }
+    };
+    if token.owner != owner || token.project != project {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token does not belong to this project",
+                "code": "MARKETPLACE_TOKEN_FORBIDDEN"
+            })),
+        )
+            .into_response();
     }
     match state.platform.marketplace.publish_asset(
         &owner,
         &project,
-        &owner,
-        &req.publisher_id,
-        "",
-        "",
-        "",
+        &token.owner,
+        &token.publisher_id,
+        &token.publisher_display_name,
+        &token.publisher_url,
+        &token.publisher_email,
         &owner,
         &project,
         &req.source_type,
@@ -13509,6 +15055,7 @@ async fn api_install_marketplace_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+    body: Option<Json<InstallMarketplaceAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -13519,12 +15066,18 @@ async fn api_install_marketplace_asset(
     ) {
         return response;
     }
+    let install_mode = normalize_marketplace_install_mode(
+        body.as_ref()
+            .map(|Json(req)| req.install_mode.as_str())
+            .unwrap_or_default(),
+    );
     match state
         .platform
         .marketplace
         .install_asset(&owner, &project, &package_id, &version)
     {
-        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Ok(result) => Json(json!({"ok": true, "install_mode": install_mode, "result": result}))
+            .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -13535,9 +15088,6 @@ async fn api_remote_publish_marketplace_asset(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<RemoteMarketplacePublishRequest>,
 ) -> Response {
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
-        return response;
-    }
     let Some(token_value) = bearer_token_from_headers(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -13715,6 +15265,13 @@ async fn api_upsert_marketplace_publisher(
         &req.icon_url,
         &req.website_url,
         req.enabled,
+        req.can_read,
+        req.can_publish,
+        req.can_manage,
+        req.max_packages,
+        req.max_package_bytes,
+        req.max_media_files,
+        req.max_image_bytes,
     ) {
         Ok(item) => {
             Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response()
@@ -13756,7 +15313,7 @@ async fn api_set_marketplace_producer_mode(
     Path((owner, project)): Path<(String, String)>,
     Json(req): Json<SetMarketplaceProducerRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&headers) else {
+    let Some(session_owner) = session_owner(&state, &headers) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "Not authenticated"})),
@@ -13840,6 +15397,13 @@ async fn api_list_marketplace_repositories(
     ) {
         return response;
     }
+    if let Err(err) = state
+        .platform
+        .marketplace
+        .ensure_default_project_repository(&owner, &project)
+    {
+        return internal_error(err);
+    }
     match state
         .platform
         .marketplace
@@ -13885,7 +15449,7 @@ async fn api_upsert_marketplace_repository(
             "repository": project_marketplace_repository_json(item)
         }))
         .into_response(),
-        Err(err) => internal_error(err),
+        Err(err) => marketplace_api_error(err),
     }
 }
 
@@ -13923,6 +15487,7 @@ async fn api_install_remote_marketplace_pack(
         String,
         String,
     )>,
+    body: Option<Json<InstallMarketplaceAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -13933,6 +15498,11 @@ async fn api_install_remote_marketplace_pack(
     ) {
         return response;
     }
+    let install_mode = normalize_marketplace_install_mode(
+        body.as_ref()
+            .map(|Json(req)| req.install_mode.as_str())
+            .unwrap_or_default(),
+    );
     match state
         .platform
         .marketplace
@@ -13946,7 +15516,8 @@ async fn api_install_remote_marketplace_pack(
         )
         .await
     {
-        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Ok(result) => Json(json!({"ok": true, "install_mode": install_mode, "result": result}))
+            .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -15622,11 +17193,7 @@ async fn public_webhook_ingress(
                     if !project_css.trim().is_empty() {
                         let style_block =
                             format!("<style data-project-theme>{project_css}</style>");
-                        if let Some(pos) = html.find("</head>") {
-                            html.insert_str(pos, &style_block);
-                        } else {
-                            html = format!("{style_block}{html}");
-                        }
+                        html = insert_project_theme_block(html, &style_block);
                     }
                 }
             }
@@ -16645,12 +18212,82 @@ fn resolve_pipeline_registry_scope(
     }
 }
 
-fn session_owner(headers: &HeaderMap) -> Option<String> {
+fn random_session_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rng().fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn issue_session(state: &PlatformAppState, owner: &str) -> String {
+    let token = random_session_token();
+    let expires_at = crate::platform::model::now_ts() + SESSION_TTL_SECS;
+    if let Ok(mut sessions) = state.sessions.lock() {
+        sessions.insert(
+            token.clone(),
+            PlatformWebSession {
+                owner: owner.to_string(),
+                expires_at,
+            },
+        );
+    }
+    token
+}
+
+fn session_cookie_header(token: &str, max_age: i64) -> String {
+    let secure = match std::env::var("ZEBFLOW_COOKIE_SECURE") {
+        Ok(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => !matches!(
+            std::env::var("ZEBFLOW_PLATFORM_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".to_string())
+                .as_str(),
+            "127.0.0.1" | "localhost" | "::1"
+        ),
+    };
+    let secure_attr = if secure { "; Secure" } else { "" };
+    format!(
+        "{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}{secure_attr}",
+    )
+}
+
+fn session_token(headers: &HeaderMap) -> Option<String> {
     let cookie = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     cookie.split(';').map(str::trim).find_map(|part| {
-        part.strip_prefix("zebflow_session=")
+        part.strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
             .map(ToString::to_string)
     })
+}
+
+fn session_owner(state: &PlatformAppState, headers: &HeaderMap) -> Option<String> {
+    let token = session_token(headers)?;
+    let now = crate::platform::model::now_ts();
+    let owner = {
+        let mut sessions = state.sessions.lock().ok()?;
+        let Some(session) = sessions.get(&token) else {
+            return None;
+        };
+        if session.expires_at <= now {
+            sessions.remove(&token);
+            return None;
+        }
+        session.owner.clone()
+    };
+    if state
+        .platform
+        .users
+        .get_user(&owner)
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        if let Ok(mut sessions) = state.sessions.lock() {
+            sessions.remove(&token);
+        }
+        return None;
+    }
+    Some(owner)
 }
 
 fn require_project_page_capability(
@@ -16660,7 +18297,7 @@ fn require_project_page_capability(
     project: &str,
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
-    let Some(session_owner) = session_owner(headers) else {
+    let Some(session_owner) = session_owner(state, headers) else {
         return Err(Redirect::to(LOGIN_PATH).into_response());
     };
     let subject = ProjectAccessSubject::user(&session_owner);
@@ -16690,7 +18327,7 @@ fn require_project_api_capability(
     if has_valid_cluster_token(state, headers) {
         return Ok(ProjectAccessSubject::user(owner));
     }
-    let Some(session_owner) = session_owner(headers) else {
+    let Some(session_owner) = session_owner(state, headers) else {
         return Err(StatusCode::UNAUTHORIZED.into_response());
     };
     let subject = ProjectAccessSubject::user(&session_owner);
@@ -16984,8 +18621,7 @@ async fn api_get_mcp_session(
         return resp;
     }
 
-    let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:10610".to_string());
+    let base_url = platform_base_url(&headers);
 
     match state
         .platform
@@ -17007,6 +18643,9 @@ async fn api_get_mcp_session(
                     "token": session.token,
                     "mcp_url": mcp_url,
                     "capabilities": session.capabilities.iter().map(|c| c.key()).collect::<Vec<_>>(),
+                    "created_at": session.created_at,
+                    "auto_reset_seconds": session.auto_reset_seconds,
+                    "rotation_epoch": state.platform.mcp_sessions.min_created_at(),
                 }
             }))
             .into_response()
@@ -17019,6 +18658,9 @@ async fn api_get_mcp_session(
                 "token": null,
                 "mcp_url": null,
                 "capabilities": Vec::<String>::new(),
+                "created_at": null,
+                "auto_reset_seconds": null,
+                "rotation_epoch": state.platform.mcp_sessions.min_created_at(),
             }
         }))
         .into_response(),
@@ -17058,8 +18700,7 @@ async fn api_create_mcp_session(
             .into_response();
     }
 
-    let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:10610".to_string());
+    let base_url = platform_base_url(&headers);
 
     match state.platform.mcp_sessions.create(
         &owner,
@@ -17089,7 +18730,6 @@ async fn api_toggle_mcp_session(
         return resp;
     }
 
-    // When enabling, auto-create with all capabilities if no session exists yet.
     if req.enabled
         && state
             .platform
@@ -17097,18 +18737,17 @@ async fn api_toggle_mcp_session(
             .get_for_project(&owner, &project)
             .is_none()
     {
-        let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:10610".to_string());
-        return match state.platform.mcp_sessions.create(
-            &owner,
-            &project,
-            ProjectCapability::all(),
-            &base_url,
-            None,
-        ) {
-            Ok(_) => Json(json!({"ok": true})).into_response(),
-            Err(err) => internal_error(err),
-        };
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "MCP_SESSION_NOT_FOUND",
+                    "message": "Create an MCP session before enabling it"
+                }
+            })),
+        )
+            .into_response();
     }
 
     match state
@@ -17136,8 +18775,7 @@ async fn api_reset_mcp_session_token(
         return resp;
     }
 
-    let base_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:10610".to_string());
+    let base_url = platform_base_url(&headers);
 
     match state
         .platform
@@ -17179,15 +18817,25 @@ fn internal_error(err: PlatformError) -> Response {
         "PLATFORM_PIPELINE_LOCKED" | "PLATFORM_TEMPLATE_LOCKED" => StatusCode::LOCKED,
         "MARKETPLACE_PUBLISHER_MISSING"
         | "MARKETPLACE_ASSET_MISSING"
-        | "MARKETPLACE_PUBLISH_SOURCE_MISSING" => StatusCode::NOT_FOUND,
-        "MARKETPLACE_TOKEN_FORBIDDEN" => StatusCode::FORBIDDEN,
+        | "MARKETPLACE_PUBLISH_SOURCE_MISSING"
+        | "MARKETPLACE_SERVICE_DISABLED"
+        | "MCP_SESSION_NOT_FOUND" => StatusCode::NOT_FOUND,
+        "MARKETPLACE_TOKEN_FORBIDDEN"
+        | "MARKETPLACE_PUBLISHER_FORBIDDEN"
+        | "MARKETPLACE_PUBLISHER_SCOPE_DENIED"
+        | "MARKETPLACE_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
         "MARKETPLACE_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
+        "MARKETPLACE_PUBLISHER_QUOTA_EXCEEDED" => StatusCode::CONFLICT,
         "MARKETPLACE_TOKEN_INVALID"
+        | "MARKETPLACE_ARTIFACT_PATH_INVALID"
         | "MARKETPLACE_PUBLISH_INVALID"
         | "MARKETPLACE_REMOTE_INVALID"
+        | "MARKETPLACE_REMOTE_HASH_MISSING"
+        | "MARKETPLACE_REMOTE_HASH_MISMATCH"
         | "MARKETPLACE_REPOSITORY_INVALID"
         | "MARKETPLACE_TOKEN_SCOPE_INVALID"
         | "MARKETPLACE_PUBLISH_EMPTY" => StatusCode::BAD_REQUEST,
+        "MARKETPLACE_ARTIFACT_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (
@@ -17212,7 +18860,17 @@ async fn ws_room_handler(
     ws: WebSocketUpgrade,
     Path((owner, project, room_id)): Path<(String, String, String)>,
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::ProjectRead,
+    ) {
+        return response;
+    }
     let session_id = format!(
         "ws-{:016x}",
         std::time::SystemTime::now()
@@ -17221,6 +18879,7 @@ async fn ws_room_handler(
             .as_nanos()
     );
     ws.on_upgrade(move |socket| handle_ws_room(socket, owner, project, room_id, session_id, state))
+        .into_response()
 }
 
 async fn handle_ws_room(
@@ -18058,7 +19717,7 @@ async fn api_preview_toggle(
     Path((owner, project)): Path<(String, String)>,
     Json(body): Json<PreviewToggleBody>,
 ) -> Response {
-    let Some(_session) = session_owner(&headers) else {
+    let Some(_session) = session_owner(&state, &headers) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false}))).into_response();
     };
     let file = match sanitize_preview_file(&body.file) {
@@ -18091,7 +19750,7 @@ async fn api_preview_status(
     Path((owner, project)): Path<(String, String)>,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let Some(_session) = session_owner(&headers) else {
+    let Some(_session) = session_owner(&state, &headers) else {
         return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
     };
     let file = q
@@ -18116,7 +19775,7 @@ async fn preview_page(
     Path((owner, project)): Path<(String, String)>,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let Some(_session) = session_owner(&headers) else {
+    let Some(_session) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
 
@@ -18272,6 +19931,20 @@ fn urlencoding_encode(s: &str) -> String {
         .collect()
 }
 
+fn url_query_encode(s: &str) -> String {
+    let mut out = String::new();
+    for byte in s.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            b' ' => out.push_str("%20"),
+            byte => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// `GET /ws/preview/{owner}/{project}?file=...`
 /// WebSocket: polls file mtime every second, sends {"type":"reload"} on change.
 /// On disconnect: removes the file from the preview registry.
@@ -18282,7 +19955,7 @@ async fn ws_preview_handler(
     Query(q): Query<PreviewQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let Some(_session) = session_owner(&headers) else {
+    let Some(_session) = session_owner(&state, &headers) else {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     };
 

@@ -13,6 +13,53 @@ const ARRAY_FIELDS = new Set(["cases", "branches"]);
 
 const JSON_FIELDS = new Set(["claims"]);
 
+function slugifyPin(raw: string, fallback = "case"): string {
+  const out = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return out || fallback;
+}
+
+function normalizeMatchCase(item: unknown, index: number) {
+  if (typeof item === "string") {
+    const value = item.trim();
+    return value ? { value, pin: slugifyPin(value, `case-${index + 1}`), label: value } : null;
+  }
+  const source = item && typeof item === "object" ? item as Record<string, unknown> : {};
+  const value = String(source.value || "").trim();
+  if (!value) return null;
+  const pin = slugifyPin(String(source.pin || value), `case-${index + 1}`);
+  const label = String(source.label || value).trim() || value;
+  return { value, pin, label };
+}
+
+function normalizeMatchDefault(raw: unknown) {
+  if (typeof raw === "string") {
+    const pin = slugifyPin(raw, "default");
+    return { pin, label: pin === "default" ? "Default" : pin };
+  }
+  const source = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const pin = slugifyPin(String(source.pin || "default"), "default");
+  const label = String(source.label || "Default").trim() || "Default";
+  return { pin, label };
+}
+
+function normalizeMatchRoutes(raw: unknown) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const cases = Array.isArray(source.cases)
+    ? source.cases.map(normalizeMatchCase).filter(Boolean)
+    : [];
+  return {
+    cases,
+    default: normalizeMatchDefault(source.default),
+  };
+}
+
 function deriveTemplateIdFromPath(rawPath: string): string {
   return String(rawPath || "")
     .trim()
@@ -60,6 +107,13 @@ export function extractNodeConfig(
       continue;
     }
 
+    if (key === "match_routes") {
+      const routes = normalizeMatchRoutes(value);
+      next.cases = routes.cases;
+      next.default = routes.default;
+      continue;
+    }
+
     // template_path_select → multiple derived fields
     if (key === "template_path_select") {
       const selected = String(value || "").trim();
@@ -79,10 +133,16 @@ export function extractNodeConfig(
 
     // Array fields (one item per line)
     if (ARRAY_FIELDS.has(key)) {
-      next[key] = String(value || "")
-        .split("\n")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      if (Array.isArray(value)) {
+        next[key] = value
+          .map((item, index) => key === "cases" ? normalizeMatchCase(item, index) : String(item || "").trim())
+          .filter(Boolean);
+      } else {
+        next[key] = String(value || "")
+          .split("\n")
+          .map((s, index) => key === "cases" ? normalizeMatchCase(s, index) : s.trim())
+          .filter(Boolean);
+      }
       continue;
     }
 

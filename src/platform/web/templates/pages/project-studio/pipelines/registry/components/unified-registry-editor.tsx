@@ -462,6 +462,7 @@ export default function UnifiedRegistryEditor(input) {
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState(null as string | null);
   const [installTab, setInstallTab] = useState("packs");
+  const [marketplaceInstallMode, setMarketplaceInstallMode] = useState("add_to_current_project");
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -727,22 +728,28 @@ export default function UnifiedRegistryEditor(input) {
     }
   }
 
-  async function handleAddPack(item: any) {
+  async function handleAddPack(item: any, installMode = "add_to_current_project") {
     const packageId = item?.package_id;
     const version = item?.latest_version;
     if (!packageId || !version) {
       setInstallResult("Pack is missing package id or version.");
       return;
     }
+    const normalizedMode = installMode === "clone_as_folder" ? "clone_as_folder" : "add_to_current_project";
+    const verb = normalizedMode === "clone_as_folder" ? "Cloning" : "Adding";
+    const doneVerb = normalizedMode === "clone_as_folder" ? "Cloned" : "Added";
     setInstalling(true);
-    setInstallResult(`Adding ${packageId}@${version}...`);
+    setInstallResult(`${verb} ${packageId}@${version}...`);
     try {
       const url = item?.source === "remote"
         ? `${projectApiBase}/marketplace/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
         : `${projectApiBase}/marketplace/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
-      const json = await requestJson(url, { method: "POST" });
+      const json = await requestJson(url, {
+        method: "POST",
+        body: JSON.stringify({ install_mode: normalizedMode }),
+      });
       const result = json?.result || {};
-      setInstallResult(`Added ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
+      setInstallResult(`${doneVerb} ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
       setTimeout(() => {
         setInstallOpen(false);
         nav(`${editorBase}?path=${encodeURIComponent(currentPath)}`);
@@ -1747,6 +1754,8 @@ export default function UnifiedRegistryEditor(input) {
               marketplacePacks={marketplacePacks}
               packSearch={packSearch}
               setPackSearch={setPackSearch}
+              marketplaceInstallMode={marketplaceInstallMode}
+              setMarketplaceInstallMode={setMarketplaceInstallMode}
               selectedComponents={selectedComponents}
               setSelectedComponents={setSelectedComponents}
               installResult={installResult}

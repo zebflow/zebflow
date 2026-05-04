@@ -53,6 +53,10 @@ pub struct PlatformConfig {
     pub default_password: String,
     /// Default project slug created on first bootstrap.
     pub default_project: String,
+    /// Unix timestamp seconds; platform-issued secrets created before this time
+    /// are invalidated on startup/lookup.
+    #[serde(default)]
+    pub secret_rotation_epoch: i64,
     /// Cluster/controller-office role and connectivity settings.
     pub cluster: ClusterSettings,
 }
@@ -66,6 +70,7 @@ impl Default for PlatformConfig {
             default_owner: "superadmin".to_string(),
             default_password: String::new(),
             default_project: "default".to_string(),
+            secret_rotation_epoch: 0,
             cluster: ClusterSettings::default(),
         }
     }
@@ -178,6 +183,10 @@ pub struct ProjectCredentialListItem {
     /// Safe variable definitions exposed by `secure_request` credentials.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secure_request_vars: Vec<SecureRequestVariableDefinition>,
+    /// OAuth2 token status. Derived at list-time, not stored.
+    /// Values: "" (non-oauth2), "not_configured", "authorized", "expired".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub oauth2_status: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
@@ -299,6 +308,9 @@ pub struct PlatformMarketplaceRepository {
     pub remote_project: String,
     /// Optional bearer token for read access.
     pub read_token: String,
+    /// Source visibility in Platform Home marketplace explorer: public or private.
+    #[serde(default)]
+    pub visibility: String,
     /// Whether this repository should be queried in Home marketplace.
     pub enabled: bool,
     /// Unix timestamp seconds.
@@ -307,7 +319,7 @@ pub struct PlatformMarketplaceRepository {
     pub updated_at: i64,
 }
 
-/// One explicit project-hosted marketplace authority control-plane row.
+/// One explicit marketplace authority row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplaceAuthority {
     /// Stable authority id.
@@ -349,6 +361,33 @@ pub struct PlatformOffice {
     pub updated_at: i64,
 }
 
+/// One platform-level service instance hosted by an office.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlatformServiceInstance {
+    /// Stable service instance id, e.g. `marketplace-default`.
+    pub service_instance_id: String,
+    /// Service kind, e.g. `marketplace`.
+    pub service_kind: String,
+    /// Display label.
+    pub display_label: String,
+    /// Office that serves this service runtime.
+    pub host_office_id: String,
+    /// Office that owns this service's operational state.
+    pub state_office_id: String,
+    /// Public API/base URL for this service, when exposed.
+    pub public_base_url: String,
+    /// Whether the service is enabled.
+    pub enabled: bool,
+    /// Current service status summary.
+    pub status: String,
+    /// Monotonic placement/config generation.
+    pub placement_generation: i64,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
 /// One registered runtime node under an office.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformOfficeNode {
@@ -371,7 +410,7 @@ pub struct PlatformOfficeNode {
     pub last_heartbeat_at: i64,
 }
 
-/// One stable publisher identity inside one project-hosted marketplace authority.
+/// One stable publisher identity inside one marketplace service authority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplacePublisher {
     /// Stable authority id.
@@ -380,9 +419,9 @@ pub struct MarketplacePublisher {
     /// Stable publisher row id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher_pk: String,
-    /// Marketplace authority owner.
+    /// Internal marketplace scope owner.
     pub owner: String,
-    /// Marketplace authority project.
+    /// Internal marketplace scope project.
     pub project: String,
     /// Stable immutable public publisher identity.
     pub publisher_id: String,
@@ -400,13 +439,34 @@ pub struct MarketplacePublisher {
     pub website_url: String,
     /// Whether the publisher is active.
     pub enabled: bool,
+    /// Whether this publisher may read private marketplace artifacts.
+    #[serde(default = "default_true")]
+    pub can_read: bool,
+    /// Whether this publisher may publish package versions.
+    #[serde(default = "default_true")]
+    pub can_publish: bool,
+    /// Whether this publisher may manage publisher-scoped settings/tokens.
+    #[serde(default)]
+    pub can_manage: bool,
+    /// Maximum number of package ids this publisher may own. Zero means default.
+    #[serde(default)]
+    pub max_packages: i64,
+    /// Maximum raw artifact bytes per package version. Zero means default.
+    #[serde(default)]
+    pub max_package_bytes: i64,
+    /// Maximum media files per package version. Zero means default.
+    #[serde(default)]
+    pub max_media_files: i64,
+    /// Maximum bytes per image media file. Zero means default.
+    #[serde(default)]
+    pub max_image_bytes: i64,
     /// Unix timestamp seconds.
     pub created_at: i64,
     /// Unix timestamp seconds.
     pub updated_at: i64,
 }
 
-/// One published marketplace asset package stored at the platform level.
+/// One published marketplace asset package stored by the marketplace service.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MarketplaceAssetPackage {
     /// Stable package row id.
@@ -420,9 +480,9 @@ pub struct MarketplaceAssetPackage {
     pub publisher_pk: String,
     /// Stable package id, unique inside one marketplace instance.
     pub package_id: String,
-    /// Marketplace authority owner that hosts this package.
+    /// Internal marketplace authority owner. Public APIs must not expose this.
     pub authority_owner: String,
-    /// Marketplace authority project that hosts this package.
+    /// Internal marketplace authority project. Public APIs must not expose this.
     pub authority_project: String,
     /// Publisher owner id.
     pub publisher_owner: String,
@@ -460,9 +520,9 @@ pub struct MarketplaceAssetVersion {
     pub package_id: String,
     /// Version string.
     pub version: String,
-    /// Marketplace authority owner that hosts this package version.
+    /// Internal marketplace authority owner. Public APIs must not expose this.
     pub authority_owner: String,
-    /// Marketplace authority project that hosts this package version.
+    /// Internal marketplace authority project. Public APIs must not expose this.
     pub authority_project: String,
     /// Publisher owner id.
     pub publisher_owner: String,
@@ -499,7 +559,7 @@ pub struct MarketplaceToken {
     pub publisher_pk: String,
     /// Owner id.
     pub owner: String,
-    /// Project slug for the marketplace authority that owns this token.
+    /// Client project slug that owns this token/profile.
     pub project: String,
     /// Stable public publisher identity this token acts as.
     pub publisher_id: String,
@@ -2427,6 +2487,15 @@ pub struct McpSessionResponse {
     pub mcp_url: String,
     /// Allowed capabilities echoed back.
     pub capabilities: Vec<String>,
+    /// Whether the session is currently accepted by the MCP handler.
+    pub enabled: bool,
+    /// Session creation timestamp.
+    pub created_at: i64,
+    /// Optional seconds after which this session auto-expires.
+    #[serde(default)]
+    pub auto_reset_seconds: Option<u64>,
+    /// Global minimum creation timestamp required for persisted MCP sessions.
+    pub rotation_epoch: i64,
 }
 
 /// Maps MCP tool name to required project capability.
@@ -2493,6 +2562,9 @@ pub fn mcp_tool_capability(tool_name: &str) -> Option<ProjectCapability> {
         "template_write" => Some(ProjectCapability::TemplatesWrite),
         "template_search" => Some(ProjectCapability::TemplatesRead),
         "template_edit" => Some(ProjectCapability::TemplatesWrite),
+        "template_outline" => Some(ProjectCapability::TemplatesRead),
+        "template_deps" => Some(ProjectCapability::TemplatesRead),
+        "template_batch_edit" => Some(ProjectCapability::TemplatesWrite),
         "pipeline_search" => Some(ProjectCapability::PipelinesRead),
         "connection_list" => Some(ProjectCapability::TablesRead),
         "connection_describe" => Some(ProjectCapability::TablesRead),

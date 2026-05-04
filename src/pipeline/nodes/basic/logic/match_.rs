@@ -76,18 +76,10 @@ pub fn definition() -> NodeDefinition {
                     ..Default::default()
                 },
                 NodeFieldDef {
-                    name: "cases".to_string(),
-                    label: "Cases (one per line)".to_string(),
-                    field_type: NodeFieldType::Textarea,
-                    rows: Some(5),
-                    help: Some("Each case becomes an output pin.".to_string()),
-                    ..Default::default()
-                },
-                NodeFieldDef {
-                    name: "default".to_string(),
-                    label: "Default Pin".to_string(),
-                    field_type: NodeFieldType::Text,
-                    default_value: Some(serde_json::json!("default")),
+                    name: "match_routes".to_string(),
+                    label: "Routes".to_string(),
+                    field_type: NodeFieldType::MatchCases,
+                    help: Some("Each route creates one output pin. The default route is used when no value matches.".to_string()),
                     ..Default::default()
                 },
             ]
@@ -96,27 +88,169 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("title".to_string()),
-                    LayoutItem::Field("default".to_string()),
                 ],
             },
             LayoutItem::Field("expression".to_string()),
-            LayoutItem::Field("cases".to_string()),
+            LayoutItem::Field("match_routes".to_string()),
         ],
         ai_tool: Default::default(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MatchCase {
+    pub value: String,
+    #[serde(default)]
+    pub pin: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchDefault {
+    pub pin: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+impl Default for MatchDefault {
+    fn default() -> Self {
+        Self {
+            pin: default_case(),
+            label: "Default".to_string(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub expression: String,
-    #[serde(default)]
-    pub cases: Vec<String>,
-    #[serde(default = "default_case")]
-    pub default: String,
+    #[serde(default, deserialize_with = "deserialize_match_cases")]
+    pub cases: Vec<MatchCase>,
+    #[serde(default, deserialize_with = "deserialize_match_default")]
+    pub default: MatchDefault,
 }
 
 fn default_case() -> String {
     "default".to_string()
+}
+
+fn pin_from_value(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in value.trim().chars() {
+        let next = if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            Some(ch.to_ascii_lowercase())
+        } else if ch.is_whitespace() || matches!(ch, '.' | '/' | ':' | ',' | ';') {
+            Some('-')
+        } else {
+            None
+        };
+        if let Some(ch) = next {
+            if ch == '-' {
+                if !last_dash && !out.is_empty() {
+                    out.push(ch);
+                    last_dash = true;
+                }
+            } else {
+                out.push(ch);
+                last_dash = false;
+            }
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "case".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn normalize_match_case(mut item: MatchCase) -> MatchCase {
+    item.value = item.value.trim().to_string();
+    item.pin = item.pin.trim().to_string();
+    item.label = item.label.trim().to_string();
+    if item.pin.is_empty() {
+        item.pin = pin_from_value(&item.value);
+    }
+    if item.label.is_empty() {
+        item.label = item.value.clone();
+    }
+    item
+}
+
+fn normalize_default(mut item: MatchDefault) -> MatchDefault {
+    item.pin = item.pin.trim().to_string();
+    item.label = item.label.trim().to_string();
+    if item.pin.is_empty() {
+        item.pin = default_case();
+    }
+    if item.label.is_empty() {
+        item.label = "Default".to_string();
+    }
+    item
+}
+
+fn deserialize_match_cases<'de, D>(deserializer: D) -> Result<Vec<MatchCase>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let mut out = Vec::new();
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                match item {
+                    serde_json::Value::String(value) => out.push(normalize_match_case(MatchCase {
+                        value,
+                        pin: String::new(),
+                        label: String::new(),
+                    })),
+                    serde_json::Value::Object(_) => {
+                        let parsed: MatchCase = serde_json::from_value(item)
+                            .map_err(serde::de::Error::custom)?;
+                        let normalized = normalize_match_case(parsed);
+                        if !normalized.value.is_empty() {
+                            out.push(normalized);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        serde_json::Value::String(raw) => {
+            for line in raw.lines() {
+                let value = line.trim();
+                if !value.is_empty() {
+                    out.push(normalize_match_case(MatchCase {
+                        value: value.to_string(),
+                        pin: String::new(),
+                        label: String::new(),
+                    }));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
+fn deserialize_match_default<'de, D>(deserializer: D) -> Result<MatchDefault, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let parsed = match value {
+        serde_json::Value::String(pin) => MatchDefault {
+            pin,
+            label: String::new(),
+        },
+        serde_json::Value::Object(_) => {
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?
+        }
+        _ => MatchDefault::default(),
+    };
+    Ok(normalize_default(parsed))
 }
 
 pub struct Node {
@@ -234,11 +368,13 @@ impl NodeHandler for Node {
             })?;
 
         let value = out.value.as_str().unwrap_or("").to_string();
-        let pin = if self.config.cases.contains(&value) {
-            value.clone()
-        } else {
-            self.config.default.clone()
-        };
+        let pin = self
+            .config
+            .cases
+            .iter()
+            .find(|case| case.value == value)
+            .map(|case| case.pin.clone())
+            .unwrap_or_else(|| self.config.default.pin.clone());
 
         Ok(NodeExecutionOutput {
             output_pins: vec![pin.clone()],

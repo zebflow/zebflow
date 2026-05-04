@@ -59,7 +59,7 @@ const ALGORITHMS = [
 
 const CREDENTIAL_KINDS = [
   "postgres", "mysql", "openai", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "secure_request", "tts", "custom",
+  "jwt_signing_key", "browser_browserless", "secure_request", "oauth2", "tts", "custom",
 ];
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -68,6 +68,20 @@ const TTS_PROVIDERS = [{ value: "piper", label: "Piper" }];
 function defaultSecretForKind(kind: string): Record<string, any> {
   if (kind === "tts") {
     return { provider: "piper" };
+  }
+  if (kind === "oauth2") {
+    return {
+      provider: "",
+      client_id: "",
+      client_secret: "",
+      authorize_url: "",
+      token_url: "",
+      scopes: "",
+      refresh_token: "",
+      access_token: "",
+      expires_at: 0,
+      token_type: "Bearer",
+    };
   }
   return {};
 }
@@ -400,6 +414,57 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
     </div>
   );
 
+  if (kind === "oauth2") {
+    const statusLabel = s("refresh_token") ? (Number(s("expires_at", "0")) * 1000 > Date.now() ? "Authorized" : "Token Expired") : "Not Configured";
+    const statusColor = s("refresh_token") ? (Number(s("expires_at", "0")) * 1000 > Date.now() ? "bg-green-500" : "bg-amber-500") : "bg-zinc-400";
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-body">OAuth2 Authorization Code Grant</p>
+          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+            Configure the OAuth2 provider's client credentials and endpoints.
+            After saving, use the <strong>Authorize</strong> button to complete the consent flow.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 px-1">
+          <span className={cx("inline-block w-2 h-2 rounded-full", statusColor)} />
+          <span className="text-xs text-body-soft">{statusLabel}</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Provider" description="Label for this provider (e.g. google, microsoft, slack).">
+            <Input value={s("provider")} onInput={(e: any) => onChange("provider", e.target.value)} placeholder="google" />
+          </Field>
+          <Field label="Token Type">
+            <Input value={s("token_type", "Bearer")} onInput={(e: any) => onChange("token_type", e.target.value)} placeholder="Bearer" />
+          </Field>
+          <Field label="Client ID" className="col-span-2">
+            <Input value={s("client_id")} onInput={(e: any) => onChange("client_id", e.target.value)} placeholder="xxx.apps.googleusercontent.com" />
+          </Field>
+          <Field label="Client Secret" className="col-span-2">
+            <Input type="password" value={s("client_secret")} onInput={(e: any) => onChange("client_secret", e.target.value)} />
+          </Field>
+          <Field label="Authorize URL" className="col-span-2" description="Provider's authorization endpoint.">
+            <Input value={s("authorize_url")} onInput={(e: any) => onChange("authorize_url", e.target.value)} placeholder="https://accounts.google.com/o/oauth2/v2/auth" />
+          </Field>
+          <Field label="Token URL" className="col-span-2" description="Provider's token exchange endpoint.">
+            <Input value={s("token_url")} onInput={(e: any) => onChange("token_url", e.target.value)} placeholder="https://oauth2.googleapis.com/token" />
+          </Field>
+          <Field label="Scopes" className="col-span-2" description="Space-separated scopes to request.">
+            <Input value={s("scopes")} onInput={(e: any) => onChange("scopes", e.target.value)} placeholder="openid email profile" />
+          </Field>
+          <Field label="Callback URL" className="col-span-2" description="Register this URL with your OAuth2 provider.">
+            <div className="flex gap-1.5">
+              <Input value={`${window.location.origin}/oauth/callback`} readOnly className="flex-1 text-body-soft" />
+              <Button type="button" variant="outline" size="sm" onClick={() => { try { navigator.clipboard.writeText(`${window.location.origin}/oauth/callback`); } catch {} }}>Copy</Button>
+            </div>
+          </Field>
+        </div>
+      </div>
+    );
+  }
+
   if (kind === "secure_request") {
     const request = secret.request && typeof secret.request === "object" ? secret.request : {};
     const variables = Array.isArray(secret.variables) ? secret.variables : [];
@@ -626,6 +691,18 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
             {mode === "edit" && (
               <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>Delete</Button>
             )}
+            {mode === "edit" && kind === "oauth2" && (
+              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={async () => {
+                setBusy(true); setStatus("Redirecting to provider…"); setStatusTone("info");
+                try {
+                  const data = await requestJson(`${apiItemBase}/${encodeURIComponent(credentialId)}/oauth/authorize`);
+                  if (data?.redirect_url) { window.location.href = data.redirect_url; }
+                  else { setStatus("No redirect URL returned."); setStatusTone("error"); setBusy(false); }
+                } catch (err: any) {
+                  setStatus(`Authorize failed: ${err?.message || err}`); setStatusTone("error"); setBusy(false);
+                }
+              }}>Authorize</Button>
+            )}
             <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>Cancel</Button>
             <Button type="submit" size="sm" disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
           </DialogFooter>
@@ -653,7 +730,18 @@ export default function Page(input) {
     } catch {}
   }
 
-  useEffect(() => { loadList(); }, []);
+  useEffect(() => {
+    loadList();
+    // Handle OAuth callback redirect params
+    const params = new URLSearchParams(window.location.search);
+    const oauthResult = params.get("oauth");
+    if (oauthResult) {
+      // Clean URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete("oauth");
+      window.history.replaceState({}, "", url.pathname + url.search);
+    }
+  }, []);
 
   function openCreate() {
     setDialogMode("create"); setEditItem(null); setDialogOpen(true);
@@ -723,7 +811,17 @@ export default function Page(input) {
                             ))}
                           </div>
                         </td>
-                        <td className="px-3 py-2 text-sm text-body-soft">{item.has_secret ? "yes" : "no"}</td>
+                        <td className="px-3 py-2 text-sm text-body-soft">
+                          {item.kind === "oauth2" && item.oauth2_status ? (
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className={cx("inline-block w-1.5 h-1.5 rounded-full",
+                                item.oauth2_status === "authorized" ? "bg-green-500" :
+                                item.oauth2_status === "expired" ? "bg-amber-500" : "bg-zinc-400"
+                              )} />
+                              {item.oauth2_status}
+                            </span>
+                          ) : item.has_secret ? "yes" : "no"}
+                        </td>
                         <td className="px-3 py-2 text-sm text-body-soft">{formatTs(item.updated_at)}</td>
                         <td className="px-3 py-2">
                           <Button size="xs" variant="outline" onClick={() => openEdit(item)}>Edit</Button>

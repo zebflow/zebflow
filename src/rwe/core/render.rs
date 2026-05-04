@@ -212,7 +212,18 @@ pub fn render(
         escape_json_script(&payload_json)
     );
 
-    let html = build_document_shell(&ssr.page_config, &body_content);
+    let mut html = build_document_shell(&ssr.page_config, &body_content);
+    for (idx, css) in compiled.inline_styles.iter().enumerate() {
+        if css.trim().is_empty() {
+            continue;
+        }
+        let style_block = format!("<style data-rwe-style=\"{idx}\">{css}</style>");
+        if let Some(pos) = html.find("</head>") {
+            html.insert_str(pos, &style_block);
+        } else {
+            html = format!("{style_block}{html}");
+        }
+    }
 
     let js = build_client_module(&transpiled_client, &zeb_preamble);
 
@@ -508,10 +519,16 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
                      lRoot.innerHTML = nRoot.innerHTML;\n\
                      if (nPay && lPay) lPay.textContent = nPay.textContent;\n\
                    }}\n\
-                   document.querySelectorAll('style[data-rwe-tw]').forEach(function(s) {{ s.remove(); }});\n\
+                   document.querySelectorAll('style[data-rwe-tw], style[data-rwe-style]').forEach(function(s) {{ s.remove(); }});\n\
                    doc.querySelectorAll('style[data-rwe-tw]').forEach(function(s) {{\n\
                      var nc = document.createElement('style');\n\
                      nc.setAttribute('data-rwe-tw', '');\n\
+                     nc.textContent = s.textContent;\n\
+                     document.head.appendChild(nc);\n\
+                   }});\n\
+                   doc.querySelectorAll('style[data-rwe-style]').forEach(function(s) {{\n\
+                     var nc = document.createElement('style');\n\
+                     nc.setAttribute('data-rwe-style', s.getAttribute('data-rwe-style') || '');\n\
                      nc.textContent = s.textContent;\n\
                      document.head.appendChild(nc);\n\
                    }});\n\
@@ -561,6 +578,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          const __payloadEl = document.getElementById('{PAYLOAD_ID}');\n\
          const __input = __payloadEl ? JSON.parse(__payloadEl.textContent || '{{}}') : {{}};\n\
          globalThis.ctx = __input;\n\
+         globalThis.input = globalThis.ctx;\n\
          {zeb_preamble}\
          let __islandCounter = 0;\n\
          const __IslandOff = memo(function({{ children }}) {{ return children; }}, () => true);\n\
@@ -856,6 +874,46 @@ fn build_document_shell(page_config: &Option<Value>, body_content: &str) -> Stri
         }
     }
 
+    // stylesheets — array of href strings or objects with href/rel/media
+    if let Some(stylesheets) = hd
+        .and_then(|h| h.get("stylesheets"))
+        .and_then(Value::as_array)
+    {
+        for stylesheet in stylesheets {
+            match stylesheet {
+                Value::String(href) if !href.is_empty() => {
+                    head.push_str(&format!(
+                        "<link rel=\"stylesheet\" href=\"{}\">",
+                        escape_attr(href)
+                    ));
+                }
+                Value::Object(obj) => {
+                    let href = obj.get("href").and_then(Value::as_str).unwrap_or_default();
+                    if href.is_empty() {
+                        continue;
+                    }
+                    let rel = obj
+                        .get("rel")
+                        .and_then(Value::as_str)
+                        .unwrap_or("stylesheet");
+                    let mut tag = format!(
+                        "<link rel=\"{}\" href=\"{}\"",
+                        escape_attr(rel),
+                        escape_attr(href)
+                    );
+                    if let Some(media) = obj.get("media").and_then(Value::as_str)
+                        && !media.is_empty()
+                    {
+                        tag.push_str(&format!(" media=\"{}\"", escape_attr(media)));
+                    }
+                    tag.push('>');
+                    head.push_str(&tag);
+                }
+                _ => {}
+            }
+        }
+    }
+
     let body_attr = if body_class.is_empty() {
         String::new()
     } else {
@@ -890,6 +948,8 @@ fn escape_json_script(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rwe::core::model::HydrateMode;
+    use serde_json::json;
 
     #[test]
     fn zeb_preamble_uses_codemirror_entry_module() {
@@ -902,6 +962,72 @@ mod tests {
         assert!(
             preamble.contains("Object.assign(globalThis"),
             "expected zeb preamble to expose library exports on globalThis, got {preamble}"
+        );
+    }
+
+    #[test]
+    fn build_client_module_sets_global_input_alias() {
+        let module = build_client_module("export default function Page(){ return null; }", "");
+        assert!(
+            module.contains("globalThis.input = globalThis.ctx;"),
+            "expected client bootstrap to mirror input alias, got {module}"
+        );
+    }
+
+    #[test]
+    fn render_injects_collected_inline_styles_into_document_head() {
+        let compiled = CompiledTemplate {
+            engine: "rwe".to_string(),
+            source_path: Some("inline-style-test.tsx".to_string()),
+            runtime_mode: super::super::config::RuntimeMode::Inline,
+            deno_timeout_ms: 10_000,
+            server_module_source:
+                "export default function Page(){ return <main>INLINE_STYLE_TEST</main>; }"
+                    .to_string(),
+            client_module_source:
+                "export default function Page(){ return <main>INLINE_STYLE_TEST</main>; }"
+                    .to_string(),
+            imports: Vec::new(),
+            diagnostics: Vec::new(),
+            hydrate_mode: HydrateMode::Onload,
+            compile_options: super::super::config::CompileOptions::default(),
+            detected_zeb_libs: Vec::new(),
+            inline_styles: vec![".editor-shell { color: red; }".to_string()],
+            dependency_paths: Default::default(),
+        };
+
+        let output = render(&compiled, &json!({}), &[]).expect("render");
+        let style_pos = output
+            .html
+            .find("data-rwe-style=\"0\"")
+            .expect("expected inline style block");
+        let root_pos = output
+            .html
+            .find("__rwe_root")
+            .expect("expected rwe root in html");
+
+        assert!(output.html.contains(".editor-shell { color: red; }"));
+        assert!(
+            style_pos < root_pos,
+            "expected collected inline styles in head before body content, got {}",
+            output.html
+        );
+    }
+
+    #[test]
+    fn build_client_module_syncs_imported_styles_during_navigation() {
+        let module = build_client_module("export default function Page(){ return null; }", "");
+        assert!(
+            module.contains("style[data-rwe-tw], style[data-rwe-style]"),
+            "expected navigation cleanup to remove imported styles, got {module}"
+        );
+        assert!(
+            module.contains("doc.querySelectorAll('style[data-rwe-style]')"),
+            "expected navigation sync to clone imported style blocks, got {module}"
+        );
+        assert!(
+            module.contains("setAttribute('data-rwe-style'"),
+            "expected imported style blocks to preserve identity during navigation, got {module}"
         );
     }
 }

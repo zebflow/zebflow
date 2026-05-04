@@ -2,6 +2,10 @@
 
 use std::sync::Arc;
 
+use argon2::{
+    Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -18,11 +22,36 @@ pub struct UserService {
 }
 
 impl UserService {
-    fn hash_password(password: &str) -> String {
+    fn sha256_password(password: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(password.as_bytes());
         let digest = hasher.finalize();
         digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn argon2id() -> Argon2<'static> {
+        Argon2::new(
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::new(65_536, 3, 4, None).expect("valid Argon2id params"),
+        )
+    }
+
+    fn hash_password(password: &str) -> Result<String, PlatformError> {
+        let salt = SaltString::generate(&mut OsRng);
+        Self::argon2id()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+            .map_err(|err| PlatformError::new("PLATFORM_PASSWORD_HASH", err.to_string()))
+    }
+
+    fn verify_argon2_password(hash: &str, password: &str) -> bool {
+        let Ok(parsed) = PasswordHash::new(hash) else {
+            return false;
+        };
+        Self::argon2id()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
     }
 
     fn new_user_id() -> String {
@@ -85,13 +114,31 @@ impl UserService {
             profile: profile.clone(),
             auth: PlatformUserLocalAuth {
                 user_id: profile.user_id.clone(),
-                password_hash: Self::hash_password(&req.password),
-                password_alg: "sha256".to_string(),
+                password_hash: Self::hash_password(&req.password)?,
+                password_alg: "argon2id".to_string(),
                 password_updated_at: now,
             },
         };
         self.data.put_user(&stored)?;
         Ok(profile)
+    }
+
+    /// Creates a new user and refuses to overwrite existing auth material.
+    pub fn create_user(&self, req: &CreateUserRequest) -> Result<PlatformUser, PlatformError> {
+        let owner = slug_segment(&req.owner);
+        if owner.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_INVALID",
+                "owner must not be empty",
+            ));
+        }
+        if self.data.get_user_auth(&owner)?.is_some() {
+            return Err(PlatformError::new(
+                "PLATFORM_USER_EXISTS",
+                format!("user '{owner}' already exists"),
+            ));
+        }
+        self.create_or_update_user(req)
     }
 
     /// Updates self-service user settings while preserving password and role.
@@ -138,6 +185,23 @@ impl UserService {
         let Some(found) = self.data.get_user_auth(&owner)? else {
             return Ok(false);
         };
-        Ok(found.auth.password_hash == Self::hash_password(password))
+        match found.auth.password_alg.as_str() {
+            "argon2id" => Ok(Self::verify_argon2_password(
+                &found.auth.password_hash,
+                password,
+            )),
+            "sha256" | "" => {
+                let ok = found.auth.password_hash == Self::sha256_password(password);
+                if ok {
+                    let mut upgraded = found.clone();
+                    upgraded.auth.password_hash = Self::hash_password(password)?;
+                    upgraded.auth.password_alg = "argon2id".to_string();
+                    upgraded.auth.password_updated_at = now_ts();
+                    let _ = self.data.put_user(&upgraded);
+                }
+                Ok(ok)
+            }
+            _ => Ok(false),
+        }
     }
 }

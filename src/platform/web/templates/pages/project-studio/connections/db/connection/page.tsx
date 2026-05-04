@@ -42,7 +42,6 @@ export default function Page(input) {
   const dbApi = input?.db_runtime_api ?? {};
 
   return (
-<Page>
     <ProjectStudioShell
       projectHref={input.project_href}
       projectLabel={input.title}
@@ -211,6 +210,5 @@ export default function Page(input) {
         </section>
       </div>
     </ProjectStudioShell>
-</Page>
   );
 }

@@ -199,6 +199,7 @@ impl NodeHandler for Node {
                 "credential secret.url is required",
             ));
         }
+        crate::pipeline::security::validate_outbound_http_url(base_url, NODE_KIND)?;
         let token = credential
             .secret
             .get("token")
