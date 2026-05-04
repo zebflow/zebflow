@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="base-object" transform="translate(2.8679 0.8679) scale(1.660377)">
+    <rect x="9" y="12" width="46" height="40" rx="7" fill="none" stroke="#30384a" stroke-width="7"/>
+    <circle cx="42" cy="24" r="4" fill="#e2a35b"/>
+    <path d="M 14 47 L 27 34 L 36 42 L 43 35 L 55 48" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+  <g id="operation-badge" transform="translate(72.9091 72.9091) scale(0.909091)">
+    <path d="M 14 14 H 50 V 50 H 14 Z" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M 26 26 H 50 V 50 H 26 Z" fill="none" stroke="#e2a35b" stroke-width="6" stroke-linejoin="round"/>
+  </g>
+</svg>

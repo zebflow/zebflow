@@ -14,7 +14,7 @@ use crate::platform::model::{
     DataAdapterKind, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority,
     MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
     PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite,
+    PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite,
     ProjectMarketplaceRepository, ProjectMember, ProjectOperationRecord, ProjectPolicy,
     ProjectPolicyBinding, StoredUser,
 };
@@ -264,6 +264,10 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, project);
         Ok(vec![])
     }
+    /// List all marketplace tokens in this marketplace catalog.
+    fn list_all_marketplace_tokens(&self) -> Result<Vec<MarketplaceToken>, PlatformError> {
+        Ok(vec![])
+    }
     /// Delete one marketplace token.
     fn delete_marketplace_token(&self, token_id: &str) -> Result<(), PlatformError> {
         let _ = token_id;
@@ -403,6 +407,31 @@ pub trait DataAdapter: Send + Sync {
     }
     /// List offices.
     fn list_platform_offices(&self) -> Result<Vec<PlatformOffice>, PlatformError> {
+        Ok(vec![])
+    }
+    /// Get one platform service instance.
+    fn get_platform_service_instance(
+        &self,
+        service_instance_id: &str,
+    ) -> Result<Option<PlatformServiceInstance>, PlatformError> {
+        let _ = service_instance_id;
+        Ok(None)
+    }
+    /// Upsert one platform service instance.
+    fn put_platform_service_instance(
+        &self,
+        service: &PlatformServiceInstance,
+    ) -> Result<(), PlatformError> {
+        let _ = service;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "platform service instances are not supported by this adapter",
+        ))
+    }
+    /// List platform service instances.
+    fn list_platform_service_instances(
+        &self,
+    ) -> Result<Vec<PlatformServiceInstance>, PlatformError> {
         Ok(vec![])
     }
     /// Get one office node row.
@@ -557,6 +586,22 @@ pub trait DataAdapter: Send + Sync {
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
         Ok(vec![])
     }
+
+    /// Re-key all project-scoped records from `(old_owner, project)` to
+    /// `(new_owner, project)` in a single atomic transaction.
+    /// Used for sovereignty recovery after controller dissolution.
+    fn transfer_project_owner(
+        &self,
+        _old_owner: &str,
+        _project: &str,
+        _new_owner: &str,
+        _new_owner_user_id: &str,
+    ) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "transfer_project_owner not supported by this adapter",
+        ))
+    }
 }
 
 /// Builds selected metadata adapter.
@@ -568,5 +613,25 @@ pub fn build_data_adapter(
         DataAdapterKind::Sqlite => Ok(Arc::new(sqlite::SqliteDataAdapter::new(data_root)?)),
         DataAdapterKind::DynamoDb => Ok(Arc::new(dynamodb::DynamoDbDataAdapter::default())),
         DataAdapterKind::Firebase => Ok(Arc::new(firebase::FirebaseDataAdapter::default())),
+    }
+}
+
+/// Builds the SQLite-backed marketplace service catalog at an exact DB path.
+///
+/// Marketplace is an office-hosted service in the fresh storage model, so its
+/// operational rows live under `{data_root}/services/{service}/marketplace.db`
+/// instead of the platform control-plane catalog.
+pub fn build_marketplace_data_adapter(
+    kind: DataAdapterKind,
+    db_path: &Path,
+) -> Result<Arc<dyn DataAdapter>, PlatformError> {
+    match kind {
+        DataAdapterKind::Sqlite => Ok(Arc::new(sqlite::SqliteDataAdapter::new_at_db_path(
+            db_path,
+        )?)),
+        DataAdapterKind::DynamoDb | DataAdapterKind::Firebase => Err(PlatformError::new(
+            "PLATFORM_MARKETPLACE_ADAPTER_UNAVAILABLE",
+            "office-hosted marketplace service storage currently requires sqlite",
+        )),
     }
 }

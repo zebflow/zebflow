@@ -2648,4 +2648,33 @@ mod tests {
         assert!(!css.contains("--zebflow-font-display"));
         assert!(!css.contains(", display)"));
     }
+
+    #[test]
+    fn semantic_color_tokens_map_to_main_css_variable_contract() {
+        let text_css = token_css_rule("text-brand-blue").expect("text-brand-blue rule");
+        let bg_css = token_css_rule("bg-surface").expect("bg-surface rule");
+        let border_css = token_css_rule("border-body-soft").expect("border-body-soft rule");
+
+        assert!(text_css.contains("var(--color-brand-blue)"));
+        assert!(bg_css.contains("var(--color-surface)"));
+        assert!(border_css.contains("var(--color-body-soft)"));
+    }
+
+    #[test]
+    fn semantic_color_tokens_align_with_platform_main_css() {
+        let main_css = include_str!("../../../platform/web/templates/styles/main.css");
+        assert!(
+            main_css.contains("--color-brand-blue:"),
+            "expected platform main.css to define --color-brand-blue"
+        );
+        assert!(
+            main_css.contains("--color-ui-text-soft:"),
+            "expected platform main.css to define --color-ui-text-soft"
+        );
+
+        let text_css = token_css_rule("text-brand-blue").expect("text-brand-blue rule");
+        let soft_text_css = token_css_rule("text-ui-text-soft").expect("text-ui-text-soft rule");
+        assert!(text_css.contains("var(--color-brand-blue)"));
+        assert!(soft_text_css.contains("var(--color-ui-text-soft)"));
+    }
 }

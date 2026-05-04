@@ -119,6 +119,7 @@ Environment:
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
   ZEBFLOW_PLATFORM_DATA_DIR          Data root override
+  ZEBFLOW_SECRET_ROTATION_EPOCH      Unix timestamp; invalidate older platform-issued tokens
   ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL  Default platform marketplace API URL
 
 Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
@@ -157,6 +158,14 @@ fn load_platform_config_with_default_password(
     if let Ok(project) = std::env::var("ZEBFLOW_PLATFORM_DEFAULT_PROJECT") {
         config.default_project = project;
     }
+    if let Ok(value) = std::env::var("ZEBFLOW_SECRET_ROTATION_EPOCH") {
+        config.secret_rotation_epoch = value.trim().parse::<i64>().map_err(|err| {
+            io::Error::other(format!(
+                "invalid ZEBFLOW_SECRET_ROTATION_EPOCH '{}': {err}",
+                value.trim()
+            ))
+        })?;
+    }
     config.cluster.role = role;
     config.cluster.node_id = std::env::var("ZEBFLOW_CLUSTER_NODE_ID").ok();
     config.cluster.node_label = std::env::var("ZEBFLOW_CLUSTER_NODE_LABEL").ok();
@@ -172,6 +181,23 @@ fn load_platform_config_with_default_password(
     if role != ClusterRole::Worker && config.default_password.trim().is_empty() {
         return Err(io::Error::other(
             "missing ZEBFLOW_PLATFORM_DEFAULT_PASSWORD for initial superadmin bootstrap",
+        ));
+    }
+    let allow_insecure_default = std::env::var("ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD")
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false);
+    if role != ClusterRole::Worker
+        && config.default_password.trim() == "secret"
+        && !allow_insecure_default
+    {
+        return Err(io::Error::other(
+            "refusing insecure ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=secret; choose a strong password or set ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD=1 only for disposable local development",
         ));
     }
 
@@ -510,8 +536,7 @@ async fn install_remote_project_asset(
 }
 
 async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> {
-    let config =
-        load_platform_config_with_default_password(ClusterRole::Standalone, Some("secret"))?;
+    let config = load_platform_config(ClusterRole::Standalone)?;
 
     let remote = parse_remote_asset_ref(&req.target);
     let owner = req

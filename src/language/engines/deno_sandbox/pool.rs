@@ -5,8 +5,10 @@
 //! Work is dispatched round-robin across all N workers for parallelism.
 
 use std::cell::RefCell;
+use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use deno_core::{FastString, JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use deno_error::JsErrorBox;
@@ -19,6 +21,7 @@ use super::config::DenoSandboxConfig;
 // ---------------------------------------------------------------------------
 thread_local! {
     static SCRIPT_RESULT: RefCell<Option<String>> = const { RefCell::new(None) };
+    static LOCAL_FETCH_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 /// Op: called by the IIFE to deliver the JSON result to Rust.
@@ -27,11 +30,41 @@ fn op_script_result(#[string] json: String) {
     SCRIPT_RESULT.with(|r| *r.borrow_mut() = Some(json));
 }
 
-/// Op: synchronous file read used by the embedded local-fetch implementation.
+/// Op: synchronous file read used only by the embedded local-fetch wrapper.
+///
+/// User code must not be able to call this op directly. The JS sandbox hides
+/// `Deno.core` before user modules run, and this op also enforces a canonical
+/// root boundary as a second line of defense.
 #[deno_core::op2]
 #[string]
-fn op_read_local_file(#[string] path: String) -> Result<String, JsErrorBox> {
-    std::fs::read_to_string(&path)
+fn op_read_local_file(#[string] rel_path: String) -> Result<String, JsErrorBox> {
+    let rel = Path::new(&rel_path);
+    if rel.is_absolute()
+        || rel.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(JsErrorBox::generic("local file path escaped sandbox root"));
+    }
+
+    let root = LOCAL_FETCH_ROOT
+        .with(|root| root.borrow().clone())
+        .ok_or_else(|| JsErrorBox::generic("local fetch root is not configured"))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|e| JsErrorBox::generic(format!("local fetch root invalid: {e}")))?;
+    let target = canonical_root.join(rel);
+    let canonical_target = target
+        .canonicalize()
+        .map_err(|e| JsErrorBox::generic(format!("local file read failed: {e}")))?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(JsErrorBox::generic("local file path escaped sandbox root"));
+    }
+
+    std::fs::read_to_string(&canonical_target)
         .map_err(|e| JsErrorBox::generic(format!("local file read failed: {e}")))
 }
 
@@ -50,6 +83,17 @@ const TOOL_INIT: &str = include_str!("../../../language/runtime/tool_init.js");
 const SANDBOX_INIT: &str = r#"
 (function () {
   "use strict";
+  var __zfOps = globalThis.Deno && globalThis.Deno.core && globalThis.Deno.core.ops;
+  var __zfScriptResult = __zfOps && __zfOps.op_script_result;
+  var __zfReadLocalFile = __zfOps && __zfOps.op_read_local_file;
+  if (typeof __zfScriptResult !== "function" || typeof __zfReadLocalFile !== "function") {
+    throw new Error("DenoSandboxError: host ops unavailable");
+  }
+  try {
+    Object.defineProperty(globalThis, "__zebflow_script_result", {
+      value: __zfScriptResult, writable: false, configurable: false
+    });
+  } catch (e) {}
 
   // ----- URL polyfill (bare deno_core has no web APIs) --------------------
   if (typeof URL === "undefined") {
@@ -140,11 +184,9 @@ const SANDBOX_INIT: &str = r#"
       if (!rel || rel.indexOf("..") !== -1) {
         return Promise.reject(new Error("DenoSandboxError: local fetch path invalid"));
       }
-      var localRoot = (globalThis.__fetchConfig && globalThis.__fetchConfig.localFetchRoot) || ".";
-      var fullPath  = localRoot + "/" + rel;
       try {
-        var content = Deno.core.ops.op_read_local_file(fullPath);
-        var ct = fullPath.endsWith(".json") ? "application/json" : "text/plain";
+        var content = __zfReadLocalFile(rel);
+        var ct = rel.endsWith(".json") ? "application/json" : "text/plain";
         return Promise.resolve(new globalThis.Response(content, {
           status: 200, headers: { "content-type": ct }
         }));
@@ -180,6 +222,18 @@ const SANDBOX_INIT: &str = r#"
       "DenoSandboxError: fetch protocol denied (" + parsed.protocol + ")"
     ));
   };
+
+  // Hide raw deno_core host capability access from user scripts. Supported
+  // capabilities are exposed only through Tool.* and the `n` capability object.
+  try {
+    Object.defineProperty(globalThis, "Deno", {
+      value: undefined, writable: false, configurable: false
+    });
+  } catch (e) {
+    try { if (globalThis.Deno) Object.defineProperty(globalThis.Deno, "core", {
+      value: undefined, writable: false, configurable: false
+    }); } catch (_) {}
+  }
 })();
 "#;
 
@@ -279,9 +333,12 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
 
     let fetch_cfg_json = serde_json::json!({
         "allowedHosts": cfg.allow_list.external_fetch_hosts,
-        "localFetchRoot": cfg.local_fetch_root,
     })
     .to_string();
+
+    LOCAL_FETCH_ROOT.with(|root| {
+        *root.borrow_mut() = Some(PathBuf::from(&cfg.local_fetch_root));
+    });
 
     let timeout_ms = cfg.timeout_ms;
     let max_ops = cfg.max_ops;
@@ -319,9 +376,9 @@ async fn execute_script(js_rt: &mut JsRuntime, work: ScriptWork) -> Result<Value
   try {{
     var __fn = {fn_source};
     var __r  = await __fn(globalThis.__script_input, globalThis.__script_n, globalThis.__script_ctx);
-    Deno.core.ops.op_script_result(JSON.stringify({{ ok: true, result: __r }}));
+    globalThis.__zebflow_script_result(JSON.stringify({{ ok: true, result: __r }}));
   }} catch (e) {{
-    Deno.core.ops.op_script_result(JSON.stringify({{ ok: false, error: String(e && e.message || e) }}));
+    globalThis.__zebflow_script_result(JSON.stringify({{ ok: false, error: String(e && e.message || e) }}));
   }}
 }})();"#,
         fn_source = work.fn_source,
@@ -387,6 +444,7 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
         return Err("DenoSandboxError: worker pool is empty".into());
     }
     let idx = POOL_COUNTER.fetch_add(1, Ordering::Relaxed) % pool.len();
+    let timeout = Duration::from_millis(work.config.timeout_ms.saturating_add(1_000));
     let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<Result<Value, String>>(1);
     pool[idx]
         .send(WorkItem {
@@ -394,7 +452,12 @@ pub(crate) fn run_in_pool(work: ScriptWork) -> Result<Value, String> {
             reply: reply_tx,
         })
         .map_err(|_| "DenoSandboxError: worker channel disconnected".to_string())?;
-    reply_rx
-        .recv()
-        .map_err(|_| "DenoSandboxError: worker reply disconnected".to_string())?
+    reply_rx.recv_timeout(timeout).map_err(|err| match err {
+        std::sync::mpsc::RecvTimeoutError::Timeout => {
+            "DenoSandboxError: worker reply timeout".to_string()
+        }
+        std::sync::mpsc::RecvTimeoutError::Disconnected => {
+            "DenoSandboxError: worker reply disconnected".to_string()
+        }
+    })?
 }

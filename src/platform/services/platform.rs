@@ -6,7 +6,9 @@ use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
-use crate::platform::adapters::data::{DataAdapter, build_data_adapter};
+use crate::platform::adapters::data::{
+    DataAdapter, build_data_adapter, build_marketplace_data_adapter,
+};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
@@ -115,7 +117,10 @@ impl PlatformService {
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
         let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
-        let credentials = Arc::new(CredentialService::new(data.clone()));
+        let credentials = Arc::new(CredentialService::new(
+            data.clone(),
+            reqwest::Client::new(),
+        ));
         let assistant_configs = Arc::new(AssistantConfigService::new(
             data.clone(),
             zebflow_cfg.clone(),
@@ -126,8 +131,19 @@ impl PlatformService {
             credentials.clone(),
             config.data_root.clone(),
         ));
+        let marketplace_data = build_marketplace_data_adapter(
+            config.data_adapter,
+            &config
+                .data_root
+                .join("services")
+                .join(
+                    crate::platform::services::marketplace::DEFAULT_MARKETPLACE_SERVICE_INSTANCE_ID,
+                )
+                .join("marketplace.db"),
+        )?;
         let marketplace = Arc::new(MarketplaceService::new(
             data.clone(),
+            marketplace_data,
             projects.clone(),
             config.data_root.clone(),
         ));
@@ -139,7 +155,10 @@ impl PlatformService {
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
-        let mcp_sessions = Arc::new(McpSessionService::new(data.clone()));
+        let mcp_sessions = Arc::new(McpSessionService::new(
+            data.clone(),
+            config.secret_rotation_epoch,
+        ));
         let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
         let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub((*mem_hub).clone()));

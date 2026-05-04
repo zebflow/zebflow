@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="single-object" transform="translate(14.5964 13.0526) scale(1.543862)">
+    <path d="M 32 8 L 52 17 V 31 C 52 44 43 53 32 58 C 21 53 12 44 12 31 V 17 Z" fill="none" stroke="#30384a" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M 26 34 L 31 39 L 42 27" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

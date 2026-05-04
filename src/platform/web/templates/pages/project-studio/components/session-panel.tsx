@@ -64,6 +64,24 @@ const DEFAULT_CAPABILITIES = [
   { key: "settings.write",     label: "Settings Write",    defaultOn: false },
 ];
 
+function formatSessionTime(value) {
+  if (!value) return "Not generated";
+  try {
+    return new Date(value * 1000).toLocaleString();
+  } catch (_) {
+    return "Unknown";
+  }
+}
+
+function formatAutoReset(value) {
+  if (!value) return "Manual";
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "Manual";
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} hr`;
+  return `${Math.round(seconds / 86400)} day`;
+}
+
 export function SessionPanel({ owner, project }) {
   const { activePanel, openHeaderPanel } = useStudioChrome();
   const [open, setOpen] = useState(false);
@@ -72,6 +90,9 @@ export function SessionPanel({ owner, project }) {
   const [enabled, setEnabled] = useState(false);
   const [token, setToken] = useState(null);
   const [mcpUrl, setMcpUrl] = useState(null);
+  const [createdAt, setCreatedAt] = useState(null);
+  const [autoResetSeconds, setAutoResetSeconds] = useState(null);
+  const [rotationEpoch, setRotationEpoch] = useState(0);
   const [capabilities, setCapabilities] = useState(
     DEFAULT_CAPABILITIES.filter((c) => c.defaultOn).map((c) => c.key)
   );
@@ -86,6 +107,16 @@ export function SessionPanel({ owner, project }) {
 
   const sessionUrl = `/api/projects/${owner}/${project}/mcp/session`;
 
+  function applySession(s) {
+    setEnabled(!!s?.enabled);
+    setToken(s?.token ?? null);
+    setMcpUrl(s?.mcp_url ?? null);
+    setCreatedAt(s?.created_at ?? null);
+    setAutoResetSeconds(s?.auto_reset_seconds ?? null);
+    setRotationEpoch(s?.rotation_epoch ?? 0);
+    if (s?.capabilities?.length) setCapabilities(s.capabilities);
+  }
+
   async function fetchSession() {
     if (!owner || !project) return;
     setLoading(true);
@@ -94,11 +125,7 @@ export function SessionPanel({ owner, project }) {
       const res = await fetch(sessionUrl, { headers: { Accept: "application/json" } });
       const data = await res.json().catch(() => ({}));
       if (data?.ok && data?.session) {
-        const s = data.session;
-        setEnabled(!!s.enabled);
-        setToken(s.token ?? null);
-        setMcpUrl(s.mcp_url ?? null);
-        if (s.capabilities?.length) setCapabilities(s.capabilities);
+        applySession(data.session);
       }
     } catch (_) {}
     setLoading(false);
@@ -133,7 +160,7 @@ export function SessionPanel({ owner, project }) {
     setError("");
 
     if (!token) {
-      // First enable — create the session
+      if (!next) return;
       setLoading(true);
       try {
         const res = await fetch(sessionUrl, {
@@ -143,9 +170,7 @@ export function SessionPanel({ owner, project }) {
         });
         const data = await res.json().catch(() => ({}));
         if (data?.ok && data?.session) {
-          setEnabled(true);
-          setToken(data.session.token ?? null);
-          setMcpUrl(data.session.mcp_url ?? null);
+          applySession(data.session);
         } else {
           setError(data?.error?.message ?? "Failed to create session");
         }
@@ -154,14 +179,20 @@ export function SessionPanel({ owner, project }) {
       }
       setLoading(false);
     } else {
-      // Soft toggle
       setEnabled(next);
       try {
-        await fetch(sessionUrl, {
-          method: "PUT",
+        const res = await fetch(sessionUrl, {
+          method: next ? "POST" : "PUT",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({ enabled: next }),
+          body: JSON.stringify(next ? { capabilities } : { enabled: false }),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+          setEnabled(!next);
+          setError(data?.error?.message ?? "Failed to update session");
+        } else if (data?.session) {
+          applySession(data.session);
+        }
       } catch (_) {
         setEnabled(!next);
         setError("Failed to update session");
@@ -191,12 +222,17 @@ export function SessionPanel({ owner, project }) {
     setActivating(true);
     setError("");
     try {
-      await fetch(sessionUrl, {
-        method: "PUT",
+      const res = await fetch(sessionUrl, {
+        method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ enabled: true }),
+        body: JSON.stringify({ capabilities }),
       });
-      await fetchSession();
+      const data = await res.json().catch(() => ({}));
+      if (data?.ok && data?.session) {
+        applySession(data.session);
+      } else {
+        setError(data?.error?.message ?? "Failed to activate session");
+      }
     } catch (_) {
       setError("Failed to activate session");
     }
@@ -209,14 +245,22 @@ export function SessionPanel({ owner, project }) {
       : capabilities.filter((c) => c !== key);
     setCapabilities(next);
 
-    if (token) {
+    if (token && enabled) {
       try {
-        await fetch(sessionUrl, {
+        const res = await fetch(sessionUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify({ capabilities: next }),
         });
-      } catch (_) {}
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data?.ok === false) {
+          setError(data?.error?.message ?? "Failed to update permissions");
+        } else if (data?.session) {
+          applySession(data.session);
+        }
+      } catch (_) {
+        setError("Failed to update permissions");
+      }
     }
   }
 
@@ -231,8 +275,7 @@ export function SessionPanel({ owner, project }) {
       });
       const data = await res.json().catch(() => ({}));
       if (data?.ok && data?.session) {
-        setToken(data.session.token ?? null);
-        setEnabled(true);
+        applySession(data.session);
       } else {
         setError(data?.error?.message ?? "Failed to reset token");
       }
@@ -262,6 +305,7 @@ export function SessionPanel({ owner, project }) {
 
   const labelCls = "text-[0.65rem] font-semibold tracking-widest text-body-soft uppercase";
   const sectionCls = "px-4 py-3 border-b border-border";
+  const rotationLabel = rotationEpoch ? formatSessionTime(rotationEpoch) : "Off";
 
   return (
     <details ref={sessionDetailsRef} className="relative inline-block group" data-dropdown-menu="true">
@@ -373,6 +417,25 @@ export function SessionPanel({ owner, project }) {
                   {copied ? "✓" : "Copy"}
                 </Button>
               </div>
+              <div className="mt-2 grid grid-cols-3 gap-2 text-[0.64rem] text-body-soft">
+                <div>
+                  <span className="block uppercase tracking-widest">Created</span>
+                  <span className="block truncate text-body">{formatSessionTime(createdAt)}</span>
+                </div>
+                <div>
+                  <span className="block uppercase tracking-widest">Auto reset</span>
+                  <span className="block truncate text-body">{formatAutoReset(autoResetSeconds)}</span>
+                </div>
+                <div>
+                  <span className="block uppercase tracking-widest">Rotation epoch</span>
+                  <span className="block truncate text-body">{rotationLabel}</span>
+                </div>
+              </div>
+              {token && (
+                <p className="mt-1.5 text-[0.65rem] leading-snug text-body-soft">
+                  Reset invalidates existing MCP clients immediately.
+                </p>
+              )}
             </div>
 
             {/* MCP URL */}

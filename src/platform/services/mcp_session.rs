@@ -19,16 +19,33 @@ fn mcp_url_for(base_url: &str, owner: &str, project: &str) -> String {
     )
 }
 
+fn response_for(session: &McpSession, base_url: &str, min_created_at: i64) -> McpSessionResponse {
+    McpSessionResponse {
+        token: session.token.clone(),
+        mcp_url: mcp_url_for(base_url, &session.owner, &session.project),
+        capabilities: session
+            .capabilities
+            .iter()
+            .map(|c| c.key().to_string())
+            .collect(),
+        enabled: session.enabled,
+        created_at: session.created_at,
+        auto_reset_seconds: session.auto_reset_seconds,
+        rotation_epoch: min_created_at,
+    }
+}
+
 /// In-memory MCP session store (tokens valid until revoked or server restart).
 #[derive(Clone)]
 pub struct McpSessionService {
     sessions: Arc<Mutex<HashMap<String, McpSession>>>,
     project_tokens: Arc<Mutex<HashMap<(String, String), String>>>,
     data: Arc<dyn DataAdapter>,
+    min_created_at: i64,
 }
 
 impl McpSessionService {
-    pub fn new(data: Arc<dyn DataAdapter>) -> Self {
+    pub fn new(data: Arc<dyn DataAdapter>, min_created_at: i64) -> Self {
         let sessions_map = Arc::new(Mutex::new(HashMap::new()));
         let project_tokens_map = Arc::new(Mutex::new(HashMap::new()));
 
@@ -38,6 +55,10 @@ impl McpSessionService {
             let mut sessions = sessions_map.lock().unwrap_or_else(|e| e.into_inner());
             let mut project_tokens = project_tokens_map.lock().unwrap_or_else(|e| e.into_inner());
             for session in persisted {
+                if min_created_at > 0 && session.created_at < min_created_at {
+                    let _ = data.delete_mcp_session(&session.token);
+                    continue;
+                }
                 // Skip expired sessions
                 if let Some(secs) = session.auto_reset_seconds {
                     let age = now.saturating_sub(session.created_at.max(0) as u64);
@@ -56,6 +77,7 @@ impl McpSessionService {
             sessions: sessions_map,
             project_tokens: project_tokens_map,
             data,
+            min_created_at,
         }
     }
 
@@ -71,7 +93,6 @@ impl McpSessionService {
         base_url: &str,
         auto_reset_seconds: Option<u64>,
     ) -> Result<McpSessionResponse, PlatformError> {
-        let mcp_url = mcp_url_for(base_url, owner, project);
         let key = (owner.to_string(), project.to_string());
 
         let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -100,11 +121,7 @@ impl McpSessionService {
                     &existing_token,
                     &capabilities,
                 )?;
-                return Ok(McpSessionResponse {
-                    token: existing_token,
-                    mcp_url,
-                    capabilities: capabilities.iter().map(|c| c.key().to_string()).collect(),
-                });
+                return Ok(response_for(&session_clone, base_url, self.min_created_at));
             }
         }
 
@@ -128,11 +145,7 @@ impl McpSessionService {
         let _ = self.data.put_mcp_session(&session);
         self.create_session_policy_and_binding(owner, project, &token, &capabilities)?;
 
-        Ok(McpSessionResponse {
-            token,
-            mcp_url,
-            capabilities: capabilities.iter().map(|c| c.key().to_string()).collect(),
-        })
+        Ok(response_for(&session, base_url, self.min_created_at))
     }
 
     /// Soft-enable or soft-disable a session without changing its token.
@@ -171,7 +184,6 @@ impl McpSessionService {
         project: &str,
         base_url: &str,
     ) -> Result<McpSessionResponse, PlatformError> {
-        let mcp_url = mcp_url_for(base_url, owner, project);
         let key = (owner.to_string(), project.to_string());
         let new_token = Self::generate_token();
 
@@ -213,11 +225,7 @@ impl McpSessionService {
         let _ = self.data.put_mcp_session(&new_session);
         self.create_session_policy_and_binding(owner, project, &new_token, &capabilities)?;
 
-        Ok(McpSessionResponse {
-            token: new_token,
-            mcp_url,
-            capabilities: capabilities.iter().map(|c| c.key().to_string()).collect(),
-        })
+        Ok(response_for(&new_session, base_url, self.min_created_at))
     }
 
     fn create_session_policy_and_binding(
@@ -327,13 +335,9 @@ impl McpSessionService {
         if !session.enabled {
             return None;
         }
-        if let Some(secs) = session.auto_reset_seconds {
-            let now = now_ts() as u64;
-            let age = now.saturating_sub(session.created_at.max(0) as u64);
-            if age >= secs {
-                let _ = self.revoke_by_token(token);
-                return None;
-            }
+        if self.is_rotated_or_expired(&session) {
+            let _ = self.revoke_by_token(token);
+            return None;
         }
         Some(session)
     }
@@ -341,13 +345,41 @@ impl McpSessionService {
     /// Get current session for a project (if any).
     pub fn get_for_project(&self, owner: &str, project: &str) -> Option<McpSession> {
         let key = (owner.to_string(), project.to_string());
-        let project_tokens = self
-            .project_tokens
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let token = project_tokens.get(&key)?;
-        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions.get(token).cloned()
+        let token = {
+            let project_tokens = self
+                .project_tokens
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            project_tokens.get(&key).cloned()?
+        };
+        let session = {
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            sessions.get(&token).cloned()?
+        };
+        if self.is_rotated_or_expired(&session) {
+            let _ = self.revoke_by_token(&token);
+            return None;
+        }
+        Some(session)
+    }
+
+    /// Global rotation cutoff used to invalidate older persisted sessions.
+    pub fn min_created_at(&self) -> i64 {
+        self.min_created_at
+    }
+
+    fn is_rotated_or_expired(&self, session: &McpSession) -> bool {
+        if self.min_created_at > 0 && session.created_at < self.min_created_at {
+            return true;
+        }
+        if let Some(secs) = session.auto_reset_seconds {
+            let now = now_ts() as u64;
+            let age = now.saturating_sub(session.created_at.max(0) as u64);
+            if age >= secs {
+                return true;
+            }
+        }
+        false
     }
 
     fn generate_token() -> String {

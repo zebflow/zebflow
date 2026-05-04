@@ -643,7 +643,7 @@ fn path_to_file_url(path: &std::path::Path) -> Result<ModuleSpecifier, EngineErr
 
 #[cfg(test)]
 mod tests {
-    use super::render_ssr;
+    use super::{render_ssr, transpile_client};
     use serde_json::json;
 
     #[test]
@@ -715,5 +715,56 @@ mod tests {
                 "navigation": "history"
             }))
         );
+    }
+
+    #[test]
+    fn render_ssr_serializes_style_object_props() {
+        let source = r##"
+            export default function Page() {
+                return (
+                    <div
+                        style={{
+                            width: "100%",
+                            backgroundColor: "#fff",
+                            "--track-size": "12px"
+                        }}
+                    >
+                        inline-style-ok
+                    </div>
+                );
+            }
+        "##;
+
+        let render = render_ssr(source, &json!({}), 10_000).expect("render");
+        assert!(render.html.contains("inline-style-ok"));
+        assert!(
+            render
+                .html
+                .contains(r#"style="width:100%;background-color:#fff;--track-size:12px""#)
+                || render
+                    .html
+                    .contains(r#"style="width:100%;background-color:#fff;--track-size:12px;""#),
+            "expected SSR style object serialization, got {}",
+            render.html
+        );
+    }
+
+    #[test]
+    fn transpile_client_preserves_style_object_for_hydration() {
+        let source = r##"
+            export default function Page() {
+                return (
+                    <div style={{ width: "100%", backgroundColor: "#fff", "--track-size": "12px" }}>
+                        hydrated-style-ok
+                    </div>
+                );
+            }
+        "##;
+
+        let js = transpile_client(source, 10_000).expect("transpile client");
+        assert!(js.contains("style: {"));
+        assert!(js.contains("width: \"100%\""));
+        assert!(js.contains("backgroundColor: \"#fff\""));
+        assert!(js.contains("\"--track-size\": \"12px\""));
     }
 }

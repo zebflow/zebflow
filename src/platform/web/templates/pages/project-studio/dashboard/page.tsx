@@ -27,7 +27,6 @@ export default function Page(input) {
   initDashboardBehavior();
   const apiUrl = (input?.api && input.api.system_info) || "/api/system/info";
   return (
-<Page>
     <ProjectStudioShell
       projectHref={input.project_href}
       projectLabel={input.title}
@@ -165,6 +164,5 @@ export default function Page(input) {
         </section>
       </div>
     </ProjectStudioShell>
-</Page>
   );
 }

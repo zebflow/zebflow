@@ -82,8 +82,47 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.trigger.memsubscribe": "#b45309",
 };
 
+export const NODE_KIND_ICONS: Record<string, string> = {
+  "n.ai.agent": "/assets/node-icons/zebflow/n.ai.agent.svg",
+  "n.auth.token.create": "/assets/node-icons/zebflow/n.auth.token.create.svg",
+  "n.crypto": "/assets/node-icons/zebflow/n.crypto.svg",
+  "n.file.save": "/assets/node-icons/zebflow/n.file.save.svg",
+  "n.function.call": "/assets/node-icons/zebflow/n.function.call.svg",
+  "n.http.request": "/assets/node-icons/zebflow/n.http.request.svg",
+  "n.logic.collect": "/assets/node-icons/zebflow/n.logic.collect.svg",
+  "n.logic.foreach": "/assets/node-icons/zebflow/n.logic.foreach.svg",
+  "n.logic.if": "/assets/node-icons/zebflow/n.logic.if.svg",
+  "n.logic.match": "/assets/node-icons/zebflow/n.logic.match.svg",
+  "n.logic.reduce": "/assets/node-icons/zebflow/n.logic.reduce.svg",
+  "n.logic.retry": "/assets/node-icons/zebflow/n.logic.retry.svg",
+  "n.mem.set": "/assets/node-icons/zebflow/n.mem.set.svg",
+  "n.pg.query": "/assets/node-icons/zebflow/n.pg.query.svg",
+  "n.sekejap.query": "/assets/node-icons/zebflow/n.sekejap.query.svg",
+  "n.script": "/assets/node-icons/zebflow/n.script.svg",
+  "n.sqlite.mutate": "/assets/node-icons/zebflow/n.sqlite.mutate.svg",
+  "n.sqlite.query": "/assets/node-icons/zebflow/n.sqlite.query.svg",
+  "n.img.thumbnail": "/assets/node-icons/zebflow/n.img.thumbnail.svg",
+  "n.trigger.function": "/assets/node-icons/zebflow/n.trigger.function.svg",
+  "n.trigger.manual": "/assets/node-icons/zebflow/n.trigger.manual.svg",
+  "n.trigger.mapserver": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
+  "n.trigger.memsubscribe": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
+  "n.trigger.schedule": "/assets/node-icons/zebflow/n.trigger.schedule.svg",
+  "n.trigger.webhook": "/assets/node-icons/zebflow/n.trigger.webhook.svg",
+  "n.trigger.weberror": "/assets/node-icons/zebflow/n.trigger.weberror.svg",
+  "n.trigger.ws": "/assets/node-icons/zebflow/n.trigger.ws.svg",
+  "n.web.docs.generate": "/assets/node-icons/zebflow/n.web.docs.generate.svg",
+  "n.web.response": "/assets/node-icons/zebflow/n.web.response.svg",
+  "n.web.static.generate": "/assets/node-icons/zebflow/n.web.static.generate.svg",
+  "n.ws.emit": "/assets/node-icons/zebflow/n.ws.emit.svg",
+  "n.ws.sync_state": "/assets/node-icons/zebflow/n.ws.sync_state.svg",
+};
+
 export function nodeColor(kind: string): string {
   return NODE_KIND_COLORS[kind] || "#334155";
+}
+
+export function nodeIcon(kind: string): string {
+  return NODE_KIND_ICONS[canonicalNodeKind(kind)] || "";
 }
 
 export function canonicalNodeKind(kind: string): string {
@@ -139,6 +178,98 @@ export function normalizeNodePins(
   return pins.length > 0 ? pins : fallback.slice();
 }
 
+function slugifyPin(raw: string, fallback = "case"): string {
+  const out = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return out || fallback;
+}
+
+export function normalizeMatchCases(rawCases: unknown): { value: string; pin: string; label: string }[] {
+  if (typeof rawCases === "string") {
+    return rawCases
+      .split("\n")
+      .map((line, index) => normalizeMatchCase(line, index))
+      .filter(Boolean) as { value: string; pin: string; label: string }[];
+  }
+  if (!Array.isArray(rawCases)) return [];
+  return rawCases
+    .map((item, index) => normalizeMatchCase(item, index))
+    .filter(Boolean) as { value: string; pin: string; label: string }[];
+}
+
+function normalizeMatchCase(item: unknown, index: number) {
+  if (typeof item === "string") {
+    const value = item.trim();
+    return value ? { value, pin: slugifyPin(value, `case-${index + 1}`), label: value } : null;
+  }
+  const source = item && typeof item === "object" ? item as Record<string, unknown> : {};
+  const value = String(source.value || "").trim();
+  if (!value) return null;
+  return {
+    value,
+    pin: slugifyPin(String(source.pin || value), `case-${index + 1}`),
+    label: String(source.label || value).trim() || value,
+  };
+}
+
+export function normalizeMatchDefault(rawDefault: unknown): { pin: string; label: string } {
+  if (typeof rawDefault === "string") {
+    const pin = slugifyPin(rawDefault, "default");
+    return { pin, label: pin === "default" ? "Default" : pin };
+  }
+  const source = rawDefault && typeof rawDefault === "object"
+    ? rawDefault as Record<string, unknown>
+    : {};
+  return {
+    pin: slugifyPin(String(source.pin || "default"), "default"),
+    label: String(source.label || "Default").trim() || "Default",
+  };
+}
+
+export function deriveNodeOutputPins(
+  kind: string,
+  config: Record<string, unknown> = {},
+  rawPins: string[] = [],
+  fallback: string[] = []
+): string[] {
+  const canonicalKind = canonicalNodeKind(kind);
+  if (canonicalKind !== "n.logic.match") {
+    return normalizeNodePins(canonicalKind, "output", rawPins, fallback);
+  }
+  const cases = normalizeMatchCases(config?.cases);
+  const defaultRoute = normalizeMatchDefault(config?.default);
+  const pins: string[] = [];
+  for (const item of cases) {
+    if (!pins.includes(item.pin)) pins.push(item.pin);
+  }
+  if (!pins.includes(defaultRoute.pin)) pins.push(defaultRoute.pin);
+  return pins.length > 0 ? pins : normalizeNodePins(canonicalKind, "output", rawPins, ["default"]);
+}
+
+export function deriveNodeOutputLabels(
+  kind: string,
+  config: Record<string, unknown> = {},
+  outputPins: string[] = []
+): Record<string, string> {
+  const canonicalKind = canonicalNodeKind(kind);
+  const labels: Record<string, string> = {};
+  if (canonicalKind === "n.logic.match") {
+    normalizeMatchCases(config?.cases).forEach((item) => {
+      labels[item.pin] = item.label || item.value || item.pin;
+    });
+    const defaultRoute = normalizeMatchDefault(config?.default);
+    labels[defaultRoute.pin] = defaultRoute.label || defaultRoute.pin;
+  }
+  outputPins.forEach((pin) => {
+    if (!labels[pin]) labels[pin] = pin;
+  });
+  return labels;
+}
+
 export function normalizeGraphForEditor(graph: any): any {
   const source = graph && typeof graph === "object" ? graph : {};
   const nodes = Array.isArray(source.nodes) ? source.nodes : [];
@@ -150,7 +281,7 @@ export function normalizeGraphForEditor(graph: any): any {
         ...node,
         kind,
         input_pins: normalizeNodePins(kind, "input", node?.input_pins, ["in"]),
-        output_pins: normalizeNodePins(kind, "output", node?.output_pins, ["out"]),
+        output_pins: deriveNodeOutputPins(kind, node?.config || {}, node?.output_pins, ["out"]),
       };
     }),
   };

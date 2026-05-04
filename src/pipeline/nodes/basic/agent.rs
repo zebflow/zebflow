@@ -489,7 +489,7 @@ impl Node {
         query: &str,
         owner: &str,
         project: &str,
-        input: &NodeExecutionInput,
+        _input: &NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         let Some(llm) = self.build_llm(owner, project) else {
             return Ok(NodeExecutionOutput {

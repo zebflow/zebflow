@@ -26,7 +26,11 @@ import {
   buildNodeCatalog,
   normalizeGraphForEditor,
   normalizeNodePins,
+  NODE_KIND_ICONS,
   nodeColor,
+  nodeIcon,
+  deriveNodeOutputPins,
+  deriveNodeOutputLabels,
   canonicalNodeKind,
   isTriggerNodeKind,
   nodeCategories,
@@ -196,6 +200,17 @@ export default function PipelineEditor({
     error?: string | null;
     trace: InvocationTraceEntry[];
   };
+  type ContinuationRequest = {
+    graphNodeId: number;
+    zfKind: string;
+    zfPipelineNodeId: string;
+    title?: string;
+    x: number;
+    y: number;
+    outputSlot: number;
+    outputPin: string;
+    _raw: any;
+  };
   const graphRef = useRef(null);
   const nav = useNavigate();
 
@@ -229,6 +244,7 @@ export default function PipelineEditor({
     browserCredentials: [],
     openaiCredentials: [],
     secureRequestCredentials: [],
+    httpAuthCredentials: [],
     aiTools: [],
     pageTemplates: [],
     functionPipelines: [],
@@ -253,6 +269,8 @@ export default function PipelineEditor({
   const [retentionInherit, setRetentionInherit] = useState(true);
   const [retentionMaxInv, setRetentionMaxInv] = useState("");
   const [retentionMaxAgeDays, setRetentionMaxAgeDays] = useState("");
+  const [continuationRequest, setContinuationRequest] = useState<ContinuationRequest | null>(null);
+  const [nodePickerQuery, setNodePickerQuery] = useState("");
 
   // ── Git commit dialog state ─────────────────────────────────────────────────
   const [gitDialogOpen, setGitDialogOpen] = useState(false);
@@ -310,6 +328,7 @@ export default function PipelineEditor({
             browserCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase().startsWith("browser_")),
             openaiCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "openai"),
             secureRequestCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "secure_request"),
+            httpAuthCredentials: items.filter((i: any) => { const k = String(i?.kind || "").toLowerCase(); return k === "secure_request" || k === "oauth2"; }),
           }));
         } catch {}
       }
@@ -396,6 +415,32 @@ export default function PipelineEditor({
     }
   }
 
+  const handleOutputAdd = useCallback((req: ContinuationRequest) => {
+    setContinuationRequest(req);
+    setNodePickerQuery("");
+  }, []);
+
+  useEffect(() => {
+    function onRuntimeNodeEdit(event: Event) {
+      const detail = (event as CustomEvent<PipelineNodeData>).detail;
+      if (!detail) return;
+      event.preventDefault();
+      handleNodeEdit(detail);
+    }
+    function onRuntimeOutputAdd(event: Event) {
+      const detail = (event as CustomEvent<ContinuationRequest>).detail;
+      if (!detail) return;
+      event.preventDefault();
+      handleOutputAdd(detail);
+    }
+    window.addEventListener("zebflow:pipeline-node-edit", onRuntimeNodeEdit);
+    window.addEventListener("zebflow:pipeline-output-add", onRuntimeOutputAdd);
+    return () => {
+      window.removeEventListener("zebflow:pipeline-node-edit", onRuntimeNodeEdit);
+      window.removeEventListener("zebflow:pipeline-output-add", onRuntimeOutputAdd);
+    };
+  }, [currentLocked, handleOutputAdd]);
+
   // ── Apply node edit from NodeDialog ──────────────────────────────────────
   function handleNodeApply(
     nodeData: PipelineNodeData,
@@ -404,17 +449,45 @@ export default function PipelineEditor({
   ) {
     // Mutate live graph node via _raw escape hatch
     const rawNode = nodeData._raw;
+    const app = graphRef.current?.getApp?.();
     if (rawNode) {
       rawNode.zfPipelineNodeId = slug;
       rawNode.zfConfig = config;
       if (config.title) {
         rawNode.title = String(config.title);
+        const label = rawNode.el?.querySelector?.(".zgu-node-label");
         const header = rawNode.el?.querySelector?.(".zgu-node-header");
-        if (header) header.textContent = String(config.title);
+        if (label) {
+          label.textContent = String(config.title);
+        } else if (header) {
+          header.textContent = String(config.title);
+        }
+      }
+      const nextOutputs = deriveNodeOutputPins(
+        nodeData.zfKind,
+        config,
+        (rawNode.outputs || []).map((pin: any) => pin.name),
+        ["out"]
+      );
+      rawNode.zfOutputLabels = deriveNodeOutputLabels(nodeData.zfKind, config, nextOutputs);
+      const currentOutputs = (rawNode.outputs || []).map((pin: any) => pin.name);
+      if (
+        app?.updateNodePins &&
+        (nextOutputs.length !== currentOutputs.length ||
+          nextOutputs.some((pin, index) => pin !== currentOutputs[index]))
+      ) {
+        app.updateNodePins(rawNode, {
+          inputs: (rawNode.inputs || []).map((pin: any) => pin.name),
+          outputs: nextOutputs,
+        });
+      } else {
+        app?.updateNodePins?.(rawNode, {
+          inputs: (rawNode.inputs || []).map((pin: any) => pin.name),
+          outputs: nextOutputs,
+        });
       }
     }
     // Re-attach edit buttons to refresh slug badge
-    const app = graphRef.current?.getApp?.();
     if (app) {
       // PipelineGraph handles this via its internal MutationObserver
       // but we can manually trigger a refresh
@@ -627,6 +700,7 @@ export default function PipelineEditor({
       const node = app.factory.custom(x, y, {
         title: entry?.title || kind,
         color: nodeColor(kind),
+        icon: nodeIcon(kind),
         inputs: normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]),
         outputs: normalizeNodePins(kind, "output", entry?.output_pins || [], ["out"]),
       });
@@ -636,6 +710,11 @@ export default function PipelineEditor({
         : canonicalNodeKind(kind) === "n.trigger.mapserver"
           ? { mode: "features", source_kind: "geojson_file", bbox_required: true, max_features: 1000 }
           : {};
+      node.zfOutputLabels = deriveNodeOutputLabels(
+        kind,
+        node.zfConfig,
+        (node.outputs || []).map((pin: any) => pin.name),
+      );
       node.zfPipelineNodeId =
         anchor?.zfPipelineNodeId ||
         String(kind).replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
@@ -650,12 +729,98 @@ export default function PipelineEditor({
       );
       return;
     }
+    const nextConfig = defaultConfigForNode(kind);
+    const outputPins = deriveNodeOutputPins(kind, nextConfig, entry?.output_pins || [], ["out"]);
     graphRef.current.addNode(kind, {
       title: entry?.title || kind,
       color: nodeColor(kind),
+      icon: nodeIcon(kind),
       input_pins: normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]),
-      output_pins: normalizeNodePins(kind, "output", entry?.output_pins || [], ["out"]),
+      output_pins: outputPins,
     });
+  }
+
+  function defaultConfigForNode(kind: string) {
+    const canonical = canonicalNodeKind(kind);
+    if (canonical === "n.trigger.webhook") {
+      return { method: "GET" };
+    }
+    if (canonical === "n.trigger.mapserver") {
+      return { mode: "features", source_kind: "geojson_file", bbox_required: true, max_features: 1000 };
+    }
+    if (canonical === "n.logic.match") {
+      return { cases: [], default: { pin: "default", label: "Default" } };
+    }
+    return {};
+  }
+
+  function baseSlugForKind(kind: string) {
+    return String(kind || "node")
+      .split(".")
+      .filter(Boolean)
+      .slice(1)
+      .join("-") || "node";
+  }
+
+  function handleContinuationAdd(kind: string) {
+    if (!graphRef.current || currentLocked || !continuationRequest) return;
+    const app = (graphRef.current as any)?.getApp?.();
+    if (!app?.graph || !app?.factory || !app?.ui) return;
+    const source = app.graph.nodes.find((node: any) => node.id === continuationRequest.graphNodeId);
+    if (!source) {
+      setContinuationRequest(null);
+      return;
+    }
+
+    const entry = catalog.get(kind);
+    const inputPins = normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]);
+    const nextConfig = defaultConfigForNode(kind);
+    const outputPins = deriveNodeOutputPins(kind, nextConfig, entry?.output_pins || [], ["out"]);
+    const x = Number.isFinite(Number(continuationRequest.x))
+      ? Number(continuationRequest.x)
+      : Number.isFinite(Number(source.x))
+        ? Number(source.x) + 330
+        : 240;
+    const y = Number.isFinite(Number(continuationRequest.y))
+      ? Number(continuationRequest.y)
+      : Number.isFinite(Number(source.y))
+        ? Number(source.y) + Math.max(0, continuationRequest.outputSlot) * 34
+        : 160;
+    const node = app.factory.custom(x, y, {
+      title: entry?.title || kind,
+      color: nodeColor(kind),
+      icon: nodeIcon(kind),
+      inputs: inputPins,
+      outputs: outputPins,
+    });
+    node.zfKind = kind;
+    node.zfConfig = nextConfig;
+    node.zfOutputLabels = deriveNodeOutputLabels(kind, nextConfig, outputPins);
+    node.zfPipelineNodeId = ensureUniqueSlug(app.graph.nodes, -1, baseSlugForKind(kind));
+    app.addNode(node);
+    if (inputPins.length > 0) {
+      app.graph.connect(source.id, continuationRequest.outputSlot, node.id, 0, app.ui.options?.defaultManualLinkOptions || {});
+      app.ui.updateWires?.();
+    }
+    setContinuationRequest(null);
+    setNodePickerQuery("");
+    const nodeData = {
+      graphNodeId: node.id,
+      zfKind: node.zfKind || "",
+      zfPipelineNodeId: node.zfPipelineNodeId || "",
+      zfConfig: node.zfConfig || {},
+      title: node.title,
+      x: node.x,
+      y: node.y,
+      inputs: node.inputs || [],
+      outputs: node.outputs || [],
+      _raw: node,
+    };
+    if (canonicalNodeKind(kind) === "n.web.render") {
+      setWebRenderNode(nodeData);
+    } else {
+      setDialogNode(nodeData);
+    }
   }
 
   // ── Toolbar state indicators ──────────────────────────────────────────────
@@ -687,6 +852,22 @@ export default function PipelineEditor({
     : retention?.max_invocations
       ? `retain last ${retention.max_invocations} run(s)`
       : `inherit project default (${projectDefaultMaxInvocations})`;
+  const continuationItems = Object.entries(nodeCategories)
+    .filter(([cat]) => cat !== "trigger")
+    .flatMap(([cat, kinds]) =>
+      (kinds || [])
+        .map((kind) => ({ category: cat, entry: catalog.get(kind) }))
+        .filter((item) => item.entry) as { category: string; entry: NodeCatalogEntry }[]
+    )
+    .filter(({ entry }) => {
+      const q = nodePickerQuery.trim().toLowerCase();
+      if (!q) return true;
+      return [
+        entry.kind,
+        entry.title,
+        entry.description,
+      ].some((value) => String(value || "").toLowerCase().includes(q));
+    });
 
   function openSettingsDialog() {
     if (!currentMeta) return;
@@ -907,9 +1088,11 @@ export default function PipelineEditor({
             readOnly={currentLocked}
             snapToGrid={snapToGrid}
             gridSize={30}
+            kindIcons={NODE_KIND_ICONS}
             id="pipeline-canvas"
             className="w-full h-full"
             onNodeEdit={currentLocked ? undefined : handleNodeEdit}
+            onOutputAdd={currentLocked ? undefined : handleOutputAdd}
             onReady={() => {
               // No-op; edit buttons handled by PipelineGraph's MutationObserver
             }}
@@ -1098,6 +1281,60 @@ export default function PipelineEditor({
         redirectUrl={gitRedirectUrl}
         onClose={() => setGitDialogOpen(false)}
       />
+
+      <Dialog open={!!continuationRequest} onOpenChange={(v: boolean) => {
+        if (!v) {
+          setContinuationRequest(null);
+          setNodePickerQuery("");
+        }
+      }}>
+        <DialogContent className="max-w-3xl border-border bg-[var(--color-surface,#161616)] text-body">
+          <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
+            <div>
+              <DialogHeader>
+                <DialogTitle>Add Next Node</DialogTitle>
+              </DialogHeader>
+              <p className="mt-1 text-xs text-body-muted">
+                {continuationRequest
+                  ? `After ${continuationRequest.zfPipelineNodeId || continuationRequest.title || "node"} / ${continuationRequest.outputPin || "out"}`
+                  : "Choose the next node for this output."}
+              </p>
+            </div>
+          </div>
+          <div className="px-6 py-3">
+            <input
+              className="zf-input"
+              value={nodePickerQuery}
+              placeholder="Search nodes..."
+              autoFocus
+              onInput={(e) => setNodePickerQuery((e.target as HTMLInputElement).value)}
+            />
+          </div>
+          <div className="pipeline-editor-continuation-grid">
+            {continuationItems.map(({ category, entry }) => (
+              <button
+                key={entry.kind}
+                type="button"
+                className="pipeline-editor-continuation-item"
+                onClick={() => handleContinuationAdd(entry.kind)}
+              >
+                <span className="text-sm font-semibold text-body">{entry.title || entry.kind}</span>
+                <span className="pipeline-editor-continuation-kind">{entry.kind}</span>
+                {entry.description ? (
+                  <span className="line-clamp-2 text-xs text-body-soft">{entry.description}</span>
+                ) : (
+                  <span className="text-xs uppercase tracking-[0.12em] text-body-soft">{category}</span>
+                )}
+              </button>
+            ))}
+            {continuationItems.length === 0 ? (
+              <div className="col-span-full rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-body-muted">
+                No matching nodes.
+              </div>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={settingsOpen} onOpenChange={(v: boolean) => !v && closeSettingsDialog()}>
         <DialogContent className="max-w-xl border-border bg-surface text-body">

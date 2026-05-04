@@ -13,6 +13,7 @@ The Office Federation Contract exists to make Zebflow scale from:
 - one self-managed office on a laptop or Raspberry Pi
 - one controller office with multiple managed offices
 - Kubernetes multi-node deployments
+- office-hosted platform services such as marketplace
 - future agent-heavy offices with multiple managed execution capabilities
 
 without changing the meaning of:
@@ -20,6 +21,7 @@ without changing the meaning of:
 - office identity
 - management authority
 - project placement
+- platform service placement
 - mutation journaling
 - failure and recovery
 
@@ -50,7 +52,12 @@ Every office has:
 - local runtime embodiment
 - local project storage
 - local project execution
+- local platform service storage for services it hosts
+- local platform service execution for services it hosts
 - a management role that is either sovereign or delegated
+
+An office is therefore not only a place for projects. It is the local Zebflow
+embodiment for hosted projects and hosted platform service instances.
 
 ### 4.2 Managing Office
 
@@ -71,6 +78,69 @@ A Self-Managed Office is an office whose managing office is itself.
 Each project is hosted by exactly one office in the base `0.2.x` model.
 
 That office is the embodiment of the project runtime and local workspace.
+
+### 4.6 Platform Service Instance
+
+A Platform Service Instance is a platform-level service embodied in one office.
+
+Examples include:
+
+- marketplace
+- future artifact registry
+- future scheduler or queue
+- future model or agent runner
+
+A platform service instance is not a project, even if implementation reuses
+project/app deployment machinery internally.
+
+Minimum identity fields:
+
+- `service_instance_id`
+- `service_kind`
+- `display_label`
+- `host_office_id`
+- `state_office_id`
+- `public_base_url`
+- `enabled`
+- `status`
+- `placement_generation`
+- `created_at`
+- `updated_at`
+
+For the default marketplace service:
+
+```text
+service_instance_id: marketplace-default
+service_kind: marketplace
+host_office_id: {office_id}
+state_office_id: {office_id}
+public_base_url: https://market.zebflow.com/api
+```
+
+`host_office_id` and `state_office_id` **Must** be equal in the base `0.2.x`
+model.
+
+### 4.7 Platform Service Host Office
+
+Each platform service instance is hosted by exactly one office in the base
+`0.2.x` model.
+
+That office is the embodiment of the service runtime and operational state.
+
+### 4.8 Platform Service Management Binding
+
+The managing office for a platform service instance is the managing office of
+the service host office.
+
+Formally:
+
+```text
+service_manager(s) = root(service_host(s))
+```
+
+This means a controller governs a platform service while it governs the office
+that hosts the service. The controller does not own the service state unless it
+is also the service host office.
 
 ## 5. Identity Fields
 
@@ -98,6 +168,7 @@ Binding answers:
 
 - who manages this office?
 - which office hosts this project?
+- which office hosts this platform service instance?
 
 Binding changes only through explicit mutation.
 
@@ -146,12 +217,15 @@ This includes:
 - runtime-served files
 - project-local state access
 - app-level authentication handled by the project itself
+- office-hosted platform service APIs
+- office-hosted platform service state access
 
 This does not include:
 
 - new federation-level mutation
 - cross-office orchestration
 - office reassignment
+- service reassignment
 - controller-only management UI
 
 ## 9. Management Scope Rule
@@ -164,8 +238,12 @@ This means:
 
 - sovereignty is hierarchical
 - runtime embodiment is local
+- service embodiment is local
 - local operators in a managed office act by delegation, not by intrinsic
   sovereignty
+
+Federation changes management authority. It **Must Not** imply that hosted
+project or hosted platform service data is moved into the managing office.
 
 ## 10. Actor And Capability Model
 
@@ -233,6 +311,8 @@ Minimum record fields:
 - `operation_kind`
 - `owner`
 - `project`
+- `service_id` if applicable
+- `service_kind` if applicable
 - `source_office_id`
 - `target_office_id` if applicable
 - `status`
@@ -256,6 +336,8 @@ The journal is required for:
 - export
 - import
 - placement change
+- service placement change
+- service migration
 - remote authoring mutation
 - future migration or cutover actions
 
@@ -290,6 +372,28 @@ core operation.
 
 Hot-path data must already be local enough for the office to serve correctly.
 
+## 15a. Platform Service Materialization Contract
+
+Runtime-critical platform service state for a service hosted by an office
+**Must** be local enough for that office to serve the service without per-request
+controller lookups.
+
+For marketplace, materialized state **May** include:
+
+- marketplace service configuration
+- publisher records
+- token hashes and revocation state
+- package metadata
+- package version metadata
+- artifact blobs
+- media assets
+- quotas
+- audit records needed for local service operation
+
+The managing office **May** hold inventory and replicated summaries, but those
+summaries are not the runtime source of truth while the service is hosted by a
+managed office.
+
 ## 16. Project Placement Rule
 
 Each project has exactly one host office in the base `0.2.x` model.
@@ -307,6 +411,112 @@ The managing office is authoritative for:
 - inventory
 - governance
 - migration orchestration
+
+## 16a. Platform Service Placement Rule
+
+Each platform service instance has exactly one host office in the base `0.2.x`
+model.
+
+Formal functions:
+
+```text
+service_host : S -> O
+state_host : S -> O
+service_manager : S -> O
+```
+
+Base `0.2.x` invariant:
+
+```text
+state_host(s) = service_host(s)
+service_manager(s) = root(service_host(s))
+```
+
+The host office is authoritative for:
+
+- service runtime execution
+- service operational database/storage
+- service-served files and assets
+- service-local audit required for operation
+
+The managing office is authoritative for:
+
+- service placement policy
+- inventory
+- governance
+- migration orchestration
+
+For marketplace, this means the selected host office owns the marketplace
+database and artifact/media storage while it hosts the marketplace service.
+
+### 16b. Platform Service Lifecycle
+
+Platform service lifecycle states:
+
+- `disabled`
+- `provisioning`
+- `enabled`
+- `degraded`
+- `migrating`
+- `disabled_pending_cleanup`
+
+Lifecycle transitions **Must** be explicit and journaled.
+
+Minimum operations:
+
+- `service.enable`
+- `service.disable`
+- `service.configure`
+- `service.move_host`
+- `service.rotate_secrets`
+- `service.rebuild_public_projection`
+
+Marketplace-specific operations:
+
+- `marketplace.publisher.create`
+- `marketplace.publisher.update`
+- `marketplace.publisher.disable`
+- `marketplace.token.create`
+- `marketplace.token.revoke`
+- `marketplace.package.publish`
+- `marketplace.package.unpublish`
+- `marketplace.package.install`
+
+Each operation record **Must** include:
+
+- `service_instance_id`
+- `service_kind`
+- `source_office_id`
+- `target_office_id` when placement changes
+- actor identity
+- requested capability
+- status
+- audit timestamp
+
+### 16c. Platform Service State Ownership
+
+The host office owns the service's operational state while it hosts the service.
+
+For marketplace, operational state includes:
+
+- marketplace configuration
+- publisher records
+- token hashes and revocation state
+- package records
+- version records
+- artifact blobs
+- media assets
+- quota counters
+- service-local audit log
+
+The managing office may keep:
+
+- inventory
+- health/status summaries
+- placement generation
+- replicated package summaries for management UI
+
+Those replicated records are not the runtime source of truth.
 
 ## 17. Office-Truthful Studio Rule
 
@@ -339,6 +549,8 @@ Required operations:
 - attach to manager
 - detach to self-managed
 - reattach to a new manager
+- move project host office
+- move platform service host office
 - optional future subtree transfer semantics
 
 ## 19. Failure Semantics
@@ -349,6 +561,7 @@ If the managing office is offline:
 
 - managed offices remain bound
 - managed offices may continue serving runtime
+- managed offices may continue serving hosted platform services from local state
 - federation mutation is suspended
 
 ### 19.2 Managed Office Offline
@@ -358,6 +571,8 @@ If a managed office is offline:
 - manager records the office as unavailable
 - binding remains unchanged
 - pending mutation may remain queued or fail explicitly
+- projects and platform services hosted by that office are unavailable unless
+  explicitly migrated or failed over
 
 ### 19.3 Office Compromised
 
@@ -422,6 +637,8 @@ Within `0.2.x`, new releases **Must Not**:
 - silently reinterpret status as sovereignty
 - silently require hot-path controller lookups for core runtime
 - silently make a host office non-authoritative for its own project workspace
+- silently make a host office non-authoritative for its own hosted platform
+  service state
 
 ## 23. Compatibility Examples
 
@@ -483,6 +700,7 @@ An office federation implementation is compliant with this contract if:
 2. runtime can remain local when management is unavailable
 3. mutations are journaled durably
 4. compatibility is checked explicitly
-5. host office truth is preserved for hosted projects
+5. host office truth is preserved for hosted projects and hosted platform
+   services
 
 That is the minimum stability bar for multi-office Zebflow.

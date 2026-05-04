@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="base-object" transform="translate(-0.3200 -7.6000) scale(1.760000)">
+    <path d="M 23 14 C 13 14 11 23 17 30 C 20 34 20 38 16 43 C 12 49 16 56 25 56" fill="none" stroke="#30384a" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 41 14 C 51 14 53 23 47 30 C 44 34 44 38 48 43 C 52 49 48 56 39 56" fill="none" stroke="#30384a" stroke-width="8" stroke-linecap="round"/>
+    <path d="M 28 42 L 36 22" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <g id="operation-badge" transform="translate(77.5556 78.2963) scale(0.740741)">
+    <path d="M 11 32 H 39 M 31 20 L 43 32 L 31 44" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 47 14 H 56 V 50 H 47" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

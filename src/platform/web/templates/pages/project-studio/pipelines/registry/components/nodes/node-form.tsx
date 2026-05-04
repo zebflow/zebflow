@@ -70,6 +70,7 @@ function defaultFor(type: NodeFieldType): unknown {
   if (type === "multi_checkbox") return [];
   if (type === "key_value_pairs") return {};
   if (type === "claims_pairs") return {};
+  if (type === "match_cases") return { cases: [], default: { pin: "default", label: "Default" } };
   return "";
 }
 
@@ -95,6 +96,7 @@ const FULL_WIDTH_TYPES: NodeFieldType[] = [
   "claims_pairs",
   "params_builder",
   "secure_request_bindings",
+  "match_cases",
 ];
 
 function isFullWidth(field: NodeFieldDef): boolean {
@@ -144,6 +146,11 @@ function enrichFields(
       if (options.length === 1 && options[0].value === "") {
         options[0].label = "No secure request profile available";
       }
+    } else if (f.data_source === "credentials_http_auth") {
+      options = buildCredentialOptions(dataState.httpAuthCredentials, value as string);
+      if (options.length === 1 && options[0].value === "") {
+        options[0].label = "No HTTP auth credential available";
+      }
     } else if (f.data_source === "ai_tools") {
       options = (Array.isArray(dataState.aiTools) ? dataState.aiTools : []).map((t: any) => ({
         value: t.tool_name,
@@ -170,11 +177,21 @@ function enrichFields(
     if (f.type === "copy_url") {
       value = webhookPublicUrlFor(dataState, String(config.path ?? "/"));
     }
+    if (f.type === "match_cases") {
+      const draft = config[f.name];
+      value = draft && typeof draft === "object" && !Array.isArray(draft)
+        ? draft
+        : {
+            cases: Array.isArray(config.cases) ? config.cases : [],
+            default: config.default !== undefined ? config.default : { pin: "default", label: "Default" },
+          };
+    }
 
     const enriched: EnrichedFieldDef = { ...f, value, options };
     if (f.type === "secure_request_bindings") {
       const selectedCredId = String(config.credential_id ?? "");
-      const cred = (dataState.secureRequestCredentials as any[]).find(
+      const allHttpCreds = [...(dataState.secureRequestCredentials || []), ...(dataState.httpAuthCredentials || [])];
+      const cred = allHttpCreds.find(
         (item: any) => String(item?.credential_id || "") === selectedCredId
       );
       const variables = Array.isArray(cred?.secure_request_vars) ? cred.secure_request_vars : [];

@@ -14,6 +14,7 @@ pub mod interface;
 pub mod model;
 pub mod nodes;
 pub mod registry;
+pub mod security;
 
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine};
 pub use interface::PipelineEngine;

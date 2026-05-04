@@ -1,17 +1,3 @@
-/**
- * Infrastructure landing page scaffold.
- *
- * This page is the future home of cluster-aware Studio UX:
- *
- * - office inventory and health
- * - per-project placement policy
- * - join/bootstrap guidance
- * - later runtime drains, tags, and capacity views
- *
- * The route is intentionally not wired yet. The file exists now so the product structure mirrors
- * the cluster/control-plane architecture before the UI behavior is implemented.
- */
-
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { ProjectRuntimePanel } from "@/pages/project-studio/infrastructure/components/project-runtime-panel";
 import { WorkersPanel } from "@/pages/project-studio/infrastructure/components/workers-panel";
@@ -31,7 +17,7 @@ export function getPage(input) {
   };
 }
 
-export default function InfrastructurePage(input) {
+export default function Page(input) {
   const runtime = input?.runtime ?? {};
   const project = input?.project ?? {};
 
@@ -54,9 +40,8 @@ export default function InfrastructurePage(input) {
               Controller and office topology
             </h1>
             <p className="max-w-3xl text-sm leading-6 text-gray-600">
-              This surface will manage office inventory, project placement, and
-              controller bootstrap. The structure exists now so runtime work can land
-              behind stable UI module boundaries.
+              Current office inventory, project runtime placement, and controller
+              registration state for this project.
             </p>
           </header>
           <section className="grid gap-6 lg:grid-cols-[1.25fr_0.95fr]">

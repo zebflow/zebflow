@@ -128,6 +128,11 @@
         out += ' for="' + escAttr(val) + '"';
         continue;
       }
+      if (key === "style" && val && typeof val === "object") {
+        var style = renderStyleObject(val);
+        if (style) out += ' style="' + escAttr(style) + '"';
+        continue;
+      }
       if (val === true) {
         out += " " + key;
         continue;
@@ -135,6 +140,24 @@
       out += ' ' + key + '="' + escAttr(String(val)) + '"';
     }
     return out;
+  }
+
+  function renderStyleObject(styleObj) {
+    var parts = [];
+    for (var styleKey in styleObj) {
+      if (!Object.prototype.hasOwnProperty.call(styleObj, styleKey)) continue;
+      var styleVal = styleObj[styleKey];
+      if (styleVal == null || styleVal === false) continue;
+      var cssKey = styleKey.indexOf("--") === 0 ? styleKey : camelToKebab(styleKey);
+      parts.push(cssKey + ":" + String(styleVal));
+    }
+    return parts.join(";");
+  }
+
+  function camelToKebab(input) {
+    return String(input).replace(/[A-Z]/g, function (m) {
+      return "-" + m.toLowerCase();
+    });
   }
 
   // ---------------------------------------------------------------------------

@@ -65,13 +65,13 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         rewrite_imports(source, &raw_imports, &options, &mut diagnostics)?;
 
     let normalized_page_source = rewrite_page_root_tag(&rewritten_source);
-    let (bundled_server, _, server_deps) = bundle_for_client(
+    let (bundled_server, _, server_deps, inline_styles) = bundle_for_client(
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
     )?;
     let transformed_server = format!("{}{}", JSX_PRELUDE, bundled_server);
-    let (bundled_client, detected_zeb_libs, client_deps) = bundle_for_client(
+    let (bundled_client, detected_zeb_libs, client_deps, _) = bundle_for_client(
         &normalized_page_source,
         &imports,
         options.template_root.as_deref(),
@@ -94,6 +94,7 @@ fn compile_inner(source: &str, options: CompileOptions) -> Result<CompiledTempla
         hydrate_mode,
         compile_options: options,
         detected_zeb_libs,
+        inline_styles,
         dependency_paths,
     })
 }
@@ -152,15 +153,19 @@ fn validate_import_allowlist(
         if import.starts_with("@/") {
             continue;
         }
+        if import.starts_with("./") || import.starts_with("../") {
+            continue;
+        }
         // Absolute paths are the resolved form of @/ imports written to disk by
-        // prepare_template_root() before compile() is called. Never user-authored.
+        // prepare_template_root() before compile() is called, or the rewritten
+        // resolved form of relative imports. Never user-authored.
         if import.starts_with('/') {
             continue;
         }
         return Err(EngineError::new(
             "RWE_IMPORT_NOT_ALLOWED",
             format!(
-                "import '{import}' is not allowed; only \"zeb\", \"zeb/*\", and \"@/\" imports are valid"
+                "import '{import}' is not allowed; valid imports are \"zeb\", \"zeb/*\", \"@/…\", and boundary-checked relative imports"
             ),
         ));
     }
@@ -475,7 +480,11 @@ fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<Strin
         })?;
         let root_path = canonical_or_current(Path::new(root))?;
         let joined = root_path.join(import.trim_start_matches("@/"));
-        let resolved = resolve_module_path(&joined)?;
+        let resolved = if import.ends_with(".css") {
+            resolve_style_path(&joined)?
+        } else {
+            resolve_module_path(&joined)?
+        };
         let final_path = normalize_path(&canonical_or_fallback(&resolved)?);
         ensure_within_root(&final_path, &root_path)?;
         return Ok(Some(final_path.to_string_lossy().to_string()));
@@ -493,7 +502,11 @@ fn resolve_import(import: &str, options: &CompileOptions) -> Result<Option<Strin
             .ok_or_else(|| EngineError::new("RWE_FILE_PATH", "invalid file_path"))?;
         let base = canonical_or_current(base)?;
         let joined = base.join(import);
-        let resolved = resolve_module_path(&joined)?;
+        let resolved = if import.ends_with(".css") {
+            resolve_style_path(&joined)?
+        } else {
+            resolve_module_path(&joined)?
+        };
         let final_path = normalize_path(&canonical_or_fallback(&resolved)?);
         if let Some(root) = &options.template_root {
             let root_path = canonical_or_current(Path::new(root))?;
@@ -575,6 +588,28 @@ fn resolve_module_path(base: &Path) -> Result<PathBuf, EngineError> {
     Ok(base.to_path_buf())
 }
 
+fn resolve_style_path(base: &Path) -> Result<PathBuf, EngineError> {
+    if base.is_file() {
+        return Ok(base.to_path_buf());
+    }
+
+    if base.extension().and_then(|v| v.to_str()) == Some("css") {
+        return Ok(base.to_path_buf());
+    }
+
+    let candidate = PathBuf::from(format!("{}.css", base.display()));
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+
+    let index = base.join("index.css");
+    if index.exists() {
+        return Ok(index);
+    }
+
+    Ok(base.to_path_buf())
+}
+
 fn ensure_within_root(path: &Path, root: &Path) -> Result<(), EngineError> {
     if path.starts_with(root) {
         Ok(())
@@ -640,7 +675,12 @@ fn rewrite_at_imports(source: &str, template_root: &Path) -> String {
             }
             let rel = spec.trim_start_matches("@/");
             let joined = template_root.join(rel);
-            if let Ok(resolved) = resolve_module_path(&joined) {
+            let resolved = if spec.ends_with(".css") {
+                resolve_style_path(&joined)
+            } else {
+                resolve_module_path(&joined)
+            };
+            if let Ok(resolved) = resolved {
                 if let Ok(canonical) = canonical_or_fallback(&resolved) {
                     let abs = normalize_path(&canonical);
                     let abs_str = abs.to_string_lossy();
@@ -660,9 +700,10 @@ fn bundle_for_client(
     page_source: &str,
     imports: &[ImportEdge],
     template_root: Option<&str>,
-) -> Result<(String, Vec<String>, HashSet<String>), EngineError> {
+) -> Result<(String, Vec<String>, HashSet<String>, Vec<String>), EngineError> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut inlined_parts: Vec<String> = Vec::new();
+    let mut inline_styles: Vec<String> = Vec::new();
     let mut counter: usize = 0;
     let mut rwe_names: HashSet<String> = HashSet::new();
     let mut zeb_libs: HashSet<String> = HashSet::new();
@@ -674,11 +715,14 @@ fn bundle_for_client(
     // Depth-first: inline all filesystem imports from the page.
     for edge in imports {
         let path = edge.resolved.as_deref().unwrap_or(&edge.source);
-        if path.starts_with('/') && !is_rwe_runtime_path(path) {
+        if path.starts_with('/') && path.ends_with(".css") {
+            collect_inline_style(path, &mut inline_styles, &mut visited)?;
+        } else if path.starts_with('/') && !is_rwe_runtime_path(path) {
             collect_inlined_module(
                 path,
                 &mut inlined_parts,
                 &mut visited,
+                &mut inline_styles,
                 &mut counter,
                 &mut rwe_names,
                 &mut zeb_libs,
@@ -698,13 +742,14 @@ fn bundle_for_client(
     result.push_str(&clean_main);
     let mut libs: Vec<String> = zeb_libs.into_iter().collect();
     libs.sort();
-    Ok((result, libs, visited))
+    Ok((result, libs, visited, inline_styles))
 }
 
 fn collect_inlined_module(
     path: &str,
     parts: &mut Vec<String>,
     visited: &mut HashSet<String>,
+    inline_styles: &mut Vec<String>,
     counter: &mut usize,
     rwe_names: &mut HashSet<String>,
     zeb_libs: &mut HashSet<String>,
@@ -744,15 +789,20 @@ fn collect_inlined_module(
     // Recursively inline this file's own filesystem imports first (depth-first)
     let sub_paths = extract_filesystem_import_paths(&content);
     for sub_path in &sub_paths {
-        collect_inlined_module(
-            sub_path,
-            parts,
-            visited,
-            counter,
-            rwe_names,
-            zeb_libs,
-            template_root,
-        )?;
+        if sub_path.ends_with(".css") {
+            collect_inline_style(sub_path, inline_styles, visited)?;
+        } else {
+            collect_inlined_module(
+                sub_path,
+                parts,
+                visited,
+                inline_styles,
+                counter,
+                rwe_names,
+                zeb_libs,
+                template_root,
+            )?;
+        }
     }
 
     // Collect exported names BEFORE localize_exports strips the export keywords.
@@ -780,6 +830,27 @@ fn collect_inlined_module(
     let processed = super::js_masker::unmask(&prefixed, &masks);
 
     parts.push(processed);
+    Ok(())
+}
+
+fn collect_inline_style(
+    path: &str,
+    inline_styles: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) -> Result<(), EngineError> {
+    let canonical_path = canonical_module_identity(path)?;
+    let visit_key = canonical_path.to_string_lossy().to_string();
+    if visited.contains(&visit_key) {
+        return Ok(());
+    }
+    visited.insert(visit_key);
+    let css = fs::read_to_string(&canonical_path).map_err(|e| {
+        EngineError::new(
+            "RWE_STYLE_READ",
+            format!("cannot read stylesheet '{}': {e}", canonical_path.display()),
+        )
+    })?;
+    inline_styles.push(css);
     Ok(())
 }
 
@@ -1306,6 +1377,156 @@ export default function Page() { return <div />; }"#;
         assert!(
             rewritten.contains(r#"from "zeb""#),
             "zeb imports must stay logical, got: {rewritten}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compile_collects_side_effect_css_imports() {
+        let root = std::env::temp_dir().join(format!("rwe-css-import-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("styles")).expect("create styles dir");
+        fs::create_dir_all(root.join("pages")).expect("create pages dir");
+        fs::write(
+            root.join("styles/editor.css"),
+            ".editor-shell { color: rgb(1, 2, 3); }",
+        )
+        .expect("write css");
+
+        let file = root.join("pages/page.tsx");
+        fs::write(
+            &file,
+            r#"
+import "@/styles/editor.css";
+
+export default function Page() {
+  return <div className="editor-shell">ok</div>;
+}
+"#,
+        )
+        .expect("write page");
+
+        let compiled = compile(
+            &fs::read_to_string(&file).expect("read page"),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("compile should succeed");
+
+        assert_eq!(compiled.inline_styles.len(), 1);
+        assert!(
+            compiled.inline_styles[0].contains(".editor-shell"),
+            "expected collected inline CSS, got {:?}",
+            compiled.inline_styles
+        );
+        assert!(
+            compiled
+                .dependency_paths
+                .iter()
+                .any(|path| path.ends_with("styles/editor.css")),
+            "expected stylesheet dependency path, got {:?}",
+            compiled.dependency_paths
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compile_allows_relative_component_imports() {
+        let root =
+            std::env::temp_dir().join(format!("rwe-relative-import-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("pages")).expect("create pages dir");
+        fs::create_dir_all(root.join("components")).expect("create components dir");
+        fs::write(
+            root.join("components/badge.tsx"),
+            r#"
+export function Badge() {
+  return <span>badge</span>;
+}
+"#,
+        )
+        .expect("write badge");
+
+        let file = root.join("pages/page.tsx");
+        fs::write(
+            &file,
+            r#"
+import { Badge } from "../components/badge";
+
+export default function Page() {
+  return <div><Badge /></div>;
+}
+"#,
+        )
+        .expect("write page");
+
+        let compiled = compile(
+            &fs::read_to_string(&file).expect("read page"),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("compile should succeed");
+
+        assert!(
+            compiled
+                .dependency_paths
+                .iter()
+                .any(|path| path.ends_with("components/badge.tsx")),
+            "expected relative component dependency path, got {:?}",
+            compiled.dependency_paths
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compile_collects_relative_css_imports() {
+        let root =
+            std::env::temp_dir().join(format!("rwe-relative-css-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("pages")).expect("create pages dir");
+        fs::write(
+            root.join("pages/editor.css"),
+            ".editor-pane { background: rgb(10, 20, 30); }",
+        )
+        .expect("write css");
+
+        let file = root.join("pages/page.tsx");
+        fs::write(
+            &file,
+            r#"
+import "./editor.css";
+
+export default function Page() {
+  return <section className="editor-pane">ok</section>;
+}
+"#,
+        )
+        .expect("write page");
+
+        let compiled = compile(
+            &fs::read_to_string(&file).expect("read page"),
+            CompileOptions {
+                template_root: Some(root.display().to_string()),
+                file_path: Some(file.display().to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("compile should succeed");
+
+        assert_eq!(compiled.inline_styles.len(), 1);
+        assert!(
+            compiled.inline_styles[0].contains(".editor-pane"),
+            "expected collected relative CSS, got {:?}",
+            compiled.inline_styles
         );
 
         let _ = fs::remove_dir_all(&root);

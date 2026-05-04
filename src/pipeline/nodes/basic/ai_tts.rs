@@ -892,18 +892,17 @@ fn build_lipsync_payload(
         LipSyncMode::None => Vec::new(),
         LipSyncMode::Basic => basic_word_timings(&words, duration_ms),
         LipSyncMode::TimedWords => weighted_word_timings(&words, duration_ms),
-        LipSyncMode::AudioGuided => audio_guided_word_timings(&words, duration_ms, sample_rate, wav_bytes)
-            .unwrap_or_else(|| weighted_word_timings(&words, duration_ms)),
-        LipSyncMode::AudioSegmented => audio_segmented_word_timings(
-            &words,
-            duration_ms,
-            sample_rate,
-            wav_bytes,
-        )
-        .unwrap_or_else(|| {
+        LipSyncMode::AudioGuided => {
             audio_guided_word_timings(&words, duration_ms, sample_rate, wav_bytes)
                 .unwrap_or_else(|| weighted_word_timings(&words, duration_ms))
-        }),
+        }
+        LipSyncMode::AudioSegmented => {
+            audio_segmented_word_timings(&words, duration_ms, sample_rate, wav_bytes)
+                .unwrap_or_else(|| {
+                    audio_guided_word_timings(&words, duration_ms, sample_rate, wav_bytes)
+                        .unwrap_or_else(|| weighted_word_timings(&words, duration_ms))
+                })
+        }
     };
     let word_timings = Value::Array(
         timings
@@ -1103,8 +1102,7 @@ fn audio_guided_word_timings(
                     ((target - prev) / (*cumulative - prev)).clamp(0.0, 1.0)
                 };
                 let frame_start_ms = (frame_idx as u64) * analysis.frame_ms;
-                let frame_end_ms =
-                    (((frame_idx as u64) + 1) * analysis.frame_ms).min(duration_ms);
+                let frame_end_ms = (((frame_idx as u64) + 1) * analysis.frame_ms).min(duration_ms);
                 return frame_start_ms
                     + (((frame_end_ms - frame_start_ms) as f32) * local_ratio).round() as u64;
             }
@@ -1147,8 +1145,10 @@ fn audio_segmented_word_timings(
     let base = audio_guided_word_timings(words, duration_ms, sample_rate, wav_bytes)?;
     let mut refined = Vec::with_capacity(base.len());
     for timing in base {
-        let mut start_frame = ms_to_frame_idx(timing.start_ms, analysis.frame_ms, analysis.energies.len());
-        let mut end_frame = ms_to_frame_idx_ceil(timing.end_ms, analysis.frame_ms, analysis.energies.len());
+        let mut start_frame =
+            ms_to_frame_idx(timing.start_ms, analysis.frame_ms, analysis.energies.len());
+        let mut end_frame =
+            ms_to_frame_idx_ceil(timing.end_ms, analysis.frame_ms, analysis.energies.len());
         if end_frame <= start_frame {
             end_frame = (start_frame + 1).min(analysis.energies.len());
         }
@@ -1250,8 +1250,8 @@ fn analyze_wav_frames(
     while index < mono.len() {
         let end = (index + frame_len).min(mono.len());
         let slice = &mono[index..end];
-        let rms = (slice.iter().map(|sample| sample * sample).sum::<f32>() / slice.len() as f32)
-            .sqrt();
+        let rms =
+            (slice.iter().map(|sample| sample * sample).sum::<f32>() / slice.len() as f32).sqrt();
         energies.push(rms);
         index = end;
     }
@@ -1432,11 +1432,7 @@ fn looks_like_schwa(chars: &[char], index: usize) -> bool {
     let next = chars.get(index + 1).copied();
     let next2 = chars.get(index + 2).copied();
     match (prev, next, next2) {
-        (Some(p), Some(n), Some(n2))
-            if !is_vowel(p) && !is_vowel(n) && is_vowel(n2) =>
-        {
-            true
-        }
+        (Some(p), Some(n), Some(n2)) if !is_vowel(p) && !is_vowel(n) && is_vowel(n2) => true,
         (None, Some('m' | 'n' | 'r' | 'l' | 's' | 't' | 'k' | 'p' | 'b'), Some(n2))
             if !is_vowel(n2) =>
         {
@@ -1458,14 +1454,14 @@ fn word_weight(word: &str) -> f32 {
 
 fn dominant_viseme(word: &str) -> &'static str {
     match word {
-        "terima" | "kasih" | "apa" | "saya" | "akan" | "datang" | "pagi" | "malam"
-        | "jalan" | "makan" | "aman" | "karena" | "bahasa" | "sekarang" | "tentang" => "aa",
-        "ini" | "dingin" | "kiri" | "minim" | "pilih" | "ingin" | "bisa" | "kecil"
-        | "sedikit" | "istri" | "lihat" | "hidup" => "ih",
-        "buku" | "untuk" | "umur" | "turun" | "gunung" | "cukup" | "musik" | "murung"
-        | "suruh" | "rumput" => "ou",
-        "enak" | "meja" | "lebar" | "besok" | "cepat" | "kereta" | "teman" | "seret"
-        | "dekat" | "hemat" => "ee",
+        "terima" | "kasih" | "apa" | "saya" | "akan" | "datang" | "pagi" | "malam" | "jalan"
+        | "makan" | "aman" | "karena" | "bahasa" | "sekarang" | "tentang" => "aa",
+        "ini" | "dingin" | "kiri" | "minim" | "pilih" | "ingin" | "bisa" | "kecil" | "sedikit"
+        | "istri" | "lihat" | "hidup" => "ih",
+        "buku" | "untuk" | "umur" | "turun" | "gunung" | "cukup" | "musik" | "murung" | "suruh"
+        | "rumput" => "ou",
+        "enak" | "meja" | "lebar" | "besok" | "cepat" | "kereta" | "teman" | "seret" | "dekat"
+        | "hemat" => "ee",
         "orang" | "tolong" | "mobil" | "sore" | "kota" | "dokter" | "nomor" | "kosong"
         | "obrolan" | "boleh" => "oh",
         _ => fallback_viseme(word),
@@ -1596,10 +1592,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        Config, LipSyncMode, Node, ReturnMode, basic_word_timings, build_audio_segmented_cues,
-        expand_audio_guided_cues_for_word, normalize_private_rel_path, parse_lipsync_mode,
-        reconcile_word_boundaries, speed_to_length_scale, split_word_into_viseme_segments,
-        tokenize_words, weighted_word_timings, WordTiming,
+        Config, LipSyncMode, Node, ReturnMode, WordTiming, basic_word_timings,
+        build_audio_segmented_cues, expand_audio_guided_cues_for_word, normalize_private_rel_path,
+        parse_lipsync_mode, reconcile_word_boundaries, speed_to_length_scale,
+        split_word_into_viseme_segments, tokenize_words, weighted_word_timings,
     };
     use crate::language::DenoSandboxEngine;
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
@@ -1653,9 +1649,18 @@ mod tests {
     #[test]
     fn parse_lipsync_modes_accepts_aliases() {
         assert_eq!(parse_lipsync_mode("none").expect("mode"), LipSyncMode::None);
-        assert_eq!(parse_lipsync_mode("word_to_vowel").expect("mode"), LipSyncMode::Basic);
-        assert_eq!(parse_lipsync_mode("timed").expect("mode"), LipSyncMode::TimedWords);
-        assert_eq!(parse_lipsync_mode("audio").expect("mode"), LipSyncMode::AudioGuided);
+        assert_eq!(
+            parse_lipsync_mode("word_to_vowel").expect("mode"),
+            LipSyncMode::Basic
+        );
+        assert_eq!(
+            parse_lipsync_mode("timed").expect("mode"),
+            LipSyncMode::TimedWords
+        );
+        assert_eq!(
+            parse_lipsync_mode("audio").expect("mode"),
+            LipSyncMode::AudioGuided
+        );
         assert_eq!(
             parse_lipsync_mode("segmented").expect("mode"),
             LipSyncMode::AudioSegmented
@@ -1683,12 +1688,17 @@ mod tests {
     #[test]
     fn audio_guided_segments_split_words_into_sub_visemes() {
         let segments = split_word_into_viseme_segments("transportasi");
-        let tokens: Vec<&str> = segments.iter().map(|segment| segment.token.as_str()).collect();
+        let tokens: Vec<&str> = segments
+            .iter()
+            .map(|segment| segment.token.as_str())
+            .collect();
         let visemes: Vec<&str> = segments.iter().map(|segment| segment.viseme).collect();
         assert_eq!(tokens, vec!["tr", "a", "ns", "p", "o", "rt", "a", "s", "i"]);
         assert_eq!(
             visemes,
-            vec!["neutral", "aa", "neutral", "close", "oh", "neutral", "aa", "neutral", "ih"]
+            vec![
+                "neutral", "aa", "neutral", "close", "oh", "neutral", "aa", "neutral", "ih"
+            ]
         );
 
         let cues = expand_audio_guided_cues_for_word(&WordTiming {
@@ -1704,7 +1714,10 @@ mod tests {
     #[test]
     fn indonesian_clusters_and_schwa_are_detected() {
         let banyak = split_word_into_viseme_segments("banyak");
-        let tokens: Vec<&str> = banyak.iter().map(|segment| segment.token.as_str()).collect();
+        let tokens: Vec<&str> = banyak
+            .iter()
+            .map(|segment| segment.token.as_str())
+            .collect();
         let visemes: Vec<&str> = banyak.iter().map(|segment| segment.viseme).collect();
         assert_eq!(tokens, vec!["b", "a", "ny", "a", "k"]);
         assert_eq!(visemes, vec!["close", "aa", "neutral", "aa", "neutral"]);
@@ -2026,7 +2039,10 @@ mod tests {
                 }
                 row.push(format!("{elapsed_ms} ms"));
             }
-            eprintln!("| {} | {} | {} | {} | {} |", row[0], row[1], row[2], row[3], row[4]);
+            eprintln!(
+                "| {} | {} | {} | {} | {} |",
+                row[0], row[1], row[2], row[3], row[4]
+            );
         }
     }
 }

@@ -32,6 +32,7 @@ export interface PipelineGraphHandle {
     entry: {
       title?: string;
       color?: string;
+      icon?: string;
       input_pins?: string[];
       output_pins?: string[];
     }
@@ -53,6 +54,8 @@ export interface PipelineGraphProps {
   gridSize?: number;
   /** Override per-kind node colours. Merged with DEFAULT_NODE_KIND_COLORS. */
   kindColors?: Record<string, string>;
+  /** Override per-kind SVG icon URLs shown in node headers. */
+  kindIcons?: Record<string, string>;
   /** Called when the user clicks the "E" (edit) button on a node */
   onNodeEdit?: (node: PipelineNodeData) => void;
   /** Called once after the graphui app is created and the first scene loads */

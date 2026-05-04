@@ -46,6 +46,10 @@ pub struct CompiledTemplate {
     /// All `zeb/*` library specifiers found across the page and all inlined components.
     #[serde(default)]
     pub detected_zeb_libs: Vec<String>,
+    /// Inline stylesheet contents collected from side-effect CSS imports such as
+    /// `import "@/styles/editor.css"`.
+    #[serde(default)]
+    pub inline_styles: Vec<String>,
     /// Absolute filesystem paths of all component files inlined during compilation
     /// (from `collect_inlined_module` `visited` set).
     /// Used for dependency-aware cache eviction: when any of these files change,
