@@ -853,6 +853,18 @@ button.pipeline-editor-item:hover {
   line-height: 1;
 }
 
+.pipeline-editor-main .zf-node-slug.long {
+  font-size: 8px;
+  font-weight: 650;
+  line-height: 1.25;
+  width: 10ch;
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #cbd5e1;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85);
+}
+
 .pipeline-editor-continuation-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));

@@ -452,6 +452,11 @@ export default function PipelineEditor({
     const app = graphRef.current?.getApp?.();
     if (rawNode) {
       rawNode.zfPipelineNodeId = slug;
+      const badge = rawNode.el?.querySelector?.(".zf-node-slug");
+      if (badge) {
+        badge.textContent = slug;
+        badge.classList.toggle("long", slug.length > 2);
+      }
       rawNode.zfConfig = config;
       if (config.title) {
         rawNode.title = String(config.title);
@@ -486,23 +491,6 @@ export default function PipelineEditor({
           outputs: nextOutputs,
         });
       }
-    }
-    // Re-attach edit buttons to refresh slug badge
-    if (app) {
-      // PipelineGraph handles this via its internal MutationObserver
-      // but we can manually trigger a refresh
-      setTimeout(() => {
-        const root = app.root;
-        if (!root) return;
-        root.querySelectorAll(".zf-node-slug").forEach((badge: any) => {
-          const el = badge.closest?.(".zgu-node");
-          const nodeMap = new Map(app.graph.nodes.map((n: any) => [String(n.id), n]));
-          const nd = nodeMap.get(el?.getAttribute?.("data-id") || "");
-          if (nd) {
-            badge.textContent = nd.zfPipelineNodeId || "node";
-          }
-        });
-      }, 0);
     }
     setDialogNode(null);
     setWebRenderNode(null);
