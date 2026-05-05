@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: insanalamin/zebflow
+  IMAGE: zebflow/zebflow
 
 jobs:
   # ── Compute version once — shared by all jobs ─────────────────────────────
