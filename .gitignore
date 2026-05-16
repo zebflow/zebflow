@@ -40,3 +40,28 @@ integrations/website/index.html
 output
 # local improvement notes
 test-and-improve-object.md
+
+# Zebflow local runtime/check data
+.zf-market-*/
+# or, if every .zf* folder is runtime-only in this repo:
+# .zf*/
+
+# Python local/build artifacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+
+# Package build outputs
+*.tgz
+*.whl
+
+desktop
+uxui
+prototypes
+qa
+tools

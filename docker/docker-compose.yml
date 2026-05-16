@@ -1,0 +1,23 @@
+services:
+  zebflow:
+    image: zebflow/zebflow:latest
+    ports:
+      - "10610:10610"
+    environment:
+      ZEBFLOW_PLATFORM_HOST: "0.0.0.0"
+      ZEBFLOW_PLATFORM_PORT: "10610"
+      ZEBFLOW_PLATFORM_DATA_DIR: "/var/lib/zebflow/data"
+      ZEBFLOW_PLATFORM_DEFAULT_PASSWORD: "${ZEBFLOW_PASSWORD:-changeme}"
+      ZEBFLOW_PUBLIC_URL: "${ZEBFLOW_PUBLIC_URL:-http://localhost:10610}"
+    volumes:
+      - zebflow-data:/var/lib/zebflow/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10610/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  zebflow-data:

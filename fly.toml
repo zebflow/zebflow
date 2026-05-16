@@ -1,0 +1,27 @@
+app = "zebflow"
+primary_region = "sin"
+
+[build]
+  dockerfile = "docker/Dockerfile"
+
+[http_service]
+  internal_port = 10610
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+
+[[http_service.checks]]
+  grace_period = "30s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[mounts]
+  source = "zebflow_data"
+  destination = "/var/lib/zebflow/data"
+
+[env]
+  ZEBFLOW_PLATFORM_HOST = "0.0.0.0"
+  ZEBFLOW_PLATFORM_PORT = "10610"
+  ZEBFLOW_PLATFORM_DATA_DIR = "/var/lib/zebflow/data"

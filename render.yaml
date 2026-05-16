@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: zebflow
+    runtime: docker
+    dockerfilePath: docker/Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: ZEBFLOW_PLATFORM_HOST
+        value: "0.0.0.0"
+      - key: ZEBFLOW_PLATFORM_PORT
+        value: "10610"
+      - key: ZEBFLOW_PLATFORM_DATA_DIR
+        value: "/var/lib/zebflow/data"
+      - key: ZEBFLOW_PLATFORM_DEFAULT_PASSWORD
+        generateValue: true
+    disk:
+      name: zebflow-data
+      mountPath: /var/lib/zebflow/data
+      sizeGB: 10

@@ -1,0 +1,43 @@
+services:
+  zebflow:
+    image: zebflow/zebflow:latest
+    ports:
+      - "10610:10610"
+    environment:
+      ZEBFLOW_PLATFORM_HOST: "0.0.0.0"
+      ZEBFLOW_PLATFORM_PORT: "10610"
+      ZEBFLOW_PLATFORM_DATA_DIR: "/var/lib/zebflow/data"
+      ZEBFLOW_PLATFORM_DEFAULT_PASSWORD: "${ZEBFLOW_PASSWORD:-changeme}"
+      ZEBFLOW_PUBLIC_URL: "${ZEBFLOW_PUBLIC_URL:-http://localhost:10610}"
+      DATABASE_URL: "postgres://zebflow:${POSTGRES_PASSWORD:-zebflow}@postgres:5432/zebflow"
+    volumes:
+      - zebflow-data:/var/lib/zebflow/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:10610/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zebflow
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-zebflow}"
+      POSTGRES_DB: zebflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zebflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  zebflow-data:
+  postgres-data:

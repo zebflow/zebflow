@@ -1,0 +1,27 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Zebflow",
+  "description": "Full-stack reactive web automation. TSX templates + pipeline DSL + 40 MCP tools in a single Rust binary. No build step.",
+  "folders": [
+    "skills/zebflow",
+    "docs/user-guide",
+    "src/platform/help"
+  ],
+  "excludeFolders": [
+    "docs/unused",
+    "docs/ops",
+    "src/platform/help/pipeline/examples"
+  ],
+  "excludeFiles": [
+    "SECURITY-AUDIT-REPORT*.md"
+  ],
+  "rules": [
+    "Import hooks from 'zeb', never from 'preact', 'react', or 'npm:preact/hooks'",
+    "Use @/ paths for component imports, never relative ../ between components",
+    "Pipeline DSL has two modes: pipe (| chains) for linear and graph ([id] + edges) for branching — don't mix",
+    "Templates use built-in Tailwind — no build step, no CSS files needed",
+    "Page entry is always: export default function Page(input) { return <jsx/>; }",
+    "Credentials are UI-only — DSL cannot read or write credential values",
+    "Dynamic config in pipelines uses {{ expr }} with $input, $trigger, $nodes scope variables"
+  ]
+}
