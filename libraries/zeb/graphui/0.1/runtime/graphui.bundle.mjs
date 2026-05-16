@@ -1043,15 +1043,18 @@ export class GraphCanvasUI {
     const exitX = sourceRect ? sourceRect.right + laneGap : x1 + exit;
     const entryX = targetRect ? targetRect.left - laneGap : x2 - entry;
     const sourceHeight = sourceNodeRect?.height || sourceRect?.height || 84;
+    const sourceWidth = sourceNodeRect?.width || sourceRect?.width || 84;
     const significantGap = sourceHeight * 0.75;
     const targetFarAbove = Boolean(sourceRect && targetRect && targetRect.bottom < sourceRect.top - significantGap);
     const targetFarBelow = Boolean(sourceRect && targetRect && targetRect.top > sourceRect.bottom + significantGap);
+    const rightClearance = sourceRect && targetRect ? targetRect.left - sourceRect.right : 0;
+    const hasNormalRightRunway = rightClearance > sourceWidth * 0.75;
     const verticalOverlap = sourceRect && targetRect
       ? Math.min(sourceRect.bottom, targetRect.bottom) - Math.max(sourceRect.top, targetRect.top)
       : 0;
     const nearVerticalBand = verticalOverlap > -sourceHeight * 0.75;
     const needsLane = dx < exit + entry || Boolean(sourceRect && targetRect && targetRect.left < sourceRect.right && nearVerticalBand);
-    const needsGapLane = Boolean(sourceRect && targetRect && (targetFarAbove || targetFarBelow));
+    const needsGapLane = Boolean(sourceRect && targetRect && (targetFarAbove || targetFarBelow) && !hasNormalRightRunway);
 
     if (needsGapLane) {
       const laneY = targetFarAbove
@@ -1558,17 +1561,17 @@ export class GraphCanvasUI {
           connected = true;
         }
       }
-      if (!connected && this.connectOrigin?.fromDangling) {
-        this.connectOrigin.fromDangling.style.display = "";
-        if (!this.readOnly && typeof this.options.onOutputAdd === "function") {
-          this.options.onOutputAdd(
-            this.makeOutputAddPayload(
-              this.graph.nodes.find((node) => node.id === this.connectOrigin.nodeId),
-              this.connectOrigin.slot,
-              this.clientToWorld(event.clientX, event.clientY)
-            )
-          );
+      if (!connected && !this.readOnly && typeof this.options.onOutputAdd === "function") {
+        if (this.connectOrigin?.fromDangling) {
+          this.connectOrigin.fromDangling.style.display = "";
         }
+        this.options.onOutputAdd(
+          this.makeOutputAddPayload(
+            this.graph.nodes.find((node) => node.id === this.connectOrigin.nodeId),
+            this.connectOrigin.slot,
+            this.clientToWorld(event.clientX, event.clientY)
+          )
+        );
       }
       this.connectOrigin = null;
     }
@@ -2249,15 +2252,6 @@ export const PipelineGraph = (() => {
     return count <= 0 ? base : `${base}-${count}`;
   }
 
-  function _pgBadgeLabel(index) {
-    const alphabet = "abcdefghijklmnopqrstuvwxyz";
-    const safe = Math.max(0, Number(index) || 0);
-    if (safe < alphabet.length) {
-      return alphabet[safe];
-    }
-    return `${alphabet[safe % alphabet.length]}${Math.floor(safe / alphabet.length) + 1}`;
-  }
-
   function _pgAttachEditButtons(app, onNodeEdit) {
     const root = app.root;
     if (!root) return;
@@ -2290,7 +2284,7 @@ export const PipelineGraph = (() => {
         fallback(payload);
       }
     };
-    root.querySelectorAll(".zgu-node").forEach((el, index) => {
+    root.querySelectorAll(".zgu-node").forEach((el) => {
       const nodeData = nodeMap.get(el.getAttribute("data-id") || "");
       if (!nodeData) return;
       const openEdit = () => {
@@ -2356,10 +2350,10 @@ export const PipelineGraph = (() => {
         badge.className = "zf-node-slug";
         el.appendChild(badge);
       }
-      const slug = nodeData.zfPipelineNodeId || "";
-      const nextText = _pgBadgeLabel(index);
+      const nextText = String(nodeData.zfPipelineNodeId || "");
       if (badge.textContent !== nextText)
         badge.textContent = nextText;
+      badge.classList.toggle("long", nextText.length > 2);
 
       const title = el.querySelector(".zgu-node-label");
       if (title && title.textContent !== String(nodeData.title || "")) {
