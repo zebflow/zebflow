@@ -1,11 +1,11 @@
 [package]
 name = "zebflow"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Reactive web automation platform — pipelines, templates, and real-time collaboration in a single binary."
 license = "MIT"
 repository = "https://github.com/zebflow/zebflow"
-homepage = "https://github.com/zebflow/zebflow"
+homepage = "https://zebflow.com"
 keywords = ["pipeline", "automation", "reactive", "web", "server"]
 categories = ["web-programming::http-server", "command-line-utilities"]
 

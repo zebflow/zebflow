@@ -48,10 +48,11 @@ Add short GIF walkthroughs here before the next public-facing release:
 Current stable install path:
 
 ```bash
+export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$(openssl rand -base64 32)"
 docker run --name zebflow \
   -p 10610:10610 \
   -v zebflow-data:/var/lib/zebflow/data \
-  -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=change-me \
+  -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD \
   insanalamin/zebflow:latest
 ```
 
@@ -62,7 +63,7 @@ Then open:
 ### Source Build
 
 ```bash
-export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD=change-me
+export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$(openssl rand -base64 32)"
 cargo run --bin zebflow
 ```
 
@@ -127,6 +128,10 @@ zebflow office
 - [Project Contract](docs/dev-guide/project-contract.md)
 - [Office Federation Contract](docs/dev-guide/office-federation-contract.md)
 - [Architecture](docs/dev-guide/architecture.md)
+
+## UI Engineering Rule
+
+Zebflow UI work is expected to use **Zeb React** and **Zeb Tailwind**. If a normal Zeb/RWE UI flow behaves strangely, that should be treated as a **foundational RWE issue** and fixed at the root instead of being bypassed with page-local hacks or DOM workarounds.
 
 ## License
 
