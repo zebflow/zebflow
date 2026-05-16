@@ -82,10 +82,13 @@ interface Props {
 export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<any>(null);
+  const latestValueRef = useRef<string>(String(value ?? ""));
   const externalValueRef = useRef<string>(String(value ?? ""));
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [wrapLines, setWrapLines] = useState(true);
   const [editorPrefsVersion, setEditorPrefsVersion] = useState(0);
   const hasSidebar = Array.isArray(field.sidebar) && field.sidebar.length > 0;
+  latestValueRef.current = String(value ?? "");
 
   useEffect(() => {
     return subscribeEditorPreferences(() => {
@@ -97,7 +100,7 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
   useEffect(() => {
     if (!containerRef.current) return;
     let destroyed = false;
-    const initDoc = viewRef.current?.state?.doc?.toString?.() ?? String(value ?? "");
+    const initDoc = latestValueRef.current;
     externalValueRef.current = initDoc;
 
     if (viewRef.current) {
@@ -110,21 +113,28 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
     loadCm().then((cm) => {
       if (destroyed || !containerRef.current || !cm) return;
 
+      const doc = latestValueRef.current;
+      externalValueRef.current = doc;
+
       const view = new cm.EditorView({
-        doc: initDoc,
-        extensions: cm.presets.zebflow({
-          kind: field.language || "text",
-          autocomplete: true,
-          clipboardSource: "node-field-code-editor",
-          readonly: !!field.readonly,
-          minHeight: "160px",
-          maxHeight: "320px",
-          onDocumentChange: (update: any) => {
-            const newVal = update.state.doc.toString();
-            externalValueRef.current = newVal;
-            onChange(newVal);
-          },
-        }),
+        doc,
+        extensions: [
+          cm.presets.zebflow({
+            kind: field.language || "text",
+            autocomplete: true,
+            clipboardSource: "node-field-code-editor",
+            readonly: !!field.readonly,
+            minHeight: "160px",
+            maxHeight: "320px",
+            onDocumentChange: (update: any) => {
+              const newVal = update.state.doc.toString();
+              latestValueRef.current = newVal;
+              externalValueRef.current = newVal;
+              onChange(newVal);
+            },
+          }),
+          wrapLines ? cm.EditorView.lineWrapping : [],
+        ],
         parent: containerRef.current,
       });
 
@@ -139,11 +149,12 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorPrefsVersion]);
+  }, [editorPrefsVersion, wrapLines, field.name, field.language, field.readonly]);
 
   // Sync external value changes (e.g., form reset when different node is opened)
   useEffect(() => {
     const newVal = String(value ?? "");
+    latestValueRef.current = newVal;
     if (!viewRef.current) return;
     if (externalValueRef.current === newVal) return;
     // External update — replace editor content
@@ -162,15 +173,31 @@ export default function NodeFieldCodeEditor({ field, value, onChange }: Props) {
           <Label>{field.label}</Label>
           {field.help && <HelpTooltip text={field.help} />}
         </div>
-        {hasSidebar && (
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setSidebarOpen((v) => !v)}
-            className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700"
+            onClick={() => setWrapLines((v) => !v)}
+            aria-pressed={wrapLines}
+            title={wrapLines ? "Disable line wrap" : "Enable line wrap"}
+            className={cx(
+              "text-[10px] px-2 py-0.5 rounded border transition-colors",
+              wrapLines
+                ? "border-blue-300 text-blue-600 bg-blue-50 dark:border-blue-500/50 dark:text-blue-300 dark:bg-blue-500/10"
+                : "border-gray-200 text-gray-400 hover:text-gray-600 dark:border-gray-700 dark:hover:text-gray-300"
+            )}
           >
-            {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            Wrap
           </button>
-        )}
+          {hasSidebar && (
+            <button
+              type="button"
+              onClick={() => setSidebarOpen((v) => !v)}
+              className="text-[10px] text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700"
+            >
+              {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            </button>
+          )}
+        </div>
       </div>
       <div
         className={cx(

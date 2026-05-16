@@ -1,4 +1,4 @@
-//! n.file.decompress — extract one archive into project file storage.
+//! n.fs.decompress — extract one archive into project file storage.
 //!
 //! First slice supports only `tar.gz`.
 
@@ -18,16 +18,12 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.file.decompress";
+pub const NODE_KIND: &str = "n.fs.decompress";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 fn default_source_key() -> String {
     "saved.path".to_string()
-}
-
-fn default_access() -> String {
-    "private".to_string()
 }
 
 fn default_format() -> String {
@@ -40,8 +36,6 @@ pub struct Config {
     pub source_key: String,
     #[serde(default)]
     pub output_dir: String,
-    #[serde(default = "default_access")]
-    pub access: String,
     #[serde(default = "default_format")]
     pub format: String,
 }
@@ -51,7 +45,6 @@ impl Default for Config {
         Self {
             source_key: default_source_key(),
             output_dir: String::new(),
-            access: default_access(),
             format: default_format(),
         }
     }
@@ -110,16 +103,8 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--output-dir".to_string(),
                 config_key: "output_dir".to_string(),
-                description:
-                    "Destination directory under files/{access}/. Defaults to extracted/<archive>"
-                        .to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--access".to_string(),
-                config_key: "access".to_string(),
-                description: "public | private (default: private)".to_string(),
+                description: "Destination ZebFS object directory. Defaults to extracted/<archive>"
+                    .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -148,26 +133,9 @@ pub fn definition() -> NodeDefinition {
                 label: "Output Dir".to_string(),
                 field_type: NodeFieldType::Text,
                 help: Some(
-                    "Destination under files/{access}/. Leave blank to use extracted/<archive>."
+                    "Destination ZebFS object directory. Leave blank to use extracted/<archive>."
                         .to_string(),
                 ),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "access".to_string(),
-                label: "Access".to_string(),
-                field_type: NodeFieldType::Select,
-                default_value: Some(json!("private")),
-                options: vec![
-                    SelectOptionDef {
-                        label: "Private".to_string(),
-                        value: "private".to_string(),
-                    },
-                    SelectOptionDef {
-                        label: "Public".to_string(),
-                        value: "public".to_string(),
-                    },
-                ],
                 ..Default::default()
             },
             NodeFieldDef {
@@ -186,7 +154,6 @@ pub fn definition() -> NodeDefinition {
             col: vec![
                 LayoutItem::Field("source_key".to_string()),
                 LayoutItem::Field("output_dir".to_string()),
-                LayoutItem::Field("access".to_string()),
                 LayoutItem::Field("format".to_string()),
             ],
         }],
@@ -238,7 +205,7 @@ impl NodeHandler for Node {
                 PipelineError::new(
                     "FW_NODE_FILE_DECOMPRESS",
                     format!(
-                        "source path not found at payload key '{source_key}' — chain after n.file.save or set --source-key"
+                        "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
                     ),
                 )
             })?;
@@ -265,9 +232,7 @@ impl NodeHandler for Node {
             ));
         }
 
-        let access = normalize_access(&self.config.access);
-        let output_leaf = resolve_output_dir(&self.config.output_dir, &source_rel);
-        let output_rel = format!("{access}/{output_leaf}");
+        let output_rel = resolve_output_dir(&self.config.output_dir, &source_rel);
         let output_abs = layout.files_dir.join(&output_rel);
         std::fs::create_dir_all(&output_abs).map_err(|err| {
             PipelineError::new(
@@ -361,13 +326,6 @@ fn extract_tar_gz(source_abs: &Path, output_abs: &Path) -> Result<(), PipelineEr
     Ok(())
 }
 
-fn normalize_access(value: &str) -> &'static str {
-    match value.trim() {
-        "public" => "public",
-        _ => "private",
-    }
-}
-
 fn validate_format(format: &str) -> Result<(), PipelineError> {
     if format.trim().eq_ignore_ascii_case("tar.gz") {
         Ok(())
@@ -440,15 +398,15 @@ mod tests {
     #[test]
     fn sanitizes_archive_paths() {
         assert_eq!(
-            sanitize_rel_path("../private/archives/./bundle.tar.gz"),
-            "private/archives/bundle.tar.gz"
+            sanitize_rel_path("../archives/./bundle.tar.gz"),
+            "archives/bundle.tar.gz"
         );
     }
 
     #[test]
     fn derives_default_extract_dir() {
         assert_eq!(
-            resolve_output_dir("", "private/archives/paper-bundle.tar.gz"),
+            resolve_output_dir("", "archives/paper-bundle.tar.gz"),
             "extracted/paper-bundle"
         );
     }

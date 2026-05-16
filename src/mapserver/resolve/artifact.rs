@@ -227,7 +227,7 @@ mod tests {
             &source,
             "adm4_villages",
             &artifact_dir,
-            "private/mapserver/.artifacts/default-mapserver/adm4_villages",
+            "mapserver/.artifacts/default-mapserver/adm4_villages",
         )
         .expect("build artifact");
         let after_build = process_memory_kib(&mut system, pid);

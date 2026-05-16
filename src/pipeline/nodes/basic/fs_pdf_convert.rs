@@ -1,8 +1,8 @@
-//! n.file.pdf_convert — break a project PDF into page-level artifacts.
+//! n.fs.pdf.convert — break a project PDF into page-level artifacts.
 //!
 //! This node is the Zebflow wrapper around the standalone `pdfwrangler` library.
 //! It resolves a project-scoped source PDF path from the payload, writes exported
-//! page assets under the project's `files/` tree, and emits a structured summary
+//! page assets under Zebflow FS, and emits a structured summary
 //! for downstream indexing flows.
 
 use std::path::{Path, PathBuf};
@@ -16,21 +16,17 @@ use serde_json::json;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
-    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
+    model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.file.pdf_convert";
+pub const NODE_KIND: &str = "n.fs.pdf.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 fn default_source_key() -> String {
     "saved.path".to_string()
-}
-
-fn default_access() -> String {
-    "private".to_string()
 }
 
 fn default_emit_fulltext() -> bool {
@@ -54,12 +50,9 @@ pub struct Config {
     /// Dot-path in the payload containing the project-relative PDF path.
     #[serde(default = "default_source_key")]
     pub source_key: String,
-    /// Destination subdirectory under `files/{access}/`.
+    /// Destination ZebFS object directory.
     #[serde(default)]
     pub output_dir: String,
-    /// `public` or `private`.
-    #[serde(default = "default_access")]
-    pub access: String,
     /// Export text markdown per page.
     #[serde(default = "default_emit_fulltext")]
     pub emit_fulltext: bool,
@@ -79,7 +72,6 @@ impl Default for Config {
         Self {
             source_key: default_source_key(),
             output_dir: String::new(),
-            access: default_access(),
             emit_fulltext: default_emit_fulltext(),
             emit_page_images: default_emit_page_images(),
             emit_page_raster: default_emit_page_raster(),
@@ -119,8 +111,8 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "PDF Convert".to_string(),
-        description: "Convert one project PDF file into page-level artifacts under project \
-            files/. Reads the source PDF path from `input.saved.path` by default and writes \
+        description: "Convert one project PDF file into page-level artifacts under Zebflow FS. \
+            Reads the source PDF path from `input.saved.path` by default and writes \
             `text.md`, `page.json`, optional page rasters, and optional extracted embedded \
             images. Output payload includes a page manifest for downstream indexing."
             .to_string(),
@@ -158,14 +150,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--output-dir".to_string(),
                 config_key: "output_dir".to_string(),
-                description: "Destination subdirectory under files/{access}/. Defaults to pdf/<source-file-stem>".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--access".to_string(),
-                config_key: "access".to_string(),
-                description: "public | private (default: private)".to_string(),
+                description: "Destination ZebFS object directory. Defaults to pdf/<source-file-stem>".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -211,24 +196,7 @@ pub fn definition() -> NodeDefinition {
                 name: "output_dir".to_string(),
                 label: "Output Dir".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Destination under files/{access}/. Leave blank to use pdf/<source-file-stem>.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "access".to_string(),
-                label: "Access".to_string(),
-                field_type: NodeFieldType::Select,
-                default_value: Some(json!("private")),
-                options: vec![
-                    SelectOptionDef {
-                        label: "Private".to_string(),
-                        value: "private".to_string(),
-                    },
-                    SelectOptionDef {
-                        label: "Public".to_string(),
-                        value: "public".to_string(),
-                    },
-                ],
+                help: Some("Destination ZebFS object directory. Leave blank to use pdf/<source-file-stem>.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -264,7 +232,6 @@ pub fn definition() -> NodeDefinition {
             col: vec![
                 LayoutItem::Field("source_key".to_string()),
                 LayoutItem::Field("output_dir".to_string()),
-                LayoutItem::Field("access".to_string()),
                 LayoutItem::Field("emit_fulltext".to_string()),
                 LayoutItem::Field("emit_page_images".to_string()),
                 LayoutItem::Field("emit_page_raster".to_string()),
@@ -318,7 +285,7 @@ impl NodeHandler for Node {
                 PipelineError::new(
                     "FW_NODE_PDF_CONVERT",
                     format!(
-                        "source PDF path not found at payload key '{source_key}' — chain after n.file.save or set --source-key"
+                        "source PDF path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
                     ),
                 )
             })?;
@@ -347,12 +314,7 @@ impl NodeHandler for Node {
 
         validate_pdf_magic(&abs_path)?;
 
-        let access = match self.config.access.trim() {
-            "public" => "public",
-            _ => "private",
-        };
-        let output_dir = resolve_output_dir(&self.config.output_dir, &rel_path);
-        let output_rel_dir = format!("{access}/{output_dir}");
+        let output_rel_dir = resolve_output_dir(&self.config.output_dir, &rel_path);
         let output_root = layout.files_dir.join(&output_rel_dir);
 
         let options = ExportOptions {
@@ -505,15 +467,15 @@ mod tests {
     #[test]
     fn sanitizes_relative_paths() {
         assert_eq!(
-            sanitize_rel_path("../private/uploads/./paper.pdf"),
-            "private/uploads/paper.pdf"
+            sanitize_rel_path("../uploads/./paper.pdf"),
+            "uploads/paper.pdf"
         );
     }
 
     #[test]
     fn derives_default_output_dir_from_source_stem() {
         assert_eq!(
-            resolve_output_dir("", "private/uploads/My Paper.pdf"),
+            resolve_output_dir("", "uploads/My Paper.pdf"),
             "pdf/my-paper"
         );
     }
@@ -521,8 +483,8 @@ mod tests {
     #[test]
     fn prefixes_manifest_children_under_output_dir() {
         assert_eq!(
-            prefixed_output_path("private/pdf/my-paper", "1/text.md"),
-            "private/pdf/my-paper/1/text.md"
+            prefixed_output_path("pdf/my-paper", "1/text.md"),
+            "pdf/my-paper/1/text.md"
         );
     }
 
@@ -538,7 +500,7 @@ mod tests {
             .file
             .ensure_project_layout("superadmin", "default")
             .expect("layout");
-        let source_rel = "private/uploads/test.pdf";
+        let source_rel = "uploads/test.pdf";
         let source_abs = layout.files_dir.join(source_rel);
         std::fs::create_dir_all(source_abs.parent().expect("parent")).expect("create parent");
         std::fs::write(&source_abs, minimal_pdf_bytes("Hello PDF")).expect("write pdf");

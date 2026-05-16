@@ -21,6 +21,7 @@ pub mod platform;
 pub mod provision;
 pub mod rwe;
 pub mod version;
+pub mod zebfs;
 
 use std::sync::Arc;
 

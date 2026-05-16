@@ -25,9 +25,11 @@ export function getPage(input) {
 export default function Page(input) {
   initFilesBehavior();
 
-  const activeTab = input?.active_tab ?? "files";
+  const activeTab = input?.active_tab ?? "storages";
+  const selectedStorage = input?.selected_storage ?? "default";
   const base = `/projects/${input.owner}/${input.project}/files`;
   const api = input?.api ?? {};
+  const storages = Array.isArray(input?.storages) ? input.storages : [];
 
   const browser = input?.browser ?? { path: "", folders: [], files: [] };
   const folders = Array.isArray(browser?.folders) ? browser.folders : [];
@@ -56,12 +58,49 @@ export default function Page(input) {
     >
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <StudioTabNav>
-          <StudioTabLink href={base} active={activeTab === "files"}>Browser</StudioTabLink>
-          <StudioTabLink href={`${base}/s3`} active={activeTab === "s3"}>S3</StudioTabLink>
+          {activeTab === "explorer" ? (
+            <StudioTabLink href={`${base}/${selectedStorage}`} active>Explorer</StudioTabLink>
+          ) : (
+            <StudioTabLink href={base} active>Storages</StudioTabLink>
+          )}
         </StudioTabNav>
 
         <section className="flex-1 min-h-0 overflow-auto flex flex-col bg-bg">
-          {activeTab === "files" ? (
+          {activeTab === "storages" ? (
+            <div className="project-content-wrap">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-[0.95rem] font-semibold text-body">Storages</h2>
+                    <p className="text-[0.76rem] text-body-muted mt-1">
+                      Project artifact storage. Every project starts with a default ZebFS namespace.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-md border border-border bg-surface">
+                  <table className="w-full border-collapse text-[0.78rem]">
+                    <thead className="bg-surface-2 text-body-muted">
+                      <tr>
+                        <th className="text-left font-medium px-3 py-2 border-b border-border">Name</th>
+                        <th className="text-left font-medium px-3 py-2 border-b border-border">Backend</th>
+                        <th className="text-left font-medium px-3 py-2 border-b border-border">Namespace</th>
+                        <th className="text-left font-medium px-3 py-2 border-b border-border">Tags</th>
+                        <th className="text-right font-medium px-3 py-2 border-b border-border">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {storages.map((storage) => (
+                        <StorageRow key={storage.name} storage={storage} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "explorer" ? (
             <div
               className="flex flex-col flex-1 min-h-0"
               data-files-browser="true"
@@ -77,6 +116,15 @@ export default function Page(input) {
               <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-border bg-surface">
                 {/* Breadcrumbs */}
                 <div className="flex flex-1 min-w-0 flex-wrap items-center gap-1 text-[0.78rem]">
+                  <a
+                    href={base}
+                    className="text-body-soft hover:text-body transition-colors"
+                  >
+                    storages
+                  </a>
+                  <span className="text-border">/</span>
+                  <span className="text-body font-medium">{selectedStorage}</span>
+                  <span className="text-border">/</span>
                   <button
                     type="button"
                     className="text-body-soft hover:text-body transition-colors bg-transparent border-0 p-0 cursor-pointer"
@@ -127,7 +175,7 @@ export default function Page(input) {
                   <p className="px-2 py-6 text-[0.78rem] text-body-muted">
                     {currentPath
                       ? "Empty folder"
-                      : <>No files yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">n.file.save</code>.</>
+                      : <>No objects yet. Upload here or via a pipeline using <code className="font-mono text-[0.75rem]">n.fs.save</code>.</>
                     }
                   </p>
                 ) : null}
@@ -142,12 +190,6 @@ export default function Page(input) {
               </div>
             </div>
           ) : null}
-
-          {activeTab === "s3" ? (
-            <div className="project-content-wrap">
-              <S3Panel />
-            </div>
-          ) : null}
         </section>
       </div>
     </ProjectStudioShell>
@@ -155,6 +197,32 @@ export default function Page(input) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+function StorageRow({ storage }) {
+  const tags = Array.isArray(storage.tags) ? storage.tags : [];
+  return (
+    <tr className="border-b border-border-soft last:border-b-0">
+      <td className="px-3 py-2.5 text-body font-medium">{storage.name}</td>
+      <td className="px-3 py-2.5 text-body-soft">{storage.backend}</td>
+      <td className="px-3 py-2.5 text-body-soft font-mono text-[0.74rem]">{storage.namespace}</td>
+      <td className="px-3 py-2.5">
+        <div className="flex flex-wrap gap-1">
+          {tags.map((tag) => (
+            <Badge key={tag} variant="outline" className="text-[0.65rem]">{tag}</Badge>
+          ))}
+        </div>
+      </td>
+      <td className="px-3 py-2.5 text-right">
+        <a
+          href={storage.open_href}
+          className="inline-flex items-center justify-center min-h-7 px-2.5 rounded border border-border bg-surface-2 text-body hover:border-accent hover:text-accent transition-colors"
+        >
+          Open
+        </a>
+      </td>
+    </tr>
+  );
+}
 
 function FolderRow({ folder }) {
   return (
@@ -277,7 +345,7 @@ function S3Panel() {
               <p className="text-[0.88rem] font-semibold text-body">Amazon S3 / S3-Compatible</p>
               <p className="mt-0.5 text-[0.78rem] text-body-soft">
                 Connect an S3 bucket (AWS S3, Cloudflare R2, MinIO, Backblaze B2) as the primary
-                file backend. Files stored in the bucket and served via public or pre-signed URLs.
+                file backend. Files stored in the bucket and served through the Zebflow FS contract.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {["AWS S3", "Cloudflare R2", "MinIO", "Backblaze B2", "Tigris"].map((label) => (

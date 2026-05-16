@@ -256,7 +256,7 @@ export default function Page(input) {
                             <p className="db-suite-side-title">Upload GeoJSON</p>
                           </div>
                           <input type="file" accept=".geojson,.json,application/geo+json,application/json" onChange={onUpload} disabled={uploading} />
-                          <p className="text-xs text-ui-text-muted mt-2">Files are stored under <code>files/private/mapserver</code>.</p>
+                          <p className="text-xs text-ui-text-muted mt-2">Files are stored under <code>mapserver/</code> in Zebflow FS.</p>
                         </div>
                         <form className="rounded-lg border border-ui-border/80 p-4 space-y-3" onSubmit={publishLayer}>
                           <div className="db-suite-side-actions">

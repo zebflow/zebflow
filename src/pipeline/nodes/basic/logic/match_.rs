@@ -207,8 +207,8 @@ where
                         label: String::new(),
                     })),
                     serde_json::Value::Object(_) => {
-                        let parsed: MatchCase = serde_json::from_value(item)
-                            .map_err(serde::de::Error::custom)?;
+                        let parsed: MatchCase =
+                            serde_json::from_value(item).map_err(serde::de::Error::custom)?;
                         let normalized = normalize_match_case(parsed);
                         if !normalized.value.is_empty() {
                             out.push(normalized);

@@ -1,6 +1,6 @@
 //! `n.logic.foreach` — explicit ordered multi-emission node.
 //!
-//! Resolves an array at `items_path` from the current input payload and emits one downstream
+//! Evaluates `items_expr` to an array and emits one downstream
 //! run per item on the `item` pin. Emitted payloads preserve the original object payload and add:
 //!
 //! - `item`
@@ -11,6 +11,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::language::{
+    COMPILE_TARGET_BACKEND, CompileOptions, CompiledProgram, LanguageEngine, ModuleSource,
+    SourceKind,
+};
+use crate::pipeline::expr::build_expression_scope_input;
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -36,16 +41,16 @@ pub fn definition() -> NodeDefinition {
         config_schema: Default::default(),
         dsl_flags: vec![
             DslFlag {
-                flag: "--items-path".to_string(),
-                config_key: "items_path".to_string(),
-                description: "JSON pointer to the array to emit.".to_string(),
+                flag: "--items-expr".to_string(),
+                config_key: "items_expr".to_string(),
+                description: "JS expression returning the array to emit.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
             DslFlag {
                 flag: "--dispatch".to_string(),
                 config_key: "dispatch".to_string(),
-                description: "Dispatch policy hint. Current runtime preserves logical order."
+                description: "Dispatch policy. Current runtime supports sequential dispatch only."
                     .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
@@ -70,27 +75,21 @@ pub fn definition() -> NodeDefinition {
                     ..Default::default()
                 },
                 NodeFieldDef {
-                    name: "items_path".to_string(),
-                    label: "Items Path".to_string(),
+                    name: "items_expr".to_string(),
+                    label: "Items".to_string(),
                     field_type: NodeFieldType::Text,
-                    placeholder: Some("/rows".to_string()),
-                    help: Some("JSON pointer to the array to emit.".to_string()),
+                    placeholder: Some("$input.rows".to_string()),
+                    help: Some("JS expression returning the array to emit.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
                     name: "dispatch".to_string(),
                     label: "Dispatch".to_string(),
                     field_type: NodeFieldType::Select,
-                    options: vec![
-                        SelectOptionDef {
-                            value: "seq".to_string(),
-                            label: "Sequential".to_string(),
-                        },
-                        SelectOptionDef {
-                            value: "parallel".to_string(),
-                            label: "Parallel".to_string(),
-                        },
-                    ],
+                    options: vec![SelectOptionDef {
+                        value: "seq".to_string(),
+                        label: "Sequential".to_string(),
+                    }],
                     default_value: Some(json!("seq")),
                     ..Default::default()
                 },
@@ -110,7 +109,7 @@ pub fn definition() -> NodeDefinition {
                     LayoutItem::Field("dispatch".to_string()),
                 ],
             },
-            LayoutItem::Field("items_path".to_string()),
+            LayoutItem::Field("items_expr".to_string()),
             LayoutItem::Field("chunk_size".to_string()),
         ],
         ai_tool: Default::default(),
@@ -119,7 +118,7 @@ pub fn definition() -> NodeDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub items_path: String,
+    pub items_expr: String,
     #[serde(default = "default_dispatch")]
     pub dispatch: String,
     #[serde(default)]
@@ -132,19 +131,69 @@ fn default_dispatch() -> String {
 
 pub struct Node {
     config: Config,
+    compiled_items_expr: CompiledProgram,
+    language: std::sync::Arc<dyn LanguageEngine>,
 }
 
 impl Node {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(
+        config: Config,
+        language: std::sync::Arc<dyn LanguageEngine>,
+    ) -> Result<Self, PipelineError> {
+        if config.dispatch.trim() != "seq" {
+            return Err(PipelineError::new(
+                "FW_NODE_LOGIC_FOREACH_CONFIG",
+                "foreach dispatch currently supports only 'seq'",
+            ));
+        }
+        let compiled_items_expr = compile_items_expr(language.as_ref(), &config.items_expr)?;
+        Ok(Self {
+            config,
+            compiled_items_expr,
+            language,
+        })
     }
 }
 
-fn json_pointer_get<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
-    if path.is_empty() || path == "/" {
-        return Some(value);
+fn compile_items_expr(
+    language: &dyn LanguageEngine,
+    expr: &str,
+) -> Result<CompiledProgram, PipelineError> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Err(PipelineError::new(
+            "FW_NODE_LOGIC_FOREACH_CONFIG",
+            "items_expr must not be empty",
+        ));
     }
-    value.pointer(path)
+    let source = format!(
+        "var $input = input.$input;\n\
+         var $item = input.$item;\n\
+         var $index = input.$index;\n\
+         var $count = input.$count;\n\
+         var $trigger = input.$trigger || null;\n\
+         var $nodes = input.$nodes || {{}};\n\
+         return ({expr});"
+    );
+    let module = ModuleSource {
+        id: format!("pipeline:logic.foreach:items:{expr}"),
+        source_path: None,
+        kind: SourceKind::Tsx,
+        code: source,
+    };
+    let ir = language
+        .parse(&module)
+        .map_err(|err| PipelineError::new("FW_NODE_LOGIC_FOREACH_PARSE", err.to_string()))?;
+    language
+        .compile(
+            &ir,
+            &CompileOptions {
+                target: COMPILE_TARGET_BACKEND.to_string(),
+                optimize_level: 1,
+                emit_trace_hints: false,
+            },
+        )
+        .map_err(|err| PipelineError::new("FW_NODE_LOGIC_FOREACH_COMPILE", err.to_string()))
 }
 
 fn build_emission_payload(base: &Value, item: Value, index: usize, count: usize) -> Value {
@@ -194,19 +243,47 @@ impl NodeHandler for Node {
         &self,
         input: NodeExecutionInput,
     ) -> Result<Vec<NodeExecutionOutput>, PipelineError> {
-        let source =
-            json_pointer_get(&input.payload, &self.config.items_path).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_LOGIC_FOREACH_PATH",
-                    format!("items_path '{}' not found", self.config.items_path),
-                )
-            })?;
+        let ctx = crate::language::ExecutionContext {
+            project: input
+                .metadata
+                .get("project")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            pipeline: input
+                .metadata
+                .get("pipeline")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            request_id: input
+                .metadata
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            trigger: input
+                .metadata
+                .get("trigger")
+                .cloned()
+                .unwrap_or(Value::Null),
+            metadata: input.metadata.clone(),
+        };
+        let source = self
+            .language
+            .run(
+                &self.compiled_items_expr,
+                build_expression_scope_input(&input.payload, &input.metadata),
+                &ctx,
+            )
+            .map_err(|err| PipelineError::new("FW_NODE_LOGIC_FOREACH_RUN", err.to_string()))?
+            .value;
         let items = source.as_array().ok_or_else(|| {
             PipelineError::new(
                 "FW_NODE_LOGIC_FOREACH_TYPE",
                 format!(
-                    "items_path '{}' did not resolve to an array",
-                    self.config.items_path
+                    "items_expr '{}' did not resolve to an array",
+                    self.config.items_expr
                 ),
             )
         })?;

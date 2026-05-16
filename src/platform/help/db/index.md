@@ -22,7 +22,8 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 
 ```zf
 | n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = '{{ $trigger.params.id }}'"
+| n.sekejap.query --params-path params.id -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = $1"
+| n.sekejap.query --params-expr "[$trigger.body.slug, $trigger.body.title]" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
 ```
 
 ### Reference

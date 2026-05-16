@@ -1,8 +1,31 @@
 [package]
 name = "zebflow"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
-publish = false
+description = "Reactive web automation platform — pipelines, templates, and real-time collaboration in a single binary."
+license = "MIT"
+repository = "https://github.com/zebflow/zebflow"
+homepage = "https://github.com/zebflow/zebflow"
+keywords = ["pipeline", "automation", "reactive", "web", "server"]
+categories = ["web-programming::http-server", "command-line-utilities"]
+
+[package.metadata.binstall]
+pkg-url = "https://github.com/zebflow/zebflow/releases/download/v{ version }/zebflow-{ target }{ archive-suffix }"
+bin-dir = "zebflow{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "https://github.com/zebflow/zebflow/releases/download/v{ version }/zebflow-linux-amd64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "https://github.com/zebflow/zebflow/releases/download/v{ version }/zebflow-linux-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "https://github.com/zebflow/zebflow/releases/download/v{ version }/zebflow-darwin-arm64.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "https://github.com/zebflow/zebflow/releases/download/v{ version }/zebflow-windows-amd64.zip"
+pkg-fmt = "zip"
 
 [dependencies]
 async-trait = "0.1"
@@ -41,13 +64,14 @@ infer = "0.16"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 multer = "3"
 serde_urlencoded = "0.7"
+sha1 = "0.10"
 sha2 = "0.10"
 sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }
 dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.8.7"
+sekejap = "0.8.8"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
@@ -57,6 +81,9 @@ tempfile = "3"
 flate2 = "1"
 pdfwrangler = "0.1.4"
 hound = "3.5"
+geodatafusion = "0.4.0"
+datafusion = "53.1.0"
+parquet = "58.3.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

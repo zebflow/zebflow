@@ -3,7 +3,7 @@
 //! First stable provider:
 //! - `piper` via local Python runtime
 //!
-//! Local provider assets are resolved from project `files/private/` using relative paths stored
+//! Local provider assets are resolved from Zebflow FS using relative paths stored
 //! in the selected credential secret.
 
 use std::fs;
@@ -217,7 +217,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "AI TTS".to_string(),
-        description: "Synthesize speech from text. First stable provider is local Piper. Model, config, and espeak data are resolved from the selected credential under project files/private/.".to_string(),
+        description: "Synthesize speech from text. First stable provider is local Piper. Model, config, and espeak data are resolved from the selected credential under Zebflow FS.".to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Current payload. Use --text-expr to choose what text to speak."
@@ -272,14 +272,14 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--output-path".to_string(),
                 config_key: "output_path".to_string(),
-                description: "Private-relative output file path, for example audio/demo.wav.".to_string(),
+                description: "Zebflow FS output object path, for example audio/demo.wav.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
                 flag: "--output-path-expr".to_string(),
                 config_key: "output_path_expr".to_string(),
-                description: "Expression that resolves to the private-relative output file path.".to_string(),
+                description: "Expression that resolves to the Zebflow FS output object path.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -585,13 +585,13 @@ impl NodeHandler for Node {
             }
         }
 
-        let private_root = layout.files_dir.join("private");
-        let model_abs = resolve_private_abs(
-            &private_root,
+        let files_root = layout.files_dir.clone();
+        let model_abs = resolve_zebfs_abs(
+            &files_root,
             required_secret_str(&secret.model_file, "model_file")?,
         )?;
-        let config_abs = resolve_private_abs(
-            &private_root,
+        let config_abs = resolve_zebfs_abs(
+            &files_root,
             required_secret_str(&secret.config_file, "config_file")?,
         )?;
         let espeak_abs = secret
@@ -599,7 +599,7 @@ impl NodeHandler for Node {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|value| resolve_private_abs(&private_root, value))
+            .map(|value| resolve_zebfs_abs(&files_root, value))
             .transpose()?;
         if !model_abs.is_file() {
             return Err(PipelineError::new(
@@ -670,8 +670,7 @@ impl NodeHandler for Node {
                 &input.metadata,
                 self.language.as_ref(),
             )?;
-            let inner_rel = normalize_private_rel_path(&output_rel)?;
-            let final_rel = format!("private/{inner_rel}");
+            let final_rel = normalize_audio_output_rel_path(&output_rel)?;
             let abs_path = layout.files_dir.join(&final_rel);
             if let Some(parent) = abs_path.parent() {
                 fs::create_dir_all(parent).map_err(|err| {
@@ -686,7 +685,7 @@ impl NodeHandler for Node {
             })?;
             (
                 Some(final_rel.clone()),
-                Some(format!("/files/{owner}/{project}/{final_rel}")),
+                Some(format!("/fs/{owner}/{project}/{final_rel}")),
             )
         } else {
             (None, None)
@@ -1522,17 +1521,17 @@ fn resolve_output_rel_path(
     Ok(path.to_string())
 }
 
-fn resolve_private_abs(private_root: &Path, raw: &str) -> Result<PathBuf, PipelineError> {
-    Ok(private_root.join(normalize_private_asset_rel_path(raw)?))
+fn resolve_zebfs_abs(files_root: &Path, raw: &str) -> Result<PathBuf, PipelineError> {
+    Ok(files_root.join(normalize_zebfs_asset_rel_path(raw)?))
 }
 
-fn normalize_private_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
+fn normalize_zebfs_asset_rel_path(raw: &str) -> Result<String, PipelineError> {
     let normalized = raw.trim().replace('\\', "/");
     if normalized.is_empty() {
         return Err(PipelineError::new("AI_TTS_PATH", "path must not be empty"));
     }
     let mut parts = Vec::new();
-    for (index, part) in normalized.split('/').enumerate() {
+    for part in normalized.split('/') {
         let part = part.trim();
         if part.is_empty() || part == "." {
             continue;
@@ -1540,16 +1539,7 @@ fn normalize_private_asset_rel_path(raw: &str) -> Result<String, PipelineError> 
         if part == ".." || part.contains('\0') {
             return Err(PipelineError::new(
                 "AI_TTS_PATH",
-                "path must stay inside project private files",
-            ));
-        }
-        if index == 0 && part == "private" {
-            continue;
-        }
-        if index == 0 && part == "public" {
-            return Err(PipelineError::new(
-                "AI_TTS_PATH",
-                "path must resolve inside private/ and cannot use public/",
+                "path must stay inside project Zebflow FS",
             ));
         }
         parts.push(part.to_string());
@@ -1557,14 +1547,14 @@ fn normalize_private_asset_rel_path(raw: &str) -> Result<String, PipelineError> 
     if parts.is_empty() {
         return Err(PipelineError::new(
             "AI_TTS_PATH",
-            "path must not resolve to the private root itself",
+            "path must not resolve to the Zebflow FS root itself",
         ));
     }
     Ok(parts.join("/"))
 }
 
-fn normalize_private_rel_path(raw: &str) -> Result<String, PipelineError> {
-    let mut rel = normalize_private_asset_rel_path(raw)?;
+fn normalize_audio_output_rel_path(raw: &str) -> Result<String, PipelineError> {
+    let mut rel = normalize_zebfs_asset_rel_path(raw)?;
     let ext = Path::new(&rel)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1593,9 +1583,10 @@ mod tests {
 
     use super::{
         Config, LipSyncMode, Node, ReturnMode, WordTiming, basic_word_timings,
-        build_audio_segmented_cues, expand_audio_guided_cues_for_word, normalize_private_rel_path,
-        parse_lipsync_mode, reconcile_word_boundaries, speed_to_length_scale,
-        split_word_into_viseme_segments, tokenize_words, weighted_word_timings,
+        build_audio_segmented_cues, expand_audio_guided_cues_for_word,
+        normalize_audio_output_rel_path, parse_lipsync_mode, reconcile_word_boundaries,
+        speed_to_length_scale, split_word_into_viseme_segments, tokenize_words,
+        weighted_word_timings,
     };
     use crate::language::DenoSandboxEngine;
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
@@ -1618,22 +1609,21 @@ mod tests {
     }
 
     #[test]
-    fn private_path_normalization_accepts_private_prefix_and_adds_wav() {
+    fn audio_output_path_normalization_adds_wav() {
         assert_eq!(
-            normalize_private_rel_path("private/audio/demo").expect("normalize"),
+            normalize_audio_output_rel_path("audio/demo").expect("normalize"),
             "audio/demo.wav"
         );
         assert_eq!(
-            normalize_private_rel_path("audio/demo.wav").expect("normalize"),
+            normalize_audio_output_rel_path("audio/demo.wav").expect("normalize"),
             "audio/demo.wav"
         );
     }
 
     #[test]
-    fn private_path_normalization_rejects_escape_and_public() {
-        assert!(normalize_private_rel_path("../audio/demo.wav").is_err());
-        assert!(normalize_private_rel_path("public/audio/demo.wav").is_err());
-        assert!(normalize_private_rel_path("audio/demo.mp3").is_err());
+    fn audio_output_path_normalization_rejects_escape_and_non_wav() {
+        assert!(normalize_audio_output_rel_path("../audio/demo.wav").is_err());
+        assert!(normalize_audio_output_rel_path("audio/demo.mp3").is_err());
     }
 
     #[test]
@@ -1796,15 +1786,12 @@ mod tests {
             .ensure_project_layout("superadmin", "default")
             .expect("layout");
 
-        let voice_dir = layout.files_dir.join("private/voices/arin");
+        let voice_dir = layout.files_dir.join("voices/arin");
         fs::create_dir_all(&voice_dir).expect("voice dir");
         fs::copy(model_src, voice_dir.join("arin-2449.onnx")).expect("copy model");
         fs::copy(config_src, voice_dir.join("arin-2449.onnx.json")).expect("copy config");
-        copy_dir_all(
-            espeak_src,
-            &layout.files_dir.join("private/runtime/espeak-ng-data"),
-        )
-        .expect("copy espeak");
+        copy_dir_all(espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
+            .expect("copy espeak");
 
         platform
             .credentials
@@ -1865,7 +1852,7 @@ mod tests {
         let file_rel = out.payload["audio"]["path"]
             .as_str()
             .expect("audio path should be present");
-        assert_eq!(file_rel, "private/audio/arin-node-smoke.wav");
+        assert_eq!(file_rel, "audio/arin-node-smoke.wav");
         assert!(
             layout.files_dir.join(file_rel).is_file(),
             "expected synthesized wav file to exist"
@@ -1913,15 +1900,12 @@ mod tests {
             .ensure_project_layout("superadmin", "default")
             .expect("layout");
 
-        let voice_dir = layout.files_dir.join("private/voices/arin");
+        let voice_dir = layout.files_dir.join("voices/arin");
         fs::create_dir_all(&voice_dir).expect("voice dir");
         fs::copy(model_src, voice_dir.join("arin-2449.onnx")).expect("copy model");
         fs::copy(config_src, voice_dir.join("arin-2449.onnx.json")).expect("copy config");
-        copy_dir_all(
-            espeak_src,
-            &layout.files_dir.join("private/runtime/espeak-ng-data"),
-        )
-        .expect("copy espeak");
+        copy_dir_all(espeak_src, &layout.files_dir.join("runtime/espeak-ng-data"))
+            .expect("copy espeak");
 
         platform
             .credentials

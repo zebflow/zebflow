@@ -58,7 +58,7 @@ pub fn definition() -> NodeDefinition {
                  Use {{ $input.field }} or {{ $trigger.params.id }} for dynamic values."
                     .to_string(),
             ),
-            default_value: Some(json!("SELECT id FROM items LIMIT 20")),
+            default_value: Some(json!("SELECT id\nFROM items\nLIMIT 20")),
             ..Default::default()
         }],
         layout: vec![crate::pipeline::model::LayoutItem::Field("sql".to_string())],

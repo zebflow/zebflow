@@ -227,7 +227,7 @@ function ProjectTransferPanel({ owner, project, api, initialOperations }) {
       title="Project Export"
       description={
         <>
-            Download or apply first-class project archives. Bundle includes <code>repo/</code> and <code>data/</code>. Files archive includes <code>files/public</code> and <code>files/private</code>.
+            Download or apply first-class project archives. Bundle includes <code>repo/</code> and <code>data/</code>. Files archive includes Zebflow FS objects.
         </>
       }
       tag="Portability"

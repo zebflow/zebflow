@@ -9,8 +9,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::platform::model::{
-    DescribeProjectDbConnectionRequest, TemplateCreateKind, TemplateCreateRequest,
-    TemplateSaveRequest,
+    DescribeProjectDbConnectionRequest, PipelineMeta, TemplateCreateKind, TemplateCreateRequest,
+    TemplateSaveRequest, TemplateTreeItem,
 };
 use crate::platform::services::PlatformService;
 
@@ -47,6 +47,32 @@ pub struct PlatformOps {
     pub platform: Arc<PlatformService>,
     pub owner: String,
     pub project: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PipelineListOptions<'a> {
+    pub query: Option<&'a str>,
+    pub glob: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub trigger_kind: Option<&'a str>,
+    pub limit: Option<u32>,
+    pub format: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TemplateListOptions<'a> {
+    pub query: Option<&'a str>,
+    pub glob: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub limit: Option<u32>,
+    pub format: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TemplateSemanticMeta {
+    title: String,
+    description: String,
+    keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -624,19 +650,81 @@ impl PlatformOps {
 // ── Pipelines ─────────────────────────────────────────────────────────────────
 
 impl PlatformOps {
-    pub fn pipeline_list(&self) -> OpsResult {
+    pub fn pipeline_list(&self, options: PipelineListOptions<'_>) -> OpsResult {
         match self
             .platform
             .projects
             .list_pipeline_meta_rows(&self.owner, &self.project)
         {
-            Ok(pipelines) => OpsResult::ok(
+            Ok(pipelines) => self.format_pipeline_list(pipelines, options),
+            Err(e) => OpsResult::err(e.to_string()),
+        }
+    }
+
+    fn format_pipeline_list(
+        &self,
+        pipelines: Vec<PipelineMeta>,
+        options: PipelineListOptions<'_>,
+    ) -> OpsResult {
+        let format = options.format.unwrap_or("compact");
+        if format == "json" {
+            let filtered = filter_pipeline_rows(self, pipelines, &options, false);
+            return OpsResult::ok(
                 serde_json::to_string_pretty(
-                    &json!({ "pipelines": pipelines, "count": pipelines.len() }),
+                    &json!({ "pipelines": filtered, "count": filtered.len() }),
                 )
                 .unwrap_or_default(),
-            ),
-            Err(e) => OpsResult::err(e.to_string()),
+            );
+        }
+
+        let mut rows = filter_pipeline_rows(self, pipelines, &options, true);
+        let total = rows.len();
+        let default_limit = if format == "compact" { 80 } else { usize::MAX };
+        let limit = options
+            .limit
+            .map(|n| n as usize)
+            .unwrap_or(default_limit)
+            .max(1);
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+
+        let mut out = format!("count: {total}");
+        if rows.len() < total {
+            out.push_str(&format!(" (showing {})", rows.len()));
+        }
+        out.push('\n');
+
+        match format {
+            "compact" => {
+                for (meta, trigger_summary) in rows {
+                    out.push_str(&format!(
+                        "{} | {} | {} | {}\n",
+                        meta.file_rel_path,
+                        trigger_summary,
+                        pipeline_status(&meta),
+                        pipeline_purpose(&meta)
+                    ));
+                }
+                OpsResult::ok(out)
+            }
+            "tree" => {
+                for (meta, trigger_summary) in rows {
+                    let depth = meta.file_rel_path.matches('/').count();
+                    out.push_str(&format!(
+                        "{}{} | {} | {} | {}\n",
+                        "  ".repeat(depth),
+                        meta.file_rel_path,
+                        trigger_summary,
+                        pipeline_status(&meta),
+                        pipeline_purpose(&meta)
+                    ));
+                }
+                OpsResult::ok(out)
+            }
+            other => OpsResult::err(format!(
+                "pipeline_list format must be compact, json, or tree; got '{other}'"
+            )),
         }
     }
 
@@ -1006,40 +1094,98 @@ impl PlatformOps {
 // ── Templates ─────────────────────────────────────────────────────────────────
 
 impl PlatformOps {
-    pub fn template_list(&self, glob: Option<&str>) -> OpsResult {
+    pub fn template_list(&self, options: TemplateListOptions<'_>) -> OpsResult {
         match self
             .platform
             .projects
             .list_template_workspace(&self.owner, &self.project)
         {
             Ok(workspace) => {
-                if let Some(g) = glob.filter(|s| !s.is_empty()) {
-                    // Filter items by glob and prune empty folders.
-                    let filtered_items: Vec<_> = workspace
-                        .items
-                        .iter()
-                        .filter(|item| {
-                            if item.kind == "folder" {
-                                return false;
-                            }
-                            crate::platform::services::project::template_glob_matches(
-                                g,
-                                &item.rel_path,
-                            )
-                        })
-                        .cloned()
-                        .collect();
-                    let result = json!({
-                        "items": filtered_items,
-                        "count": filtered_items.len(),
-                        "glob": g,
-                    });
-                    OpsResult::ok(serde_json::to_string_pretty(&result).unwrap_or_default())
-                } else {
-                    OpsResult::ok(serde_json::to_string_pretty(&workspace).unwrap_or_default())
+                let format = options.format.unwrap_or("compact");
+                if format == "json" {
+                    if let Some(g) = options.glob.filter(|s| !s.is_empty()) {
+                        let filtered_items: Vec<_> = workspace
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                item.kind != "folder"
+                                    && crate::platform::services::project::template_glob_matches(
+                                        g,
+                                        &item.rel_path,
+                                    )
+                            })
+                            .cloned()
+                            .collect();
+                        let result = json!({
+                            "items": filtered_items,
+                            "count": filtered_items.len(),
+                            "glob": g,
+                        });
+                        return OpsResult::ok(
+                            serde_json::to_string_pretty(&result).unwrap_or_default(),
+                        );
+                    }
+                    return OpsResult::ok(
+                        serde_json::to_string_pretty(&workspace).unwrap_or_default(),
+                    );
                 }
+
+                self.format_template_list(workspace.items, options)
             }
             Err(e) => OpsResult::err(e.to_string()),
+        }
+    }
+
+    fn format_template_list(
+        &self,
+        items: Vec<TemplateTreeItem>,
+        options: TemplateListOptions<'_>,
+    ) -> OpsResult {
+        let format = options.format.unwrap_or("compact");
+        let mut rows = filter_template_rows(self, items, &options);
+        let total = rows.len();
+        let default_limit = if format == "compact" { 120 } else { usize::MAX };
+        let limit = options
+            .limit
+            .map(|n| n as usize)
+            .unwrap_or(default_limit)
+            .max(1);
+        if rows.len() > limit {
+            rows.truncate(limit);
+        }
+
+        let mut out = format!("count: {total}");
+        if rows.len() < total {
+            out.push_str(&format!(" (showing {})", rows.len()));
+        }
+        out.push('\n');
+
+        match format {
+            "compact" => {
+                for (item, meta) in rows {
+                    out.push_str(&format!(
+                        "{} | {} | {} | {}\n",
+                        item.rel_path, item.file_kind, meta.title, meta.description
+                    ));
+                }
+                OpsResult::ok(out)
+            }
+            "tree" => {
+                for (item, meta) in rows {
+                    out.push_str(&format!(
+                        "{}{} | {} | {} | {}\n",
+                        "  ".repeat(item.depth),
+                        item.rel_path,
+                        item.file_kind,
+                        meta.title,
+                        meta.description
+                    ));
+                }
+                OpsResult::ok(out)
+            }
+            other => OpsResult::err(format!(
+                "template_list format must be compact, json, or tree; got '{other}'"
+            )),
         }
     }
 
@@ -1830,6 +1976,302 @@ impl PlatformOps {
 }
 
 // ── Search result formatter ────────────────────────────────────────────────────
+
+fn filter_pipeline_rows(
+    ops: &PlatformOps,
+    pipelines: Vec<PipelineMeta>,
+    options: &PipelineListOptions<'_>,
+    include_trigger_summary: bool,
+) -> Vec<(PipelineMeta, String)> {
+    let query = options
+        .query
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
+    let status_filter = options
+        .status
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+        .map(str::to_lowercase);
+    let trigger_filter = options
+        .trigger_kind
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+        .map(normalize_trigger_filter);
+
+    pipelines
+        .into_iter()
+        .filter(|meta| {
+            options
+                .glob
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|glob| {
+                    crate::platform::services::project::pipeline_glob_matches(
+                        glob,
+                        &meta.file_rel_path,
+                    )
+                })
+                .unwrap_or(true)
+        })
+        .filter(|meta| {
+            status_filter
+                .as_deref()
+                .map(|wanted| pipeline_status(meta).eq_ignore_ascii_case(wanted))
+                .unwrap_or(true)
+        })
+        .filter(|meta| {
+            trigger_filter
+                .as_deref()
+                .map(|wanted| normalize_trigger_filter(&meta.trigger_kind) == wanted)
+                .unwrap_or(true)
+        })
+        .filter_map(|meta| {
+            let trigger_summary = if include_trigger_summary || query.is_some() {
+                pipeline_trigger_summary(ops, &meta)
+            } else {
+                meta.trigger_kind.clone()
+            };
+            let matches_query = query
+                .as_deref()
+                .map(|needle| {
+                    [
+                        meta.file_rel_path.as_str(),
+                        meta.name.as_str(),
+                        meta.title.as_str(),
+                        meta.description.as_str(),
+                        meta.trigger_kind.as_str(),
+                        trigger_summary.as_str(),
+                    ]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(needle))
+                })
+                .unwrap_or(true);
+            matches_query.then_some((meta, trigger_summary))
+        })
+        .collect()
+}
+
+fn filter_template_rows(
+    ops: &PlatformOps,
+    items: Vec<TemplateTreeItem>,
+    options: &TemplateListOptions<'_>,
+) -> Vec<(TemplateTreeItem, TemplateSemanticMeta)> {
+    let query = options
+        .query
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase);
+    let kind_filter = options
+        .kind
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+        .map(str::to_lowercase);
+
+    items
+        .into_iter()
+        .filter(|item| item.kind != "folder")
+        .filter(|item| {
+            options
+                .glob
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|glob| {
+                    crate::platform::services::project::template_glob_matches(glob, &item.rel_path)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|item| {
+            kind_filter
+                .as_deref()
+                .map(|wanted| item.file_kind.eq_ignore_ascii_case(wanted))
+                .unwrap_or(true)
+        })
+        .filter_map(|item| {
+            let meta = read_template_semantic_meta(ops, &item.rel_path);
+            let keyword_text = meta.keywords.join(" ");
+            let matches_query = query
+                .as_deref()
+                .map(|needle| {
+                    [
+                        item.rel_path.as_str(),
+                        item.name.as_str(),
+                        item.file_kind.as_str(),
+                        meta.title.as_str(),
+                        meta.description.as_str(),
+                        keyword_text.as_str(),
+                    ]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(needle))
+                })
+                .unwrap_or(true);
+            matches_query.then_some((item, meta))
+        })
+        .collect()
+}
+
+fn pipeline_status(meta: &PipelineMeta) -> &'static str {
+    if meta.active_hash.is_some() {
+        "active"
+    } else {
+        "draft"
+    }
+}
+
+fn pipeline_purpose(meta: &PipelineMeta) -> &str {
+    let description = meta.description.trim();
+    if !description.is_empty() {
+        return description;
+    }
+    meta.title.trim()
+}
+
+fn normalize_trigger_filter(value: &str) -> String {
+    let lower = value.trim().to_lowercase();
+    lower
+        .strip_prefix("n.trigger.")
+        .or_else(|| lower.strip_prefix("trigger."))
+        .unwrap_or(&lower)
+        .to_string()
+}
+
+fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
+    let fallback = if meta.trigger_kind.trim().is_empty() {
+        "n.trigger.unknown".to_string()
+    } else if meta.trigger_kind.starts_with("n.trigger.") {
+        meta.trigger_kind.clone()
+    } else {
+        format!("n.trigger.{}", meta.trigger_kind)
+    };
+
+    let source = match ops.platform.projects.read_pipeline_source(
+        &ops.owner,
+        &ops.project,
+        &meta.file_rel_path,
+    ) {
+        Ok(source) => source,
+        Err(_) => return fallback,
+    };
+    let graph = match serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
+        Ok(graph) => graph,
+        Err(_) => return fallback,
+    };
+    let Some(node) = graph
+        .nodes
+        .iter()
+        .find(|node| node.kind.starts_with("n.trigger."))
+    else {
+        return fallback;
+    };
+
+    match node.kind.as_str() {
+        "n.trigger.webhook" => {
+            let method = node
+                .config
+                .get("method")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("GET");
+            let path = node
+                .config
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("/");
+            format!("n.trigger.webhook {} {}", method.to_uppercase(), path)
+        }
+        "n.trigger.schedule" => {
+            let cron = node
+                .config
+                .get("cron")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("* * * * *");
+            format!("n.trigger.schedule {cron}")
+        }
+        "n.trigger.memsubscribe" => {
+            let channel = node
+                .config
+                .get("channel")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("*");
+            format!("n.trigger.memsubscribe {channel}")
+        }
+        "n.trigger.mcp" => {
+            let tool_name = node
+                .config
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&meta.name);
+            format!("n.trigger.mcp {tool_name}")
+        }
+        "n.trigger.function" => format!("n.trigger.function {}", meta.name),
+        other => other.to_string(),
+    }
+}
+
+fn read_template_semantic_meta(ops: &PlatformOps, rel_path: &str) -> TemplateSemanticMeta {
+    let Ok(content) = ops
+        .platform
+        .projects
+        .read_template_file(&ops.owner, &ops.project, rel_path)
+    else {
+        return TemplateSemanticMeta::default();
+    };
+    parse_template_semantic_meta(&content)
+}
+
+fn parse_template_semantic_meta(content: &str) -> TemplateSemanticMeta {
+    let trimmed = content.trim_start();
+    let Some(after_open) = trimmed.strip_prefix("/*") else {
+        return TemplateSemanticMeta::default();
+    };
+    let Some(end) = after_open.find("*/") else {
+        return TemplateSemanticMeta::default();
+    };
+    let block = &after_open[..end];
+    let mut in_zebflow = false;
+    let mut in_keywords = false;
+    let mut meta = TemplateSemanticMeta::default();
+
+    for raw_line in block.lines() {
+        let line = raw_line.trim().trim_start_matches('*').trim();
+        if line == "zebflow:" {
+            in_zebflow = true;
+            in_keywords = false;
+            continue;
+        }
+        if !in_zebflow || line.is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("title:") {
+            meta.title = unquote_meta_value(value.trim());
+            in_keywords = false;
+        } else if let Some(value) = line.strip_prefix("description:") {
+            meta.description = unquote_meta_value(value.trim());
+            in_keywords = false;
+        } else if line == "keywords:" {
+            in_keywords = true;
+        } else if in_keywords && line.starts_with('-') {
+            meta.keywords
+                .push(unquote_meta_value(line.trim_start_matches('-').trim()));
+        } else if !line.starts_with(' ') && !line.starts_with('-') {
+            in_keywords = false;
+        }
+    }
+
+    meta
+}
+
+fn unquote_meta_value(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
 
 /// Format search matches with optional head_limit and output_mode.
 fn format_search_results(

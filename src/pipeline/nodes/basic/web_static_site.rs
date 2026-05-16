@@ -80,18 +80,7 @@ impl StaticSiteManifest {
     }
 }
 
-pub fn normalize_site_root_rel_path(scope: &str, raw: &str) -> Result<String, PipelineError> {
-    let scope = match scope.trim() {
-        "public" => "public",
-        "private" => "private",
-        other => {
-            return Err(PipelineError::new(
-                "WEB_STATIC_SITE_SCOPE",
-                format!("unsupported scope '{other}' — expected public or private"),
-            ));
-        }
-    };
-
+pub fn normalize_site_root_rel_path(raw: &str) -> Result<String, PipelineError> {
     let mut parts = Vec::new();
     for part in raw.trim().replace('\\', "/").split('/') {
         let part = part.trim();
@@ -112,7 +101,7 @@ pub fn normalize_site_root_rel_path(scope: &str, raw: &str) -> Result<String, Pi
             "site_root must not be empty",
         ));
     }
-    Ok(format!("{scope}/{}", parts.join("/")))
+    Ok(parts.join("/"))
 }
 
 pub fn normalize_page_output_path(raw: &str) -> Result<String, PipelineError> {
@@ -1045,17 +1034,17 @@ mod tests {
     #[test]
     fn normalizes_site_root_and_page_paths() {
         assert_eq!(
-            normalize_site_root_rel_path("private", "static/musiklib").unwrap(),
-            "private/static/musiklib"
+            normalize_site_root_rel_path("static/musiklib").unwrap(),
+            "static/musiklib"
         );
         assert_eq!(
-            page_rel_path_from_site_root("private/static/musiklib", "a/aurora/index.html").unwrap(),
-            "private/static/musiklib/a/aurora/index.html"
+            page_rel_path_from_site_root("static/musiklib", "a/aurora/index.html").unwrap(),
+            "static/musiklib/a/aurora/index.html"
         );
         assert!(normalize_page_output_path("../escape.html").is_err());
         assert_eq!(
-            site_manifest_rel_path("private/static/musiklib"),
-            "private/static/musiklib/.zebflow-static-site.json"
+            site_manifest_rel_path("static/musiklib"),
+            "static/musiklib/.zebflow-static-site.json"
         );
     }
 
@@ -1228,7 +1217,7 @@ mod tests {
 
         let _ = update_site_manifest(
             &manifest_abs,
-            "private/docs",
+            "docs",
             Some("https://db.sekejap.life"),
             "/docs",
             "web.docs.generate",
@@ -1254,7 +1243,7 @@ mod tests {
 
         let manifest = update_site_manifest(
             &manifest_abs,
-            "private/docs",
+            "docs",
             Some("https://db.sekejap.life"),
             "/docs",
             "web.docs.generate",

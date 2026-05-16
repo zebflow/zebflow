@@ -93,8 +93,6 @@ impl FileAdapter for FilesystemFileAdapter {
             &data_runtime_dir,
             &data_runtime_pipelines_dir,
             &files_dir,
-            &files_dir.join("public"),
-            &files_dir.join("private"),
             &repo_dir,
             &repo_pipelines_dir,
             &repo_docs_dir,

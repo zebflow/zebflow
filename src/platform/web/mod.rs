@@ -5,7 +5,7 @@ pub(crate) mod embedded;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fs;
-use std::path::{Component, Path as FsPath, PathBuf};
+use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -345,7 +345,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/p/{owner}/{project}/assets/{*path}",
             get(project_static_asset),
         )
-        .route("/files/{owner}/{project}/{*path}", get(project_file_serve))
+        .route("/fs/{owner}/{project}/{*path}", get(project_fs_serve))
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
@@ -2016,11 +2016,9 @@ async fn project_static_asset(
     resp
 }
 
-/// Route: GET /files/{owner}/{project}/{*path}
-/// Serves files written by n.file.save from the project's files_dir.
-/// Files under `private/` require project file-read capability.
-/// Files under `public/` are served without auth.
-async fn project_file_serve(
+/// Route: GET /fs/{owner}/{project}/{*path}
+/// Serves one object from the project default ZebFS namespace.
+async fn project_fs_serve(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -2035,97 +2033,45 @@ async fn project_file_serve(
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
     }
 
-    let normalized = path.trim_start_matches('/').replace('\\', "/");
-    if normalized.is_empty() || normalized.contains('\0') {
-        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
-    }
-    let mut clean_parts = Vec::new();
-    for component in FsPath::new(&normalized).components() {
-        match component {
-            Component::Normal(part) => {
-                let part = part.to_string_lossy();
-                if part.is_empty() {
-                    return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
-                }
-                clean_parts.push(part.into_owned());
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
-            }
-        }
-    }
-    if clean_parts.is_empty() {
-        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
-    }
-    let normalized = clean_parts.join("/");
-
-    // Files under private/ require project-scoped file read access.
-    if normalized.starts_with("private/") || normalized == "private" {
-        if let Err(response) = require_project_api_capability(
-            &state,
-            &headers,
-            &owner,
-            &project,
-            ProjectCapability::FilesRead,
-        ) {
-            return response;
-        }
+    // First slice is private-by-default: all /fs reads require project file-read.
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesRead,
+    ) {
+        return response;
     }
 
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
-        Ok(l) => l,
+        Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let files_root = match std::fs::canonicalize(&layout.files_dir) {
-        Ok(root) => root,
-        Err(err) => {
-            return internal_error(PlatformError::new(
-                "PLATFORM_FILE_ROOT_CANONICALIZE",
-                err.to_string(),
-            ));
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let object = match zebfs.get(&path) {
+        Ok(object) => object,
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
+            return (StatusCode::NOT_FOUND, "object not found").into_response();
         }
-    };
-    let requested = files_root.join(&normalized);
-    if !requested.exists() {
-        return (StatusCode::NOT_FOUND, "file not found").into_response();
-    }
-    let abs = match std::fs::canonicalize(&requested) {
-        Ok(path) => path,
-        Err(err) => {
-            return internal_error(PlatformError::new(
-                "PLATFORM_FILE_SERVE_CANONICALIZE",
-                err.to_string(),
-            ));
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
+            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
         }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
     };
 
-    // Strict canonical containment check prevents traversal and symlink escapes.
-    if !abs.starts_with(&files_root) {
-        return (StatusCode::BAD_REQUEST, "invalid file path").into_response();
-    }
-    if !abs.is_file() {
-        return (StatusCode::NOT_FOUND, "file not found").into_response();
-    }
-
-    let bytes = match std::fs::read(&abs) {
-        Ok(b) => b,
-        Err(err) => {
-            return internal_error(PlatformError::new("PLATFORM_FILE_SERVE", err.to_string()));
-        }
-    };
-
-    let mut resp = Response::new(Body::from(bytes));
+    let mut resp = Response::new(Body::from(object.bytes));
     *resp.status_mut() = StatusCode::OK;
-    let content_type = content_type_for_path(&abs);
+    let content_type = content_type_for_path(FsPath::new(&object.path));
     if let Ok(v) = HeaderValue::from_str(content_type) {
         resp.headers_mut().insert(CONTENT_TYPE, v);
     }
     let download_requested = query_flag_enabled(params.get("download").map(String::as_str));
-    if let Some(disposition) = file_content_disposition(&abs, content_type, download_requested) {
+    if let Some(disposition) =
+        file_content_disposition(FsPath::new(&object.path), content_type, download_requested)
+    {
         resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
     }
-    // No caching for dynamic upload files — content can change
     if let Ok(v) = HeaderValue::from_str("no-cache") {
         resp.headers_mut()
             .insert(axum::http::header::CACHE_CONTROL, v);
@@ -5248,8 +5194,8 @@ async fn project_db_suite_page(
                     "mapserver_api": {
                         "sources": format!("/api/projects/{owner}/{project}/mapserver/{connection}/sources"),
                         "layers": format!("/api/projects/{owner}/{project}/mapserver/{connection}/layers"),
-                        "upload": format!("/api/projects/{owner}/{project}/files/upload?path=private/mapserver"),
-                        "list_files": format!("/api/projects/{owner}/{project}/files/list?path=private/mapserver"),
+                        "upload": format!("/api/projects/{owner}/{project}/files/upload?path=mapserver"),
+                        "list_files": format!("/api/projects/{owner}/{project}/files/list?path=mapserver"),
                         "base_public": format!("/ms/{owner}/{project}"),
                     },
                     "nav": nav,
@@ -5393,7 +5339,16 @@ async fn project_files_page(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let browse_path = params.get("path").cloned().unwrap_or_default();
-    render_files_page(state, headers, owner, project, "files", browse_path).await
+    render_files_page(
+        state,
+        headers,
+        owner,
+        project,
+        "storages",
+        None,
+        browse_path,
+    )
+    .await
 }
 
 async fn project_files_tab_page(
@@ -5402,12 +5357,23 @@ async fn project_files_tab_page(
     Path((owner, project, tab)): Path<(String, String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    let tab = match tab.trim() {
-        "s3" => "s3",
-        _ => "files",
+    let selected_storage = slug_segment(tab.trim());
+    let selected_storage = if selected_storage.is_empty() {
+        None
+    } else {
+        Some(selected_storage)
     };
     let browse_path = params.get("path").cloned().unwrap_or_default();
-    render_files_page(state, headers, owner, project, tab, browse_path).await
+    render_files_page(
+        state,
+        headers,
+        owner,
+        project,
+        "explorer",
+        selected_storage,
+        browse_path,
+    )
+    .await
 }
 
 async fn render_files_page(
@@ -5416,6 +5382,7 @@ async fn render_files_page(
     owner: String,
     project: String,
     tab: &str,
+    selected_storage: Option<String>,
     browse_path: String,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -5431,45 +5398,35 @@ async fn render_files_page(
         Ok(Some(info)) => {
             let nav = nav_classes(&owner, &project, "files", None);
             let route = format!("/projects/{owner}/{project}/files");
+            let selected_storage = selected_storage.unwrap_or_else(|| "default".to_string());
+            let active_tab = if tab == "explorer" {
+                "explorer"
+            } else {
+                "storages"
+            };
 
             // Build file listing for the requested browse_path
-            let (folders, files, rel_path) = if tab == "files" {
+            let (folders, files, rel_path) = if active_tab == "explorer" {
                 match state.platform.file.ensure_project_layout(&owner, &project) {
                     Ok(layout) => {
-                        let rel = sanitize_file_path(browse_path.trim().trim_start_matches('/'));
-                        let dir = if rel.is_empty() {
-                            layout.files_dir.clone()
-                        } else {
-                            layout.files_dir.join(&rel)
-                        };
-                        let protected_roots = ["public", "private"];
+                        let rel = browse_path.trim().trim_start_matches('/').to_string();
+                        let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
                         let mut fds: Vec<serde_json::Value> = Vec::new();
                         let mut fls: Vec<serde_json::Value> = Vec::new();
-                        if dir.is_dir() && dir.starts_with(&layout.files_dir) {
-                            if let Ok(entries) = std::fs::read_dir(&dir) {
-                                let mut entries: Vec<_> = entries.flatten().collect();
-                                entries.sort_by_key(|e| e.file_name());
+                        let rel_path = match zebfs.list(&rel) {
+                            Ok(entries) => {
                                 for entry in entries {
-                                    let name = entry.file_name().to_string_lossy().into_owned();
-                                    let entry_rel = if rel.is_empty() {
-                                        name.clone()
-                                    } else {
-                                        format!("{rel}/{name}")
-                                    };
-                                    let is_protected =
-                                        rel.is_empty() && protected_roots.contains(&name.as_str());
-                                    if entry.path().is_dir() {
+                                    let name = entry.name;
+                                    let path = entry.path;
+                                    if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
                                         fds.push(json!({
                                             "name": name,
-                                            "path": entry_rel,
-                                            "protected": is_protected,
+                                            "path": path,
+                                            "protected": false,
                                         }));
                                     } else {
-                                        let meta = entry.path().metadata().ok();
-                                        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                                        let modified = meta
-                                            .as_ref()
-                                            .and_then(|m| m.modified().ok())
+                                        let modified = entry
+                                            .modified
                                             .and_then(|t| {
                                                 t.duration_since(std::time::UNIX_EPOCH).ok()
                                             })
@@ -5477,16 +5434,18 @@ async fn render_files_page(
                                             .unwrap_or(0);
                                         fls.push(json!({
                                             "name": name,
-                                            "path": entry_rel,
-                                            "size": size,
+                                            "path": path.clone(),
+                                            "size": entry.size,
                                             "modified": modified,
-                                            "url": format!("/files/{owner}/{project}/{entry_rel}"),
+                                            "url": format!("/fs/{owner}/{project}/{path}"),
                                         }));
                                     }
                                 }
+                                rel
                             }
-                        }
-                        (fds, fls, rel)
+                            Err(_) => String::new(),
+                        };
+                        (fds, fls, rel_path)
                     }
                     Err(_) => (vec![], vec![], String::new()),
                 }
@@ -5504,7 +5463,17 @@ async fn render_files_page(
                 "title": info.title,
                 "project_href": format!("/projects/{owner}/{project}"),
                 "current_menu": "Files",
-                "active_tab": tab,
+                "active_tab": active_tab,
+                "selected_storage": selected_storage,
+                "storages": [
+                    {
+                        "name": "default",
+                        "backend": "ZebFS local",
+                        "namespace": format!("{owner}/{project}"),
+                        "tags": ["default"],
+                        "open_href": format!("/projects/{owner}/{project}/files/default")
+                    }
+                ],
                 "api": {
                     "list":  format!("/api/projects/{owner}/{project}/files/list"),
                     "mkdir": format!("/api/projects/{owner}/{project}/files/mkdir"),
@@ -12081,7 +12050,7 @@ async fn api_template_diagnostics(
 
 // ── File browser API ──────────────────────────────────────────────────────────
 
-/// GET /api/projects/{owner}/{project}/files/list?path=public/uploads
+/// GET /api/projects/{owner}/{project}/files/list?path=uploads
 /// Returns folders and files at a given path inside files_dir.
 async fn api_files_list(
     State(state): State<PlatformAppState>,
@@ -12124,70 +12093,50 @@ async fn api_files_list(
         .map(|s| s.trim().trim_start_matches('/'))
         .unwrap_or("")
         .to_string();
-    let rel = sanitize_file_path(&rel);
-
-    let dir = if rel.is_empty() {
-        layout.files_dir.clone()
-    } else {
-        layout.files_dir.join(&rel)
-    };
-
-    // Security: must stay within files_dir
-    if !dir.starts_with(&layout.files_dir) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"invalid path"})),
-        )
-            .into_response();
-    }
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
 
     let mut folders: Vec<serde_json::Value> = Vec::new();
     let mut files: Vec<serde_json::Value> = Vec::new();
-
-    if dir.is_dir() {
-        let protected_roots = ["public", "private"];
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut entries: Vec<_> = entries.flatten().collect();
-            entries.sort_by_key(|e| e.file_name());
-            for entry in entries {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let entry_rel = if rel.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{rel}/{name}")
-                };
-                let is_protected_root = rel.is_empty() && protected_roots.contains(&name.as_str());
-                if entry.path().is_dir() {
-                    folders.push(json!({
-                        "name": name,
-                        "path": entry_rel,
-                        "protected": is_protected_root,
-                    }));
-                } else {
-                    let meta = entry.path().metadata().ok();
-                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                    let modified = meta
-                        .as_ref()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    files.push(json!({
-                        "name": name,
-                        "path": entry_rel,
-                        "size": size,
-                        "modified": modified,
-                        "url": format!("/files/{owner}/{project}/{entry_rel}"),
-                    }));
-                }
-            }
+    let entries = match zebfs.list(&rel) {
+        Ok(entries) => entries,
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid path"})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
+    for entry in entries {
+        let name = entry.name;
+        let path = entry.path;
+        if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
+            folders.push(json!({
+                "name": name,
+                "path": path,
+                "protected": false,
+            }));
+        } else {
+            let modified = entry
+                .modified
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            files.push(json!({
+                "name": name,
+                "path": path.clone(),
+                "size": entry.size,
+                "modified": modified,
+                "url": format!("/fs/{owner}/{project}/{}", path),
+            }));
         }
     }
 
     Json(json!({ "path": rel, "folders": folders, "files": files })).into_response()
 }
 
-/// POST /api/projects/{owner}/{project}/files/mkdir  { "path": "public/photos" }
+/// POST /api/projects/{owner}/{project}/files/mkdir  { "path": "photos" }
 async fn api_files_mkdir(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -12231,7 +12180,16 @@ async fn api_files_mkdir(
         .trim()
         .trim_start_matches('/')
         .to_string();
-    let path_str = sanitize_file_path(&path_str);
+    let path_str = match crate::zebfs::normalize_object_path(&path_str) {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid path"})),
+            )
+                .into_response();
+        }
+    };
     if path_str.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -12240,16 +12198,8 @@ async fn api_files_mkdir(
             .into_response();
     }
 
-    let abs = layout.files_dir.join(&path_str);
-    if !abs.starts_with(&layout.files_dir) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"invalid path"})),
-        )
-            .into_response();
-    }
-
-    match std::fs::create_dir_all(&abs) {
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    match zebfs.create_prefix(&path_str) {
         Ok(_) => Json(json!({ "ok": true, "path": path_str })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -12259,7 +12209,7 @@ async fn api_files_mkdir(
     }
 }
 
-/// `POST /api/projects/{owner}/{project}/files/upload?path=public/uploads`
+/// `POST /api/projects/{owner}/{project}/files/upload?path=uploads`
 /// Upload a file into project file storage via multipart.
 async fn api_files_upload(
     State(state): State<PlatformAppState>,
@@ -12351,35 +12301,24 @@ async fn api_files_upload(
     let rel = params
         .get("path")
         .map(|s| s.trim().trim_start_matches('/'))
-        .unwrap_or("public/uploads")
+        .unwrap_or("uploads")
         .to_string();
-    let rel = sanitize_file_path(&rel);
+    let rel = match crate::zebfs::normalize_object_path(&rel) {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid path"})),
+            )
+                .into_response();
+        }
+    };
     if rel.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"ok": false, "error": "path is required"})),
         )
             .into_response();
-    }
-    let top = rel.split('/').next().unwrap_or("");
-    if top != "public" && top != "private" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "path must begin with public/ or private/"})),
-        )
-            .into_response();
-    }
-
-    let dir = layout.files_dir.join(&rel);
-    if !dir.starts_with(&layout.files_dir) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "invalid path"})),
-        )
-            .into_response();
-    }
-    if let Err(err) = std::fs::create_dir_all(&dir) {
-        return internal_error(PlatformError::new("FILES_UPLOAD_DIR", err.to_string()));
     }
 
     let field = match multipart.next_field().await {
@@ -12420,21 +12359,21 @@ async fn api_files_upload(
         Ok(bytes) => bytes,
         Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
     };
-    let dest = dir.join(&filename);
-    if let Err(err) = std::fs::write(&dest, bytes.as_ref()) {
+    let entry_rel = format!("{rel}/{filename}");
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    if let Err(err) = zebfs.put(&entry_rel, bytes.as_ref()) {
         return internal_error(PlatformError::new("FILES_UPLOAD_WRITE", err.to_string()));
     }
 
-    let entry_rel = format!("{rel}/{filename}");
     Json(json!({
         "ok": true,
         "path": entry_rel,
-        "url": format!("/files/{owner}/{project}/{entry_rel}")
+        "url": format!("/fs/{owner}/{project}/{entry_rel}")
     }))
     .into_response()
 }
 
-/// POST /api/projects/{owner}/{project}/files/rm  { "path": "public/uploads/abc.jpg" }
+/// POST /api/projects/{owner}/{project}/files/rm  { "path": "uploads/abc.jpg" }
 async fn api_files_rm(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -12478,7 +12417,16 @@ async fn api_files_rm(
         .trim()
         .trim_start_matches('/')
         .to_string();
-    let path_str = sanitize_file_path(&path_str);
+    let path_str = match crate::zebfs::normalize_object_path(&path_str) {
+        Ok(path) => path,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid path"})),
+            )
+                .into_response();
+        }
+    };
     if path_str.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -12487,32 +12435,8 @@ async fn api_files_rm(
             .into_response();
     }
 
-    // Protect root dirs: public/ and private/ themselves cannot be deleted
-    let protected_roots = ["public", "private"];
-    if protected_roots.contains(&path_str.as_str()) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"cannot delete protected root folder"})),
-        )
-            .into_response();
-    }
-
-    let abs = layout.files_dir.join(&path_str);
-    if !abs.starts_with(&layout.files_dir) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"invalid path"})),
-        )
-            .into_response();
-    }
-
-    let result = if abs.is_dir() {
-        std::fs::remove_dir_all(&abs)
-    } else {
-        std::fs::remove_file(&abs)
-    };
-
-    match result {
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    match zebfs.delete(&path_str) {
         Ok(_) => Json(json!({ "ok": true })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -12602,18 +12526,21 @@ async fn api_mapserver_layers_publish(
         )
             .into_response();
     }
-    if !source_path.starts_with("private/mapserver/") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": "source_path must be under private/mapserver/"})),
-        )
-            .into_response();
-    }
+    let source_path = match crate::zebfs::normalize_object_path(source_path) {
+        Ok(path) if path.starts_with("mapserver/") => path,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "source_path must be under mapserver/"})),
+            )
+                .into_response();
+        }
+    };
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
-    let source_abs_path = layout.files_dir.join(source_path.trim_start_matches('/'));
+    let source_abs_path = layout.files_dir.join(&source_path);
     if !source_abs_path.exists() || !source_abs_path.is_file() {
         return (
             StatusCode::BAD_REQUEST,
@@ -12662,7 +12589,7 @@ async fn api_mapserver_layers_publish(
         })
         .collect::<String>();
     let artifact_abs_dir = artifact_root.join(&safe_layer_id);
-    let artifact_rel_dir = format!("private/mapserver/.artifacts/{instance}/{safe_layer_id}");
+    let artifact_rel_dir = format!("mapserver/.artifacts/{instance}/{safe_layer_id}");
     let build = match crate::mapserver::publish::build::build_geojson_artifact(
         &source_abs_path,
         layer_id,
@@ -12689,7 +12616,7 @@ async fn api_mapserver_layers_publish(
         } else {
             format!("/{}", path)
         },
-        source_path: source_path.to_string(),
+        source_path,
         artifact_manifest_path: Some(build.manifest_rel_path.clone()),
         mode: "features".to_string(),
         min_zoom,
@@ -12763,13 +12690,6 @@ async fn api_mapserver_layers_delete(
         }
     }
     Json(json!({"ok": true})).into_response()
-}
-
-fn sanitize_file_path(path: &str) -> String {
-    path.split('/')
-        .filter(|seg| !seg.is_empty() && *seg != "." && *seg != "..")
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 async fn api_list_credentials(
@@ -12897,21 +12817,22 @@ async fn api_oauth2_authorize(
     ) {
         return response;
     }
-    let credential = match state
-        .platform
-        .credentials
-        .get_project_credential(&owner, &project, &credential_id)
-    {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "credential not found"})),
-            )
-                .into_response();
-        }
-        Err(err) => return internal_error(err),
-    };
+    let credential =
+        match state
+            .platform
+            .credentials
+            .get_project_credential(&owner, &project, &credential_id)
+        {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "credential not found"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
+        };
     if credential.kind != "oauth2" {
         return (
             StatusCode::BAD_REQUEST,
@@ -12941,18 +12862,18 @@ async fn api_oauth2_authorize(
             .into_response();
     }
 
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
-        "http"
-    } else {
-        "https"
-    };
-    let redirect_uri = format!("{scheme}://{host}/oauth/callback");
-    let oauth_state =
-        sign_oauth_state(&state.oauth_state_secret, &owner, &project, &credential_id);
+    // redirect_uri is stored per-credential (each project/domain can differ).
+    // Falls back to derived URL for dev convenience.
+    let redirect_uri = secret
+        .get("redirect_uri")
+        .and_then(serde_json::Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| {
+            let base = platform_base_url(&headers);
+            format!("{base}/oauth/callback")
+        });
+    let oauth_state = sign_oauth_state(&state.oauth_state_secret, &owner, &project, &credential_id);
 
     let mut url = format!(
         "{authorize_url}?client_id={}&redirect_uri={}&response_type=code&state={}",
@@ -13004,16 +12925,28 @@ async fn oauth2_callback_handler(
             }
         };
 
-    let host = headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = if host.starts_with("localhost") || host.starts_with("127.") {
-        "http"
-    } else {
-        "https"
-    };
-    let redirect_uri = format!("{scheme}://{host}/oauth/callback");
+    // Read redirect_uri from the credential's secret (per-credential, per-domain).
+    let redirect_uri =
+        match state
+            .platform
+            .credentials
+            .get_project_credential(&owner, &project, &credential_id)
+        {
+            Ok(Some(cred)) => cred
+                .secret
+                .get("redirect_uri")
+                .and_then(serde_json::Value::as_str)
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| {
+                    let base = platform_base_url(&headers);
+                    format!("{base}/oauth/callback")
+                }),
+            _ => {
+                let base = platform_base_url(&headers);
+                format!("{base}/oauth/callback")
+            }
+        };
 
     match state
         .platform
@@ -13022,15 +12955,11 @@ async fn oauth2_callback_handler(
         .await
     {
         Ok(()) => {
-            let target = format!(
-                "/projects/{owner}/{project}/credentials?oauth=success"
-            );
+            let target = format!("/projects/{owner}/{project}/credentials?oauth=success");
             axum::response::Redirect::to(&target).into_response()
         }
         Err(_err) => {
-            let target = format!(
-                "/projects/{owner}/{project}/credentials?oauth=error"
-            );
+            let target = format!("/projects/{owner}/{project}/credentials?oauth=error");
             axum::response::Redirect::to(&target).into_response()
         }
     }
@@ -13043,8 +12972,8 @@ fn sign_oauth_state(secret: &[u8; 32], owner: &str, project: &str, credential_id
 
     let now = crate::platform::model::now_ts();
     let payload = serde_json::json!({"o": owner, "p": project, "c": credential_id, "t": now});
-    let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(payload.to_string().as_bytes());
+    let payload_b64 =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
 
     type HmacSha256 = Hmac<Sha256>;
     let mut mac = HmacSha256::new_from_slice(secret).expect("hmac key size");
@@ -13054,10 +12983,7 @@ fn sign_oauth_state(secret: &[u8; 32], owner: &str, project: &str, credential_id
     format!("{payload_b64}.{sig}")
 }
 
-fn verify_oauth_state(
-    secret: &[u8; 32],
-    state: &str,
-) -> Result<(String, String, String), String> {
+fn verify_oauth_state(secret: &[u8; 32], state: &str) -> Result<(String, String, String), String> {
     use base64::Engine as _;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -13082,8 +13008,8 @@ fn verify_oauth_state(
     let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload_b64)
         .map_err(|e| format!("bad payload encoding: {e}"))?;
-    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| format!("bad payload json: {e}"))?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&payload_bytes).map_err(|e| format!("bad payload json: {e}"))?;
 
     let owner = payload
         .get("o")
@@ -16660,19 +16586,38 @@ fn verify_webhook_auth(
 
         "hmac" => {
             use hmac::{Hmac, Mac};
-            use sha2::Sha256;
-            type HmacSha256 = Hmac<Sha256>;
 
-            let sig_header = headers
-                .get("X-Hub-Signature-256")
-                .or_else(|| headers.get("x-hub-signature-256"))
-                .or_else(|| headers.get("X-Signature"))
-                .and_then(|h| h.to_str().ok())
-                .ok_or_else(|| AuthError::Unauthenticated {
-                    message: "missing HMAC signature header (X-Hub-Signature-256)".to_string(),
-                    redirect_url: None,
-                })?;
-            let expected = sig_header.trim_start_matches("sha256=");
+            // Read configurable fields from credential secret.
+            let provider = credential
+                .secret
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("generic");
+            let sig_header_name = credential
+                .secret
+                .get("signature_header")
+                .and_then(|v| v.as_str())
+                .unwrap_or("X-Hub-Signature-256");
+            let sig_prefix = credential
+                .secret
+                .get("signature_prefix")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let sig_encoding = credential
+                .secret
+                .get("signature_encoding")
+                .and_then(|v| v.as_str())
+                .unwrap_or("hex");
+            let algorithm = credential
+                .secret
+                .get("algorithm")
+                .and_then(|v| v.as_str())
+                .unwrap_or("sha256");
+            let replay_tolerance = credential
+                .secret
+                .get("replay_tolerance")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             let secret = credential
                 .secret
@@ -16682,16 +16627,143 @@ fn verify_webhook_auth(
                     AuthError::Internal("hmac credential missing 'secret' field".to_string())
                 })?;
 
-            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-                .map_err(|e| AuthError::Internal(e.to_string()))?;
-            mac.update(body.as_ref());
-            let computed = hex::encode(mac.finalize().into_bytes());
-
-            if computed != expected {
-                return Err(AuthError::Unauthenticated {
-                    message: "HMAC signature mismatch".to_string(),
+            // Get signature value from the configured header.
+            let sig_raw = headers
+                .get(sig_header_name)
+                .and_then(|h| h.to_str().ok())
+                .ok_or_else(|| AuthError::Unauthenticated {
+                    message: format!("missing HMAC signature header '{sig_header_name}'"),
                     redirect_url: None,
-                });
+                })?;
+
+            // Provider-specific parsing: extract expected signature bytes + message to sign.
+            let (expected_sig_str, message_to_sign): (String, Vec<u8>) = match provider {
+                // Stripe: header = "t=1234567890,v1=<hex_sig>", signs "{t}.{body}"
+                "stripe" => {
+                    let parts: std::collections::HashMap<&str, &str> = sig_raw
+                        .split(',')
+                        .filter_map(|p| p.split_once('='))
+                        .collect();
+                    let timestamp = parts.get("t").ok_or_else(|| AuthError::Unauthenticated {
+                        message: "Stripe signature missing 't' field".to_string(),
+                        redirect_url: None,
+                    })?;
+                    let sig = parts.get("v1").ok_or_else(|| AuthError::Unauthenticated {
+                        message: "Stripe signature missing 'v1' field".to_string(),
+                        redirect_url: None,
+                    })?;
+
+                    if replay_tolerance > 0 {
+                        let ts: i64 =
+                            timestamp.parse().map_err(|_| AuthError::Unauthenticated {
+                                message: "Stripe timestamp invalid".to_string(),
+                                redirect_url: None,
+                            })?;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64;
+                        if (now - ts).unsigned_abs() > replay_tolerance {
+                            return Err(AuthError::Unauthenticated {
+                                message: format!("replay tolerance exceeded ({replay_tolerance}s)"),
+                                redirect_url: None,
+                            });
+                        }
+                    }
+
+                    let body_str = std::str::from_utf8(body.as_ref()).unwrap_or("");
+                    let msg = format!("{timestamp}.{body_str}");
+                    (sig.to_string(), msg.into_bytes())
+                }
+                // Slack: timestamp in X-Slack-Request-Timestamp, signs "v0:{ts}:{body}"
+                "slack" => {
+                    let timestamp = headers
+                        .get("X-Slack-Request-Timestamp")
+                        .and_then(|h| h.to_str().ok())
+                        .ok_or_else(|| AuthError::Unauthenticated {
+                            message: "missing X-Slack-Request-Timestamp header".to_string(),
+                            redirect_url: None,
+                        })?;
+
+                    if replay_tolerance > 0 {
+                        let ts: i64 =
+                            timestamp.parse().map_err(|_| AuthError::Unauthenticated {
+                                message: "Slack timestamp invalid".to_string(),
+                                redirect_url: None,
+                            })?;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64;
+                        if (now - ts).unsigned_abs() > replay_tolerance {
+                            return Err(AuthError::Unauthenticated {
+                                message: format!("replay tolerance exceeded ({replay_tolerance}s)"),
+                                redirect_url: None,
+                            });
+                        }
+                    }
+
+                    let sig = if !sig_prefix.is_empty() {
+                        sig_raw.strip_prefix(sig_prefix).unwrap_or(sig_raw)
+                    } else {
+                        sig_raw
+                    };
+                    let body_str = std::str::from_utf8(body.as_ref()).unwrap_or("");
+                    let msg = format!("v0:{timestamp}:{body_str}");
+                    (sig.to_string(), msg.into_bytes())
+                }
+                // Generic / GitHub / Shopify: strip prefix, sign raw body.
+                _ => {
+                    let sig = if !sig_prefix.is_empty() {
+                        sig_raw.strip_prefix(sig_prefix).unwrap_or(sig_raw)
+                    } else {
+                        sig_raw
+                    };
+                    (sig.to_string(), body.to_vec())
+                }
+            };
+
+            // Decode expected signature from hex or base64.
+            let expected_bytes = match sig_encoding {
+                "base64" => {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(expected_sig_str.as_bytes())
+                        .map_err(|e| AuthError::Unauthenticated {
+                            message: format!("invalid base64 in signature: {e}"),
+                            redirect_url: None,
+                        })?
+                }
+                _ => hex::decode(&expected_sig_str).map_err(|e| AuthError::Unauthenticated {
+                    message: format!("invalid hex in signature: {e}"),
+                    redirect_url: None,
+                })?,
+            };
+
+            // Compute HMAC and verify using constant-time comparison.
+            match algorithm {
+                "sha1" => {
+                    type HmacSha1 = Hmac<sha1::Sha1>;
+                    let mut mac = HmacSha1::new_from_slice(secret.as_bytes())
+                        .map_err(|e| AuthError::Internal(e.to_string()))?;
+                    mac.update(&message_to_sign);
+                    mac.verify_slice(&expected_bytes)
+                        .map_err(|_| AuthError::Unauthenticated {
+                            message: "HMAC signature mismatch".to_string(),
+                            redirect_url: None,
+                        })?;
+                }
+                _ => {
+                    type HmacSha256 = Hmac<sha2::Sha256>;
+                    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                        .map_err(|e| AuthError::Internal(e.to_string()))?;
+                    mac.update(&message_to_sign);
+                    mac.verify_slice(&expected_bytes)
+                        .map_err(|_| AuthError::Unauthenticated {
+                            message: "HMAC signature mismatch".to_string(),
+                            redirect_url: None,
+                        })?;
+                }
             }
 
             Ok(None)
@@ -17630,7 +17702,6 @@ fn mapserver_layers_manifest_path(
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(layout
         .files_dir
-        .join("private")
         .join("mapserver")
         .join(format!("{instance}.layers.json")))
 }
@@ -17644,7 +17715,6 @@ fn mapserver_artifacts_root(
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(layout
         .files_dir
-        .join("private")
         .join("mapserver")
         .join(".artifacts")
         .join(instance))
@@ -17689,7 +17759,7 @@ fn list_mapserver_source_files(
     project: &str,
 ) -> Result<Vec<serde_json::Value>, PlatformError> {
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
-    let dir = layout.files_dir.join("private").join("mapserver");
+    let dir = layout.files_dir.join("mapserver");
     std::fs::create_dir_all(&dir)
         .map_err(|err| PlatformError::new("MAPSERVER_LIST", err.to_string()))?;
     let mut out = Vec::new();
@@ -17709,13 +17779,13 @@ fn list_mapserver_source_files(
             if !(lower.ends_with(".geojson") || lower.ends_with(".json")) {
                 continue;
             }
-            let rel = format!("private/mapserver/{name}");
+            let rel = format!("mapserver/{name}");
             let meta = path.metadata().ok();
             out.push(json!({
                 "name": name,
                 "path": rel,
                 "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-                "url": format!("/files/{owner}/{project}/{rel}")
+                "url": format!("/fs/{owner}/{project}/{rel}")
             }));
         }
     }

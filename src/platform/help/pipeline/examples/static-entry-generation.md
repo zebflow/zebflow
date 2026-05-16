@@ -7,7 +7,7 @@ One persisted static page for one entry.
 The pipeline does not answer the current HTTP request. Instead it:
 - collects one collection/entry payload
 - renders a TSX page through RWE
-- writes the resulting HTML into `files/public/...`
+- writes the resulting HTML into Zebflow FS
 
 That makes it the right primitive for any regeneration flow where one content mutation can fan out into many related pages later.
 
@@ -79,7 +79,6 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --scope public \
     --output-path "collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}/index.html" \
     --route "/collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}" \
     --on-conflict overwrite
@@ -87,11 +86,11 @@ return {
 
 Generated file:
 
-- `files/public/collections/field-notes/city-garden/index.html`
+- `collections/field-notes/city-garden/index.html`
 
 Served URL:
 
-- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
+- `/fs/{owner}/{project}/collections/field-notes/city-garden/index.html`
 
 ---
 
@@ -137,7 +136,6 @@ return {
 "
 | web.static.generate \
     --template pages/static-entry-page.tsx \
-    --scope public \
     --output-path "collections/{{ $input.collection.slug }}/{{ $input.entry.slug }}/index.html"
 ```
 
@@ -168,11 +166,11 @@ After generation, the file is already serveable directly from project storage.
 
 If the output path is:
 
-- `files/public/collections/field-notes/city-garden/index.html`
+- `collections/field-notes/city-garden/index.html`
 
 then the office can serve it immediately at:
 
-- `/files/{owner}/{project}/public/collections/field-notes/city-garden/index.html`
+- `/fs/{owner}/{project}/collections/field-notes/city-garden/index.html`
 
 So:
 - generation pipeline: `trigger.function` is enough
@@ -182,7 +180,7 @@ Only add a webhook or ingress rewrite if you want a prettier public route like:
 
 - `/collections/field-notes/city-garden`
 
-instead of the native `/files/...` address.
+instead of the native `/fs/...` address.
 
 ---
 
@@ -192,7 +190,7 @@ For production static publishing, prefer a separate static host or ingress inste
 
 Example artifact root inside the project data volume:
 
-- `users/superadmin/default/files/private/static/musiklib`
+- `users/superadmin/default/files/static/musiklib`
 
 Example nginx server:
 
@@ -201,7 +199,7 @@ server {
   listen 80;
   server_name musiklib.org;
 
-  root /data/users/superadmin/default/files/private/static/musiklib;
+  root /data/users/superadmin/default/files/static/musiklib;
   index index.html;
 
   location / {

@@ -2202,7 +2202,7 @@ pub struct ClusterRuntimeTargetOption {
 pub enum ProjectTransferArtifactKind {
     /// Repository workspace plus project runtime data.
     Bundle,
-    /// Public/private file storage trees.
+    /// Project Zebflow FS object tree.
     Files,
 }
 
@@ -2255,12 +2255,9 @@ pub struct ProjectTransferManifest {
     /// File count inside `data/` when exporting a bundle.
     #[serde(default)]
     pub data_file_count: u64,
-    /// File count inside `files/public/` when exporting file storage.
+    /// File count inside `files/` when exporting project FS objects.
     #[serde(default)]
-    pub public_file_count: u64,
-    /// File count inside `files/private/` when exporting file storage.
-    #[serde(default)]
-    pub private_file_count: u64,
+    pub files_file_count: u64,
     /// Total exported payload bytes before tar packaging.
     #[serde(default)]
     pub total_bytes: u64,
@@ -2272,11 +2269,11 @@ pub struct ProjectTransferManifest {
 pub enum ProjectOperationKind {
     /// Export `repo/` + `data/`.
     ExportBundle,
-    /// Export `files/public` + `files/private`.
+    /// Export Zebflow FS files.
     ExportFiles,
     /// Import `repo/` + `data/`.
     ImportBundle,
-    /// Import `files/public` + `files/private`.
+    /// Import Zebflow FS files.
     ImportFiles,
 }
 

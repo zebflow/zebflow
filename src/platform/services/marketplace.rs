@@ -164,30 +164,8 @@ struct RemoteMarketplaceArtifactResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 struct RemoteMarketplaceAssetVersion {
-    package_id: String,
-    version: String,
-    #[serde(default)]
-    publisher_owner: String,
-    #[serde(default)]
-    publisher_id: String,
-    #[serde(default)]
-    publisher_display_name: String,
-    #[serde(default)]
-    publisher_url: String,
-    #[serde(default)]
-    publisher_email: String,
-    #[serde(default)]
-    source_owner: String,
-    #[serde(default)]
-    source_project: String,
-    #[serde(default)]
-    source_kind: String,
-    #[serde(default)]
-    source_ref: String,
     #[serde(default)]
     artifact_sha256: String,
-    #[serde(default)]
-    manifest: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1256,6 +1234,17 @@ impl MarketplaceService {
         let raw = fs::read_to_string(&artifact_abs)?;
         let payload: MarketplaceArtifact = serde_json::from_str(&raw)
             .map_err(|err| PlatformError::new("MARKETPLACE_INSTALL", err.to_string()))?;
+        self.install_artifact_payload(target_owner, target_project, package_id, version, payload)
+    }
+
+    fn install_artifact_payload(
+        &self,
+        target_owner: String,
+        target_project: String,
+        package_id: &str,
+        version: &str,
+        payload: MarketplaceArtifact,
+    ) -> Result<MarketplaceInstallResult, PlatformError> {
         let layout = self
             .projects
             .project_layout(&target_owner, &target_project)?;
@@ -1629,92 +1618,15 @@ impl MarketplaceService {
             .await
             .map_err(|err| PlatformError::new("MARKETPLACE_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let publish_token = MarketplaceToken {
-            token_id: "imported".to_string(),
-            authority_id: String::new(),
-            publisher_pk: String::new(),
-            owner: if payload.version.publisher_owner.trim().is_empty() {
-                target_owner.to_string()
-            } else {
-                payload.version.publisher_owner.clone()
-            },
-            project: target_project.to_string(),
-            publisher_id: payload.version.publisher_id.clone(),
-            publisher_display_name: public_value_string(
-                &payload.version.manifest,
-                "publisher_display_name",
-            )
-            .or_else(|| value_string(&payload.artifact, "publisher_display_name"))
-            .unwrap_or_else(|| payload.version.publisher_display_name.clone()),
-            publisher_url: public_value_string(&payload.version.manifest, "publisher_url")
-                .or_else(|| value_string(&payload.artifact, "publisher_url"))
-                .unwrap_or_else(|| payload.version.publisher_url.clone()),
-            publisher_email: payload.version.publisher_email.clone(),
-            title: "imported".to_string(),
-            secret_hash: String::new(),
-            scopes: vec![],
-            scope_read: false,
-            scope_publish: false,
-            scope_manage: false,
-            expires_at: None,
-            last_used_at: None,
-            revoked_at: None,
-            created_at: 0,
-            updated_at: 0,
-        };
-        self.import_remote_asset(
-            target_owner,
-            target_project,
-            &publish_token,
-            &RemoteMarketplacePublishRequest {
-                package_id: payload.version.package_id.clone(),
-                version: payload.version.version.clone(),
-                title: public_value_string(&payload.version.manifest, "title")
-                    .or_else(|| value_string(&payload.artifact, "title"))
-                    .unwrap_or_else(|| package_id.to_string()),
-                description: public_value_string(&payload.version.manifest, "description")
-                    .or_else(|| value_string(&payload.artifact, "description"))
-                    .unwrap_or_default(),
-                visibility: public_value_string(&payload.version.manifest, "visibility")
-                    .unwrap_or_else(|| "private".to_string()),
-                tags: payload
-                    .version
-                    .manifest
-                    .get("tags")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
-                source_owner: if payload.version.source_owner.trim().is_empty() {
-                    target_owner.to_string()
-                } else {
-                    payload.version.source_owner.clone()
-                },
-                source_project: if payload.version.source_project.trim().is_empty() {
-                    target_project.to_string()
-                } else {
-                    payload.version.source_project.clone()
-                },
-                source_kind: if payload.version.source_kind.trim().is_empty() {
-                    value_string(&payload.artifact, "source_type")
-                        .unwrap_or_else(|| "pipeline".to_string())
-                } else {
-                    payload.version.source_kind.clone()
-                },
-                source_ref: if payload.version.source_ref.trim().is_empty() {
-                    package_id.to_string()
-                } else {
-                    payload.version.source_ref.clone()
-                },
-                artifact: payload.artifact,
-            },
-        )?;
-        self.install_asset(target_owner, target_project, package_id, version)
+        let artifact: MarketplaceArtifact = serde_json::from_value(payload.artifact)
+            .map_err(|err| PlatformError::new("MARKETPLACE_REMOTE_INVALID", err.to_string()))?;
+        self.install_artifact_payload(
+            slug_segment(target_owner),
+            slug_segment(target_project),
+            package_id,
+            version,
+            artifact,
+        )
     }
 
     pub async fn install_remote_project_from_platform_repository(
@@ -2266,19 +2178,6 @@ fn marketplace_localhost_remote_allowed(url: &str) -> bool {
         parsed.host_str().unwrap_or(""),
         "localhost" | "127.0.0.1" | "::1"
     )
-}
-
-fn value_string(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-}
-
-fn public_value_string(value: &Value, key: &str) -> Option<String> {
-    value_string(value, key)
 }
 
 fn clear_repo_worktree_preserving_git(repo_dir: &Path) -> Result<(), PlatformError> {

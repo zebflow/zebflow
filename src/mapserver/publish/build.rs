@@ -475,7 +475,7 @@ mod tests {
             &source,
             "sample",
             &artifact_dir,
-            "private/mapserver/.artifacts/sample",
+            "mapserver/.artifacts/sample",
         )
         .expect("build artifact");
         assert_eq!(out.feature_count, 2);
@@ -520,7 +520,7 @@ mod tests {
             &source,
             "dense",
             &artifact_dir,
-            "private/mapserver/.artifacts/dense",
+            "mapserver/.artifacts/dense",
         )
         .expect("build artifact");
         assert!(out.chunk_count > 1);

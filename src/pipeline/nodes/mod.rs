@@ -156,7 +156,8 @@
 //! | `DslFlagKind` | DSL syntax | Config result |
 //! |---|---|---|
 //! | `Scalar` | `--key value` | `"value"` |
-//! | `CommaSeparatedList` | `--key a,b,c` | `["a","b","c"]` |
+//! | `CommaSeparatedList` | `--key a,b,c` or `--key a --key b` | `["a","b"]` |
+//! | `RepeatedList` | `--key a --key b` or `--key a,b` | `["a","b"]` |
 //! | `Bool` | `--silent` (no value) | `true` |
 //!
 //! Body content (after ` -- `) is always captured separately as the node body string.
@@ -404,6 +405,7 @@ fn format_node_definition_markdown(def: &NodeDefinition) -> String {
             let kind_s = match f.kind {
                 DslFlagKind::Scalar => "scalar",
                 DslFlagKind::CommaSeparatedList => "comma-list",
+                DslFlagKind::RepeatedList => "repeated-list",
                 DslFlagKind::Bool => "bool",
                 DslFlagKind::KeyValuePairs => "key-value-pairs",
             };

@@ -19,12 +19,13 @@ use crate::pipeline::model::{
     PipelineOutput,
 };
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, browser_run, crypto, file_compress, file_decompress,
-    file_pdf_convert, file_save, function_call, http_request, img_thumbnail, logic, mem_del,
-    mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
-    sekejap_query, sqlite_mutate, sqlite_query,
+    agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress,
+    fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mem_del, mem_exists,
+    mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script, sekejap_query,
+    sqlite_mutate, sqlite_query, table_convert, table_query,
     trigger::{
-        function as trigger_function, manual, mapserver, memsubscribe, schedule, weberror, webhook,
+        function as trigger_function, manual, mapserver, mcp_trigger, memsubscribe, schedule,
+        weberror, webhook,
     },
     web_docs_generate, web_response, web_static_generate, web_static_site, ws_emit, ws_sync_state,
     ws_trigger,
@@ -444,6 +445,7 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SEKEJAP_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
+                    self.language.clone(),
                 )?))
             }
             sqlite_mutate::NODE_KIND => {
@@ -485,6 +487,21 @@ impl BasicPipelineEngine {
                     serde_json::from_value(node.config.clone())
                         .map_err(|err| PipelineError::new("FW_NODE_PG_CONFIG", err.to_string()))?,
                     credentials.clone(),
+                    self.language.clone(),
+                )?))
+            }
+            table_query::NODE_KIND => {
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_TABLE_QUERY_UNAVAILABLE",
+                        "platform service is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::TableQuery(table_query::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_TABLE_QUERY_CONFIG", err.to_string())
+                    })?,
+                    platform.clone(),
                     self.language.clone(),
                 )?))
             }
@@ -570,11 +587,14 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_LOGIC_COLLECT_CONFIG", e.to_string())
                 })?,
             ))),
-            logic::foreach_::NODE_KIND => Ok(NodeDispatch::LogicForeach(
-                logic::foreach_::Node::new(serde_json::from_value(node.config.clone()).map_err(
-                    |e| PipelineError::new("FW_NODE_LOGIC_FOREACH_CONFIG", e.to_string()),
-                )?),
-            )),
+            logic::foreach_::NODE_KIND => {
+                Ok(NodeDispatch::LogicForeach(logic::foreach_::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_LOGIC_FOREACH_CONFIG", e.to_string())
+                    })?,
+                    self.language.clone(),
+                )?))
+            }
             logic::reduce::NODE_KIND => Ok(NodeDispatch::LogicReduce(logic::reduce::Node::new(
                 &node.id,
                 serde_json::from_value(node.config.clone()).map_err(|e| {
@@ -657,8 +677,8 @@ impl BasicPipelineEngine {
                     self.platform.clone(),
                 )))
             }
-            file_save::NODE_KIND => {
-                let config: file_save::Config =
+            fs_save::NODE_KIND => {
+                let config: fs_save::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -666,13 +686,28 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileSave(file_save::Node::new(
+                Ok(NodeDispatch::FileSave(fs_save::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            file_compress::NODE_KIND => {
-                let config: file_compress::Config =
+            table_convert::NODE_KIND => {
+                let config: table_convert::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_TABLE_CONVERT",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::TableConvert(table_convert::Node::new(
+                    config,
+                    platform.clone(),
+                    self.language.clone(),
+                )?))
+            }
+            fs_compress::NODE_KIND => {
+                let config: fs_compress::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -680,13 +715,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileCompress(file_compress::Node::new(
+                Ok(NodeDispatch::FileCompress(fs_compress::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            file_decompress::NODE_KIND => {
-                let config: file_decompress::Config =
+            fs_decompress::NODE_KIND => {
+                let config: fs_decompress::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -694,13 +729,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FileDecompress(file_decompress::Node::new(
+                Ok(NodeDispatch::FileDecompress(fs_decompress::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            file_pdf_convert::NODE_KIND => {
-                let config: file_pdf_convert::Config =
+            fs_pdf_convert::NODE_KIND => {
+                let config: fs_pdf_convert::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -708,13 +743,13 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::FilePdfConvert(file_pdf_convert::Node::new(
+                Ok(NodeDispatch::FilePdfConvert(fs_pdf_convert::Node::new(
                     config,
                     platform.clone(),
                 )?))
             }
-            img_thumbnail::NODE_KIND => {
-                let config: img_thumbnail::Config =
+            fs_thumbnail::NODE_KIND => {
+                let config: fs_thumbnail::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
@@ -722,7 +757,7 @@ impl BasicPipelineEngine {
                         "platform service not available in this engine context",
                     ));
                 };
-                Ok(NodeDispatch::ImgThumbnail(img_thumbnail::Node::new(
+                Ok(NodeDispatch::ImgThumbnail(fs_thumbnail::Node::new(
                     config,
                     platform.clone(),
                 )?))
@@ -822,6 +857,11 @@ impl BasicPipelineEngine {
                     state_bus.clone(),
                 )))
             }
+            mcp_trigger::NODE_KIND => Ok(NodeDispatch::McpTrigger(mcp_trigger::Node::new(
+                serde_json::from_value(node.config.clone()).map_err(|err| {
+                    PipelineError::new("FW_NODE_MCP_TRIGGER_CONFIG", err.to_string())
+                })?,
+            ))),
             memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|e| {
                     PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string())
@@ -1641,7 +1681,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                 &config.on_conflict,
                             )?;
                             let bytes = localized.html.as_bytes().len() as u64;
-                            let url = format!("/files/{}/{}/{}", ctx.owner, ctx.project, rel_path);
+                            let url = format!("/fs/{}/{}/{}", ctx.owner, ctx.project, rel_path);
                             let site_root_rel =
                                 web_static_generate::effective_site_root_rel_path(&config)?;
                             let manifest_rel = if let Some(site_root_rel) = site_root_rel.as_deref()
@@ -1703,7 +1743,6 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "site_root": site_root_rel,
                                         "manifest_path": manifest_rel,
                                         "asset_group": asset_group,
-                                        "scope": config.scope,
                                         "bytes": bytes,
                                     }
                                 }),
@@ -1742,6 +1781,10 @@ impl PipelineEngine for BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::FileSave(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::TableConvert(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::TableQuery(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FileCompress(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -1761,6 +1804,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::MemExpire(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::MemIncr(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::MemPublish(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::McpTrigger(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::MemSubscribe(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -1977,6 +2021,8 @@ impl PipelineEngine for BasicPipelineEngine {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use serde_json::json;
 
     use super::{
@@ -1984,7 +2030,12 @@ mod tests {
         take_private_redact_tokens, take_private_trace_redact_tokens, trace_config_snapshot,
     };
     use crate::pipeline::interface::PipelineEngine;
+    use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
+    use crate::pipeline::nodes::basic::table_convert::{TableFormat, collect_columns, encode_rows};
+    use crate::platform::model::PlatformConfig;
+    use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
+    use crate::zebfs::LocalZebFs;
 
     #[test]
     fn private_redact_tokens_are_removed_and_applied_recursively() {
@@ -2110,6 +2161,343 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn table_convert_parquet_roundtrips_through_pipeline_and_zebfs() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_convert_e2e";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+
+        let dsl = r#"
+[a] trigger.manual
+[b] table.convert --from-expr "$input.rows" --to datasets/posts.parquet
+[c] table.convert --from datasets/posts.parquet --to-json --preview 2
+
+[a] -> [b]
+[b] -> [c]
+"#;
+
+        let graph = build_pipeline_graph("table-convert-parquet-e2e", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform.clone());
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "table-convert-parquet-e2e".to_string(),
+                    request_id: "req-table-convert".to_string(),
+                    route: String::new(),
+                    input: json!({
+                        "rows": [
+                            { "id": 1, "title": "First", "score": 1.5, "active": true },
+                            { "id": 2, "title": "Second", "score": 2.0, "active": false }
+                        ]
+                    }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["table"]["from_format"], "parquet");
+        assert_eq!(out.value["table"]["data"][0]["id"], 1);
+        assert_eq!(out.value["table"]["data"][0]["title"], "First");
+        assert_eq!(out.value["table"]["data"][0]["score"], 1.5);
+        assert_eq!(out.value["table"]["data"][0]["active"], true);
+        assert_eq!(out.value["table"]["rows"], 2);
+
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        let object = LocalZebFs::new(layout.files_dir)
+            .get("datasets/posts.parquet")
+            .expect("parquet object");
+        assert!(!object.bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn table_query_joins_multiple_zebfs_sources_with_params() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_query_e2e";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        let zebfs = LocalZebFs::new(layout.files_dir);
+        zebfs
+            .put(
+                "datasets/posts.csv",
+                b"id,author_id,title\n1,10,First\n2,20,Second\n",
+            )
+            .expect("posts csv");
+        zebfs
+            .put("datasets/authors.csv", b"id,name\n10,Ada\n20,Bob\n")
+            .expect("authors csv");
+
+        let dsl = r#"
+[a] trigger.manual
+[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params-expr "[$input.post_id]" --to-json --preview 1 --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("table-query-e2e", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform.clone());
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "table-query-e2e".to_string(),
+                    request_id: "req-table-query".to_string(),
+                    route: String::new(),
+                    input: json!({ "post_id": 1 }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["table"]["engine"], "geodatafusion");
+        assert_eq!(out.value["table"]["rows"], 1);
+        assert_eq!(out.value["table"]["data"][0]["id"], 1);
+        assert_eq!(out.value["table"]["data"][0]["title"], "First");
+        assert_eq!(out.value["table"]["data"][0]["name"], "Ada");
+        assert_eq!(out.value["table"]["preview"][0]["title"], "First");
+    }
+
+    #[tokio::test]
+    async fn table_query_joins_multiple_parquet_sources() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_query_parquet_join";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        let zebfs = LocalZebFs::new(layout.files_dir);
+
+        let posts = vec![
+            json!({ "id": 1, "author_id": 10, "title": "First", "score": 7.5 }),
+            json!({ "id": 2, "author_id": 20, "title": "Second", "score": 3.0 }),
+            json!({ "id": 3, "author_id": 30, "title": "Third", "score": 9.0 }),
+        ];
+        let posts_bytes = encode_rows(&posts, &collect_columns(&posts), TableFormat::Parquet)
+            .expect("posts parquet");
+        zebfs
+            .put("datasets/posts.parquet", &posts_bytes)
+            .expect("posts parquet put");
+
+        let authors = vec![
+            json!({ "id": 10, "name": "Ada", "active": true }),
+            json!({ "id": 20, "name": "Bob", "active": false }),
+            json!({ "id": 30, "name": "Cora", "active": true }),
+        ];
+        let authors_bytes = encode_rows(&authors, &collect_columns(&authors), TableFormat::Parquet)
+            .expect("authors parquet");
+        zebfs
+            .put("datasets/authors.parquet", &authors_bytes)
+            .expect("authors parquet put");
+
+        let dsl = r#"
+[a] trigger.manual
+[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview 2 --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("table-query-parquet-join", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform);
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "table-query-parquet-join".to_string(),
+                    request_id: "req-table-query-parquet-join".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["table"]["engine"], "geodatafusion");
+        assert_eq!(out.value["table"]["rows"], 2);
+        assert_eq!(out.value["table"]["data"][0]["id"], 1);
+        assert_eq!(out.value["table"]["data"][0]["title"], "First");
+        assert_eq!(out.value["table"]["data"][0]["name"], "Ada");
+        assert_eq!(out.value["table"]["data"][1]["id"], 3);
+        assert_eq!(out.value["table"]["data"][1]["title"], "Third");
+        assert_eq!(out.value["table"]["data"][1]["name"], "Cora");
+    }
+
+    #[tokio::test]
+    async fn table_query_accepts_ui_source_binding_rows() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_query_ui_rows";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        LocalZebFs::new(layout.files_dir)
+            .put("datasets/posts.csv", b"id,title\n1,First\n2,Second\n")
+            .expect("posts csv");
+
+        let graph = PipelineGraph {
+            kind: "zebflow.pipeline".to_string(),
+            version: "0.1".to_string(),
+            id: "table-query-ui-rows".to_string(),
+            description: None,
+            metadata: None,
+            entry_nodes: Vec::new(),
+            nodes: vec![
+                PipelineNode {
+                    id: "a".to_string(),
+                    kind: "n.trigger.manual".to_string(),
+                    input_pins: vec![],
+                    output_pins: vec!["out".to_string()],
+                    config: json!({}),
+                },
+                PipelineNode {
+                    id: "b".to_string(),
+                    kind: "n.table.query".to_string(),
+                    input_pins: vec!["in".to_string()],
+                    output_pins: vec!["out".to_string()],
+                    config: json!({
+                        "sources": [
+                            { "source": "datasets/posts.csv", "alias": "posts" }
+                        ],
+                        "sql": "select * from posts where id = $1",
+                        "params_expr": "[$input.post_id]",
+                        "to_json": true,
+                        "preview": 1
+                    }),
+                },
+            ],
+            edges: vec![PipelineEdge {
+                from_node: "a".to_string(),
+                from_pin: "out".to_string(),
+                to_node: "b".to_string(),
+                to_pin: "in".to_string(),
+            }],
+        };
+
+        let engine = BasicPipelineEngine::default().with_platform(platform);
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "table-query-ui-rows".to_string(),
+                    request_id: "req-table-query-ui".to_string(),
+                    route: String::new(),
+                    input: json!({ "post_id": 2 }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["table"]["rows"], 1);
+        assert_eq!(out.value["table"]["data"][0]["title"], "Second");
+        assert_eq!(out.value["table"]["sources"][0]["alias"], "posts");
+    }
+
+    #[tokio::test]
+    async fn table_query_geodatafusion_runs_geospatial_sql() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "table_query_geodatafusion";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+
+        let dsl = r#"
+[a] trigger.manual
+[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview 1 --sql "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("table-query-geodatafusion", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform);
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "table-query-geodatafusion".to_string(),
+                    request_id: "req-table-query-geodatafusion".to_string(),
+                    route: String::new(),
+                    input: json!({
+                        "rows": [
+                            { "id": 1, "x": 30.0, "y": 10.0 },
+                            { "id": 2, "x": 40.0, "y": 20.0 }
+                        ],
+                    }),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["table"]["engine"], "geodatafusion");
+        assert_eq!(out.value["table"]["rows"], 1);
+        assert_eq!(out.value["table"]["data"][0]["id"], 1);
+        assert_eq!(out.value["table"]["data"][0]["geom"], "POINT(30 10)");
+    }
+
+    #[tokio::test]
     async fn logic_if_supports_dsl_input_scope() {
         let dsl = r#"
 [a] trigger.manual
@@ -2187,7 +2575,7 @@ mod tests {
     async fn logic_foreach_emits_one_run_per_item() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-path /rows
+[b] logic.foreach --items-expr "$input.rows"
 
 [a] -> [b]
 "#;
@@ -2232,7 +2620,7 @@ mod tests {
     async fn logic_reduce_accumulates_foreach_series() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.foreach --items-path /rows
+[b] logic.foreach --items-expr "$input.rows"
 [c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }"
 
 [a] -> [b]
@@ -2387,11 +2775,13 @@ enum NodeDispatch {
     Crypto(crypto::Node),
     TriggerFunction(trigger_function::Node),
     FunctionCall(function_call::Node),
-    FileSave(file_save::Node),
-    FileCompress(file_compress::Node),
-    FileDecompress(file_decompress::Node),
-    FilePdfConvert(file_pdf_convert::Node),
-    ImgThumbnail(img_thumbnail::Node),
+    FileSave(fs_save::Node),
+    TableConvert(table_convert::Node),
+    TableQuery(table_query::Node),
+    FileCompress(fs_compress::Node),
+    FileDecompress(fs_decompress::Node),
+    FilePdfConvert(fs_pdf_convert::Node),
+    ImgThumbnail(fs_thumbnail::Node),
     MemSet(mem_set::Node),
     MemGet(mem_get::Node),
     MemDel(mem_del::Node),
@@ -2400,6 +2790,7 @@ enum NodeDispatch {
     MemIncr(mem_incr::Node),
     MemPublish(mem_publish::Node),
     MemSubscribe(memsubscribe::Node),
+    McpTrigger(mcp_trigger::Node),
 }
 
 fn is_logic_collect(node: &PipelineNode) -> bool {

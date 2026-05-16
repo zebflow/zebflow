@@ -472,6 +472,7 @@ pub fn execute_sql(
     owner: &str,
     project: &str,
     sql: &str,
+    params: &[Value],
     limit: usize,
     read_only: bool,
 ) -> Result<QueryPayload, PlatformError> {
@@ -492,9 +493,12 @@ pub fn execute_sql(
             ));
         }
         let mut db = open_db(data_root, owner, project)?;
-        let affected_rows = db
-            .execute(trimmed)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
+        let affected_rows = if params.is_empty() {
+            db.execute(trimmed)
+        } else {
+            db.execute_params(trimmed, params)
+        }
+        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
         return Ok(QueryPayload {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -537,8 +541,12 @@ pub fn execute_sql(
     let hits = if statement_is_show(trimmed) {
         db.show(trimmed)
             .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
-    } else {
+    } else if params.is_empty() {
         db.query(trimmed)
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
+            .collect()
+    } else {
+        db.query_params(trimmed, params)
             .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
             .collect()
     };
@@ -596,6 +604,7 @@ pub fn execute_connection_query(
         owner,
         project,
         &req.sql,
+        &[],
         req.limit.unwrap_or(200),
         req.read_only.unwrap_or(true),
     )?;
@@ -670,6 +679,7 @@ mod tests {
             "alice",
             "demo",
             "INSERT INTO posts (_key, title) VALUES ('first', 'Hello')",
+            &[],
             100,
             false,
         )
@@ -681,6 +691,7 @@ mod tests {
             "alice",
             "demo",
             "SELECT _key, title FROM posts LIMIT 20",
+            &[],
             100,
             true,
         )
@@ -710,7 +721,7 @@ mod tests {
         )
         .expect("table");
 
-        let read = execute_sql(tmp.path(), "alice", "demo", "SHOW TABLES", 100, true)
+        let read = execute_sql(tmp.path(), "alice", "demo", "SHOW TABLES", &[], 100, true)
             .expect("show tables");
         assert_eq!(read.row_count, 1);
         assert_eq!(read.columns.len(), 2);
@@ -746,7 +757,7 @@ mod tests {
         )
         .expect("table");
 
-        let read = execute_sql(tmp.path(), "alice", "demo", "SHOW posts", 100, true)
+        let read = execute_sql(tmp.path(), "alice", "demo", "SHOW posts", &[], 100, true)
             .expect("show structure");
         assert!(read.row_count >= 2);
         assert_eq!(read.columns.len(), 4);
@@ -791,6 +802,7 @@ mod tests {
             "alice",
             "demo",
             "SELECT b._key AS _key, b.name AS name FROM MATCH (a:people)-[:knows]->(b:people) WHERE a._key = 'alice'",
+            &[],
             100,
             true,
         )
@@ -799,5 +811,53 @@ mod tests {
         assert_eq!(read.columns.len(), 2);
         assert_eq!(read.rows[0][0], Value::String("bob".to_string()));
         assert_eq!(read.rows[0][1], Value::String("Bob".to_string()));
+    }
+
+    #[test]
+    fn execute_sql_supports_bind_params_for_write_and_read() {
+        let tmp = tmp_root();
+        create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &CreateSimpleTableRequest {
+                table: "posts".to_string(),
+                title: None,
+                attributes: vec![CollectionAttribute {
+                    name: "title".to_string(),
+                    kind: "string".to_string(),
+                    index_types: Vec::new(),
+                }],
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("table");
+
+        let write = execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "INSERT INTO posts (_key, title) VALUES ($1, $2)",
+            &[json!("first"), json!("Hello")],
+            100,
+            false,
+        )
+        .expect("insert with params");
+        assert_eq!(write.affected_rows, Some(1));
+
+        let read = execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "SELECT _key, title FROM posts WHERE _key = $1",
+            &[json!("first")],
+            100,
+            true,
+        )
+        .expect("select with params");
+        assert_eq!(read.row_count, 1);
+        assert_eq!(read.rows[0][0], Value::String("first".to_string()));
+        assert_eq!(read.rows[0][1], Value::String("Hello".to_string()));
     }
 }

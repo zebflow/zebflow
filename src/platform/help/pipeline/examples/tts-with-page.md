@@ -10,7 +10,7 @@ A minimal end-to-end text-to-speech demo:
 - page calls the API
 - API runs `ai.tts`
 - page plays the returned `audio_blob_base64`
-- generated `.wav` is also persisted under project `files/private/`
+- generated `.wav` is also persisted under Zebflow FS
 
 This is the fastest real shape to try `n.ai.tts` in a browser.
 
@@ -38,7 +38,7 @@ Optional:
 }
 ```
 
-All file paths are **project `files/private/` relative**.
+All file paths are **Zebflow FS object paths**.
 
 ---
 
@@ -82,8 +82,8 @@ Response shape:
     "provider": "piper",
     "format": "wav",
     "mime_type": "audio/wav",
-    "path": "private/audio/tts-my-demo.wav",
-    "url": "/files/superadmin/default/private/audio/tts-my-demo.wav",
+    "path": "audio/tts-my-demo.wav",
+    "url": "/fs/superadmin/default/audio/tts-my-demo.wav",
     "sample_rate": 22050,
     "samples": 93440,
     "bytes": 186924,

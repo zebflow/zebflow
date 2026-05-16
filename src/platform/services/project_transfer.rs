@@ -3,7 +3,7 @@
 //! The first `0.2.1` slice keeps the contract intentionally simple:
 //!
 //! - bundle archive: `repo/`, `data/`, `manifest.json`
-//! - files archive: `public/`, `private/`, `manifest.json`
+//! - files archive: `files/`, `manifest.json`
 //!
 //! Credentials and DB connection metadata remain platform-managed and are not bundled here.
 
@@ -104,7 +104,7 @@ impl ProjectTransferService {
         fs::create_dir_all(&staging)?;
 
         let mut manifest = ProjectTransferManifest {
-            schema_version: "0.2.1".to_string(),
+            schema_version: "0.3.0".to_string(),
             owner: owner.clone(),
             project: project.clone(),
             artifact_kind: kind,
@@ -115,8 +115,7 @@ impl ProjectTransferService {
             placement,
             repo_file_count: 0,
             data_file_count: 0,
-            public_file_count: 0,
-            private_file_count: 0,
+            files_file_count: 0,
             total_bytes: 0,
         };
 
@@ -129,15 +128,9 @@ impl ProjectTransferService {
                 manifest.total_bytes = repo_stats.total_bytes + data_stats.total_bytes;
             }
             ProjectTransferArtifactKind::Files => {
-                let public_stats =
-                    copy_dir_recursive(&layout.files_dir.join("public"), &staging.join("public"))?;
-                let private_stats = copy_dir_recursive(
-                    &layout.files_dir.join("private"),
-                    &staging.join("private"),
-                )?;
-                manifest.public_file_count = public_stats.file_count;
-                manifest.private_file_count = private_stats.file_count;
-                manifest.total_bytes = public_stats.total_bytes + private_stats.total_bytes;
+                let files_stats = copy_dir_recursive(&layout.files_dir, &staging.join("files"))?;
+                manifest.files_file_count = files_stats.file_count;
+                manifest.total_bytes = files_stats.total_bytes;
             }
         }
 
@@ -206,14 +199,7 @@ impl ProjectTransferService {
                 replace_directory(&layout.data_dir, &extract_dir.join("data"))?;
             }
             ProjectTransferArtifactKind::Files => {
-                replace_directory(
-                    &layout.files_dir.join("public"),
-                    &extract_dir.join("public"),
-                )?;
-                replace_directory(
-                    &layout.files_dir.join("private"),
-                    &extract_dir.join("private"),
-                )?;
+                replace_directory(&layout.files_dir, &extract_dir.join("files"))?;
             }
         }
 

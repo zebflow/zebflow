@@ -14,6 +14,7 @@ import NodeFieldParamsBuilder from "@/pages/project-studio/pipelines/registry/co
 import NodeFieldNumber from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-number";
 import NodeFieldSecureRequestBindings from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-secure-request-bindings";
 import NodeFieldMatchCases from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-match-cases";
+import NodeFieldSourceBindings from "@/pages/project-studio/pipelines/registry/components/nodes/node-field-source-bindings";
 
 interface Props {
   field: any;
@@ -55,6 +56,8 @@ export default function NodeField({ field, value, onChange }: Props) {
       return <NodeFieldSecureRequestBindings field={field} value={value} onChange={onChange} />;
     case "match_cases":
       return <NodeFieldMatchCases field={field} value={value} onChange={onChange} />;
+    case "source_bindings":
+      return <NodeFieldSourceBindings field={field} value={value} onChange={onChange} />;
     default:
       return <NodeFieldText field={field} value={value} onChange={onChange} />;
   }

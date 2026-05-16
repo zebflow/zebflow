@@ -64,7 +64,7 @@ export function initFilesBehavior() {
     fileUploadInput?.addEventListener("change", async () => {
       const file = fileUploadInput.files?.[0];
       if (!file || !apiUpload) return;
-      const currentPath = getCurrentPath() || "public/uploads";
+      const currentPath = getCurrentPath() || "uploads";
       const form = new FormData();
       form.append("file", file);
       const resp = await fetch(`${apiUpload}?path=${encodeURIComponent(currentPath)}`, {

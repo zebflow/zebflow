@@ -64,7 +64,7 @@ pub fn definition() -> NodeDefinition {
                     language: Some("sql".to_string()),
                     span: Some("full".to_string()),
                     help: Some("SQL query. SELECT/WITH returns rows, others return affected_rows.".to_string()),
-                    default_value: Some(serde_json::json!("SELECT 1;")),
+                    default_value: Some(serde_json::json!("SELECT 1\nAS ok;")),
                     sidebar: vec![
                         SidebarSection {
                             title: "Input payload".to_string(),

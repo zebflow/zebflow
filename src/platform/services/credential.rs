@@ -214,7 +214,10 @@ impl CredentialService {
             .send()
             .await
             .map_err(|e| {
-                PlatformError::new("PLATFORM_OAUTH2_EXCHANGE", format!("token request failed: {e}"))
+                PlatformError::new(
+                    "PLATFORM_OAUTH2_EXCHANGE",
+                    format!("token request failed: {e}"),
+                )
             })?;
 
         let status = resp.status();
@@ -245,7 +248,10 @@ impl CredentialService {
             .get("refresh_token")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let expires_in = body.get("expires_in").and_then(Value::as_i64).unwrap_or(3600);
+        let expires_in = body
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600);
         let token_type = body
             .get("token_type")
             .and_then(Value::as_str)
@@ -398,7 +404,10 @@ impl CredentialService {
             .get("refresh_token")
             .and_then(Value::as_str)
             .map(ToString::to_string);
-        let expires_in = body.get("expires_in").and_then(Value::as_i64).unwrap_or(3600);
+        let expires_in = body
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600);
 
         let mut updated_secret = credential.secret.clone();
         if let Value::Object(map) = &mut updated_secret {
@@ -439,7 +448,10 @@ impl CredentialService {
                 PlatformError::new("PLATFORM_CREDENTIAL_MISSING", "credential not found")
             })?;
         let secret = &credential.secret;
-        let expires_at = secret.get("expires_at").and_then(Value::as_i64).unwrap_or(0);
+        let expires_at = secret
+            .get("expires_at")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         let now = now_ts();
 
         if expires_at > now + 60 {
@@ -484,7 +496,10 @@ fn derive_oauth2_status(secret: &Value) -> String {
     if !has_refresh {
         return "not_configured".to_string();
     }
-    let expires_at = secret.get("expires_at").and_then(Value::as_i64).unwrap_or(0);
+    let expires_at = secret
+        .get("expires_at")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
     let now = now_ts();
     if expires_at > 0 && expires_at < now {
         "expired".to_string()

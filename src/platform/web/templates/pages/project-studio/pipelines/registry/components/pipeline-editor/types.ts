@@ -6,9 +6,9 @@ export interface SelectOptionDef {
   label: string;
 }
 
-export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings" | "match_cases";
+export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings" | "match_cases" | "source_bindings";
 
-export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "credentials_http_auth" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
+export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "credentials_http_auth" | "credentials_webhook_auth" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
 
 export interface SidebarItem {
   label: string;
@@ -66,6 +66,7 @@ export interface EditorDataState {
   openaiCredentials: any[];
   secureRequestCredentials: any[];
   httpAuthCredentials: any[];
+  webhookAuthCredentials: any[];
   aiTools: any[];
   pageTemplates: any[];
   functionPipelines: any[];

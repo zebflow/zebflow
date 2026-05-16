@@ -170,13 +170,17 @@ LIMIT 20
 
 ```zf
 | n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = '{{ $trigger.params.id }}'"
+| n.sekejap.query --params-path params.id -- "SELECT friend._key AS friend_key FROM MATCH (u:users)-[:follows]->(friend:users) WHERE u._key = $1"
+| n.sekejap.query --params-expr "[$trigger.body.slug, $trigger.body.title]" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
 ```
 
 Optional flags:
 
 - `--limit <n>` — maximum rows returned for read queries
 - `--read-only true|false` — reject writes when enabled
+- `--params-path <dot.path>` — bind one upstream value, or every element when the value is an array, into `$1`, `$2`, ...
+- `--params-expr <js-expr>` — JS expression returning bind values; use this for multiple or computed values
+- `--query-expr <js-expr>` — JS expression returning the SQL string when the query itself must be selected at runtime
 
 ## Platform Collections
 

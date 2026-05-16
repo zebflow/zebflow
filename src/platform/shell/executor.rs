@@ -648,7 +648,11 @@ impl DslExecutor {
                     d.dsl_flags
                         .iter()
                         .filter(|f| {
-                            f.kind == crate::pipeline::model::DslFlagKind::CommaSeparatedList
+                            matches!(
+                                f.kind,
+                                crate::pipeline::model::DslFlagKind::CommaSeparatedList
+                                    | crate::pipeline::model::DslFlagKind::RepeatedList
+                            )
                         })
                         .map(|f| (flag_key(f), f.config_key.clone()))
                         .collect()
@@ -1250,6 +1254,7 @@ const GLOBAL_CONFIG_KEYS: &[&str] = &[
     "template_id",
     "credential_id_expr",
     "query_expr",
+    "params_path",
     "params_expr",
     "room",
     "event",

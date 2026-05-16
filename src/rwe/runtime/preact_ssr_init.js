@@ -310,6 +310,10 @@
     return Component;
   }
 
+  function createPortal(children) {
+    return children;
+  }
+
   // ---------------------------------------------------------------------------
   // Page-state context — shared mutable state across all components on a page
   // ---------------------------------------------------------------------------
@@ -384,6 +388,7 @@
   globalThis.useImperativeHandle = useImperativeHandle;
   globalThis.forwardRef = forwardRef;
   globalThis.memo = memo;
+  globalThis.createPortal = createPortal;
 
   globalThis.createContext = createContext;
   globalThis.usePageState = createUsePageState();
