@@ -90,10 +90,10 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "auth_type".to_string(), label: "Auth Type".to_string(), field_type: NodeFieldType::Select, options: vec![
                 SelectOptionDef { value: "none".to_string(), label: "None (public)".to_string() },
                 SelectOptionDef { value: "jwt".to_string(), label: "JWT Bearer".to_string() },
-                SelectOptionDef { value: "hmac".to_string(), label: "HMAC-SHA256 (X-Hub-Signature-256)".to_string() },
+                SelectOptionDef { value: "hmac".to_string(), label: "HMAC Signature".to_string() },
                 SelectOptionDef { value: "api_key".to_string(), label: "API Key (X-API-Key)".to_string() },
             ], help: Some("Trigger-level auth. On failure returns 401.".to_string()), ..Default::default() },
-            NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
+            NodeFieldDef { name: "auth_credential".to_string(), label: "Auth Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsWebhookAuth), help: Some("Credential for signing key / secret / api_key.".to_string()), ..Default::default() },
             NodeFieldDef { name: "auth_required_role".to_string(), label: "Required Role".to_string(), field_type: NodeFieldType::MultiCheckbox, data_source: Some(NodeFieldDataSource::CredentialJwtRoles), help: Some("Roles allowed to access this route. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()), ..Default::default() },
         ],
         dsl_flags: vec![

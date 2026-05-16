@@ -1,6 +1,6 @@
-//! n.img.thumbnail — resize + compress an uploaded image into a small thumbnail.
+//! n.fs.thumbnail — resize + compress an uploaded image into a small thumbnail.
 //!
-//! Reads `input.saved.path` (the output of `n.file.save`) by default, or a custom
+//! Reads `input.saved.path` (the output of `n.fs.save`) by default, or a custom
 //! `--source-key` dot-path into the payload. Produces a resized, re-encoded file and
 //! injects `thumbnail: { path, url, width, height, format, size }` into the payload.
 //!
@@ -31,7 +31,7 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.img.thumbnail";
+pub const NODE_KIND: &str = "n.fs.thumbnail";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -57,9 +57,6 @@ fn default_quality() -> u8 {
 }
 fn default_folder() -> String {
     "thumbnails".to_string()
-}
-fn default_access() -> String {
-    "public".to_string()
 }
 fn default_source_key() -> String {
     "saved.path".to_string()
@@ -92,16 +89,12 @@ pub struct Config {
     #[serde(default = "default_quality")]
     pub quality: u8,
 
-    /// Subdirectory under files/{access}/ (default: "thumbnails").
+    /// Destination ZebFS object folder (default: "thumbnails").
     #[serde(default = "default_folder")]
     pub folder: String,
 
-    /// "public" or "private" (default: "public").
-    #[serde(default = "default_access")]
-    pub access: String,
-
     /// Dot-path into the payload for the source file path
-    /// (default: "saved.path" — matches n.file.save output).
+    /// (default: "saved.path" — matches n.fs.save output).
     #[serde(default = "default_source_key")]
     pub source_key: String,
 
@@ -126,7 +119,6 @@ impl Default for Config {
             format: default_format(),
             quality: default_quality(),
             folder: default_folder(),
-            access: default_access(),
             source_key: default_source_key(),
             delete_source: default_delete_source(),
             filename: None,
@@ -142,7 +134,7 @@ pub fn definition() -> NodeDefinition {
         title: "Image Thumbnail".to_string(),
         description:
             "Resize and compress an uploaded image to a small thumbnail. \
-             Reads the source path from `input.saved.path` (n.file.save output) by default. \
+             Reads the source path from `input.saved.path` (n.fs.save output) by default. \
              Supports cover/contain/fill fit modes and jpg/png/webp output. \
              Replaces the payload with { thumbnail: { path, url, width, height, format, size } }. \
              Use $trigger or $nodes references for upstream data."
@@ -211,14 +203,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--folder".to_string(),
                 config_key: "folder".to_string(),
-                description: "Destination subdirectory under files/{access}/ (default: thumbnails)".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--access".to_string(),
-                config_key: "access".to_string(),
-                description: "public | private (default: public)".to_string(),
+                description: "Destination ZebFS object folder (default: thumbnails)".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -299,27 +284,15 @@ pub fn definition() -> NodeDefinition {
                 name: "folder".to_string(),
                 label: "Folder".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Subdirectory under files/{access}/ (default: thumbnails)".to_string()),
+                help: Some("Destination ZebFS object folder (default: thumbnails)".to_string()),
                 default_value: Some(json!("thumbnails")),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "access".to_string(),
-                label: "Access".to_string(),
-                field_type: NodeFieldType::Select,
-                help: Some("public = no auth required. private = auth required.".to_string()),
-                default_value: Some(json!("public")),
-                options: vec![
-                    SelectOptionDef { value: "public".to_string(),  label: "Public (no auth)".to_string() },
-                    SelectOptionDef { value: "private".to_string(), label: "Private (auth required)".to_string() },
-                ],
                 ..Default::default()
             },
             NodeFieldDef {
                 name: "source_key".to_string(),
                 label: "Source path key".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Dot-path into payload for the source file path. Default: saved.path (n.file.save output).".to_string()),
+                help: Some("Dot-path into payload for the source file path. Default: saved.path (n.fs.save output).".to_string()),
                 default_value: Some(json!("saved.path")),
                 ..Default::default()
             },
@@ -347,7 +320,6 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("format".to_string()),
             LayoutItem::Field("quality".to_string()),
             LayoutItem::Field("folder".to_string()),
-            LayoutItem::Field("access".to_string()),
             LayoutItem::Field("source_key".to_string()),
             LayoutItem::Field("delete_source".to_string()),
             LayoutItem::Field("filename".to_string()),
@@ -402,7 +374,7 @@ impl NodeHandler for Node {
         let rel_path = get_dot_path(&input.payload, source_key)
             .ok_or_else(|| PipelineError::new(
                 "IMG_THUMBNAIL",
-                format!("source path not found at payload key '{source_key}' — chain after n.file.save or set --source-key"),
+                format!("source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
             ))?;
 
         // ── Resolve absolute path ─────────────────────────────────────────
@@ -458,10 +430,6 @@ impl NodeHandler for Node {
             encode_image(&resized, &self.config.format, quality)?;
 
         // ── Write to disk ─────────────────────────────────────────────────
-        let access = match self.config.access.trim() {
-            "private" => "private",
-            _ => "public",
-        };
         let folder = sanitize_folder(if self.config.folder.trim().is_empty() {
             "thumbnails"
         } else {
@@ -480,7 +448,7 @@ impl NodeHandler for Node {
                 None => format!("{}.{ext_out}", Uuid::new_v4()),
             }
         };
-        let thumb_rel = format!("{access}/{folder}/{storage_name}");
+        let thumb_rel = format!("{folder}/{storage_name}");
         let abs_dest = layout.files_dir.join(&thumb_rel);
 
         if let Some(parent) = abs_dest.parent() {
@@ -503,7 +471,7 @@ impl NodeHandler for Node {
             }
         }
 
-        let url = format!("/files/{owner}/{project}/{thumb_rel}");
+        let url = format!("/fs/{owner}/{project}/{thumb_rel}");
         let thumb_size = encoded.len();
 
         // ── Replace payload with thumbnail result ──────────────────────────

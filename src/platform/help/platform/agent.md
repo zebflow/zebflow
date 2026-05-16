@@ -47,7 +47,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 | Tool | What it does |
 |------|-------------|
-| `pipeline_list` | List all pipelines with status (draft / active) |
+| `pipeline_list` | Lean semantic index. Default rows: `file_rel_path | trigger summary | status | description`. Use `query`, `glob`, `status`, `trigger_kind`, `limit`; use `format="json"` for full metadata. |
 | `pipeline_get` | Get pipeline graph JSON. Accepts partial path — resolves to unique match automatically. Use `node_id` to return just one node instead of the full graph (accepts opaque ID, kind, or kind[index]). |
 | `pipeline_describe` | Describe nodes, edges, trigger config in detail. Set `compact=true` for one-line-per-node summary without body content — use when pipelines have long SQL or scripts. |
 | `pipeline_register` | Save a new pipeline from DSL body (stored as draft) |
@@ -64,7 +64,7 @@ If AGENTS.md contradicts any skill doc, follow AGENTS.md.
 
 | Tool | What it does |
 |------|-------------|
-| `template_list` | List template files. Use `glob` to filter (e.g. `glob="pages/*.tsx"`) |
+| `template_list` | Lean semantic index. Default rows: `rel_path | kind | title | description`. Use `query`, `glob`, `kind`, `limit`; use `format="json"` for full workspace metadata. Optional `zebflow` frontmatter provides title/description/keywords. |
 | `template_get` | Read a template file. Accepts partial path. Use `offset`/`limit` to read a range of lines (1-based) instead of the full file. |
 | `template_outline` | **Code-aware**: Parse a template and return its structural outline — imports, exports, functions, classes, types, interfaces with line numbers. Much cheaper than `template_get` for understanding file structure. |
 | `template_deps` | **Code-aware**: Show a template's dependency graph — what it imports (forward deps) and which other templates import it (reverse deps). Use before refactoring. |
@@ -188,7 +188,8 @@ Suitable for: blog posts, user tables, AI memory, vector embeddings, event graph
 **Pipeline node (DSL):**
 ```
 | n.sekejap.query -- "SELECT _key, title FROM posts LIMIT 20"
-| n.sekejap.query -- "INSERT INTO posts (_key, title) VALUES ('hello', 'Hello')"
+| n.sekejap.query --params-path params.id -- "SELECT _key, title FROM posts WHERE _key = $1"
+| n.sekejap.query --params-expr "[$trigger.body.slug, $trigger.body.title]" -- "INSERT INTO posts (_key, title) VALUES ($1, $2)"
 ```
 
 **Direct query (run_db_query / connection_describe):**

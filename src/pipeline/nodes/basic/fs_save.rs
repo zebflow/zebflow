@@ -1,10 +1,9 @@
-//! n.file.save — save an uploaded file from a multipart webhook payload to project file storage.
+//! n.fs.save — save an uploaded file from a multipart webhook payload to Zebflow FS.
 //!
 //! Input: `input.files.{field}` as set by `trigger.webhook` multipart parsing.
 //! Output: `{ saved: { path, url, original_name, content_type, size } }`
 //!
-//! Files are stored under `files_dir/{access}/{folder}/{uuid}.{ext}`.
-//! `access` is `public` or `private` — private files require auth to serve.
+//! Files are stored as ZebFS object paths, usually `uploads/{uuid}.{ext}`.
 //!
 //! Content validation uses magic-byte inspection (via the `infer` crate) in addition to
 //! the browser-reported MIME type. Both must agree, and both must match the allowed-types list.
@@ -24,8 +23,9 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::PlatformService;
+use crate::zebfs::LocalZebFs;
 
-pub const NODE_KIND: &str = "n.file.save";
+pub const NODE_KIND: &str = "n.fs.save";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
@@ -151,10 +151,6 @@ fn default_allowed_kinds() -> Vec<AllowedKind> {
     vec![AllowedKind::Images]
 }
 
-fn default_access() -> String {
-    "private".to_string()
-}
-
 fn default_field() -> String {
     "file".to_string()
 }
@@ -171,11 +167,11 @@ pub struct Config {
     #[serde(default = "default_field")]
     pub field: String,
 
-    /// "public" or "private". Files under private/ require auth to serve.
-    #[serde(default = "default_access")]
-    pub access: String,
+    /// Exact ZebFS object path. If empty, `folder` + generated filename is used.
+    #[serde(default)]
+    pub path: Option<String>,
 
-    /// Subdirectory under files/{access}/ (default: "uploads").
+    /// Subdirectory under the project ZebFS namespace (default: "uploads").
     #[serde(default)]
     pub folder: String,
 
@@ -197,7 +193,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             field: default_field(),
-            access: default_access(),
+            path: None,
             folder: String::new(),
             allowed_kinds: default_allowed_kinds(),
             max_size_mb: default_max_size_mb(),
@@ -211,11 +207,11 @@ impl Default for Config {
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "File Save".to_string(),
-        description: "Save an uploaded file from a multipart webhook payload to project file \
+        title: "FS Save".to_string(),
+        description: "Save an uploaded file from a multipart webhook payload to Zebflow FS \
             storage. Reads `input.files.{field}` (set by trigger.webhook), validates MIME type \
-            AND magic bytes (content inspection), checks size, then writes to \
-            `files/{access}/{folder}/`. \
+            AND magic bytes (content inspection), checks size, then writes to an object path such as \
+            `uploads/{uuid}.{ext}`. \
             Output: `{ saved: { path, url, original_name, content_type, size } }`."
             .to_string(),
         input_schema: serde_json::json!({
@@ -228,11 +224,11 @@ pub fn definition() -> NodeDefinition {
                 "saved": {
                     "type": "object",
                     "properties": {
-                        "path":          { "type": "string" },
-                        "url":           { "type": "string" },
-                        "original_name": { "type": "string" },
-                        "content_type":  { "type": "string" },
-                        "size":          { "type": "integer" }
+                "path":          { "type": "string", "description": "ZebFS object path" },
+                "url":           { "type": "string", "description": "ZebFS object URL" },
+                "original_name": { "type": "string" },
+                "content_type":  { "type": "string" },
+                "size":          { "type": "integer" }
                     }
                 }
             }
@@ -251,16 +247,18 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--access".to_string(),
-                config_key: "access".to_string(),
-                description: "\"public\" or \"private\" (default: \"private\")".to_string(),
+                flag: "--path".to_string(),
+                config_key: "path".to_string(),
+                description:
+                    "Exact ZebFS object path. If omitted, folder + generated filename is used."
+                        .to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
             DslFlag {
                 flag: "--folder".to_string(),
                 config_key: "folder".to_string(),
-                description: "Subdirectory under files/{access}/ (default: \"uploads\")".to_string(),
+                description: "ZebFS object folder (default: \"uploads\")".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -300,28 +298,18 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "access".to_string(),
-                label: "Access".to_string(),
-                field_type: NodeFieldType::Select,
-                help: Some("public — served without auth. private — requires auth cookie.".to_string()),
-                default_value: Some(json!("private")),
-                options: vec![
-                    SelectOptionDef {
-                        value: "private".to_string(),
-                        label: "Private (auth required)".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "public".to_string(),
-                        label: "Public (no auth)".to_string(),
-                    },
-                ],
+                name: "path".to_string(),
+                label: "Object path".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Exact ZebFS object path. Leave empty to use folder + generated filename.".to_string()),
+                default_value: None,
                 ..Default::default()
             },
             NodeFieldDef {
                 name: "folder".to_string(),
                 label: "Folder".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Subdirectory under files/{access}/ (default: \"uploads\")".to_string()),
+                help: Some("ZebFS object folder used when Object path is empty.".to_string()),
                 default_value: Some(json!("uploads")),
                 ..Default::default()
             },
@@ -382,7 +370,7 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![
             LayoutItem::Field("field".to_string()),
-            LayoutItem::Field("access".to_string()),
+            LayoutItem::Field("path".to_string()),
             LayoutItem::Field("folder".to_string()),
             LayoutItem::Field("allowed_kinds".to_string()),
             LayoutItem::Field("max_size_mb".to_string()),
@@ -493,10 +481,7 @@ impl NodeHandler for Node {
                 .get("content_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("application/octet-stream");
-            size = file_obj
-                .get("size")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
+            size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             data_b64 = file_obj
                 .get("data")
                 .and_then(|v| v.as_str())
@@ -600,12 +585,7 @@ impl NodeHandler for Node {
             }
         }
 
-        // ── Determine access + storage path ───────────────────────────────────
-        let access = match self.config.access.trim() {
-            "public" => "public",
-            _ => "private",
-        };
-
+        // ── Determine ZebFS object path ───────────────────────────────────────
         let folder = sanitize_dest_path(if self.config.folder.trim().is_empty() {
             "uploads"
         } else {
@@ -629,8 +609,18 @@ impl NodeHandler for Node {
             }
         };
 
-        // rel_path is relative to files_dir: e.g. "private/uploads/abc.jpg"
-        let rel_path = format!("{access}/{folder}/{storage_name}");
+        let configured_path = self
+            .config
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(sanitize_dest_path);
+        let rel_path = match configured_path.filter(|value| !value.is_empty()) {
+            Some(path) if path.ends_with('/') => format!("{path}{storage_name}"),
+            Some(path) => path,
+            None => format!("{folder}/{storage_name}"),
+        };
 
         // ── Write to disk ──────────────────────────────────────────────────────
         let layout = self
@@ -639,29 +629,12 @@ impl NodeHandler for Node {
             .ensure_project_layout(owner, project)
             .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
 
-        let abs_path = layout.files_dir.join(&rel_path);
-        if let Some(parent) = abs_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| {
-                PipelineError::new("FW_NODE_FILE_SAVE", format!("create dirs: {err}"))
-            })?;
-        }
+        let zebfs = LocalZebFs::new(layout.files_dir);
+        zebfs
+            .put(&rel_path, &bytes)
+            .map_err(|err| PipelineError::new("FW_NODE_FILE_SAVE", err.to_string()))?;
 
-        // Atomic write: temp → rename
-        let tmp_path = abs_path.with_extension(format!(
-            "{}.tmp",
-            abs_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .unwrap_or("bin")
-        ));
-        std::fs::write(&tmp_path, &bytes).map_err(|err| {
-            PipelineError::new("FW_NODE_FILE_SAVE", format!("write error: {err}"))
-        })?;
-        std::fs::rename(&tmp_path, &abs_path).map_err(|err| {
-            PipelineError::new("FW_NODE_FILE_SAVE", format!("rename error: {err}"))
-        })?;
-
-        let url = format!("/files/{owner}/{project}/{rel_path}");
+        let url = format!("/fs/{owner}/{project}/{rel_path}");
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
@@ -675,7 +648,7 @@ impl NodeHandler for Node {
                 }
             }),
             trace: vec![format!(
-                "node_kind={NODE_KIND} field={field} access={access} path={rel_path}"
+                "node_kind={NODE_KIND} field={field} path={rel_path}"
             )],
         })
     }

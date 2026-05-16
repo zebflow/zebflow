@@ -26,7 +26,7 @@ Everything an agent needs to understand how a Zebflow project is structured and 
 │       └── runtime/
 │           └── agent_docs/       ← AGENTS.md, SOUL.md, MEMORY.md
 │
-└── files/                        ← public static assets (images, SVG, JSON)
+└── files/                        ← Zebflow FS project artifacts
 ```
 
 ---

@@ -29,7 +29,7 @@ Zebflow is a pipeline-based reactive web automation platform. Projects contain:
 │   └── docs/                 ← project documentation
 ├── data/
 │   └── sekejap/              ← project data + agent docs
-└── files/                    ← public static assets
+└── files/                    ← Zebflow FS project artifacts
 ```
 
 ## Key Concepts

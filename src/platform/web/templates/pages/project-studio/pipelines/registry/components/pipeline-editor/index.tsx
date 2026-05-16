@@ -245,6 +245,7 @@ export default function PipelineEditor({
     openaiCredentials: [],
     secureRequestCredentials: [],
     httpAuthCredentials: [],
+    webhookAuthCredentials: [],
     aiTools: [],
     pageTemplates: [],
     functionPipelines: [],
@@ -329,6 +330,7 @@ export default function PipelineEditor({
             openaiCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "openai"),
             secureRequestCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "secure_request"),
             httpAuthCredentials: items.filter((i: any) => { const k = String(i?.kind || "").toLowerCase(); return k === "secure_request" || k === "oauth2"; }),
+            webhookAuthCredentials: items.filter((i: any) => { const k = String(i?.kind || "").toLowerCase(); return k === "jwt_signing_key" || k === "hmac" || k === "api_key"; }),
           }));
         } catch {}
       }

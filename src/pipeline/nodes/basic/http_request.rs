@@ -345,16 +345,14 @@ impl NodeHandler for Node {
                     )
                 })?;
             match credential.kind.as_str() {
-                "secure_request" => {
-                    build_request_from_secure_credential(
-                        credential_id,
-                        self.language.as_ref(),
-                        &self.config,
-                        &credential.secret,
-                        &input.payload,
-                        &input.metadata,
-                    )?
-                }
+                "secure_request" => build_request_from_secure_credential(
+                    credential_id,
+                    self.language.as_ref(),
+                    &self.config,
+                    &credential.secret,
+                    &input.payload,
+                    &input.metadata,
+                )?,
                 "oauth2" => {
                     // Get a valid access token, auto-refreshing if expired.
                     let token = credentials
@@ -526,7 +524,11 @@ impl NodeHandler for Node {
                             other => other.to_string(),
                         };
                         // Only set content-type if not already in headers
-                        if !prepared.headers.keys().any(|k| k.to_lowercase() == "content-type") {
+                        if !prepared
+                            .headers
+                            .keys()
+                            .any(|k| k.to_lowercase() == "content-type")
+                        {
                             req = req.header("content-type", "text/plain");
                         }
                         req = req.body(body_str);
@@ -537,7 +539,11 @@ impl NodeHandler for Node {
                             Value::String(s) => s.clone(),
                             other => other.to_string(),
                         };
-                        if !prepared.headers.keys().any(|k| k.to_lowercase() == "content-type") {
+                        if !prepared
+                            .headers
+                            .keys()
+                            .any(|k| k.to_lowercase() == "content-type")
+                        {
                             req = req.header("content-type", "application/json");
                         }
                         req = req.body(body_str);
@@ -573,8 +579,7 @@ impl NodeHandler for Node {
                 let bytes = resp.bytes().await.map_err(|err| {
                     PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
                 })?;
-                let encoded =
-                    base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
                 json!({
                     "__zf_bytes": encoded,
                     "__zf_mime": content_type,

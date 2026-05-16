@@ -97,6 +97,7 @@ const FULL_WIDTH_TYPES: NodeFieldType[] = [
   "params_builder",
   "secure_request_bindings",
   "match_cases",
+  "source_bindings",
 ];
 
 function isFullWidth(field: NodeFieldDef): boolean {
@@ -150,6 +151,11 @@ function enrichFields(
       options = buildCredentialOptions(dataState.httpAuthCredentials, value as string);
       if (options.length === 1 && options[0].value === "") {
         options[0].label = "No HTTP auth credential available";
+      }
+    } else if (f.data_source === "credentials_webhook_auth") {
+      options = buildCredentialOptions(dataState.webhookAuthCredentials, value as string);
+      if (options.length === 1 && options[0].value === "") {
+        options[0].label = "No webhook auth credential available";
       }
     } else if (f.data_source === "ai_tools") {
       options = (Array.isArray(dataState.aiTools) ? dataState.aiTools : []).map((t: any) => ({

@@ -146,5 +146,5 @@ web.auto --context external --help  # external (headless) action list
 - **Selectors**: prefer `data-*` attributes (`[data-tour="step"]`) over class names for stability.
 - **Waits**: always `wait-for` before interacting with dynamic content.
 - **Captures**: captured data is passed as `input.<name>` to the next node.
-- **External screenshots** are saved to `files/private/` and returned as file references.
+- **External screenshots** are saved to Zebflow FS and returned as file references.
 - **In-app context** requires the user to have the relevant page open; use with `run` for interactive demos.

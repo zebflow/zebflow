@@ -391,7 +391,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
     let encoded = STANDARD.encode(runtime_ready_source.as_bytes());
     format!(
         "{tool_js}\n\
-         import {{ h, Fragment, hydrate, render, createContext, forwardRef, memo,\
+         import {{ h, Fragment, hydrate, render, createContext, createPortal, forwardRef, memo,\
            useCallback, useContext, useEffect, useId, useImperativeHandle,\
            useLayoutEffect, useMemo, useReducer, useRef, useState }}\
            from '/assets/libraries/zeb/preact/0.1/runtime/preact.bundle.mjs';\n\
@@ -437,6 +437,7 @@ fn build_client_module(client_source: &str, zeb_preamble: &str) -> String {
          globalThis.useImperativeHandle = useImperativeHandle;\n\
          globalThis.useLayoutEffect = useLayoutEffect;\n\
          globalThis.createContext = createContext;\n\
+         globalThis.createPortal = createPortal;\n\
          globalThis.forwardRef = forwardRef;\n\
          globalThis.memo = memo;\n\
          globalThis.usePageState = __rweUsePageState;\n\

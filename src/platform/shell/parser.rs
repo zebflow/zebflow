@@ -125,6 +125,8 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
+        "table.convert" | "n.table.convert" => Some("n.table.convert"),
+        "table.query" | "n.table.query" => Some("n.table.query"),
         "script" | "n.script" => Some("n.script"),
         "web.response" | "n.web.response" => Some("n.web.response"),
         "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
@@ -148,9 +150,11 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.weberror" | "n.trigger.weberror" => Some("n.trigger.weberror"),
         "trigger.function" | "n.trigger.function" => Some("n.trigger.function"),
         "function.call" | "n.function.call" => Some("n.function.call"),
-        "file.save" | "n.file.save" => Some("n.file.save"),
-        "file.pdf_convert" | "n.file.pdf_convert" => Some("n.file.pdf_convert"),
-        "img.thumbnail" | "n.img.thumbnail" => Some("n.img.thumbnail"),
+        "fs.save" | "n.fs.save" => Some("n.fs.save"),
+        "fs.compress" | "n.fs.compress" => Some("n.fs.compress"),
+        "fs.decompress" | "n.fs.decompress" => Some("n.fs.decompress"),
+        "fs.pdf.convert" | "n.fs.pdf.convert" => Some("n.fs.pdf.convert"),
+        "fs.thumbnail" | "n.fs.thumbnail" => Some("n.fs.thumbnail"),
         "mem.set" | "n.mem.set" => Some("n.mem.set"),
         "mem.get" | "n.mem.get" => Some("n.mem.get"),
         "mem.del" | "n.mem.del" => Some("n.mem.del"),
@@ -169,8 +173,10 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sekejap.query" | "n.script" | "n.http.request" | "n.zebtune"
-        | "n.logic.collect" | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "n.pg.query" | "n.sekejap.query" | "n.table.convert" | "n.table.query" | "n.script"
+        | "n.http.request" | "n.zebtune" | "n.logic.collect" | "n.ai.tts" => {
+            (vec!["in".to_string()], vec!["out".to_string()])
+        }
         "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
         "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.retry" => (
@@ -262,6 +268,7 @@ pub fn parse_node_config(
     dsl_flags: &[DslFlag],
 ) -> Result<(Value, Option<String>), String> {
     let mut config = serde_json::Map::new();
+    let mut list_modes = HashMap::<String, ListFlagMode>::new();
     let mut body: Option<String> = None;
     let mut i = 0;
 
@@ -288,20 +295,9 @@ pub fn parse_node_config(
                     config.insert(dsl_flag.config_key.clone(), coerce_scalar_value(&val));
                     i += 2;
                 }
-                DslFlagKind::CommaSeparatedList => {
+                DslFlagKind::CommaSeparatedList | DslFlagKind::RepeatedList => {
                     let val = tokens.get(i + 1).cloned().unwrap_or_default();
-                    let arr: Vec<Value> = val
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(|s| json!(s))
-                        .collect();
-                    let entry = config
-                        .entry(dsl_flag.config_key.clone())
-                        .or_insert_with(|| Value::Array(Vec::new()));
-                    if let Value::Array(existing) = entry {
-                        existing.extend(arr);
-                    }
+                    push_list_flag_value(&mut config, &mut list_modes, dsl_flag, &val)?;
                     i += 2;
                 }
                 DslFlagKind::Bool => {
@@ -330,6 +326,58 @@ pub fn parse_node_config(
     }
 
     Ok((Value::Object(config), body))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListFlagMode {
+    Compact,
+    Repeated,
+}
+
+fn push_list_flag_value(
+    config: &mut serde_json::Map<String, Value>,
+    list_modes: &mut HashMap<String, ListFlagMode>,
+    flag: &DslFlag,
+    value: &str,
+) -> Result<(), String> {
+    let has_comma = value.contains(',');
+    let next_mode = if has_comma {
+        ListFlagMode::Compact
+    } else {
+        ListFlagMode::Repeated
+    };
+    let key = flag.config_key.clone();
+    if let Some(existing) = list_modes.get(&key) {
+        if *existing != next_mode || has_comma {
+            return Err(format!(
+                "list flag `{}` must use one style per node command: either `{0} a,b,c` or `{0} a {0} b`, not both",
+                flag.flag
+            ));
+        }
+    } else {
+        list_modes.insert(key.clone(), next_mode);
+    }
+
+    let values = if has_comma {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| json!(s))
+            .collect::<Vec<_>>()
+    } else if value.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![json!(value)]
+    };
+
+    let entry = config
+        .entry(key)
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(existing) = entry {
+        existing.extend(values);
+    }
+    Ok(())
 }
 
 /// Parse flags for patch operations without DslFlag validation.
@@ -647,15 +695,18 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::pipeline::model::PipelineNode;
     use serde_json::json;
 
-    use super::{DslVerb, build_pipeline_graph, parse_one_command, split_commands};
+    use super::{
+        DslVerb, build_pipeline_graph, node_to_segment_no_body, parse_one_command, split_commands,
+    };
 
     #[test]
-    fn logic_match_cases_accept_repeated_and_compact_forms() {
+    fn logic_match_cases_accept_compact_list_form() {
         let dsl = r#"
 [a] trigger.manual
-[b] logic.match --expr "$input.type" --cases create --cases update,delete --default unknown
+[b] logic.match --expr "$input.type" --cases create,update,delete --default unknown
 
 [a] -> [b]
 "#;
@@ -680,6 +731,65 @@ mod tests {
                 "unknown".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn logic_match_cases_accept_repeated_list_form() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.match --expr "$input.type" --cases create --cases update --cases delete --default unknown
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("parser-match-cases-repeated-test", dsl).expect("graph");
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "b")
+            .expect("match node");
+
+        assert_eq!(
+            node.config.get("cases"),
+            Some(&json!(["create", "update", "delete"]))
+        );
+    }
+
+    #[test]
+    fn list_flags_reject_mixed_compact_and_repeated_forms() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.match --expr "$input.type" --cases create,update --cases delete --default unknown
+
+[a] -> [b]
+"#;
+
+        let err = build_pipeline_graph("parser-match-cases-mixed-test", dsl)
+            .expect_err("mixed list syntax must fail");
+        assert!(err.contains("must use one style"));
+    }
+
+    #[test]
+    fn repeated_list_reconstructs_source_binding_objects() {
+        let node = PipelineNode {
+            id: "b".to_string(),
+            kind: "n.table.query".to_string(),
+            config: json!({
+                "sources": [
+                    { "source": "datasets/posts.csv", "alias": "posts" },
+                    { "source": "$input.rows", "alias": "rows" }
+                ],
+                "sql": "select * from posts",
+                "to_json": true
+            }),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string()],
+        };
+
+        let segment = node_to_segment_no_body(&node);
+        assert!(segment.contains("--from \"datasets/posts.csv as posts\""));
+        assert!(segment.contains("--from \"$input.rows as rows\""));
+        assert!(segment.contains("--to-json"));
     }
 
     #[test]
@@ -738,6 +848,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         let body_key = match full_kind {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
+            "n.table.query" => "sql",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
             "n.browser.run" => "code",
@@ -893,6 +1004,17 @@ fn node_to_segment(node: &PipelineNode) -> String {
                     }
                 }
             }
+            DslFlagKind::RepeatedList => {
+                if let Some(arr) = val.as_array() {
+                    for item in arr.iter().filter_map(repeated_list_item_to_string) {
+                        if item.is_empty() {
+                            continue;
+                        }
+                        parts.push(flag.flag.clone());
+                        parts.push(quote_dsl_arg(&item));
+                    }
+                }
+            }
             DslFlagKind::Scalar => {
                 let s = match val {
                     Value::String(s) if !s.is_empty() => s.clone(),
@@ -902,11 +1024,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
                 };
                 parts.push(flag.flag.clone());
                 // Quote values containing spaces.
-                if s.contains(' ') {
-                    parts.push(format!("\"{}\"", s.replace('"', "\\\"")));
-                } else {
-                    parts.push(s);
-                }
+                parts.push(quote_dsl_arg(&s));
             }
             DslFlagKind::KeyValuePairs => {
                 if let Some(map) = val.as_object() {
@@ -927,6 +1045,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     let body_key = match node.kind.as_str() {
         "n.pg.query" => "query",
         "n.sekejap.query" => "query",
+        "n.table.query" => "sql",
         "n.script" => "source",
         "n.logic.match" | "n.logic.if" => "expression",
         _ => "body",
@@ -967,6 +1086,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         let body_key = match node.kind.as_str() {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
+            "n.table.query" => "sql",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
             _ => "body",
@@ -996,6 +1116,17 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
                     }
                 }
             }
+            DslFlagKind::RepeatedList => {
+                if let Some(arr) = val.as_array() {
+                    for item in arr.iter().filter_map(repeated_list_item_to_string) {
+                        if item.is_empty() {
+                            continue;
+                        }
+                        parts.push(flag.flag.clone());
+                        parts.push(quote_dsl_arg(&item));
+                    }
+                }
+            }
             DslFlagKind::Scalar => {
                 let s = match val {
                     Value::String(s) if !s.is_empty() => s.clone(),
@@ -1004,11 +1135,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
                     _ => continue,
                 };
                 parts.push(flag.flag.clone());
-                if s.contains(' ') {
-                    parts.push(format!("\"{}\"", s.replace('"', "\\\"")));
-                } else {
-                    parts.push(s);
-                }
+                parts.push(quote_dsl_arg(&s));
             }
             DslFlagKind::KeyValuePairs => {
                 if let Some(map) = val.as_object() {
@@ -1026,6 +1153,27 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
     }
 
     parts.join(" ")
+}
+
+fn quote_dsl_arg(value: &str) -> String {
+    if value.chars().any(char::is_whitespace) || value.contains('"') {
+        format!("\"{}\"", value.replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn repeated_list_item_to_string(value: &Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        return Some(s.to_string());
+    }
+    let obj = value.as_object()?;
+    let source = obj.get("source").and_then(Value::as_str)?.trim();
+    let alias = obj.get("alias").and_then(Value::as_str)?.trim();
+    if source.is_empty() || alias.is_empty() {
+        return None;
+    }
+    Some(format!("{source} as {alias}"))
 }
 
 fn graph_to_pipe_mode(graph: &PipelineGraph) -> String {
@@ -1143,6 +1291,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         if let Some(bval) = body_val {
             let body_key = match full_kind {
                 "n.pg.query" => "query",
+                "n.table.query" => "sql",
                 "n.script" => "source",
                 "n.browser.run" => "code",
                 _ => "body",

@@ -424,24 +424,20 @@ impl ProjectService {
         }
 
         // Verify old project exists.
-        let old_project = self.data.get_project(&old_owner, &project)?.ok_or_else(|| {
-            PlatformError::new("PLATFORM_TRANSFER_NOT_FOUND", "source project not found")
-        })?;
-
-        // Verify new_owner is a real user.
-        let new_user = self
+        let old_project = self
             .data
-            .get_user_auth(&new_owner_slug)?
+            .get_project(&old_owner, &project)?
             .ok_or_else(|| {
-                PlatformError::new("PLATFORM_TRANSFER_INVALID", "target owner user not found")
+                PlatformError::new("PLATFORM_TRANSFER_NOT_FOUND", "source project not found")
             })?;
 
+        // Verify new_owner is a real user.
+        let new_user = self.data.get_user_auth(&new_owner_slug)?.ok_or_else(|| {
+            PlatformError::new("PLATFORM_TRANSFER_INVALID", "target owner user not found")
+        })?;
+
         // Verify no conflict — project must not already exist under new_owner.
-        if self
-            .data
-            .get_project(&new_owner_slug, &project)?
-            .is_some()
-        {
+        if self.data.get_project(&new_owner_slug, &project)?.is_some() {
             return Err(PlatformError::new(
                 "PLATFORM_TRANSFER_CONFLICT",
                 "a project with this slug already exists under the target owner",
@@ -451,15 +447,17 @@ impl ProjectService {
         let new_owner_user_id = &new_user.profile.user_id;
 
         // 1. Re-key all catalog records in a single transaction.
-        self.data
-            .transfer_project_owner(&old_owner, &project, &new_owner_slug, new_owner_user_id)?;
+        self.data.transfer_project_owner(
+            &old_owner,
+            &project,
+            &new_owner_slug,
+            new_owner_user_id,
+        )?;
 
         // 2. Move files on disk.
         let old_layout = self.file.ensure_project_layout(&old_owner, &project)?;
         // Ensure the new owner's directory exists.
-        let new_layout = self
-            .file
-            .ensure_project_layout(&new_owner_slug, &project)?;
+        let new_layout = self.file.ensure_project_layout(&new_owner_slug, &project)?;
 
         if old_layout.root.exists() {
             // Remove the (empty) new layout directory that ensure_project_layout just created,

@@ -184,10 +184,19 @@ pub enum DslFlagKind {
     /// `--template-path pages/blog-home` → `config["template_path"] = "pages/blog-home"`
     #[default]
     Scalar,
-    /// Comma-separated string split into a JSON array.
+    /// List value with compact comma form as the recommended rendering.
     ///
-    /// `--load-scripts https://a.com,https://b.com` → `config["load_scripts"] = ["https://a.com","https://b.com"]`
+    /// The parser accepts either `--key a,b,c` or `--key a --key b --key c`,
+    /// but rejects mixing those styles for the same flag in one node command.
+    /// `--cases create,update` → `config["cases"] = ["create","update"]`
     CommaSeparatedList,
+    /// List value with repeated flag form as the recommended rendering.
+    ///
+    /// Parser behavior is identical to [`DslFlagKind::CommaSeparatedList`].
+    /// Use this for long atomic values where commas may appear inside the value.
+    /// `--from "posts.parquet as posts" --from "authors.csv as authors"`
+    /// → `config["sources"] = ["posts.parquet as posts","authors.csv as authors"]`
+    RepeatedList,
     /// Presence flag — no value consumed; sets config key to `true`.
     ///
     /// `--silent` → `config["silent"] = true`
@@ -283,6 +292,11 @@ pub enum NodeFieldType {
     /// Specialized route editor for `n.logic.match`.
     /// Config value is normalized into `cases` plus `default` route metadata.
     MatchCases,
+    /// Reusable source binding table.
+    /// Each row has: source expression/path | alias | remove button.
+    /// Config value is stored as an array of objects:
+    /// `[{"source":"datasets/posts.csv","alias":"posts"}]`.
+    SourceBindings,
 }
 
 impl Default for NodeFieldType {
@@ -321,6 +335,9 @@ pub enum NodeFieldDataSource {
     /// Credentials usable as HTTP auth: `secure_request` and `oauth2` kinds.
     /// Used by `n.http.request` credential_id field.
     CredentialsHttpAuth,
+    /// Credentials usable as webhook auth: `jwt_signing_key`, `hmac`, and `api_key` kinds.
+    /// Used by `n.trigger.webhook` auth_credential field.
+    CredentialsWebhookAuth,
 }
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.

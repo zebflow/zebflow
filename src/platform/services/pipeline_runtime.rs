@@ -84,6 +84,18 @@ pub struct MapserverTriggerSpec {
     pub allowed_properties: Vec<String>,
 }
 
+/// One extracted MCP trigger from an active compiled pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpTriggerSpec {
+    pub node_id: String,
+    /// MCP tool name — the identifier used in `tools/list` and `tools/call`.
+    pub tool_name: String,
+    /// Human-readable tool description shown to AI agents.
+    pub tool_description: String,
+    /// JSON Schema object describing the tool input parameters.
+    pub input_schema: serde_json::Value,
+}
+
 /// Execution-ready active pipeline entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompiledPipeline {
@@ -100,6 +112,7 @@ pub struct CompiledPipeline {
     pub weberror_triggers: Vec<WebErrorTriggerSpec>,
     pub mem_subscribe_triggers: Vec<MemSubscribeTriggerSpec>,
     pub mapserver_triggers: Vec<MapserverTriggerSpec>,
+    pub mcp_triggers: Vec<McpTriggerSpec>,
 }
 
 impl CompiledPipeline {
@@ -158,6 +171,7 @@ impl CompiledPipeline {
         let mut weberror_triggers = Vec::new();
         let mut mem_subscribe_triggers = Vec::new();
         let mut mapserver_triggers = Vec::new();
+        let mut mcp_triggers = Vec::new();
         for node in &graph.nodes {
             match node.kind.as_str() {
                 "n.trigger.webhook" => {
@@ -349,6 +363,37 @@ impl CompiledPipeline {
                         allowed_properties,
                     });
                 }
+                "n.trigger.mcp" => {
+                    let tool_name = node
+                        .config
+                        .get("tool_name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let tool_description = node
+                        .config
+                        .get("tool_description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let params_str = node
+                        .config
+                        .get("parameters")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    let input_schema =
+                        crate::pipeline::nodes::basic::trigger::mcp_trigger::params_to_json_schema(
+                            params_str,
+                        );
+                    if !tool_name.is_empty() {
+                        mcp_triggers.push(McpTriggerSpec {
+                            node_id: node.id.clone(),
+                            tool_name,
+                            tool_description,
+                            input_schema,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -367,6 +412,7 @@ impl CompiledPipeline {
             weberror_triggers,
             mem_subscribe_triggers,
             mapserver_triggers,
+            mcp_triggers,
         })
     }
 }

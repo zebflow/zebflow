@@ -106,8 +106,20 @@ impl AssistantPlatformTools {
             // ── Pipelines ──────────────────────────────────────────────────────
             ToolDef {
                 name: "pipeline_list".to_string(),
-                description: "List all pipelines in the project with metadata (name, title, trigger_kind, active status).".to_string(),
-                parameters: json!({ "type": "object", "properties": {} }),
+                description: "List pipelines as a lean semantic index. Default compact rows are: \
+                    file_rel_path | trigger summary | status | description. \
+                    Use query/glob/status/trigger_kind/limit to narrow. Use format='json' for full metadata.".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Optional semantic filter across path, title, description, trigger kind, and trigger summary." },
+                        "glob": { "type": "string", "description": "Optional glob to filter pipeline files (e.g. 'pipelines/api/*.zf.json')." },
+                        "status": { "type": "string", "description": "Optional status filter: active, draft, or all." },
+                        "trigger_kind": { "type": "string", "description": "Optional trigger filter: webhook, schedule, function, or full n.trigger.* kind." },
+                        "limit": { "type": "integer", "description": "Optional cap on returned rows." },
+                        "format": { "type": "string", "description": "compact (default), json, or tree." }
+                    }
+                }),
             },
             ToolDef {
                 name: "pipeline_search".to_string(),
@@ -256,11 +268,17 @@ impl AssistantPlatformTools {
             // ── Templates ──────────────────────────────────────────────────────
             ToolDef {
                 name: "template_list".to_string(),
-                description: "List template files in the project workspace. Use glob to filter.".to_string(),
+                description: "List templates as a lean semantic index. Default compact rows are: \
+                    rel_path | kind | title | description. Optional top-of-file zebflow frontmatter \
+                    provides title/description/keywords. Use format='json' for full legacy workspace data.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "glob": { "type": "string", "description": "Optional glob to filter (e.g. 'pages/*.tsx'). Omit for all files." }
+                        "glob": { "type": "string", "description": "Optional glob to filter (e.g. 'pages/*.tsx'). Omit for all files." },
+                        "query": { "type": "string", "description": "Optional semantic filter across path, kind, title, description, and keywords." },
+                        "kind": { "type": "string", "description": "Optional kind filter: page, component, script, style, other, or all." },
+                        "limit": { "type": "integer", "description": "Optional cap on returned rows." },
+                        "format": { "type": "string", "description": "compact (default), json, or tree." }
                     }
                 }),
             },
@@ -557,7 +575,16 @@ impl AssistantPlatformTools {
             "help_search" => ops.help_search(args["query"].as_str().unwrap_or("")),
 
             // ── Pipelines ──────────────────────────────────────────────────────
-            "pipeline_list" => ops.pipeline_list(),
+            "pipeline_list" => {
+                ops.pipeline_list(crate::platform::services::ops::PipelineListOptions {
+                    query: args.get("query").and_then(|v| v.as_str()),
+                    glob: args.get("glob").and_then(|v| v.as_str()),
+                    status: args.get("status").and_then(|v| v.as_str()),
+                    trigger_kind: args.get("trigger_kind").and_then(|v| v.as_str()),
+                    limit: args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                    format: args.get("format").and_then(|v| v.as_str()),
+                })
+            }
             "pipeline_get" => ops.pipeline_get(
                 args["file_rel_path"].as_str().unwrap_or(""),
                 args.get("node_id").and_then(|v| v.as_str()),
@@ -634,7 +661,15 @@ impl AssistantPlatformTools {
             }
 
             // ── Templates ──────────────────────────────────────────────────────
-            "template_list" => ops.template_list(args.get("glob").and_then(|v| v.as_str())),
+            "template_list" => {
+                ops.template_list(crate::platform::services::ops::TemplateListOptions {
+                    query: args.get("query").and_then(|v| v.as_str()),
+                    glob: args.get("glob").and_then(|v| v.as_str()),
+                    kind: args.get("kind").and_then(|v| v.as_str()),
+                    limit: args.get("limit").and_then(|v| v.as_u64()).map(|n| n as u32),
+                    format: args.get("format").and_then(|v| v.as_str()),
+                })
+            }
             "template_get" => ops.template_get(
                 args["rel_path"].as_str().unwrap_or(""),
                 args.get("offset")

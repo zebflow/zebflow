@@ -34,12 +34,12 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.crypto.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.file.save.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.file.save.svg"),
+        path: "zebflow/n.fs.save.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.save.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.img.thumbnail.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.img.thumbnail.svg"),
+        path: "zebflow/n.fs.thumbnail.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.thumbnail.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.function.call.svg",
@@ -84,6 +84,10 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zebflow/n.sekejap.query.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.sekejap.query.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.table.convert.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.table.convert.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.script.svg",

@@ -4,7 +4,7 @@
 //! - source content lives under `repo/docs/<docs_root>/`
 //! - the customizable render template lives at `repo/pipelines/<template_folder>/docs.template.tsx`
 //! - if the template is missing, Zebflow scaffolds it automatically
-//! - generated HTML is written under `files/{scope}/{output_dir}/...`
+//! - generated HTML is written under Zebflow FS
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::pipeline::PipelineError;
 use crate::pipeline::model::{
-    DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDef, NodeFieldType, SelectOptionDef,
+    DslFlag, DslFlagKind, LayoutItem, NodeDefinition, NodeFieldDef, NodeFieldType,
 };
 use crate::pipeline::nodes::basic::web_static_site;
 use crate::rwe::TemplateSource;
@@ -22,10 +22,6 @@ use crate::rwe::TemplateSource;
 pub const NODE_KIND: &str = "n.web.docs.generate";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
-
-fn default_scope() -> String {
-    "private".to_string()
-}
 
 fn default_meta_file() -> String {
     "_meta.yaml".to_string()
@@ -35,17 +31,15 @@ fn default_meta_file() -> String {
 pub struct Config {
     /// Relative folder under `repo/docs/`.
     pub docs_root: String,
-    /// Relative folder under `files/{scope}/`.
+    /// Zebflow FS output directory.
     pub output_dir: String,
-    /// Optional static site root under `files/{scope}/`.
+    /// Optional static site root under Zebflow FS.
     ///
     /// Defaults to `output_dir`.
     #[serde(default)]
     pub site_root: Option<String>,
     /// Relative folder under `repo/pipelines/`.
     pub template_folder: String,
-    #[serde(default = "default_scope")]
-    pub scope: String,
     #[serde(default)]
     pub site_title: Option<String>,
     #[serde(default, alias = "base_url")]
@@ -157,7 +151,7 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Web Docs Generate".to_string(),
-        description: "Scan repo/docs markdown content, auto-scaffold docs.template.tsx when missing, and generate a fully static docs artifact tree under files/private by default. Treat output as publishable artifacts, not same-origin hosted pages.".to_string(),
+        description: "Scan repo/docs markdown content, auto-scaffold docs.template.tsx when missing, and generate a fully static docs artifact tree under Zebflow FS. Treat output as publishable artifacts, not same-origin hosted pages.".to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
@@ -194,10 +188,9 @@ pub fn definition() -> NodeDefinition {
             "required": ["docs_root", "output_dir", "template_folder"],
             "properties": {
                 "docs_root": { "type": "string", "description": "Folder under repo/docs containing the markdown doc tree." },
-                "output_dir": { "type": "string", "description": "Folder under files/{scope}/ where the generated site will be written." },
-                "site_root": { "type": "string", "description": "Optional static site root under files/{scope}/. Defaults to output_dir." },
+                "output_dir": { "type": "string", "description": "Zebflow FS folder where the generated site will be written." },
+                "site_root": { "type": "string", "description": "Optional static site root under Zebflow FS. Defaults to output_dir." },
                 "template_folder": { "type": "string", "description": "Folder under repo/pipelines/. docs.template.tsx is auto-created here when missing." },
-                "scope": { "type": "string", "enum": ["public", "private"], "description": "Output file scope under files/. Defaults to private." },
                 "site_title": { "type": "string" },
                 "deploy_base_url": { "type": "string", "description": "Optional absolute deployed site origin used for canonical URLs and sitemap entries." },
                 "deploy_base_path": { "type": "string", "description": "Optional deployed URL base path seen by generated pages. Defaults to /{output_dir}/." },
@@ -215,14 +208,14 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--output-dir".to_string(),
                 config_key: "output_dir".to_string(),
-                description: "Folder under files/{scope}/ where the generated site is written.".to_string(),
+                description: "Zebflow FS folder where the generated site is written.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
             DslFlag {
                 flag: "--site-root".to_string(),
                 config_key: "site_root".to_string(),
-                description: "Optional static site root under files/{scope}/. Defaults to output_dir.".to_string(),
+                description: "Optional static site root under Zebflow FS. Defaults to output_dir.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -232,13 +225,6 @@ pub fn definition() -> NodeDefinition {
                 description: "Folder under repo/pipelines/. docs.template.tsx is auto-created here when missing.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
-            },
-            DslFlag {
-                flag: "--scope".to_string(),
-                config_key: "scope".to_string(),
-                description: "Output scope: public or private (default: private).".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
             },
             DslFlag {
                 flag: "--site-title".to_string(),
@@ -283,7 +269,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Output Dir".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("docs".to_string()),
-                help: Some("Folder under files/{scope}/ where the generated site will be written.".to_string()),
+                help: Some("Zebflow FS folder where the generated site will be written.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -291,7 +277,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Site Root".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("static/sekejap-docs".to_string()),
-                help: Some("Optional shared static site root under files/{scope}/. Defaults to Output Dir.".to_string()),
+                help: Some("Optional shared static site root under Zebflow FS. Defaults to Output Dir.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -300,17 +286,6 @@ pub fn definition() -> NodeDefinition {
                 field_type: NodeFieldType::Text,
                 placeholder: Some("pages/docs".to_string()),
                 help: Some("Folder under repo/pipelines/. docs.template.tsx is auto-created here when missing.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "scope".to_string(),
-                label: "Output Scope".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef { value: "public".to_string(), label: "Public".to_string() },
-                    SelectOptionDef { value: "private".to_string(), label: "Private".to_string() },
-                ],
-                default_value: Some(json!("private")),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -354,12 +329,7 @@ pub fn definition() -> NodeDefinition {
                 ],
             },
             LayoutItem::Field("template_folder".to_string()),
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("scope".to_string()),
-                    LayoutItem::Field("site_title".to_string()),
-                ],
-            },
+            LayoutItem::Field("site_title".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("deploy_base_url".to_string()),
@@ -514,7 +484,7 @@ pub fn effective_site_root_rel_path(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(output_dir_rel);
-    web_static_site::normalize_site_root_rel_path(&config.scope, raw)
+    web_static_site::normalize_site_root_rel_path(raw)
 }
 
 pub fn sitemap_rel_path(site_root_rel: &str) -> String {
@@ -1925,10 +1895,10 @@ mod tests {
             .expect("docs generate");
         assert_eq!(result.value["docs_generated"]["status"], "ok");
         assert_eq!(result.value["docs_generated"]["page_count"], 2);
-        assert_eq!(result.value["docs_generated"]["site_root"], "private/docs");
+        assert_eq!(result.value["docs_generated"]["site_root"], "docs");
         assert_eq!(
             result.value["docs_generated"]["manifest_path"],
-            "private/docs/.zebflow-static-site.json"
+            "docs/.zebflow-static-site.json"
         );
         assert_eq!(
             result.value["docs_generated"]["deploy_base_url"],
@@ -1937,7 +1907,7 @@ mod tests {
         assert_eq!(result.value["docs_generated"]["deploy_base_path"], "/docs");
         assert_eq!(
             result.value["docs_generated"]["search_index_path"],
-            "private/docs/search-index.json"
+            "docs/search-index.json"
         );
 
         let template_path = layout
@@ -1947,35 +1917,21 @@ mod tests {
             .join("docs.template.tsx");
         assert!(template_path.is_file());
 
-        let home_path = layout
-            .files_dir
-            .join("private")
-            .join("docs")
-            .join("index.html");
+        let home_path = layout.files_dir.join("docs").join("index.html");
         let query_path = layout
             .files_dir
-            .join("private")
             .join("docs")
             .join("basic")
             .join("query")
             .join("index.html");
-        let sitemap_path = layout
-            .files_dir
-            .join("private")
-            .join("docs")
-            .join("sitemap.xml");
-        let search_index_path = layout
-            .files_dir
-            .join("private")
-            .join("docs")
-            .join("search-index.json");
+        let sitemap_path = layout.files_dir.join("docs").join("sitemap.xml");
+        let search_index_path = layout.files_dir.join("docs").join("search-index.json");
         assert!(home_path.is_file());
         assert!(query_path.is_file());
         assert!(sitemap_path.is_file());
         assert!(search_index_path.is_file());
         let manifest_path = layout
             .files_dir
-            .join("private")
             .join("docs")
             .join(".zebflow-static-site.json");
         assert!(manifest_path.is_file());
@@ -1997,7 +1953,6 @@ mod tests {
         assert!(
             layout
                 .files_dir
-                .join("private")
                 .join("docs")
                 .join("_assets")
                 .join("libraries")
@@ -2013,7 +1968,7 @@ mod tests {
         assert!(search_index.contains("\"href\": \"/docs/basic/query/\""));
         assert!(search_index.contains("\"Query Basics\""));
         assert!(search_index.contains("\"Select\""));
-        assert!(manifest.contains("\"site_root\": \"private/docs\""));
+        assert!(manifest.contains("\"site_root\": \"docs\""));
         assert!(manifest.contains("\"deploy_base_path\": \"/docs\""));
         assert!(manifest.contains("\"template\": \"pages/docs/docs.template.tsx\""));
 

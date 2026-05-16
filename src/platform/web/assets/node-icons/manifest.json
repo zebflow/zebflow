@@ -27,13 +27,13 @@
         "n.crypto"
       ]
     },
-    "n.file.save": {
+    "n.fs.save": {
       "label": "SAVE",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.file.save.svg",
+      "path": "/assets/node-icons/zebflow/n.fs.save.svg",
       "source_url": "",
       "supports": [
-        "n.file.save"
+        "n.fs.save"
       ]
     },
     "n.function.call": {
@@ -54,13 +54,13 @@
         "n.http.request"
       ]
     },
-    "n.img.thumbnail": {
+    "n.fs.thumbnail": {
       "label": "IMG",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.img.thumbnail.svg",
+      "path": "/assets/node-icons/zebflow/n.fs.thumbnail.svg",
       "source_url": "",
       "supports": [
-        "n.img.thumbnail"
+        "n.fs.thumbnail"
       ]
     },
     "n.logic.collect": {
@@ -151,6 +151,15 @@
       "source_url": "",
       "supports": [
         "n.sekejap.query"
+      ]
+    },
+    "n.table.convert": {
+      "label": "TBL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.table.convert.svg",
+      "source_url": "",
+      "supports": [
+        "n.table.convert"
       ]
     },
     "n.sqlite.mutate": {

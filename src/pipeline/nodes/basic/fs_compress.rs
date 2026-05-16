@@ -1,4 +1,4 @@
-//! n.file.compress — archive one project file or folder into a compressed bundle.
+//! n.fs.compress — archive one project file or folder into a compressed bundle.
 //!
 //! First slice supports only `tar.gz`.
 
@@ -18,16 +18,12 @@ use crate::pipeline::{
 };
 use crate::platform::services::PlatformService;
 
-pub const NODE_KIND: &str = "n.file.compress";
+pub const NODE_KIND: &str = "n.fs.compress";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 fn default_source_key() -> String {
     "saved.path".to_string()
-}
-
-fn default_access() -> String {
-    "private".to_string()
 }
 
 fn default_format() -> String {
@@ -42,8 +38,6 @@ pub struct Config {
     pub extra_source_keys: Vec<String>,
     #[serde(default)]
     pub output_path: String,
-    #[serde(default = "default_access")]
-    pub access: String,
     #[serde(default = "default_format")]
     pub format: String,
 }
@@ -54,7 +48,6 @@ impl Default for Config {
             source_key: default_source_key(),
             extra_source_keys: Vec::new(),
             output_path: String::new(),
-            access: default_access(),
             format: default_format(),
         }
     }
@@ -124,14 +117,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--output-path".to_string(),
                 config_key: "output_path".to_string(),
-                description: "Destination path under files/{access}/. Defaults to archives/<source>.tar.gz".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
-                flag: "--access".to_string(),
-                config_key: "access".to_string(),
-                description: "public | private (default: private)".to_string(),
+                description: "Destination ZebFS object path. Defaults to archives/<source>.tar.gz".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -166,24 +152,7 @@ pub fn definition() -> NodeDefinition {
                 name: "output_path".to_string(),
                 label: "Output Path".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("Destination under files/{access}/. Leave blank to use archives/<source>.tar.gz.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
-                name: "access".to_string(),
-                label: "Access".to_string(),
-                field_type: NodeFieldType::Select,
-                default_value: Some(json!("private")),
-                options: vec![
-                    SelectOptionDef {
-                        label: "Private".to_string(),
-                        value: "private".to_string(),
-                    },
-                    SelectOptionDef {
-                        label: "Public".to_string(),
-                        value: "public".to_string(),
-                    },
-                ],
+                help: Some("Destination ZebFS object path. Leave blank to use archives/<source>.tar.gz.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -203,7 +172,6 @@ pub fn definition() -> NodeDefinition {
                 LayoutItem::Field("source_key".to_string()),
                 LayoutItem::Field("extra_source_keys".to_string()),
                 LayoutItem::Field("output_path".to_string()),
-                LayoutItem::Field("access".to_string()),
                 LayoutItem::Field("format".to_string()),
             ],
         }],
@@ -255,7 +223,7 @@ impl NodeHandler for Node {
                 PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
                     format!(
-                        "source path not found at payload key '{source_key}' — chain after n.file.save or set --source-key"
+                        "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
                     ),
                 )
             })?;
@@ -314,9 +282,7 @@ impl NodeHandler for Node {
             source_rels_for_task.push(source_rel.clone());
         }
 
-        let access = normalize_access(&self.config.access);
-        let archive_leaf = resolve_archive_leaf(&self.config.output_path, &primary_source_rel);
-        let archive_rel = format!("{access}/{archive_leaf}");
+        let archive_rel = resolve_archive_leaf(&self.config.output_path, &primary_source_rel);
         let archive_abs = layout.files_dir.join(&archive_rel);
         if let Some(parent) = archive_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
@@ -357,7 +323,7 @@ impl NodeHandler for Node {
             source_path: primary_source_rel.clone(),
             source_paths: source_paths.clone(),
             archive_path: archive_rel.clone(),
-            archive_url: format!("/files/{owner}/{project}/{archive_rel}"),
+            archive_url: format!("/fs/{owner}/{project}/{archive_rel}"),
             format: "tar.gz".to_string(),
             size,
         };
@@ -409,13 +375,6 @@ fn compress_tar_gz(
         ));
     }
     Ok(())
-}
-
-fn normalize_access(value: &str) -> &'static str {
-    match value.trim() {
-        "public" => "public",
-        _ => "private",
-    }
 }
 
 fn validate_format(format: &str) -> Result<(), PipelineError> {
@@ -486,16 +445,13 @@ mod tests {
 
     #[test]
     fn sanitizes_source_relative_paths() {
-        assert_eq!(
-            sanitize_rel_path("../private/pdf/./paper"),
-            "private/pdf/paper"
-        );
+        assert_eq!(sanitize_rel_path("../pdf/./paper"), "pdf/paper");
     }
 
     #[test]
     fn derives_default_archive_leaf() {
         assert_eq!(
-            resolve_archive_leaf("", "private/pdf/My Paper"),
+            resolve_archive_leaf("", "pdf/My Paper"),
             "archives/my-paper.tar.gz"
         );
     }

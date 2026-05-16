@@ -117,10 +117,7 @@ impl PlatformService {
         let authz = Arc::new(AuthorizationService::new(data.clone()));
         let project_members = Arc::new(ProjectMembershipService::new(data.clone(), authz.clone()));
         let project_invites = Arc::new(ProjectInviteService::new(data.clone()));
-        let credentials = Arc::new(CredentialService::new(
-            data.clone(),
-            reqwest::Client::new(),
-        ));
+        let credentials = Arc::new(CredentialService::new(data.clone(), reqwest::Client::new()));
         let assistant_configs = Arc::new(AssistantConfigService::new(
             data.clone(),
             zebflow_cfg.clone(),

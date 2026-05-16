@@ -42,7 +42,7 @@ pub fn definition() -> NodeDefinition {
                 "path": { "type": "string", "description": "Relative mapserver path under /ms/{owner}/{project}." },
                 "mode": { "type": "string", "enum": ["features"], "description": "Serving mode. V1 only supports features." },
                 "source_kind": { "type": "string", "enum": ["geojson_file"], "description": "Backing source kind. V1 only supports geojson_file." },
-                "source_path": { "type": "string", "description": "Absolute or project-resolved GeoJSON file path." },
+                "source_path": { "type": "string", "description": "Zebflow FS GeoJSON object path under mapserver/." },
                 "bbox_required": { "type": "boolean", "description": "Require bbox query parameter before serving data." },
                 "min_zoom": { "type": "integer", "minimum": 0, "maximum": 30, "description": "Minimum zoom where this layer is visible." },
                 "max_zoom": { "type": "integer", "minimum": 0, "maximum": 30, "description": "Maximum zoom where this layer is visible." },
@@ -95,7 +95,7 @@ pub fn definition() -> NodeDefinition {
                 name: "source_path".to_string(),
                 label: "Source Path".to_string(),
                 field_type: NodeFieldType::Text,
-                help: Some("GeoJSON file path. V1 expects a FeatureCollection.".to_string()),
+                help: Some("Zebflow FS GeoJSON object path under mapserver/. V1 expects a FeatureCollection.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -145,7 +145,7 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--source-path".to_string(),
                 config_key: "source_path".to_string(),
-                description: "GeoJSON source path.".to_string(),
+                description: "Zebflow FS GeoJSON object path under mapserver/.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: true,
             },

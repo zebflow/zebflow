@@ -59,7 +59,7 @@ const ALGORITHMS = [
 
 const CREDENTIAL_KINDS = [
   "postgres", "mysql", "openai", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "secure_request", "oauth2", "tts", "custom",
+  "jwt_signing_key", "browser_browserless", "secure_request", "oauth2", "hmac", "api_key", "tts", "custom",
 ];
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -77,11 +77,26 @@ function defaultSecretForKind(kind: string): Record<string, any> {
       authorize_url: "",
       token_url: "",
       scopes: "",
+      redirect_uri: "",
       refresh_token: "",
       access_token: "",
       expires_at: 0,
       token_type: "Bearer",
     };
+  }
+  if (kind === "hmac") {
+    return {
+      provider: "generic",
+      secret: "",
+      signature_header: "X-Hub-Signature-256",
+      signature_encoding: "hex",
+      signature_prefix: "sha256=",
+      algorithm: "sha256",
+      replay_tolerance: 0,
+    };
+  }
+  if (kind === "api_key") {
+    return { key: "" };
   }
   return {};
 }
@@ -385,7 +400,7 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
       <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
         <p className="text-sm font-medium text-body">Local TTS Runtime Binding</p>
         <p className="mt-1 text-xs leading-relaxed text-body-soft">
-          These paths are relative to the project <code>files/private/</code> root.
+          These paths are Zebflow FS object paths.
           For Piper, point to the ONNX model, its JSON config, and the
           <code>espeak-ng-data</code> directory.
         </p>
@@ -454,13 +469,105 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
           <Field label="Scopes" className="col-span-2" description="Space-separated scopes to request.">
             <Input value={s("scopes")} onInput={(e: any) => onChange("scopes", e.target.value)} placeholder="openid email profile" />
           </Field>
-          <Field label="Callback URL" className="col-span-2" description="Register this URL with your OAuth2 provider.">
+          <Field label="Callback URL" className="col-span-2" description="Register this URL with your OAuth2 provider. Must match exactly what you configured in their dashboard.">
             <div className="flex gap-1.5">
-              <Input value={`${window.location.origin}/oauth/callback`} readOnly className="flex-1 text-body-soft" />
-              <Button type="button" variant="outline" size="sm" onClick={() => { try { navigator.clipboard.writeText(`${window.location.origin}/oauth/callback`); } catch {} }}>Copy</Button>
+              <Input value={s("redirect_uri") || `${window.location.origin}/oauth/callback`} onInput={(e: any) => onChange("redirect_uri", e.target.value)} placeholder={`${window.location.origin}/oauth/callback`} className="flex-1" />
+              <Button type="button" variant="outline" size="sm" onClick={() => { try { navigator.clipboard.writeText(s("redirect_uri") || `${window.location.origin}/oauth/callback`); } catch {} }}>Copy</Button>
             </div>
           </Field>
         </div>
+      </div>
+    );
+  }
+
+  if (kind === "hmac") {
+    const HMAC_PROVIDERS = [
+      { value: "generic", label: "Generic" },
+      { value: "github", label: "GitHub" },
+      { value: "stripe", label: "Stripe" },
+      { value: "shopify", label: "Shopify" },
+      { value: "slack", label: "Slack" },
+    ];
+    const HMAC_PRESETS: Record<string, Record<string, any>> = {
+      generic:  { signature_header: "X-Signature", signature_encoding: "hex", signature_prefix: "", algorithm: "sha256", replay_tolerance: 0 },
+      github:   { signature_header: "X-Hub-Signature-256", signature_encoding: "hex", signature_prefix: "sha256=", algorithm: "sha256", replay_tolerance: 0 },
+      stripe:   { signature_header: "Stripe-Signature", signature_encoding: "hex", signature_prefix: "", algorithm: "sha256", replay_tolerance: 300 },
+      shopify:  { signature_header: "X-Shopify-Hmac-SHA256", signature_encoding: "base64", signature_prefix: "", algorithm: "sha256", replay_tolerance: 0 },
+      slack:    { signature_header: "X-Slack-Signature", signature_encoding: "hex", signature_prefix: "v0=", algorithm: "sha256", replay_tolerance: 300 },
+    };
+    const HMAC_ENCODINGS = [
+      { value: "hex", label: "Hex" },
+      { value: "base64", label: "Base64" },
+    ];
+    const HMAC_ALGORITHMS = [
+      { value: "sha256", label: "SHA-256" },
+      { value: "sha1", label: "SHA-1 (legacy)" },
+    ];
+
+    function applyPreset(provider: string) {
+      const preset = HMAC_PRESETS[provider] || HMAC_PRESETS.generic;
+      onChange("__json__", { ...secret, provider, ...preset });
+    }
+
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-body">Webhook HMAC Verification</p>
+          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+            Verify inbound webhook signatures from third-party services.
+            Select a provider to auto-fill the verification settings, or use Generic and configure manually.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Provider" description="Auto-fills verification settings.">
+            <Select value={s("provider", "generic")} onChange={(e) => applyPreset(e.target.value)}>
+              {HMAC_PROVIDERS.map((p) => <SelectOption key={p.value} value={p.value} label={p.label} />)}
+            </Select>
+          </Field>
+          <Field label="Algorithm">
+            <Select value={s("algorithm", "sha256")} onChange={(e) => onChange("algorithm", e.target.value)}>
+              {HMAC_ALGORITHMS.map((a) => <SelectOption key={a.value} value={a.value} label={a.label} />)}
+            </Select>
+          </Field>
+          <Field label="Signing Secret" className="col-span-2" description="The shared secret from the provider's webhook settings.">
+            <Input type="password" value={s("secret")} onInput={(e: any) => onChange("secret", e.target.value)} placeholder="whsec_..." />
+          </Field>
+          <Field label="Signature Header" description="HTTP header containing the signature.">
+            <Input value={s("signature_header")} onInput={(e: any) => onChange("signature_header", e.target.value)} placeholder="X-Hub-Signature-256" />
+          </Field>
+          <Field label="Encoding">
+            <Select value={s("signature_encoding", "hex")} onChange={(e) => onChange("signature_encoding", e.target.value)}>
+              {HMAC_ENCODINGS.map((enc) => <SelectOption key={enc.value} value={enc.value} label={enc.label} />)}
+            </Select>
+          </Field>
+          <Field label="Signature Prefix" description="Strip this prefix from the header value before comparing (e.g. sha256=).">
+            <Input value={s("signature_prefix")} onInput={(e: any) => onChange("signature_prefix", e.target.value)} placeholder="sha256=" />
+          </Field>
+          <Field label="Replay Tolerance (seconds)" description="Reject requests older than this. 0 = disabled. Stripe/Slack use 300.">
+            <Input type="number" value={s("replay_tolerance", "0")} onInput={(e: any) => onChange("replay_tolerance", Number(e.target.value) || 0)} placeholder="0" />
+          </Field>
+        </div>
+      </div>
+    );
+  }
+
+  if (kind === "api_key") {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+          <p className="text-sm font-medium text-body">API Key</p>
+          <p className="mt-1 text-xs leading-relaxed text-body-soft">
+            Static API key for webhook authentication. Callers send it via <code>X-API-Key</code> header
+            or <code>Authorization: ApiKey &lt;key&gt;</code>.
+          </p>
+        </div>
+        <Field label="Key" description="The API key value. Generate a random one or paste an existing key.">
+          <div className="flex gap-2">
+            <Input type="password" className="flex-1" value={s("key")} onInput={(e: any) => onChange("key", e.target.value)} placeholder="zf_..." />
+            <Button type="button" variant="outline" size="sm" onClick={() => onChange("key", generateHex(32))}>Generate</Button>
+          </div>
+        </Field>
       </div>
     );
   }

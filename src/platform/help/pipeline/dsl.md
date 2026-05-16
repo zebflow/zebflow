@@ -44,9 +44,9 @@ Branching logic lives in `logic.*` nodes — edges are pure structural wiring, n
 register classify-ingest --path /webhooks \
   [a] trigger.webhook --path /ingest --method POST \
   [b] logic.match --expr "$input.type" --cases normal,urgent --default unknown \
-  [c] sekejap.mutate -- "INSERT INTO normal_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
+  [c] sekejap.query --params-expr "[$input.id, $input.data]" --read-only false -- "INSERT INTO normal_queue (id, data) VALUES ($1, $2)" \
   [d] http.request --url https://alerts.api/send --method POST \
-  [e] sekejap.mutate -- "INSERT INTO unknown_queue (id, data) VALUES ('{{ $input.id }}', '{{ $input.data }}')" \
+  [e] sekejap.query --params-expr "[$input.id, $input.data]" --read-only false -- "INSERT INTO unknown_queue (id, data) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:normal  -> [c] \
   [b]:urgent  -> [d] \
@@ -73,13 +73,15 @@ Both modes compile to the same JSON graph model.
 | Kind | Example | Produces |
 |------|---------|---------|
 | Scalar | `--template pages/foo.tsx` | `"pages/foo.tsx"` string |
-| Comma list | `--auth-required-role admin,lecturer` | `["admin","lecturer"]` array |
+| List, compact | `--auth-required-role admin,lecturer` | `["admin","lecturer"]` array |
+| List, repeated | `--from "posts.csv as posts" --from "authors.csv as authors"` | `["posts.csv as posts","authors.csv as authors"]` array |
 | Bool | `--http-only` | `true` (no value consumed) |
 | Key-value pairs | `--claim name=$.name --claim roles=$.roles` | `{"name":"$.name","roles":"$.roles"}` object |
 
 Key-value pairs (`--claim`, `--header`, `--set-cookie`) repeat the **same flag with a different key** each time — each occurrence adds one entry to a map.
-Comma lists repeat **values for the same key** — pass them all in one flag, comma-separated.
-There is no "repeat the same flag for a list" — `--role admin --role lecturer` is not valid; use `--role admin,lecturer`.
+List flags repeat **values for the same key**. Every list flag accepts either compact comma form (`--cases create,update`) or repeated form (`--cases create --cases update`).
+Use one style per flag per node command. Mixed style is invalid: `--cases create,update --cases delete`.
+Nodes document their recommended style: compact for short enums, repeated for long values where commas may be valid text.
 
 ---
 
@@ -266,13 +268,13 @@ run | pg.query --credential main-db -- "SELECT count(*) FROM users"
 
 run \
   | http.request --url https://example.com --method GET \
-  | sekejap.mutate -- "INSERT INTO results (id, status) VALUES ('{{ $input.id }}', '{{ $input.status }}')"
+  | sekejap.query --params-expr "[$input.id, $input.status]" --read-only false -- "INSERT INTO results (id, status) VALUES ($1, $2)"
 
 # Graph mode
 run \
   [a] http.request --url https://example.com --method GET \
   [b] logic.if --expr "input.status >= 400" \
-  [c] sekejap.mutate -- "INSERT INTO errors (id, status) VALUES ('{{ $input.id }}', '{{ $input.status }}')" \
+  [c] sekejap.query --params-expr "[$input.id, $input.status]" --read-only false -- "INSERT INTO errors (id, status) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:true -> [c]
 
@@ -356,16 +358,17 @@ n.logic.match --help            # same
 | `trigger.manual` | `n.trigger.manual` | _(none)_ |
 | `script` | `n.script` | `--lang <js\|ts>` or `-- <code>` |
 | `web.response` | `n.web.response` | `--template <pages/name>` (no `.tsx`), `--status`, `--location`, `--message`, `--body <$.path>`, `--set-cookie`, `--header <key=value>`, `--load-scripts <urls>` |
-| `web.static.generate` | `n.web.static.generate` | `--template <pages/name.tsx> --output-path <path> [--scope public\|private] [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into `files/{scope}/...`; output `{ generated: { status, path, url, route, template, scope, bytes } }` |
+| `web.static.generate` | `n.web.static.generate` | `--template <pages/name.tsx> --output-path <path> [--route <url>] [--on-conflict overwrite\|skip\|error]` — render a TSX page once and write the generated HTML into Zebflow FS; output `{ generated: { status, path, url, route, template, bytes } }` |
 | `http.request` | `n.http.request` | `--url <url> --method <GET\|POST> [--timeout-ms <ms>] [--header <key=value> ...] [--merge-input]` |
-| `sekejap.query` | `n.sekejap.query` | `-- "SELECT ... FROM collection [WHERE ...] [LIMIT n]"` — raw SQL SELECT/TRAVERSE/VECTOR_NEAR; `{{ expr }}` placeholders resolved before execution; output `{ rows: [...] }` |
-| `sekejap.mutate` | `n.sekejap.mutate` | `-- "INSERT INTO / UPDATE / DELETE FROM / CREATE COLLECTION / RELATE / UNRELATE"` — raw SQL mutation; `{{ expr }}` placeholders resolved before execution; output `{ ok: true, result: ... }` |
+| `sekejap.query` | `n.sekejap.query` | `[--params-path <dot.path>] [--params-expr <js-expr>] [--query-expr <js-expr>] -- "SELECT ... WHERE id = $1"` — raw Sekejap SQL with `$1`/`$2` bind params; output `{ rows: [...] }` |
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
-| `file.save` | `n.file.save` | `[--field <name>] [--dest <subdir>] [--allowed-types <mime,...>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to project file storage; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
-| `img.thumbnail` | `n.img.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--access public|private] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a file from disk (path from `saved.path` by default), resizes/re-encodes it, writes thumbnail to project file storage; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
+| `table.convert` | `n.table.convert` | `(--from <path> \| --from-expr <expr>) [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
+| `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --sql "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
+| `fs.save` | `n.fs.save` | `[--field <name>] [--path <object-path>] [--folder <subdir>] [--allowed-kinds <images,pdf,csv,json,glb,audio,video>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to Zebflow FS; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
+| `fs.thumbnail` | `n.fs.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads an object path from `saved.path` by default, resizes/re-encodes it, writes thumbnail to Zebflow FS; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
-| `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <private/path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under project `files/private/`; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
+| `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under Zebflow FS; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
 | `trigger.memsubscribe` | `n.trigger.memsubscribe` | `--channel <name>` — subscribes to an in-memory pub/sub channel; fires whenever `mem.publish` sends to that channel |
 | `ws.emit` | `n.ws.emit` | `--event <name> --to <all\|session\|others> --payload-path <ptr> [--room <id>]` — `--room` static or `{{ expr }}`; when `--room` is set this node works after **any** trigger type, not just `trigger.ws` |
@@ -378,35 +381,86 @@ n.logic.match --help            # same
 | `mem.incr` | `n.mem.incr` | `--key <k> [--amount <n>] [--out-key <k>]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing; replaces the payload with `{ [out_key]: new_value }` |
 | `mem.publish` | `n.mem.publish` | `--channel <name> [--message-path <ptr>]` — publish a message to an in-memory pub/sub channel; triggers all active `n.trigger.memsubscribe` pipelines on that channel |
 
-### `sekejap.query` and `sekejap.mutate` — SQL examples
+### `sekejap.query` — SQL examples
 
 ```zf
 # SELECT — basic
 | sekejap.query -- "SELECT id, title FROM posts LIMIT 20"
 
-# SELECT — with path param via {{ expr }}
-| sekejap.query -- "SELECT * FROM orders WHERE user_id = '{{ $trigger.auth.sub }}' LIMIT 10"
+# SELECT — with one bound value from a dot path
+| sekejap.query --params-path auth.sub -- "SELECT * FROM orders WHERE user_id = $1 LIMIT 10"
+
+# SELECT — with multiple bound values from JS
+| sekejap.query --params-expr "[$trigger.params.id, $trigger.query.status]" -- "SELECT * FROM orders WHERE user_id = $1 AND status = $2 LIMIT 10"
 
 # SELECT — graph traversal
-| sekejap.query -- "SELECT id FROM cases TRAVERSE FORWARD caused_by TO causes HOPS 3 WHERE id = '{{ $trigger.params.id }}'"
+| sekejap.query --params-path params.id -- "SELECT id FROM cases TRAVERSE FORWARD caused_by TO causes HOPS 3 WHERE id = $1"
 
 # INSERT
-| sekejap.mutate -- "INSERT INTO tasks (id, title, done) VALUES ('{{ $input.id }}', '{{ $input.title }}', false)"
+| sekejap.query --params-expr "[$input.id, $input.title]" --read-only false -- "INSERT INTO tasks (id, title, done) VALUES ($1, $2, false)"
 
 # UPDATE
-| sekejap.mutate -- "UPDATE tasks SET done = true WHERE id = '{{ $trigger.params.id }}'"
+| sekejap.query --params-path params.id --read-only false -- "UPDATE tasks SET done = true WHERE id = $1"
 
 # DELETE
-| sekejap.mutate -- "DELETE FROM tasks WHERE id = '{{ $trigger.params.id }}'"
+| sekejap.query --params-path params.id --read-only false -- "DELETE FROM tasks WHERE id = $1"
 
 # CREATE COLLECTION (schema definition)
-| sekejap.mutate -- "CREATE COLLECTION tasks (id STRING INDEX hash, title STRING, done BOOLEAN)"
+| sekejap.query --read-only false -- "CREATE COLLECTION tasks (id STRING INDEX hash, title STRING, done BOOLEAN)"
 ```
 
-### `n.file.save` — saving uploaded files
+### `n.table.convert` — table conversion
+
+Reads table-like data either from a ZebFS object path or from an upstream expression. Writes back to ZebFS with `--to`, emits downstream rows with `--to-json`, or both.
+
+```zf
+# CSV object to JSON rows for the next node
+| table.convert --from uploads/posts.csv --to-json --preview 20
+
+# Upstream query rows to NDJSON object
+| sekejap.query -- "SELECT id, title FROM posts"
+| table.convert --from-expr "$input.rows" --to exports/posts.ndjson
+
+# JSON object to CSV object
+| table.convert --from data/posts.json --to exports/posts.csv
+
+# Upstream rows to Parquet object
+| table.convert --from-expr "$input.rows" --to exports/posts.parquet
+```
+
+### `n.table.query` — multi-source table SQL
+
+Runs a read-only GeoDataFusion SQL query over one or more table sources.
+Each source is bound with `--from "<source> as <alias>"`. Source can be a ZebFS object path
+or a row-producing expression such as `$input.rows`.
+
+```zf
+# Join two ZebFS objects and emit rows downstream
+| table.query \
+    --from "datasets/posts.parquet as posts" \
+    --from "datasets/authors.csv as authors" \
+    --to-json \
+    --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id"
+
+# Bind parameters with GeoDataFusion placeholders
+| table.query \
+    --from "datasets/posts.csv as posts" \
+    --params-expr "[$trigger.params.id]" \
+    --to-json \
+    --sql "select * from posts where id = $1"
+
+# Query upstream rows and write Parquet
+| sekejap.query -- "SELECT id, title, author_id FROM posts"
+| table.query \
+    --from "$input.rows as posts" \
+    --to exports/filtered-posts.parquet \
+    --sql "select * from posts where author_id is not null"
+```
+
+### `n.fs.save` — saving uploaded files
 
 Reads a file from `input.files.{field}` (set by `trigger.webhook` multipart parsing), validates it,
-and saves it to the project's file storage at `files/{dest}/{uuid}.{ext}`.
+and saves it to Zebflow FS at `uploads/{uuid}.{ext}` by default.
 
 The saved file is immediately accessible at the URL returned in `saved.url`.
 
@@ -415,15 +469,16 @@ The saved file is immediately accessible at the URL returned in `saved.url`.
 | Flag | Default | Description |
 |---|---|---|
 | `--field` | `file` | Multipart field name from the upload form |
-| `--dest` | `uploads` | Subdirectory under project `files/` |
-| `--allowed-types` | _(all)_ | Comma-separated MIME allowlist, supports wildcards (`image/*`, `application/pdf`) |
+| `--path` | _(empty)_ | Exact ZebFS object path. If omitted, folder + generated filename is used. |
+| `--folder` | `uploads` | ZebFS object folder used when `--path` is omitted |
+| `--allowed-kinds` | `images` | Comma-separated categories: `images,pdf,csv,json,glb,audio,video` |
 | `--max-size` | `10` | Maximum file size in MB |
 | `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing file with same name. Sanitized to alphanumeric, dash, underscore only. |
 
 **Output:** `{ saved: { path, url, original_name, content_type, size } }`
 
-- `path` — relative path under `files/` (e.g. `uploads/a1b2c3.jpg`)
-- `url` — public URL to serve the file (e.g. `/files/{owner}/{project}/uploads/a1b2c3.jpg`)
+- `path` — ZebFS object path (e.g. `uploads/a1b2c3.jpg`)
+- `url` — ZebFS object URL (e.g. `/fs/{owner}/{project}/uploads/a1b2c3.jpg`)
 - `original_name` — the original filename from the upload
 - `content_type` — MIME type reported by the browser
 - `size` — actual decoded file size in bytes
@@ -434,27 +489,27 @@ The saved file is immediately accessible at the URL returned in `saved.url`.
 # Accept any file, save to uploads/
 register upload-file --path /api \
   | trigger.webhook --path /upload --method POST --auth-type jwt --auth-credential my-jwt \
-  | file.save \
+  | fs.save \
   | web.response
 
 # Accept images only, save to avatars/
 register upload-avatar --path /api \
   | trigger.webhook --path /avatar --method POST --auth-type jwt --auth-credential my-jwt \
-  | file.save --field avatar --dest avatars --allowed-types "image/*" --max-size 5 \
-  | sekejap.mutate -- "UPDATE users SET avatar_url = '{{ $input.saved.url }}' WHERE id = '{{ $trigger.auth.sub }}'" \
+  | fs.save --field avatar --folder avatars --allowed-kinds images --max-size 5 \
+  | sekejap.query --params-expr "[$input.saved.url, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
   | web.response
 
 # Save PDF, store reference in DB
 register upload-document --path /api \
   | trigger.webhook --path /documents --method POST --auth-type jwt --auth-credential my-jwt \
-  | file.save --field document --dest documents --allowed-types "application/pdf" --max-size 20 \
-  | sekejap.mutate -- "INSERT INTO documents (id, url, name) VALUES ('{{ $input.saved.path }}', '{{ $input.saved.url }}', '{{ $input.saved.original_name }}')" \
+  | fs.save --field document --folder documents --allowed-kinds pdf --max-size 20 \
+  | sekejap.query --params-expr "[$input.saved.path, $input.saved.url, $input.saved.original_name]" --read-only false -- "INSERT INTO documents (id, url, name) VALUES ($1, $2, $3)" \
   | web.response
 
 # Deterministic filename — always saves as avatars/profile-photo.jpg (overwrites on re-upload)
 register upload-avatar-fixed --path /api \
   | trigger.webhook --path /avatar --method POST --auth-type jwt --auth-credential my-jwt \
-  | file.save --field avatar --folder avatars --filename profile-photo --allowed-types "image/*" \
+  | fs.save --field avatar --folder avatars --filename profile-photo --allowed-kinds images \
   | web.response
 ```
 
@@ -462,12 +517,12 @@ register upload-avatar-fixed --path /api \
 - By default, files are stored using a UUID filename (path traversal safe). Use `--filename` for deterministic names — the value is sanitized to safe characters only.
 - Files live outside the git-synced `repo/` folder — they are not committed with your codebase.
 - Always use `--auth-type jwt` on the webhook trigger for authenticated uploads.
-- Use `--allowed-types` to restrict what users can upload; leave empty only for trusted internal endpoints.
+- Use `--allowed-kinds` to restrict what users can upload.
 
 ### `n.web.static.generate` — persistent static page generation
 
 Renders a TSX template through the same RWE engine used by `web.response`, then writes the
-final HTML file into project storage under `files/public/` or `files/private/`.
+final HTML file into Zebflow FS.
 
 This is the right primitive for:
 - generated lyric pages
@@ -485,15 +540,14 @@ The first release writes a self-contained HTML file:
 | Flag | Default | Description |
 |---|---|---|
 | `--template` | _(required)_ | TSX page under `repo/pipelines`, e.g. `pages/lyrics.tsx` |
-| `--output-path` | _(required)_ | Relative path under `files/{scope}/`. Supports `{{ expr }}` interpolation. |
-| `--scope` | `public` | `public` or `private` |
-| `--route` | generated `/files/...` URL | Optional `ctx.route` override seen by the template during render |
+| `--output-path` | _(required)_ | Zebflow FS object path. Supports `{{ expr }}` interpolation. |
+| `--route` | generated `/fs/...` URL | Optional `ctx.route` override seen by the template during render |
 | `--on-conflict` | `overwrite` | `overwrite`, `skip`, or `error` when the destination exists and content differs |
 
 **Examples:**
 
 ```zf
-# Generate one lyric page into files/public/
+# Generate one lyric page into Zebflow FS
 register generate-lyric --path /ops \
   | trigger.manual \
   | script -- "return { artist_slug: 'iwan-fals', song_slug: 'bento', artist_name: 'Iwan Fals', song_title: 'Bento' }" \
@@ -501,13 +555,12 @@ register generate-lyric --path /ops \
       --template pages/lyric.tsx \
       --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
 
-# Keep the generated file private and stop if it already exists
-register generate-private-preview --path /ops \
+# Stop if the generated file already exists
+register generate-preview --path /ops \
   | trigger.manual \
   | script -- "return { slug: 'draft-song' }" \
   | web.static.generate \
       --template pages/lyric-preview.tsx \
-      --scope private \
       --output-path "previews/{{ $input.slug }}.html" \
       --on-conflict error
 
@@ -521,7 +574,7 @@ register generate-canonical-page --path /ops \
       --output-path "artists/{{ $input.artist_slug }}/{{ $input.song_slug }}/lyric.html"
 ```
 
-### `n.img.thumbnail` — image resizing and compression
+### `n.fs.thumbnail` — image resizing and compression
 
 Reads an image file from disk (path resolved from the payload, default `saved.path`), resizes and
 re-encodes it, then writes the result to the project's file storage. Decompression bomb protection
@@ -536,8 +589,7 @@ is built in — images over 16000×16000 or 128 MB decoded are rejected.
 | `--fit` | `cover` | `cover` — scale+crop center; `contain` — fit within box; `fill` — stretch exact |
 | `--format` | `jpg` | Output format: `jpg`, `png`, or `webp` |
 | `--quality` | `82` | JPEG/WebP quality (1–100). Ignored for PNG. |
-| `--folder` | `thumbnails` | Subdirectory under project `files/{access}/` |
-| `--access` | `public` | Storage bucket: `public` or `private` |
+| `--folder` | `thumbnails` | Zebflow FS object folder |
 | `--source-key` | `saved.path` | Dot-notation path into payload for the source file relative path |
 | `--delete-source` | _(off)_ | Delete the original source file after successful thumbnail write |
 | `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing thumbnail with same name. Sanitized to alphanumeric, dash, underscore only. |
@@ -550,16 +602,16 @@ is built in — images over 16000×16000 or 128 MB decoded are rejected.
 # Upload → save → thumbnail (avatar use case: re-encode strips any embedded payload)
 register upload-avatar -- \
   | trigger.webhook --path /upload/avatar --method POST \
-  | file.save --field photo --access private --folder uploads \
-  | img.thumbnail --width 200 --height 200 --fit cover --format jpg --quality 80 \
-                  --access public --folder avatars --delete-source \
-  | sekejap.mutate -- "UPDATE users SET avatar_url='{{ $input.thumbnail.url }}' WHERE id='{{ $trigger.auth.sub }}'" \
+  | fs.save --field photo --folder uploads \
+  | fs.thumbnail --width 200 --height 200 --fit cover --format jpg --quality 80 \
+                  --folder avatars --delete-source \
+  | sekejap.query --params-expr "[$input.thumbnail.url, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
   | web.response
 
 # Thumbnail existing file in files/
 register make-thumb -- \
   | trigger.webhook --path /admin/thumb --method POST \
-  | img.thumbnail --width 400 --height 300 --fit contain --format webp --quality 90 \
+  | fs.thumbnail --width 400 --height 300 --fit contain --format webp --quality 90 \
                   --source-key file_path --folder web-thumbs \
   | web.response
 ```
@@ -615,7 +667,7 @@ All `--key` and `--channel` flags support `{{ expr }}` template expressions.
 # Subscriber pipeline (triggered by publisher)
 | trigger.memsubscribe --channel "events:order.created"
 | script -- "return { event: input.message, received_at: Date.now() }"
-| sekejap.mutate -- "INSERT INTO processed_events ..."
+| sekejap.query --params-expr "[$input.event.id, $input.event]" --read-only false -- "INSERT INTO processed_events (id, data) VALUES ($1, $2)"
 ```
 
 Output payload of `n.trigger.memsubscribe`:
@@ -635,7 +687,7 @@ Output payload of `n.trigger.memsubscribe`:
 ```zf
 # Push update to a WS room from a webhook
 | trigger.webhook --path /api/board/:room_id --method POST
-| sekejap.mutate -- "UPDATE boards SET ... WHERE id = '{{ $trigger.params.room_id }}'"
+| sekejap.query --params-path params.room_id --read-only false -- "UPDATE boards SET updated_at = NOW() WHERE id = $1"
 | ws.emit --event board.updated --to all --room "{{ $trigger.params.room_id }}" --payload-path /
 ```
 
@@ -703,10 +755,10 @@ delete template components/ui/old-button.tsx
 ## File Commands
 
 ```zf
-get files [--scope public|private]
-read file public/logo.png
-write file public/data.json -- '{"key":"value"}'
-delete file private/old-export.csv
+get fs [--path uploads]
+read fs uploads/logo.png
+write fs uploads/data.json -- '{"key":"value"}'
+delete fs old-export.csv
 ```
 
 ---
@@ -779,7 +831,7 @@ register event-router --path /webhooks \
   [c] script --lang js -- "return handleCreate(input);" \
   [d] script --lang js -- "return handleUpdate(input);" \
   [e] script --lang js -- "return handleDelete(input);" \
-  [f] sekejap.mutate -- "INSERT INTO unknown_events (id, type) VALUES ('{{ $input.id }}', '{{ $input.type }}')" \
+  [f] sekejap.query --params-expr "[$input.id, $input.type]" --read-only false -- "INSERT INTO unknown_events (id, type) VALUES ($1, $2)" \
   [a] -> [b] \
   [b]:create  -> [c] \
   [b]:update  -> [d] \
@@ -874,7 +926,7 @@ register retry-job --path /jobs \
        -- "const n=(input.attempts||0)+1; return {...doWork(input), attempts:n};" \
   [c] logic.match --expr "$input.status" --cases done,failed --default retry \
   [d] script --lang js -- "return { result: input };" \
-  [e] sekejap.mutate -- "INSERT INTO failures (id, attempts) VALUES ('{{ $input.id }}', {{ $input.attempts }})" \
+  [e] sekejap.query --params-expr "[$input.id, $input.attempts]" --read-only false -- "INSERT INTO failures (id, attempts) VALUES ($1, $2)" \
   [f] logic.if --expr "$input.attempts < 5" \
   [a] -> [b] \
   [b] -> [c] \
