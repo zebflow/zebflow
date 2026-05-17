@@ -108,9 +108,16 @@ Kubernetes:
   zebflow k8s cluster init <path>
   zebflow k8s cluster add-office <path> <office-id>
   zebflow k8s cluster set-controller <path> <office-id>
+  zebflow k8s cluster set-namespace <path> <namespace>
+  zebflow k8s cluster set-resource-suffix <path> <suffix>
   zebflow k8s cluster set-image <path> <image>
+  zebflow k8s cluster use-secret <path> <secret-name>
+  zebflow k8s cluster set-replicas <path> <replicas>
+  zebflow k8s cluster enable-precreate-pvcs <path>
+  zebflow k8s cluster disable-precreate-pvcs <path>
   zebflow k8s cluster enable-auto-update <path>
   zebflow k8s cluster disable-auto-update <path>
+  zebflow k8s cluster render-copy-jobs <source-path> <target-path> <output-file>
   zebflow k8s cluster describe <path>
   zebflow k8s cluster validate <path>
 

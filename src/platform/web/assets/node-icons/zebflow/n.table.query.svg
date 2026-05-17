@@ -4,8 +4,8 @@
     <rect x="10" y="12" width="44" height="40" rx="6" fill="none" stroke="#30384a" stroke-width="7"/>
     <path d="M 11 25 H 53 M 11 38 H 53 M 25 13 V 51 M 39 13 V 51" fill="none" stroke="#30384a" stroke-width="6" stroke-linecap="round"/>
   </g>
-  <g id="operation-badge" transform="translate(74.1739 74.1739) scale(0.869565)">
-    <path d="M 13 23 H 47 M 37 13 L 49 23 L 37 33" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M 51 41 H 17 M 27 31 L 15 41 L 27 51" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <g id="operation-badge" transform="translate(78.5517 78.5517) scale(0.689655)">
+    <circle cx="27" cy="27" r="17" fill="none" stroke="#e2a35b" stroke-width="10"/>
+    <path d="M 40 40 L 58 58" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round"/>
   </g>
 </svg>

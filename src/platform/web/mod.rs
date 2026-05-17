@@ -41,13 +41,14 @@ use crate::platform::model::{
     CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
     ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
     McpSessionToggleRequest, PipelineExecuteTrigger, PipelineInvocationEntry,
-    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocMoveRequest,
-    ProjectOperationKind, ProjectRuntimeMaterializationRequest, ProjectTransferArtifactKind,
-    QueryProjectDbConnectionRequest, TemplateCompileRequest, TemplateCompileResponse,
-    TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest, TemplateSaveRequest,
-    TestProjectDbConnectionRequest, UpdateSettingsSectionRequest, UpsertPipelineDefinitionRequest,
-    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
-    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, slug_segment,
+    PipelineLocateRequest, ProjectAccessSubject, ProjectCapability, ProjectDocItem,
+    ProjectDocMoveRequest, ProjectOperationKind, ProjectRuntimeMaterializationRequest,
+    ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
+    TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
+    TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
+    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
+    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
+    slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -776,6 +777,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/marketplace/publish-preview",
+            get(api_preview_marketplace_publish_source),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/marketplace/assets/preview",
             get(api_preview_marketplace_publish_source),
         )
         .route(
@@ -2023,6 +2028,7 @@ async fn project_fs_serve(
     headers: HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
     Path((owner, project, path)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     let valid_segment = |value: &str| {
         value
@@ -2042,6 +2048,21 @@ async fn project_fs_serve(
         ProjectCapability::FilesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
@@ -3162,6 +3183,7 @@ async fn finalize_project_runtime_setup(
     project: &str,
     selection: &crate::platform::model::ProjectRuntimeSelectionRequest,
 ) -> Result<crate::infra::execution::placement::ProjectRuntimePlacement, PlatformError> {
+    let previous_placement = state.platform.cluster_placement.get(owner, project)?;
     if let Some(mode) = selection.runtime_mode {
         state.platform.zebflow_cfg.update(owner, project, |cfg| {
             cfg.configs.runtime.mode = mode;
@@ -3182,9 +3204,209 @@ async fn finalize_project_runtime_setup(
         selection,
     )?;
     if placement.target == ProjectRuntimePlacementTarget::Worker {
-        sync_project_to_remote_worker(state, owner, project, &placement).await?;
+        let previous_worker_id = previous_placement
+            .as_ref()
+            .filter(|previous| previous.target == ProjectRuntimePlacementTarget::Worker)
+            .and_then(|previous| previous.worker_id.as_deref());
+        let next_worker_id = placement.worker_id.as_deref();
+        match (previous_worker_id, next_worker_id) {
+            (Some(previous_worker_id), Some(next_worker_id))
+                if previous_worker_id != next_worker_id =>
+            {
+                transfer_project_between_remote_workers(
+                    state,
+                    owner,
+                    project,
+                    previous_worker_id,
+                    next_worker_id,
+                )
+                .await?;
+            }
+            _ => sync_project_to_remote_worker(state, owner, project, &placement).await?,
+        }
     }
     Ok(placement)
+}
+
+async fn transfer_project_between_remote_workers(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    from_worker_id: &str,
+    to_worker_id: &str,
+) -> Result<(), PlatformError> {
+    let from_worker = state
+        .platform
+        .cluster_registry
+        .get_worker(from_worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("source office '{}' is not registered", from_worker_id),
+            )
+        })?;
+    let to_worker = state
+        .platform
+        .cluster_registry
+        .get_worker(to_worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("target office '{}' is not registered", to_worker_id),
+            )
+        })?;
+    let kind = ProjectTransferArtifactKind::Bundle;
+    materialize_project_to_remote_worker(state, owner, project, to_worker_id).await?;
+    let token = cluster_internal_token_value(state)?;
+    let export_url = format!(
+        "{}/api/internal/project-transfer/{}/{}/export/{}",
+        from_worker.base_url.trim_end_matches('/'),
+        owner,
+        project,
+        kind.key()
+    );
+    let export_response = state
+        .http_client
+        .post(export_url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .send()
+        .await
+        .map_err(|err| {
+            PlatformError::new(
+                "PROJECT_TRANSFER_EXPORT",
+                format!(
+                    "failed exporting project from office '{}': {err}",
+                    from_worker_id
+                ),
+            )
+        })?;
+    if !export_response.status().is_success() {
+        let status = export_response.status();
+        let body = export_response.text().await.unwrap_or_default();
+        return Err(PlatformError::new(
+            "PROJECT_TRANSFER_EXPORT",
+            format!(
+                "office '{}' rejected project export with {status}: {body}",
+                from_worker_id
+            ),
+        ));
+    }
+    let archive = export_response
+        .bytes()
+        .await
+        .map_err(|err| PlatformError::new("PROJECT_TRANSFER_EXPORT", err.to_string()))?;
+    let import_url = format!(
+        "{}/api/internal/project-transfer/{}/{}/import/{}",
+        to_worker.base_url.trim_end_matches('/'),
+        owner,
+        project,
+        kind.key()
+    );
+    let import_response = state
+        .http_client
+        .post(import_url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .header(CONTENT_TYPE, "application/x-tar")
+        .body(archive)
+        .send()
+        .await
+        .map_err(|err| {
+            PlatformError::new(
+                "PROJECT_TRANSFER_IMPORT",
+                format!(
+                    "failed importing project into office '{}': {err}",
+                    to_worker_id
+                ),
+            )
+        })?;
+    if import_response.status().is_success() {
+        return Ok(());
+    }
+    let status = import_response.status();
+    let body = import_response.text().await.unwrap_or_default();
+    Err(PlatformError::new(
+        "PROJECT_TRANSFER_IMPORT",
+        format!(
+            "office '{}' rejected project import with {status}: {body}",
+            to_worker_id
+        ),
+    ))
+}
+
+async fn materialize_project_to_remote_worker(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    worker_id: &str,
+) -> Result<(), PlatformError> {
+    state
+        .platform
+        .cluster_runtime_sync
+        .refresh_local_repo_state(owner, project)?;
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' is not registered", worker_id),
+            )
+        })?;
+    if worker.base_url.trim().is_empty() {
+        return Err(PlatformError::new(
+            "CLUSTER_WORKER_UNREACHABLE",
+            format!("office '{}' has no advertised base URL", worker_id),
+        ));
+    }
+    let token = cluster_internal_token_value(state)?;
+    let request = state
+        .platform
+        .cluster_runtime_sync
+        .build_materialization_request(
+            owner,
+            project,
+            state
+                .platform
+                .data
+                .list_project_credentials(owner, project)?,
+            state
+                .platform
+                .data
+                .list_project_db_connections(owner, project)?,
+        )?;
+    let url = format!(
+        "{}/api/internal/runtime/materialize",
+        worker.base_url.trim_end_matches('/')
+    );
+    let response = state
+        .http_client
+        .post(url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|err| {
+            PlatformError::new(
+                "CLUSTER_WORKER_SYNC",
+                format!("failed syncing project to office '{}': {err}", worker_id),
+            )
+        })?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "office returned an unreadable error response".to_string());
+    Err(PlatformError::new(
+        "CLUSTER_WORKER_SYNC",
+        format!(
+            "office '{}' rejected runtime sync with {}: {}",
+            worker_id, status, body
+        ),
+    ))
 }
 
 async fn sync_project_to_remote_worker(
@@ -3510,6 +3732,149 @@ async fn forward_project_json_request_to_worker<T: serde::Serialize>(
     .await
 }
 
+async fn maybe_forward_project_page_to_worker(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    uri: &Uri,
+    owner: &str,
+    project: &str,
+) -> Result<Option<Response>, PlatformError> {
+    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
+        return Ok(None);
+    };
+    forward_project_api_request_to_worker(
+        state,
+        uri,
+        &Method::GET,
+        headers,
+        Bytes::new(),
+        &worker_id,
+    )
+    .await
+    .map(Some)
+}
+
+async fn list_project_docs_for_page(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<Vec<ProjectDocItem>, PlatformError> {
+    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
+        return state.platform.projects.list_project_docs(owner, project);
+    };
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(&worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let url = format!(
+        "{}/api/projects/{}/{}/docs",
+        worker.base_url.trim_end_matches('/'),
+        owner,
+        project
+    );
+    let response = state
+        .http_client
+        .get(url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    if !status.is_success() {
+        return Err(PlatformError::new(
+            "CLUSTER_WORKER_PROXY",
+            format!(
+                "office '{}' rejected docs list with {}: {}",
+                worker_id,
+                status,
+                String::from_utf8_lossy(&body)
+            ),
+        ));
+    }
+    let payload: Value = serde_json::from_slice(&body)?;
+    serde_json::from_value(
+        payload
+            .get("items")
+            .cloned()
+            .unwrap_or(Value::Array(vec![])),
+    )
+    .map_err(PlatformError::from)
+}
+
+async fn read_project_doc_for_page(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    path: &str,
+) -> Result<String, PlatformError> {
+    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
+        return state
+            .platform
+            .projects
+            .read_project_doc(owner, project, path);
+    };
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(&worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let url = format!(
+        "{}/api/projects/{}/{}/docs/file",
+        worker.base_url.trim_end_matches('/'),
+        owner,
+        project
+    );
+    let response = state
+        .http_client
+        .get(url)
+        .query(&[("path", path)])
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token)
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    if !status.is_success() {
+        return Err(PlatformError::new(
+            "CLUSTER_WORKER_PROXY",
+            format!(
+                "office '{}' rejected doc read '{}' with {}: {}",
+                worker_id,
+                path,
+                status,
+                String::from_utf8_lossy(&body)
+            ),
+        ));
+    }
+    let payload: Value = serde_json::from_slice(&body)?;
+    Ok(payload
+        .get("doc")
+        .and_then(|doc| doc.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
 async fn cluster_worker_registration_loop(state: PlatformAppState) {
     let Some(master_url) = state
         .platform
@@ -3590,12 +3955,14 @@ async fn cluster_worker_registration_loop(state: PlatformAppState) {
 async fn project_root_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
     Query(query): Query<PipelineRegistryQuery>,
 ) -> Response {
     render_project_pipelines_with_tab(
         state,
         headers,
+        uri,
         owner,
         project,
         "registry",
@@ -3611,12 +3978,14 @@ async fn project_root_page(
 async fn project_pipelines_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, tab)): Path<(String, String, String)>,
     Query(query): Query<PipelineRegistryQuery>,
 ) -> Response {
     render_project_pipelines_with_tab(
         state,
         headers,
+        uri,
         owner,
         project,
         &tab,
@@ -3632,6 +4001,7 @@ async fn project_pipelines_page(
 async fn render_project_pipelines_with_tab(
     state: PlatformAppState,
     headers: HeaderMap,
+    uri: Uri,
     owner: String,
     project: String,
     tab: &str,
@@ -3650,6 +4020,11 @@ async fn render_project_pipelines_with_tab(
     ) {
         return response;
     }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
 
     let is_registry = tab == "registry";
     let is_editor = tab == "editor";
@@ -3662,7 +4037,7 @@ async fn render_project_pipelines_with_tab(
             file: registry_file.map(str::to_string),
             line: registry_line,
         };
-        return render_project_editor(state, headers, owner, project, query, "registry").await;
+        return render_project_editor(state, headers, uri, owner, project, query, "registry").await;
     }
 
     let tab_payload = if is_registry {
@@ -4194,10 +4569,11 @@ async fn render_project_pipelines_with_tab(
 async fn project_editor_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
     Query(query): Query<UnifiedEditorQuery>,
 ) -> Response {
-    render_project_editor(state, headers, owner, project, query, "editor").await
+    render_project_editor(state, headers, uri, owner, project, query, "editor").await
 }
 
 fn derive_scope_from_file_path(file: &str) -> String {
@@ -4239,6 +4615,7 @@ fn docs_parent_virtual_path(rel_path: &str) -> String {
 async fn render_project_editor(
     state: PlatformAppState,
     headers: HeaderMap,
+    uri: Uri,
     owner: String,
     project: String,
     query: UnifiedEditorQuery,
@@ -4252,6 +4629,11 @@ async fn render_project_editor(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let project_info = match state.platform.projects.get_project(&owner, &project) {
@@ -4294,11 +4676,10 @@ async fn render_project_editor(
     let is_docs_scope = is_docs_virtual_path(&scope_path);
     let docs_scope_rel = docs_scope_rel_path(&scope_path).unwrap_or_default();
     let docs_items = if is_docs_scope || scope_path == "/" {
-        state
-            .platform
-            .projects
-            .list_project_docs(&owner, &project)
-            .unwrap_or_default()
+        match list_project_docs_for_page(&state, &owner, &project).await {
+            Ok(items) => items,
+            Err(err) => return internal_error(err),
+        }
     } else {
         vec![]
     };
@@ -4717,10 +5098,8 @@ async fn render_project_editor(
     // Doc payload — read doc file content for editor
     let doc_payload = if effective_type == "doc" {
         let file = file_param.as_deref().unwrap_or("");
-        let content = state
-            .platform
-            .projects
-            .read_project_doc(&owner, &project, file)
+        let content = read_project_doc_for_page(&state, &owner, &project, file)
+            .await
             .unwrap_or_default();
         let name = file.rsplit('/').next().unwrap_or(file).to_string();
         json!({
@@ -4806,6 +5185,7 @@ async fn render_project_editor(
 async fn project_dashboard_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -4816,6 +5196,11 @@ async fn project_dashboard_page(
         ProjectCapability::ProjectRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
@@ -4848,11 +5233,13 @@ async fn project_dashboard_page(
 async fn project_marketplace_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     project_marketplace_tab_page(
         State(state),
         headers,
+        uri,
         Path((owner, project, "packs".to_string())),
     )
     .await
@@ -4861,6 +5248,7 @@ async fn project_marketplace_page(
 async fn project_marketplace_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, raw_tab)): Path<(String, String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -4871,6 +5259,11 @@ async fn project_marketplace_tab_page(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
@@ -4949,6 +5342,7 @@ async fn project_marketplace_tab_page(
 async fn project_credentials_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -4959,6 +5353,11 @@ async fn project_credentials_page(
         ProjectCapability::CredentialsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -4995,6 +5394,7 @@ async fn project_credentials_page(
 async fn project_db_connections_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -5005,6 +5405,11 @@ async fn project_db_connections_page(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -5093,6 +5498,7 @@ async fn project_db_suite_redirect_page(
 async fn project_db_suite_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, db_kind, connection, tab)): Path<(
         String,
         String,
@@ -5110,6 +5516,11 @@ async fn project_db_suite_page(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let tab_key = match tab.as_str() {
@@ -5335,6 +5746,7 @@ async fn project_db_suite_page(
 async fn project_files_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -5342,6 +5754,7 @@ async fn project_files_page(
     render_files_page(
         state,
         headers,
+        uri,
         owner,
         project,
         "storages",
@@ -5354,6 +5767,7 @@ async fn project_files_page(
 async fn project_files_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, tab)): Path<(String, String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -5367,6 +5781,7 @@ async fn project_files_tab_page(
     render_files_page(
         state,
         headers,
+        uri,
         owner,
         project,
         "explorer",
@@ -5379,6 +5794,7 @@ async fn project_files_tab_page(
 async fn render_files_page(
     state: PlatformAppState,
     headers: HeaderMap,
+    uri: Uri,
     owner: String,
     project: String,
     tab: &str,
@@ -5393,6 +5809,11 @@ async fn render_files_page(
         ProjectCapability::FilesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
@@ -5500,11 +5921,13 @@ async fn render_files_page(
 async fn project_todo_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     render_section_page(
         state,
         headers,
+        uri,
         owner,
         project,
         "todo",
@@ -5522,22 +5945,25 @@ async fn project_todo_page(
 async fn project_settings_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    render_settings_tab_page(state, headers, owner, project, "general".to_string()).await
+    render_settings_tab_page(state, headers, uri, owner, project, "general".to_string()).await
 }
 
 async fn project_settings_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, tab)): Path<(String, String, String)>,
 ) -> Response {
-    render_settings_tab_page(state, headers, owner, project, tab).await
+    render_settings_tab_page(state, headers, uri, owner, project, tab).await
 }
 
 async fn project_infrastructure_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -5548,6 +5974,11 @@ async fn project_infrastructure_page(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -5587,6 +6018,7 @@ async fn project_infrastructure_page(
 async fn render_settings_tab_page(
     state: PlatformAppState,
     headers: HeaderMap,
+    uri: Uri,
     owner: String,
     project: String,
     raw_tab: String,
@@ -5599,6 +6031,11 @@ async fn render_settings_tab_page(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let tab = normalize_settings_tab(&raw_tab);
@@ -5936,6 +6373,7 @@ fn settings_nodes() -> (usize, Vec<Value>) {
 async fn render_section_page(
     state: PlatformAppState,
     headers: HeaderMap,
+    uri: Uri,
     owner: String,
     project: String,
     section_key: &str,
@@ -5948,6 +6386,11 @@ async fn render_section_page(
         require_project_page_capability(&state, &headers, &owner, &project, capability)
     {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match state.platform.projects.get_project(&owner, &project) {
@@ -11326,6 +11769,7 @@ async fn api_execute_pipeline_dsl(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<crate::platform::shell::DslRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -11336,6 +11780,21 @@ async fn api_execute_pipeline_dsl(
         ProjectCapability::PipelinesExecute,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let executor = crate::platform::shell::executor::DslExecutor::new(
@@ -12450,6 +12909,7 @@ async fn api_mapserver_sources_list(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, _instance)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
         &state,
@@ -12459,6 +12919,21 @@ async fn api_mapserver_sources_list(
         ProjectCapability::FilesRead,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match list_mapserver_source_files(&state, &owner, &project) {
         Ok(items) => Json(json!({ "items": items })).into_response(),
@@ -12470,6 +12945,7 @@ async fn api_mapserver_layers_list(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, instance)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
         &state,
@@ -12479,6 +12955,21 @@ async fn api_mapserver_layers_list(
         ProjectCapability::FilesRead,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match read_mapserver_layers(&state, &owner, &project, &instance) {
         Ok(items) => Json(json!({ "items": items })).into_response(),
@@ -12490,6 +12981,7 @@ async fn api_mapserver_layers_publish(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, instance)): Path<(String, String, String)>,
+    uri: Uri,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
@@ -12500,6 +12992,21 @@ async fn api_mapserver_layers_publish(
         ProjectCapability::FilesWrite,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &body,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let layer_id = body
         .get("layer_id")
@@ -12652,6 +13159,7 @@ async fn api_mapserver_layers_delete(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, instance, layer_id)): Path<(String, String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
         &state,
@@ -12661,6 +13169,21 @@ async fn api_mapserver_layers_delete(
         ProjectCapability::FilesWrite,
     ) {
         return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let mut items = match read_mapserver_layers(&state, &owner, &project, &instance) {
         Ok(items) => items,
@@ -14842,6 +15365,7 @@ async fn api_list_marketplace_publish_sources(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<MarketplacePublishQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14852,6 +15376,21 @@ async fn api_list_marketplace_publish_sources(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match marketplace_publish_sources(
         &state,
@@ -14872,6 +15411,7 @@ async fn api_preview_marketplace_publish_source(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<MarketplacePublishQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14882,6 +15422,21 @@ async fn api_preview_marketplace_publish_source(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     match state.platform.marketplace.preview_publish_source(
         &owner,
@@ -16951,6 +17506,21 @@ async fn public_webhook_ingress(
             .as_millis()
     );
 
+    if let Ok(Some(placement)) = state.platform.cluster_placement.get(&owner, &project) {
+        if placement.target == ProjectRuntimePlacementTarget::Worker {
+            if let Some(worker_id) = placement.worker_id.as_deref() {
+                return match forward_runtime_webhook_to_worker(
+                    &state, &owner, &project, &tail, &method, &uri, &headers, &body, worker_id,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+        }
+    }
+
     struct Candidate {
         compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
         path_params: serde_json::Map<String, Value>,
@@ -17462,6 +18032,21 @@ async fn public_mapserver_ingress(
 ) -> Response {
     let owner = crate::platform::model::slug_segment(&owner);
     let project = crate::platform::model::slug_segment(&project);
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &HeaderMap::new(),
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
     let path = format!("/{}", tail.trim_start_matches('/'));
 
     struct Candidate {
@@ -18367,6 +18952,9 @@ fn require_project_page_capability(
     project: &str,
     capability: ProjectCapability,
 ) -> Result<ProjectAccessSubject, Response> {
+    if has_valid_cluster_token(state, headers) {
+        return Ok(ProjectAccessSubject::user(owner));
+    }
     let Some(session_owner) = session_owner(state, headers) else {
         return Err(Redirect::to(LOGIN_PATH).into_response());
     };
@@ -19266,6 +19854,7 @@ async fn api_reindex_project(
 async fn project_settings_clone_ui_preview_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
     if let Err(response) = require_project_page_capability(
@@ -19276,6 +19865,11 @@ async fn project_settings_clone_ui_preview_page(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match state.platform.projects.get_project(&owner, &project) {

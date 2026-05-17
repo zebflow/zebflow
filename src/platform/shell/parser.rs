@@ -125,6 +125,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
+        "sqlite.query" | "n.sqlite.query" => Some("n.sqlite.query"),
         "table.convert" | "n.table.convert" => Some("n.table.convert"),
         "table.query" | "n.table.query" => Some("n.table.query"),
         "script" | "n.script" => Some("n.script"),
@@ -173,10 +174,9 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sekejap.query" | "n.table.convert" | "n.table.query" | "n.script"
-        | "n.http.request" | "n.zebtune" | "n.logic.collect" | "n.ai.tts" => {
-            (vec!["in".to_string()], vec!["out".to_string()])
-        }
+        "n.pg.query" | "n.sekejap.query" | "n.sqlite.query" | "n.table.convert"
+        | "n.table.query" | "n.script" | "n.http.request" | "n.zebtune" | "n.logic.collect"
+        | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
         "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.retry" => (
@@ -848,6 +848,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         let body_key = match full_kind {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
+            "n.sqlite.query" => "sql",
             "n.table.query" => "sql",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
@@ -1045,6 +1046,7 @@ fn node_to_segment(node: &PipelineNode) -> String {
     let body_key = match node.kind.as_str() {
         "n.pg.query" => "query",
         "n.sekejap.query" => "query",
+        "n.sqlite.query" => "sql",
         "n.table.query" => "sql",
         "n.script" => "source",
         "n.logic.match" | "n.logic.if" => "expression",
@@ -1086,6 +1088,7 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         let body_key = match node.kind.as_str() {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
+            "n.sqlite.query" => "sql",
             "n.table.query" => "sql",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
@@ -1291,6 +1294,8 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         if let Some(bval) = body_val {
             let body_key = match full_kind {
                 "n.pg.query" => "query",
+                "n.sekejap.query" => "query",
+                "n.sqlite.query" => "sql",
                 "n.table.query" => "sql",
                 "n.script" => "source",
                 "n.browser.run" => "code",

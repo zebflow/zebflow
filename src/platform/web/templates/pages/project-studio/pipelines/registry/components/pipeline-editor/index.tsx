@@ -33,7 +33,7 @@ import {
   deriveNodeOutputLabels,
   canonicalNodeKind,
   isTriggerNodeKind,
-  nodeCategories,
+  groupedCatalogEntries,
   triggerKindFromNodeKind,
 } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/catalog";
 import { sanitizeSlug, ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
@@ -674,6 +674,16 @@ export default function PipelineEditor({
         ? app.graph.nodes.filter((node: any) => isTriggerNodeKind(node?.zfKind || node?.kind || ""))
         : [];
       const anchor = existingTriggers[0] || null;
+      const outgoingLinks = anchor && Array.isArray(app.graph.links)
+        ? app.graph.links
+            .filter((link: any) => link?.fromNode === anchor.id)
+            .map((link: any) => ({
+              fromSlot: Number.isFinite(Number(link.fromSlot)) ? Number(link.fromSlot) : 0,
+              toNode: link.toNode,
+              toSlot: Number.isFinite(Number(link.toSlot)) ? Number(link.toSlot) : 0,
+              options: { animated: !!link.animated },
+            }))
+        : [];
       if (app.ui.selectedNode && existingTriggers.some((node: any) => node?.id === app.ui.selectedNode?.id)) {
         app.ui.clearSelection?.();
       }
@@ -709,6 +719,13 @@ export default function PipelineEditor({
         anchor?.zfPipelineNodeId ||
         String(kind).replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
       app.addNode(node);
+      outgoingLinks.forEach((link: any) => {
+        const targetExists = app.graph.nodes.some((candidate: any) => candidate?.id === link.toNode);
+        if (!targetExists) return;
+        const fromSlot = Math.min(Math.max(0, link.fromSlot), Math.max(0, (node.outputs || []).length - 1));
+        app.graph.connect(node.id, fromSlot, link.toNode, link.toSlot, link.options || app.ui.options?.defaultManualLinkOptions || {});
+      });
+      app.ui.updateWires?.();
       setCurrentMeta((prev) =>
         prev
           ? {
@@ -842,13 +859,19 @@ export default function PipelineEditor({
     : retention?.max_invocations
       ? `retain last ${retention.max_invocations} run(s)`
       : `inherit project default (${projectDefaultMaxInvocations})`;
-  const continuationItems = Object.entries(nodeCategories)
-    .filter(([cat]) => cat !== "trigger")
-    .flatMap(([cat, kinds]) =>
-      (kinds || [])
-        .map((kind) => ({ category: cat, entry: catalog.get(kind) }))
-        .filter((item) => item.entry) as { category: string; entry: NodeCatalogEntry }[]
-    )
+  const catalogGroups = groupedCatalogEntries(catalog);
+  const catalogCategoryByKind = new Map<string, string>();
+  Object.entries(catalogGroups).forEach(([category, entries]) => {
+    entries.forEach((entry) => catalogCategoryByKind.set(entry.kind, category));
+  });
+  const continuationItems = Array.from(catalog.values())
+    .map((entry) => ({ category: catalogCategoryByKind.get(entry.kind) || "other", entry }))
+    .filter(({ entry }) => !isTriggerNodeKind(entry.kind))
+    .sort((a, b) => {
+      const category = a.category.localeCompare(b.category);
+      if (category !== 0) return category;
+      return String(a.entry.title || a.entry.kind).localeCompare(String(b.entry.title || b.entry.kind));
+    })
     .filter(({ entry }) => {
       const q = nodePickerQuery.trim().toLowerCase();
       if (!q) return true;
@@ -1040,10 +1063,8 @@ export default function PipelineEditor({
       <div className="flex-1 min-h-0 border-b border-border-soft relative">
         {/* Category buttons */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
-          {Object.keys(nodeCategories).map((cat) => {
-            const items = (nodeCategories[cat] || [])
-              .map((k) => catalog.get(k))
-              .filter(Boolean) as NodeCatalogEntry[];
+          {Object.entries(catalogGroups).map(([cat, items]) => {
+            if (!items.length) return null;
             return (
               <DropdownMenu
                 key={cat}

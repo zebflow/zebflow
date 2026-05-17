@@ -30,7 +30,7 @@ Repository = "https://github.com/zebflow/zebflow"
 Issues = "https://github.com/zebflow/zebflow/issues"
 
 [project.scripts]
-zebflow = "zebflow:main"
+zebflow = "zebflow.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["zebflow"]

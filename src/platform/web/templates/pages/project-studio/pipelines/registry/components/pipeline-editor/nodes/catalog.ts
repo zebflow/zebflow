@@ -4,6 +4,7 @@ export const nodeCategories: Record<string, string[]> = {
   trigger: [
     "n.trigger.webhook",
     "n.trigger.mapserver",
+    "n.trigger.mcp",
     "n.trigger.schedule",
     "n.trigger.manual",
     "n.trigger.ws",
@@ -14,6 +15,8 @@ export const nodeCategories: Record<string, string[]> = {
   data: [
     "n.sekejap.query",
     "n.sekejap.mutate",
+    "n.sqlite.query",
+    "n.sqlite.mutate",
     "n.table.convert",
     "n.table.query",
     "n.pg.query",
@@ -37,7 +40,7 @@ export const nodeCategories: Record<string, string[]> = {
     "n.ai.agent",
     "n.ai.tts",
   ],
-  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.web.static.generate", "n.ws.sync_state", "n.ws.emit"],
+  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.web.static.generate", "n.web.docs.generate", "n.ws.sync_state", "n.ws.emit"],
   security: ["n.auth.token.create", "n.crypto"],
   files: ["n.fs.save", "n.fs.compress", "n.fs.decompress", "n.fs.pdf.convert", "n.fs.thumbnail"],
 };
@@ -45,6 +48,7 @@ export const nodeCategories: Record<string, string[]> = {
 const NODE_KIND_COLORS: Record<string, string> = {
   "n.trigger.webhook": "#065f46",
   "n.trigger.mapserver": "#0f766e",
+  "n.trigger.mcp": "#155e75",
   "n.trigger.schedule": "#14532d",
   "n.trigger.manual": "#166534",
   "n.trigger.weberror": "#7f1d1d",
@@ -57,6 +61,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.pg.query": "#7c3aed",
   "n.web.render": "#be185d",
   "n.web.static.generate": "#c2410c",
+  "n.web.docs.generate": "#c2410c",
   "n.ai.agent": "#4338ca",
   "n.ai.tts": "#4338ca",
   "n.logic.if": "#0e7490",
@@ -106,7 +111,7 @@ export const NODE_KIND_ICONS: Record<string, string> = {
   "n.pg.query": "/assets/node-icons/zebflow/n.pg.query.svg",
   "n.sekejap.query": "/assets/node-icons/zebflow/n.sekejap.query.svg",
   "n.table.convert": "/assets/node-icons/zebflow/n.table.convert.svg",
-  "n.table.query": "/assets/node-icons/zebflow/n.table.convert.svg",
+  "n.table.query": "/assets/node-icons/zebflow/n.table.query.svg",
   "n.script": "/assets/node-icons/zebflow/n.script.svg",
   "n.sqlite.mutate": "/assets/node-icons/zebflow/n.sqlite.mutate.svg",
   "n.sqlite.query": "/assets/node-icons/zebflow/n.sqlite.query.svg",
@@ -114,6 +119,7 @@ export const NODE_KIND_ICONS: Record<string, string> = {
   "n.trigger.function": "/assets/node-icons/zebflow/n.trigger.function.svg",
   "n.trigger.manual": "/assets/node-icons/zebflow/n.trigger.manual.svg",
   "n.trigger.mapserver": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
+  "n.trigger.mcp": "/assets/node-icons/zebflow/n.trigger.manual.svg",
   "n.trigger.memsubscribe": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
   "n.trigger.schedule": "/assets/node-icons/zebflow/n.trigger.schedule.svg",
   "n.trigger.webhook": "/assets/node-icons/zebflow/n.trigger.webhook.svg",
@@ -149,6 +155,42 @@ export function isTriggerNodeKind(kind: string): boolean {
 export function triggerKindFromNodeKind(kind: string): string {
   const canonical = canonicalNodeKind(kind);
   return isTriggerNodeKind(canonical) ? canonical.slice("n.trigger.".length) : "";
+}
+
+export function categoryForNodeKind(kind: string): string {
+  const canonical = canonicalNodeKind(kind);
+  for (const [category, kinds] of Object.entries(nodeCategories)) {
+    if ((kinds || []).includes(canonical)) return category;
+  }
+  if (canonical.startsWith("n.trigger.")) return "trigger";
+  if (canonical.startsWith("n.logic.") || canonical.startsWith("n.function.") || canonical.startsWith("n.ai.")) return "logic";
+  if (canonical.startsWith("n.fs.")) return "files";
+  if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
+  if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";
+  if (canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
+  return "other";
+}
+
+export function groupedCatalogEntries(catalog: Map<string, NodeCatalogEntry>): Record<string, NodeCatalogEntry[]> {
+  const grouped: Record<string, NodeCatalogEntry[]> = {};
+  const seen = new Set<string>();
+  for (const [category, kinds] of Object.entries(nodeCategories)) {
+    for (const kind of kinds || []) {
+      const entry = catalog.get(kind);
+      if (!entry || seen.has(entry.kind)) continue;
+      (grouped[category] ||= []).push(entry);
+      seen.add(entry.kind);
+    }
+  }
+  Array.from(catalog.values())
+    .filter((entry) => entry?.kind && !seen.has(entry.kind))
+    .sort((a, b) => String(a.kind).localeCompare(String(b.kind)))
+    .forEach((entry) => {
+      const category = categoryForNodeKind(entry.kind);
+      (grouped[category] ||= []).push(entry);
+      seen.add(entry.kind);
+    });
+  return grouped;
 }
 
 export function buildNodeCatalog(items: any[]): Map<string, NodeCatalogEntry> {
