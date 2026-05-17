@@ -90,6 +90,10 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.table.convert.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.table.query.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.table.query.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.script.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.script.svg"),
     },

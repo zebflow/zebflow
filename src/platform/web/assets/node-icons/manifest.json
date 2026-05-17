@@ -153,15 +153,6 @@
         "n.sekejap.query"
       ]
     },
-    "n.table.convert": {
-      "label": "TBL",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.table.convert.svg",
-      "source_url": "",
-      "supports": [
-        "n.table.convert"
-      ]
-    },
     "n.sqlite.mutate": {
       "label": "SQL+",
       "method": "brand-svg+badge",
@@ -178,6 +169,24 @@
       "source_url": "https://commons.wikimedia.org/wiki/File:Sqlite-square-icon.svg",
       "supports": [
         "n.sqlite.query"
+      ]
+    },
+    "n.table.convert": {
+      "label": "TBLC",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.table.convert.svg",
+      "source_url": "",
+      "supports": [
+        "n.table.convert"
+      ]
+    },
+    "n.table.query": {
+      "label": "TBLQ",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.table.query.svg",
+      "source_url": "",
+      "supports": [
+        "n.table.query"
       ]
     },
     "n.trigger.function": {

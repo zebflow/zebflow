@@ -9,7 +9,7 @@ pub mod parser;
 use serde::{Deserialize, Serialize};
 
 /// HTTP request body for the DSL endpoint.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DslRequest {
     /// DSL command string (supports && chaining and \ continuations).
     pub dsl: String,
