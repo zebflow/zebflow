@@ -1870,6 +1870,8 @@ async fn rwe_script_asset(
 
 async fn project_rwe_script_asset(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, hash)): Path<(String, String, String)>,
 ) -> Response {
     if !hash
@@ -1885,6 +1887,21 @@ async fn project_rwe_script_asset(
     };
     if !valid_segment(&owner) || !valid_segment(&project) {
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
     let Some(cache) = &state.render_script_cache else {
         return (StatusCode::NOT_FOUND, "script cache unavailable").into_response();
@@ -1911,6 +1928,8 @@ async fn project_rwe_script_asset(
 
 async fn project_asset(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let valid_segment = |value: &str| {
@@ -1925,6 +1944,21 @@ async fn project_asset(
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     if normalized.is_empty() || normalized.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
@@ -1976,6 +2010,8 @@ async fn project_asset(
 /// Route: GET /p/{owner}/{project}/assets/{*path}
 async fn project_static_asset(
     State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    uri: Uri,
     Path((owner, project, path)): Path<(String, String, String)>,
 ) -> Response {
     let valid_segment = |value: &str| {
@@ -1990,6 +2026,21 @@ async fn project_static_asset(
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     if normalized.is_empty() || normalized.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid asset path").into_response();
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
     }
 
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
@@ -3652,10 +3703,14 @@ fn remote_project_worker_id(
     project: &str,
 ) -> Result<Option<String>, PlatformError> {
     let placement = state.platform.cluster_placement.get(owner, project)?;
-    Ok(match placement {
+    let worker_id = match placement {
         Some(record) if record.target == ProjectRuntimePlacementTarget::Worker => record.worker_id,
         _ => None,
-    })
+    };
+    if worker_id.as_deref() == local_office_id(state).as_deref() {
+        return Ok(None);
+    }
+    Ok(worker_id)
 }
 
 async fn forward_project_api_request_to_worker(
@@ -3742,16 +3797,89 @@ async fn maybe_forward_project_page_to_worker(
     let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
         return Ok(None);
     };
-    forward_project_api_request_to_worker(
-        state,
-        uri,
-        &Method::GET,
-        headers,
-        Bytes::new(),
-        &worker_id,
-    )
-    .await
-    .map(Some)
+    forward_project_page_request_to_worker(state, uri, headers, owner, project, &worker_id)
+        .await
+        .map(Some)
+}
+
+async fn forward_project_page_request_to_worker(
+    state: &PlatformAppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    worker_id: &str,
+) -> Result<Response, PlatformError> {
+    let worker = state
+        .platform
+        .cluster_registry
+        .get_worker(worker_id)?
+        .ok_or_else(|| {
+            PlatformError::new(
+                "CLUSTER_WORKER_UNKNOWN",
+                format!("office '{}' not found", worker_id),
+            )
+        })?;
+    let token = cluster_internal_token_value(state)?;
+    let mut url = format!("{}{}", worker.base_url.trim_end_matches('/'), uri.path());
+    if let Some(query) = uri.query() {
+        url.push('?');
+        url.push_str(query);
+    }
+
+    let mut request = state
+        .http_client
+        .get(url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("host")
+            || name.as_str().eq_ignore_ascii_case("content-length")
+            || name.as_str().eq_ignore_ascii_case("cookie")
+            || name
+                .as_str()
+                .eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
+        {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|err| PlatformError::new("CLUSTER_WORKER_PROXY", err.to_string()))?;
+    let status = response.status();
+    let headers = response.headers().clone();
+    let is_html = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"));
+    let body = response.bytes().await.unwrap_or_default();
+    let body = if is_html {
+        let html = String::from_utf8_lossy(&body);
+        Bytes::from(html.replace(
+            "/assets/rwe/scripts/",
+            &format!("/assets/{owner}/{project}/rwe/scripts/"),
+        ))
+    } else {
+        body
+    };
+
+    let mut axum_response = Response::new(Body::from(body));
+    *axum_response.status_mut() =
+        StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("transfer-encoding")
+            || name.as_str().eq_ignore_ascii_case("content-length")
+            || name.as_str().eq_ignore_ascii_case("connection")
+        {
+            continue;
+        }
+        axum_response
+            .headers_mut()
+            .insert(name.clone(), value.clone());
+    }
+    Ok(axum_response)
 }
 
 async fn list_project_docs_for_page(
