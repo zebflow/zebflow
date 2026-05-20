@@ -1,4 +1,15 @@
 //! Real framework engine with graph traversal and built-in node dispatch.
+//!
+//! # Engine-level common config
+//!
+//! The engine reads certain keys from each node's resolved config before
+//! dispatching execution.  These are injected as DSL flags into every node
+//! definition by [`builtin_node_definitions()`] so they are available in both
+//! DSL and the UI pipeline editor.
+//!
+//! | Config key      | DSL flag      | Description |
+//! |-----------------|---------------|-------------|
+//! | `timeout_secs`  | `--timeout`   | Per-node execution timeout in seconds (5–3600). Overrides project-level `pipeline_node_timeout_secs`. |
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
@@ -1067,7 +1078,8 @@ impl PipelineEngine for BasicPipelineEngine {
             let input_snapshot = input.payload.clone();
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
-            let node_timeout_secs: u64 = self
+            // Priority: node config `timeout_secs` → project config → env var → default(30s).
+            let project_timeout_secs: u64 = self
                 .platform
                 .as_ref()
                 .map(|platform| {
@@ -1084,6 +1096,14 @@ impl PipelineEngine for BasicPipelineEngine {
                         .and_then(|s| s.parse().ok())
                 })
                 .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
+            let node_timeout_secs: u64 = effective_config
+                .get("timeout_secs")
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
+                .map(|v| v.clamp(5, 3600))
+                .unwrap_or(project_timeout_secs);
             let mut input_for_exec = input.clone();
             if node.kind == logic::reduce::NODE_KIND
                 && let Some(acc) = reduce_pending
@@ -1845,14 +1865,20 @@ impl PipelineEngine for BasicPipelineEngine {
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
+            let timeout_is_per_node = effective_config.get("timeout_secs").is_some();
             let exec_result: Result<Vec<NodeExecutionOutput>, PipelineError> =
                 tokio::time::timeout(std::time::Duration::from_secs(node_timeout_secs), exec_fut)
                     .await
                     .unwrap_or_else(|_| {
+                        let source = if timeout_is_per_node {
+                            "per-node"
+                        } else {
+                            "project-level"
+                        };
                         Err(PipelineError::new(
                             "FW_NODE_TIMEOUT",
                             format!(
-                                "node '{}' timed out after {node_timeout_secs}s",
+                                "node '{}' timed out after {node_timeout_secs}s ({source} timeout)",
                                 timeout_node_id
                             ),
                         ))

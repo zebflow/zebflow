@@ -98,6 +98,26 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         crypto::definition(),
         trigger::weberror::definition(),
     ];
+    // Inject engine-level common flags and fields into every node definition.
+    let common_flags = crate::pipeline::model::engine_common_dsl_flags();
+    let common_fields = crate::pipeline::model::engine_common_fields();
+    for def in &mut items {
+        for flag in &common_flags {
+            if !def
+                .dsl_flags
+                .iter()
+                .any(|f| f.config_key == flag.config_key)
+            {
+                def.dsl_flags.push(flag.clone());
+            }
+        }
+        for field in &common_fields {
+            if !def.fields.iter().any(|f| f.name == field.name) {
+                def.fields.push(field.clone());
+            }
+        }
+    }
+
     items.sort_by(|a, b| a.kind.cmp(&b.kind));
     items
 }

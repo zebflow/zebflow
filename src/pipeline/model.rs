@@ -245,6 +245,40 @@ pub struct DslFlag {
     pub required: bool,
 }
 
+// ── Engine-level common flags ─────────────────────────────────────────────────
+//
+// These are automatically injected into every node definition by
+// `builtin_node_definitions()`.  They are consumed by the engine, not the node.
+
+/// DSL flags available on **every** node kind, consumed by the engine.
+pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
+    vec![DslFlag {
+        flag: "--timeout".to_string(),
+        config_key: "timeout_secs".to_string(),
+        description: "Engine-level execution timeout for this node in seconds. \
+            Overrides the project-level pipeline_node_timeout_secs. \
+            Clamped to 5–3600s."
+            .to_string(),
+        kind: DslFlagKind::Scalar,
+        required: false,
+    }]
+}
+
+/// UI fields for engine-level common config, injected into every node definition.
+pub fn engine_common_fields() -> Vec<NodeFieldDef> {
+    vec![NodeFieldDef {
+        name: "timeout_secs".to_string(),
+        label: "Timeout (s)".to_string(),
+        field_type: NodeFieldType::Text,
+        help: Some(
+            "Engine-level execution timeout in seconds. Overrides project default. Range: 5–3600."
+                .to_string(),
+        ),
+        placeholder: Some("30".to_string()),
+        ..Default::default()
+    }]
+}
+
 // ── Node field definitions ────────────────────────────────────────────────────
 //
 // These types describe the **UI form fields** for each node kind.  Every node

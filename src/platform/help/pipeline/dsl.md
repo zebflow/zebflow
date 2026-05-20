@@ -85,6 +85,29 @@ Nodes document their recommended style: compact for short enums, repeated for lo
 
 ---
 
+## Engine-Level Flags
+
+These flags are available on **every** node kind. They control engine behavior,
+not node-internal logic.
+
+### `--timeout <seconds>`
+
+Override the project-level `pipeline_node_timeout_secs` for this specific node.
+Value in seconds, clamped to 5–3600. Absent = use project default (typically 30s).
+
+```zf
+register slow-report --path /reports \
+  | trigger.webhook --path /generate --method POST \
+  | pg.query --credential main-db --timeout 120 -- "SELECT * FROM big_report_view" \
+  | n.ai.agent --credential openai --mode strategic --timeout 300 \
+  | web.response --template pages/report.tsx
+```
+
+In this example, `pg.query` gets 120s and `n.ai.agent` gets 300s while
+`web.response` uses the project default (30s).
+
+---
+
 ## Dynamic Config Expressions — `{{ expr }}`
 
 Any string field in a node's config can contain `{{ js_expr }}` placeholders.
