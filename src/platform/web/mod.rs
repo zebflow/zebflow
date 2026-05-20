@@ -33,6 +33,7 @@ use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlace
 use crate::infra::mem::subscriber::MemSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
+use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -645,7 +646,8 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/projects/{owner}/{project}/files/upload",
-            post(api_files_upload).layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+            post(api_files_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/files/rm",
@@ -876,7 +878,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             "/api/projects/{owner}/{project}/assets",
             get(api_list_assets)
                 .post(api_upload_asset)
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/assets/{*path}",
@@ -910,17 +912,17 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/wh/{owner}/{project}",
             any(public_webhook_ingress_root)
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/wh/{owner}/{project}/",
             any(public_webhook_ingress_root)
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/wh/{owner}/{project}/{*tail}",
             any(public_webhook_ingress)
-                .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route("/ms/{owner}/{project}", get(public_mapserver_ingress_root))
         .route("/ms/{owner}/{project}/", get(public_mapserver_ingress_root))
@@ -956,7 +958,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/transfer/import/{kind}",
             post(api_project_transfer_import)
-                .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route(
             "/api/projects/{owner}/{project}/transfer/download/{operation_id}",
@@ -6303,6 +6305,7 @@ async fn render_settings_tab_page(
                     "settings_api": format!("/api/projects/{owner}/{project}/settings/assets"),
                     "config": {
                         "max_asset_size_mb": zebflow_cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                        "max_file_size_mb": zebflow_cfg.configs.files.uploads.effective_max_file_size_mb(),
                         "webhook_body_max_mb": zebflow_cfg.configs.files.uploads.effective_webhook_body_max_mb(),
                         "pipeline_node_timeout_secs": zebflow_cfg.configs.pipelines.effective_node_timeout_secs()
                     }
@@ -12674,7 +12677,6 @@ async fn api_files_list(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
-
     let rel = params
         .get("path")
         .map(|s| s.trim().trim_start_matches('/'))
@@ -12884,6 +12886,13 @@ async fn api_files_upload(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
+    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let max_file_size_mb = project_cfg
+        .configs
+        .files
+        .uploads
+        .effective_max_file_size_mb();
+    let max_bytes = (max_file_size_mb as u64) * 1024 * 1024;
 
     let rel = params
         .get("path")
@@ -12946,6 +12955,13 @@ async fn api_files_upload(
         Ok(bytes) => bytes,
         Err(err) => return internal_error(PlatformError::new("FILES_UPLOAD", err.to_string())),
     };
+    if bytes.len() as u64 > max_bytes {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({"ok": false, "error": format!("file size {} bytes exceeds limit of {} MB", bytes.len(), max_file_size_mb)})),
+        )
+            .into_response();
+    }
     let entry_rel = format!("{rel}/{filename}");
     let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
     if let Err(err) = zebfs.put(&entry_rel, bytes.as_ref()) {
@@ -13787,6 +13803,7 @@ async fn api_get_settings_section(
             "section": "assets",
             "data": {
                 "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                "max_file_size_mb": cfg.configs.files.uploads.effective_max_file_size_mb(),
                 "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
                 "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
             }
@@ -13897,13 +13914,19 @@ async fn api_upsert_settings_section(
                 .data
                 .get("max_asset_size_mb")
                 .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(5, 100) as u32)
+                .map(|v| v.clamp(5, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
                 .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().max_asset_size_mb);
+            let max_file_size_mb = req
+                .data
+                .get("max_file_size_mb")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.clamp(5, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
+                .unwrap_or_else(|| cfg.configs.files.uploads.effective_max_file_size_mb());
             let webhook_body_max_mb = req
                 .data
                 .get("webhook_body_max_mb")
                 .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(100, 512) as u32)
+                .map(|v| v.clamp(100, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
                 .unwrap_or(
                     crate::platform::model::ZebflowJsonUploads::default().webhook_body_max_mb,
                 );
@@ -13914,10 +13937,12 @@ async fn api_upsert_settings_section(
                 .map(|v| v.clamp(5, 3600))
                 .unwrap_or_else(crate::platform::model::default_pipeline_node_timeout_secs);
             cfg.configs.files.uploads.max_asset_size_mb = max_mb;
+            cfg.configs.files.uploads.max_file_size_mb = Some(max_file_size_mb);
             cfg.configs.files.uploads.webhook_body_max_mb = webhook_body_max_mb;
             cfg.configs.pipelines.node_timeout_secs = Some(node_timeout_secs);
             json!({
                 "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                "max_file_size_mb": cfg.configs.files.uploads.effective_max_file_size_mb(),
                 "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
                 "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
             })
@@ -17113,6 +17138,18 @@ fn is_page_navigation(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns `true` when the request explicitly asks for an SSE event stream.
+///
+/// Used by the webhook ingress to decide between the normal synchronous response path
+/// and the streaming path that forwards [`Signal`] values as SSE messages.
+fn wants_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .map(|accept| accept.contains("text/event-stream"))
+        .unwrap_or(false)
+}
+
 /// Verifies the auth requirement of a webhook trigger spec.
 ///
 /// Returns:
@@ -17863,6 +17900,148 @@ async fn public_webhook_ingress(
     .with_ws_hub(state.platform.ws_hub.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
+
+    // ── SSE streaming path (ExecutionBus) ──────────────────────────────────────
+    // When the caller explicitly sends `Accept: text/event-stream`, create an
+    // ExecutionBus, subscribe an SSE receiver, and forward Signal values as SSE
+    // `event: signal` messages.  The final result is `event: done` / `event: error`.
+    // Normal webhook behavior is completely unchanged — this branch returns early.
+    if wants_event_stream(&headers) {
+        let bus = std::sync::Arc::new(ExecutionBus::new(256));
+        let mut signal_rx = bus.subscribe();
+        let options = ExecuteOptions { bus: Some(bus) };
+
+        let platform_sse = state.platform.clone();
+        let file_rel_path_sse = file_rel_path.clone();
+        let request_id_sse = request_id.clone();
+        let owner_sse = owner.clone();
+        let project_sse = project.clone();
+
+        // One-shot channel for the final pipeline result.
+        let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let result = engine
+                .execute_with_options_async(&graph_for_run, &ctx, &options)
+                .await;
+            let _ = result_tx.send(result);
+        });
+
+        let stream = async_stream::stream! {
+            // Drain signals until the bus closes or the result arrives.
+            loop {
+                tokio::select! {
+                    biased;
+                    sig = signal_rx.recv() => {
+                        match sig {
+                            Ok(signal) => {
+                                let payload = serde_json::to_string(&signal)
+                                    .unwrap_or_else(|_| "{}".to_string());
+                                yield Ok::<_, Infallible>(Event::default()
+                                    .event("signal")
+                                    .data(payload));
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        }
+                    }
+                    result = &mut result_rx => {
+                        match result {
+                            Ok(Ok(output)) => {
+                                let done = json!({ "ok": true, "value": output.value });
+                                yield Ok(Event::default().event("done").data(done.to_string()));
+                            }
+                            Ok(Err(err)) => {
+                                let error = json!({
+                                    "ok": false,
+                                    "error": { "code": err.code, "message": err.message }
+                                });
+                                yield Ok(Event::default().event("error").data(error.to_string()));
+                            }
+                            Err(_) => {}
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Bus closed — drain remaining signals.
+            loop {
+                match signal_rx.try_recv() {
+                    Ok(signal) => {
+                        let payload = serde_json::to_string(&signal)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        yield Ok::<_, Infallible>(Event::default()
+                            .event("signal")
+                            .data(payload));
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            // Collect the final pipeline result.
+            match result_rx.await {
+                Ok(Ok(output)) => {
+                    let elapsed_ms = exec_start.elapsed().as_millis() as u64;
+                    platform_sse.pipeline_hits.record_success(
+                        &owner_sse, &project_sse, &file_rel_path_sse,
+                    );
+                    let _ = platform_sse.data.log_pipeline_invocation(
+                        &owner_sse, &project_sse, &file_rel_path_sse,
+                        &PipelineInvocationEntry {
+                            run_id: request_id_sse.clone(),
+                            at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default().as_secs() as i64,
+                            duration_ms: elapsed_ms,
+                            status: "ok".to_string(),
+                            trigger: "webhook".to_string(),
+                            error: None,
+                            trace: output.node_trace.clone(),
+                        },
+                        retention.max_invocations,
+                        retention.max_age_secs,
+                    );
+                    let done = json!({ "ok": true, "value": output.value });
+                    yield Ok(Event::default().event("done").data(done.to_string()));
+                }
+                Ok(Err(err)) => {
+                    let elapsed_ms = exec_start.elapsed().as_millis() as u64;
+                    platform_sse.pipeline_hits.record_failure(
+                        &owner_sse, &project_sse, &file_rel_path_sse,
+                        "webhook.ingress", err.code, &err.message,
+                    );
+                    let _ = platform_sse.data.log_pipeline_invocation(
+                        &owner_sse, &project_sse, &file_rel_path_sse,
+                        &PipelineInvocationEntry {
+                            run_id: request_id_sse.clone(),
+                            at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default().as_secs() as i64,
+                            duration_ms: elapsed_ms,
+                            status: "error".to_string(),
+                            trigger: "webhook".to_string(),
+                            error: Some(err.message.clone()),
+                            trace: err.node_trace.clone(),
+                        },
+                        retention.max_invocations,
+                        retention.max_age_secs,
+                    );
+                    let error = json!({
+                        "ok": false,
+                        "error": { "code": err.code, "message": err.message }
+                    });
+                    yield Ok(Event::default().event("error").data(error.to_string()));
+                }
+                Err(_) => {}
+            }
+        };
+
+        return Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response();
+    }
+
     let output = match engine.execute_async(&graph_for_run, &ctx).await {
         Ok(output) => output,
         Err(err) => {
@@ -20822,4 +21001,229 @@ async fn handle_preview_ws(
 
 fn get_mtime(path: &FsPath) -> Option<std::time::SystemTime> {
     fs::metadata(path).ok().and_then(|m| m.modified().ok())
+}
+
+#[cfg(test)]
+mod webhook_sse_tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::wants_event_stream;
+
+    // ── wants_event_stream detection ──────────────────────────────────────────
+
+    #[test]
+    fn detects_event_stream_accept_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", HeaderValue::from_static("text/event-stream"));
+        assert!(wants_event_stream(&headers));
+    }
+
+    #[test]
+    fn detects_event_stream_among_multiple_types() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "accept",
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
+        assert!(wants_event_stream(&headers));
+    }
+
+    #[test]
+    fn normal_json_request_is_not_event_stream() {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", HeaderValue::from_static("application/json"));
+        assert!(!wants_event_stream(&headers));
+    }
+
+    #[test]
+    fn missing_accept_header_is_not_event_stream() {
+        let headers = HeaderMap::new();
+        assert!(!wants_event_stream(&headers));
+    }
+
+    #[test]
+    fn html_accept_is_not_event_stream() {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", HeaderValue::from_static("text/html"));
+        assert!(!wants_event_stream(&headers));
+    }
+
+    // ── Signal SSE serialization ────────────────────────────────────────────
+
+    #[test]
+    fn signal_serializes_to_expected_json_shape() {
+        use crate::pipeline::model::Signal;
+
+        let sig = Signal {
+            kind: "thinking".to_string(),
+            message: "LLM reasoning about query".to_string(),
+            node_id: "n0".to_string(),
+            node_kind: "n.ai.agent".to_string(),
+            data: None,
+            at: "00:00:03".to_string(),
+        };
+        let s = serde_json::to_string(&sig).unwrap();
+        assert!(s.contains("\"kind\":\"thinking\""));
+        assert!(s.contains("\"message\":\"LLM reasoning about query\""));
+        assert!(s.contains("\"node_id\":\"n0\""));
+        assert!(s.contains("\"at\":\"00:00:03\""));
+    }
+
+    #[test]
+    fn done_event_envelope_shape() {
+        let output_value = serde_json::json!({"rows": [1, 2, 3]});
+        let done = serde_json::json!({ "ok": true, "value": output_value });
+        assert_eq!(done["ok"], true);
+        assert_eq!(done["value"]["rows"][0], 1);
+    }
+
+    #[test]
+    fn error_event_envelope_shape() {
+        let error = serde_json::json!({
+            "ok": false,
+            "error": { "code": "PG_QUERY_FAIL", "message": "connection refused" }
+        });
+        assert_eq!(error["ok"], false);
+        assert_eq!(error["error"]["code"], "PG_QUERY_FAIL");
+        assert_eq!(error["error"]["message"], "connection refused");
+    }
+
+    // ── SSE stream integration (channel-level, no HTTP server) ────────────────
+
+    #[tokio::test]
+    async fn signals_forwarded_then_done() {
+        use crate::pipeline::model::{ExecutionBus, Signal};
+        use futures::StreamExt;
+
+        let bus = std::sync::Arc::new(ExecutionBus::new(64));
+        let mut signal_rx = bus.subscribe();
+        let (result_tx, mut result_rx) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, String>>();
+
+        // Simulate: 2 signals, then result.
+        bus.emit(Signal {
+            kind: "query".to_string(),
+            message: "running SQL".to_string(),
+            node_id: "n0".to_string(),
+            node_kind: "n.db.query".to_string(),
+            data: None,
+            at: "00:00:01".to_string(),
+        });
+        bus.emit(Signal {
+            kind: "render".to_string(),
+            message: "rendering template".to_string(),
+            node_id: "n1".to_string(),
+            node_kind: "n.web.response".to_string(),
+            data: None,
+            at: "00:00:02".to_string(),
+        });
+        drop(bus); // no more senders
+        let _ = result_tx.send(Ok(serde_json::json!({"html": "<h1>hi</h1>"})));
+
+        // Build the stream exactly as the production SSE code does.
+        let stream = async_stream::stream! {
+            loop {
+                tokio::select! {
+                    biased;
+                    sig = signal_rx.recv() => {
+                        match sig {
+                            Ok(s) => {
+                                yield ("signal", serde_json::to_value(&s).unwrap());
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    result = &mut result_rx => {
+                        match result {
+                            Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
+                            Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
+                            Err(_) => {}
+                        }
+                        return;
+                    }
+                }
+            }
+            match result_rx.await {
+                Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
+                Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
+                Err(_) => {}
+            }
+        };
+
+        tokio::pin!(stream);
+        let mut collected = Vec::new();
+        while let Some(item) = stream.next().await {
+            collected.push(item);
+        }
+
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[0].0, "signal");
+        assert_eq!(collected[0].1["kind"], "query");
+        assert_eq!(collected[1].0, "signal");
+        assert_eq!(collected[1].1["kind"], "render");
+        assert_eq!(collected[2].0, "done");
+        assert_eq!(collected[2].1["ok"], true);
+        assert_eq!(collected[2].1["value"]["html"], "<h1>hi</h1>");
+    }
+
+    #[tokio::test]
+    async fn error_result_emits_error_event() {
+        use crate::pipeline::model::ExecutionBus;
+        use futures::StreamExt;
+
+        let bus = std::sync::Arc::new(ExecutionBus::new(64));
+        let mut signal_rx = bus.subscribe();
+        let (result_tx, mut result_rx) =
+            tokio::sync::oneshot::channel::<Result<serde_json::Value, String>>();
+
+        drop(bus);
+        let _ = result_tx.send(Err("connection refused".to_string()));
+
+        let stream = async_stream::stream! {
+            loop {
+                tokio::select! {
+                    biased;
+                    sig = signal_rx.recv() => {
+                        match sig {
+                            Ok(s) => {
+                                yield ("signal", serde_json::to_value(&s).unwrap());
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    result = &mut result_rx => {
+                        match result {
+                            Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
+                            Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
+                            Err(_) => {}
+                        }
+                        return;
+                    }
+                }
+            }
+            match result_rx.await {
+                Ok(Ok(val)) => yield ("done", serde_json::json!({"ok": true, "value": val})),
+                Ok(Err(msg)) => yield ("error", serde_json::json!({"ok": false, "error": msg})),
+                Err(_) => {}
+            }
+        };
+
+        tokio::pin!(stream);
+        let mut collected = Vec::new();
+        while let Some(item) = stream.next().await {
+            collected.push(item);
+        }
+
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "error");
+        assert_eq!(collected[0].1["ok"], false);
+        assert!(
+            collected[0].1["error"]
+                .as_str()
+                .unwrap()
+                .contains("connection refused")
+        );
+    }
 }

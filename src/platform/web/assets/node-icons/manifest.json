@@ -27,6 +27,78 @@
         "n.crypto"
       ]
     },
+    "n.fs.copy": {
+      "label": "COPY",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.copy.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.copy"
+      ]
+    },
+    "n.fs.delete": {
+      "label": "DEL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.delete.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.delete"
+      ]
+    },
+    "n.fs.get": {
+      "label": "GET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.get.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.get"
+      ]
+    },
+    "n.fs.head": {
+      "label": "HEAD",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.head.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.head"
+      ]
+    },
+    "n.fs.list": {
+      "label": "LIST",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.list.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.list"
+      ]
+    },
+    "n.fs.mkdir": {
+      "label": "MKDIR",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.mkdir.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.mkdir"
+      ]
+    },
+    "n.fs.move": {
+      "label": "MOVE",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.move.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.move"
+      ]
+    },
+    "n.fs.put": {
+      "label": "PUT",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.put.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.put"
+      ]
+    },
     "n.fs.save": {
       "label": "SAVE",
       "method": "direct-svg",
@@ -34,6 +106,15 @@
       "source_url": "",
       "supports": [
         "n.fs.save"
+      ]
+    },
+    "n.fs.thumbnail": {
+      "label": "IMG",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.thumbnail.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.thumbnail"
       ]
     },
     "n.function.call": {
@@ -52,15 +133,6 @@
       "source_url": "",
       "supports": [
         "n.http.request"
-      ]
-    },
-    "n.fs.thumbnail": {
-      "label": "IMG",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.fs.thumbnail.svg",
-      "source_url": "",
-      "supports": [
-        "n.fs.thumbnail"
       ]
     },
     "n.logic.collect": {

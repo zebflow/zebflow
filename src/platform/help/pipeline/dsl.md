@@ -138,6 +138,33 @@ A tight op budget (`maxOps: 500`) prevents runaway computation.
 
 ---
 
+## SSE Streaming (Webhook Pipelines)
+
+Any webhook pipeline supports real-time progress streaming via Server-Sent Events.
+No pipeline config changes needed — the client controls the mode with the `Accept` header.
+
+**Normal request** (waits for full result):
+```bash
+curl -X POST /wh/owner/project/api/search -d '{"query":"hello"}'
+```
+
+**Streaming request** (receives step events as they happen):
+```bash
+curl -X POST /wh/owner/project/api/search \
+  -H "Accept: text/event-stream" \
+  -d '{"query":"hello"}'
+```
+
+**SSE events emitted:**
+- `event: signal` — signals from nodes that emit via the ExecutionBus (e.g. `n.ai.agent` emits thinking/tool_call signals) or return `__signal` in their output
+- `event: done` — final pipeline result: `{"ok":true,"value":{...}}`
+- `event: error` — pipeline failure: `{"ok":false,"error":{"code":"...","message":"..."}}`
+
+The stream closes after `done` or `error`. The pipeline definition, activation, and
+DSL registration are identical for both modes.
+
+---
+
 ## Pipeline Commands
 
 Pipelines are the primary resource. They have a **lifecycle status**:
@@ -365,6 +392,14 @@ n.logic.match --help            # same
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `table.convert` | `n.table.convert` | `(--from <path> \| --from-expr <expr>) [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
 | `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --sql "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
+| `fs.list` | `n.fs.list` | `[--path <prefix> \| --prefix <prefix>]` — list immediate children under a ZebFS prefix; output `{ fs: { operation, path, count, entries } }`. |
+| `fs.head` | `n.fs.head` | `--path <object-or-prefix>` — read object/prefix metadata without reading content. |
+| `fs.get` | `n.fs.get` | `--path <object> [--encoding text\|base64]` — read one object; default text requires UTF-8, base64 is for binary objects. |
+| `fs.put` | `n.fs.put` | `--path <object> (--from-key <dot.path> \| --text <text> \| --base64 <base64>)` — write one object from payload, text, or base64 bytes. |
+| `fs.delete` | `n.fs.delete` | `--path <object-or-prefix>` — delete one object or prefix tree; absent paths are treated as already deleted. |
+| `fs.copy` | `n.fs.copy` | `--from <object> --to <object>` — copy one object. |
+| `fs.move` | `n.fs.move` | `--from <object> --to <object>` — move one object by copying it then deleting the source. |
+| `fs.mkdir` | `n.fs.mkdir` | `--path <prefix>` — create a prefix directory. |
 | `fs.save` | `n.fs.save` | `[--field <name>] [--path <object-path>] [--folder <subdir>] [--allowed-kinds <images,pdf,csv,json,glb,audio,video>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to Zebflow FS; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
 | `fs.thumbnail` | `n.fs.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads an object path from `saved.path` by default, resizes/re-encodes it, writes thumbnail to Zebflow FS; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |

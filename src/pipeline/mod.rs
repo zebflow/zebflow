@@ -19,11 +19,11 @@ pub mod security;
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine};
 pub use interface::PipelineEngine;
 pub use model::{
-    ExecuteOptions, NodeAiToolDefinition, NodeContractDocument, NodeContractItem, NodeDefinition,
-    NodeFieldDataSource, NodeFieldDef, NodeFieldType, NodeScriptBridge, NodeScriptUsageContract,
-    NodeToolUsageContract, NodeUsageMatrix, PipelineContext, PipelineEdge, PipelineError,
-    PipelineGraph, PipelineNode, PipelineOutput, SelectOptionDef, SidebarItem, SidebarSection,
-    StepEvent,
+    ExecuteOptions, ExecutionBus, NodeAiToolDefinition, NodeContractDocument, NodeContractItem,
+    NodeDefinition, NodeFieldDataSource, NodeFieldDef, NodeFieldType, NodeScriptBridge,
+    NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix, PipelineContext, PipelineEdge,
+    PipelineError, PipelineGraph, PipelineNode, PipelineOutput, SelectOptionDef, SidebarItem,
+    SidebarSection, Signal, StepEvent,
 };
 pub use nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 pub use registry::PipelineEngineRegistry;

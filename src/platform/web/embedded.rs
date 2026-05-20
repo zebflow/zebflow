@@ -34,6 +34,38 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.crypto.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.fs.copy.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.copy.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.delete.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.delete.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.get.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.get.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.head.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.head.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.list.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.list.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.mkdir.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.mkdir.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.move.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.move.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.put.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.put.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.fs.save.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.fs.save.svg"),
     },

@@ -1802,6 +1802,8 @@ fn default_webhook_body_max_mb() -> u32 {
     100
 }
 
+pub const MAX_UPLOAD_SIZE_MB: u32 = 1024;
+
 pub fn default_pipeline_node_timeout_secs() -> u64 {
     30
 }
@@ -1868,7 +1870,7 @@ pub struct ZebflowJsonFiles {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZebflowJsonUploads {
-    /// Max allowed size in MB for a single uploaded asset file (5–50, default 10).
+    /// Max allowed size in MB for a single uploaded asset file (5–1024, default 10).
     #[serde(default = "default_max_asset_size_mb")]
     pub max_asset_size_mb: u32,
     /// Max allowed size in MB for one webhook request body.
@@ -1894,12 +1896,18 @@ impl Default for ZebflowJsonUploads {
 
 impl ZebflowJsonUploads {
     pub fn effective_max_asset_size_mb(&self) -> u32 {
-        self.max_asset_size_mb.clamp(5, 100)
+        self.max_asset_size_mb.clamp(5, MAX_UPLOAD_SIZE_MB)
     }
 
     pub fn effective_webhook_body_max_mb(&self) -> u32 {
         self.webhook_body_max_mb
-            .clamp(default_webhook_body_max_mb(), 512)
+            .clamp(default_webhook_body_max_mb(), MAX_UPLOAD_SIZE_MB)
+    }
+
+    pub fn effective_max_file_size_mb(&self) -> u32 {
+        self.max_file_size_mb
+            .unwrap_or(MAX_UPLOAD_SIZE_MB)
+            .clamp(5, MAX_UPLOAD_SIZE_MB)
     }
 }
 

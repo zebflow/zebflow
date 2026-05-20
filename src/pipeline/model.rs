@@ -891,33 +891,84 @@ impl From<NodeDefinition> for NodeContractItem {
     }
 }
 
-/// A streaming step event emitted by long-running nodes (e.g. `n.ai.zebtune`).
+/// Execution-scoped signal emitted by nodes or the engine during a pipeline run.
 ///
-/// Sent through [`ExecuteOptions::step_tx`] so the platform can forward individual
-/// reasoning steps to the client via SSE before the final output is ready.
+/// Signals are transport-neutral observable emissions — not part of the data flow.
+/// Consumers (SSE adapter, WebSocket room, log sink, execution store) subscribe
+/// independently via [`ExecutionBus`] and interpret signals according to their context.
 ///
-/// `step` is a short machine-readable tag (e.g. `"thinking"`, `"tool_call"`,
-/// `"tool_result"`, `"final"`).  `at` is a wall-clock timestamp or elapsed time string.
+/// Nodes emit signals in two ways:
+/// - **Mid-execution**: call [`ExecutionBus::emit`] directly via `input.bus` (e.g.
+///   `n.ai.agent` emitting thinking/tool_call steps in real-time).
+/// - **Post-execution**: include a `__signal` key in the output payload. The engine
+///   strips it before forwarding the payload downstream and routes it through the bus.
+///   Supports string, object `{kind, message, data}`, or array of either.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StepEvent {
-    /// Short machine-readable step tag.
-    pub step: String,
-    /// Human-readable description of what happened at this step.
-    pub description: String,
-    /// Timestamp or elapsed time string (e.g. `"00:00:03"`).
+pub struct Signal {
+    /// Short machine-readable tag chosen by the emitter (e.g. `"thinking"`,
+    /// `"progress"`, `"query"`, `"complete"`). No fixed vocabulary — nodes decide.
+    pub kind: String,
+    /// Human-readable description.
+    pub message: String,
+    /// Node that emitted the signal (set by the engine when routing `__signal`
+    /// from output; set by the node itself when calling `bus.emit()` directly).
+    #[serde(default)]
+    pub node_id: String,
+    /// Node kind (e.g. `"n.pg.query"`).
+    #[serde(default)]
+    pub node_kind: String,
+    /// Optional structured data attached to the signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    /// Timing string (e.g. `"142ms"`, `"00:00:03"`).
+    #[serde(default)]
     pub at: String,
+}
+
+/// Backward-compatible alias — existing code that references `StepEvent` keeps compiling
+/// during migration.  New code should use [`Signal`] directly.
+pub type StepEvent = Signal;
+
+/// Execution-scoped broadcast bus for [`Signal`] values.
+///
+/// Created by the execution caller (webhook handler, schedule runner, etc.) and passed
+/// into `ExecuteOptions`. The engine threads it to every node. Multiple consumers can
+/// subscribe independently. If no consumer subscribes, emitted signals are silently
+/// dropped — zero runtime cost.
+///
+/// The bus lives for exactly one pipeline execution run and is dropped when the run ends.
+#[derive(Debug, Clone)]
+pub struct ExecutionBus {
+    tx: tokio::sync::broadcast::Sender<Signal>,
+}
+
+impl ExecutionBus {
+    /// Create a new bus with the given channel capacity.
+    pub fn new(capacity: usize) -> Self {
+        let (tx, _) = tokio::sync::broadcast::channel(capacity);
+        Self { tx }
+    }
+
+    /// Emit a signal to all current subscribers.  If no subscribers exist the signal
+    /// is silently dropped.
+    pub fn emit(&self, signal: Signal) {
+        let _ = self.tx.send(signal);
+    }
+
+    /// Subscribe a new independent receiver.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Signal> {
+        self.tx.subscribe()
+    }
 }
 
 /// Per-execution options passed to the pipeline engine.
 ///
-/// Currently only carries an optional SSE step channel.  Pass `Default::default()` for
-/// standard non-streaming execution.
-#[derive(Debug, Default)]
+/// Pass `Default::default()` for standard non-streaming execution.
+#[derive(Debug, Clone, Default)]
 pub struct ExecuteOptions {
-    /// When set, nodes that support streaming (e.g. `n.ai.zebtune`) send each step
-    /// event here.  The platform can forward these to the HTTP client via SSE while the
-    /// pipeline is still running.
-    pub step_tx: Option<tokio::sync::mpsc::UnboundedSender<StepEvent>>,
+    /// When set, the engine threads this bus to every node and routes `__signal`
+    /// output keys through it.  Consumers (SSE, WS, log) subscribe independently.
+    pub bus: Option<std::sync::Arc<ExecutionBus>>,
 }
 
 /// Immutable execution context passed to every node during a pipeline run.

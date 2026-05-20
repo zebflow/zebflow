@@ -988,7 +988,7 @@ mod tests {
                                     input_pin: INPUT_PIN_IN.to_string(),
                                     payload: json!({}),
                                     metadata: json!({}),
-                                    step_tx: None,
+                                    bus: None,
                                 })
                                 .await
                                 .expect_err("self-call should be blocked");

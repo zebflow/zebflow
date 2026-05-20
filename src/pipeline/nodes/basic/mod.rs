@@ -9,6 +9,7 @@ pub mod browser_run;
 pub mod crypto;
 pub mod fs_compress;
 pub mod fs_decompress;
+pub mod fs_object;
 pub mod fs_pdf_convert;
 pub mod fs_save;
 pub mod fs_thumbnail;
@@ -48,6 +49,14 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         browser_run::definition(),
         fs_compress::definition(),
         fs_decompress::definition(),
+        fs_object::list_definition(),
+        fs_object::head_definition(),
+        fs_object::get_definition(),
+        fs_object::put_definition(),
+        fs_object::delete_definition(),
+        fs_object::copy_definition(),
+        fs_object::move_definition(),
+        fs_object::mkdir_definition(),
         fs_pdf_convert::definition(),
         fs_save::definition(),
         function_call::definition(),

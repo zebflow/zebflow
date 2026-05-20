@@ -888,6 +888,7 @@ impl DslExecutor {
         .with_platform(self.platform.clone())
         .with_ws_hub(self.platform.ws_hub.clone())
         .with_state_bus(self.platform.state_bus.clone())
+        .with_data_root(self.platform.config.data_root.clone())
         .with_template_root(
             self.platform
                 .projects
@@ -1008,6 +1009,7 @@ impl DslExecutor {
                 .with_platform(self.platform.clone())
                 .with_ws_hub(self.platform.ws_hub.clone())
                 .with_state_bus(self.platform.state_bus.clone())
+                .with_data_root(self.platform.config.data_root.clone())
                 .with_template_root(
                     self.platform
                         .projects

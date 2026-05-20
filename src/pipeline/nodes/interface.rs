@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::pipeline::PipelineError;
-use crate::pipeline::model::StepEvent;
+use crate::pipeline::model::ExecutionBus;
 
 /// Input envelope received by a node when it is triggered by an incoming edge.
 #[derive(Debug, Clone)]
@@ -17,8 +17,10 @@ pub struct NodeExecutionInput {
     pub payload: Value,
     /// Additional metadata envelope carried by the framework.
     pub metadata: Value,
-    /// When set, node may stream step events (e.g. Zebtune: thinking, tool_call, external).
-    pub step_tx: Option<tokio::sync::mpsc::UnboundedSender<StepEvent>>,
+    /// Execution-scoped broadcast bus.  Nodes that want to emit observable signals
+    /// (progress, thinking steps, metrics) call `bus.emit(Signal { .. })`.
+    /// `None` when the caller did not request signal streaming.
+    pub bus: Option<std::sync::Arc<ExecutionBus>>,
 }
 
 /// Output envelope produced by a node execution.

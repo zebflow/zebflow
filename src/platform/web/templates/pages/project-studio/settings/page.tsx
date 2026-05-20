@@ -1296,6 +1296,7 @@ function LoggingPanel({ api, initialConfig }) {
 
 function RuntimeDefaultsPanel({ api, initialConfig }) {
   const [maxMb, setMaxMb] = useState(Number(initialConfig?.max_asset_size_mb ?? 10));
+  const [fileMaxMb, setFileMaxMb] = useState(Number(initialConfig?.max_file_size_mb ?? 1024));
   const [webhookMaxMb, setWebhookMaxMb] = useState(Number(initialConfig?.webhook_body_max_mb ?? 100));
   const [nodeTimeoutSecs, setNodeTimeoutSecs] = useState(Number(initialConfig?.pipeline_node_timeout_secs ?? 30));
   const [statusMsg, setStatusMsg] = useState("Ready.");
@@ -1308,6 +1309,7 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
     e.preventDefault();
     setPendingData({
       max_asset_size_mb: maxMb,
+      max_file_size_mb: fileMaxMb,
       webhook_body_max_mb: webhookMaxMb,
       pipeline_node_timeout_secs: nodeTimeoutSecs,
     });
@@ -1363,14 +1365,30 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             type="range"
             name="max_asset_size_mb"
             min={5}
-            max={50}
+            max={1024}
             step={1}
             value={maxMb}
             onInput={(e) => setMaxMb(Number((e.target as HTMLInputElement).value))}
             className="w-full cursor-pointer accent-dark-accent1"
           />
           <small className="pipeline-editor-field-help">
-            Maximum file size per uploaded asset (5–100 MB).
+            Maximum file size per uploaded project asset (5–1024 MB).
+          </small>
+        </label>
+        <label className="pipeline-editor-field">
+          <span>Max FS upload size: <strong>{fileMaxMb} MB</strong></span>
+          <input
+            type="range"
+            name="max_file_size_mb"
+            min={5}
+            max={1024}
+            step={1}
+            value={fileMaxMb}
+            onInput={(e) => setFileMaxMb(Number((e.target as HTMLInputElement).value))}
+            className="w-full cursor-pointer accent-dark-accent1"
+          />
+          <small className="pipeline-editor-field-help">
+            Per-file limit for Project Files uploads at <code>/api/projects/.../files/upload</code> (5–1024 MB).
           </small>
         </label>
         <label className="pipeline-editor-field">
@@ -1379,14 +1397,14 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             type="range"
             name="webhook_body_max_mb"
             min={100}
-            max={512}
+            max={1024}
             step={1}
             value={webhookMaxMb}
             onInput={(e) => setWebhookMaxMb(Number((e.target as HTMLInputElement).value))}
             className="w-full cursor-pointer accent-dark-accent1"
           />
           <small className="pipeline-editor-field-help">
-            Per-project logical request limit for <code>/wh/...</code> uploads (100–512 MB). This should be at least as large as the documents your webhook pipelines need to accept.
+            Per-project logical request limit for <code>/wh/...</code> uploads (100–1024 MB). This should be at least as large as the documents your webhook pipelines need to accept.
           </small>
         </label>
         <label className="pipeline-editor-field">

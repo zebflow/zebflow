@@ -531,7 +531,7 @@ mod tests {
                     "pipeline": "test",
                     "request_id": "req-1"
                 }),
-                step_tx: None,
+                bus: None,
             })
             .await
             .expect("pdf convert output");
