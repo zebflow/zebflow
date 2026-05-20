@@ -34,7 +34,7 @@ use crate::automaton::infra::llm_interface::{LlmCall, ToolDef};
 use crate::automaton::infra::shell_tools::default_registry;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeAiToolDefinition, NodeFieldDataSource, NodeFieldType,
-    StepEvent,
+    Signal,
 };
 use crate::pipeline::nodes::basic::builtin_node_definitions;
 use crate::pipeline::{
@@ -53,7 +53,12 @@ pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "AI Agent".to_string(),
-        description: "Autonomous agent with tool use. Direct mode: single-pass structured tool sequence. Strategic mode: plan → act → adapt → synthesize.".to_string(),
+        description: "Autonomous agent with tool use. Direct mode: single-pass structured tool sequence. \
+            Strategic mode: plan → act → adapt → synthesize. \
+            Signals: this node emits real-time signals through the ExecutionBus during execution \
+            (thinking, tool_call, tool_result, etc.). When the pipeline is triggered via a webhook \
+            with Accept: text/event-stream, these signals are streamed to the client as SSE \
+            event: signal messages.".to_string(),
         input_schema: json!({
             "type": "object",
             "description": "Trigger payload. Goal/query extracted from message, body, text, or query field."
@@ -615,14 +620,18 @@ impl Node {
 
         let full_registry = default_registry();
 
-        // Bridge step events to pipeline StepEvent
-        let step_tx = input.step_tx.clone();
+        // Bridge step events to pipeline Signal via ExecutionBus
+        let bus = input.bus.clone();
+        let agent_node_id = input.node_id.clone();
         let callback: Option<crate::automaton::agents::zebtune::StepCallback> =
-            step_tx.map(|tx| -> crate::automaton::agents::zebtune::StepCallback {
+            bus.map(|b| -> crate::automaton::agents::zebtune::StepCallback {
                 Box::new(move |s: &ChainStep| {
-                    let _ = tx.send(StepEvent {
-                        step: s.step.clone(),
-                        description: s.description.clone(),
+                    b.emit(Signal {
+                        kind: s.step.clone(),
+                        message: s.description.clone(),
+                        node_id: agent_node_id.clone(),
+                        node_kind: NODE_KIND.to_string(),
+                        data: None,
                         at: s.at.clone(),
                     });
                 })

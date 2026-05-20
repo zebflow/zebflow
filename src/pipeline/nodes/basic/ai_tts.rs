@@ -1844,7 +1844,7 @@ mod tests {
                     "request_id": "req-1",
                     "trigger": { "kind": "manual" }
                 }),
-                step_tx: None,
+                bus: None,
             })
             .await
             .expect("execute");
@@ -1971,7 +1971,7 @@ mod tests {
                     "request_id": "bench-warmup",
                     "trigger": { "kind": "manual" }
                 }),
-                step_tx: None,
+                bus: None,
             })
             .await
             .expect("warmup");
@@ -2013,7 +2013,7 @@ mod tests {
                             "request_id": format!("bench-{}", mode.as_str()),
                             "trigger": { "kind": "manual" }
                         }),
-                        step_tx: None,
+                        bus: None,
                     })
                     .await
                     .expect("execute");

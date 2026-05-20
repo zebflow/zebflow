@@ -626,7 +626,7 @@ mod tests {
                 input_pin: INPUT_PIN_IN.to_string(),
                 payload: input_payload.clone(),
                 metadata: json!({}),
-                step_tx: None,
+                bus: None,
             })
             .await
             .expect("execute web.response");

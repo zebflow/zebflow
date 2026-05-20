@@ -24,7 +24,12 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Script".to_string(),
         description:
-            "Execute sandboxed Deno logic with runtime signature async function(input, n, ctx)."
+            "Execute sandboxed Deno logic with runtime signature async function(input, n, ctx). \
+            Signals: to emit real-time signals (progress, status, custom events), include a \
+            __signal key in the return value. The engine strips it from the downstream payload \
+            and routes it through the ExecutionBus. Supports string (\"processing…\"), \
+            object ({kind, message, data}), or array of either. Example: \
+            return { result: 42, __signal: {kind: \"progress\", message: \"step 2 done\"} };"
                 .to_string(),
         input_schema: serde_json::json!({
             "type":"object",

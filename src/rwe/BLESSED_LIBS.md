@@ -207,15 +207,10 @@ The first useful wrappers are:
 Example minimal wrapper shape:
 
 ```tsx
-export default function ThreeScene(props) {
-  return (
-    <canvas
-      data-zeb-lib="threejs"
-      data-config="{{props.config}}"
-      className="w-full h-full"
-      hydrate="visible"
-    />
-  );
+import { ThreeScene } from "zeb/threejs";
+
+export default function ScenePage(props) {
+  return <ThreeScene config={props.config} className="w-full h-full" hydrate="visible" />;
 }
 ```
 

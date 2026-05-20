@@ -16,10 +16,10 @@ use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_ex
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph, PipelineNode,
-    PipelineOutput,
+    PipelineOutput, Signal,
 };
 use crate::pipeline::nodes::basic::{
-    agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress,
+    agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mem_del, mem_exists,
     mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script, sekejap_query,
     sqlite_mutate, sqlite_query, table_convert, table_query,
@@ -691,6 +691,39 @@ impl BasicPipelineEngine {
                     platform.clone(),
                 )?))
             }
+            fs_object::LIST_NODE_KIND
+            | fs_object::HEAD_NODE_KIND
+            | fs_object::GET_NODE_KIND
+            | fs_object::PUT_NODE_KIND
+            | fs_object::DELETE_NODE_KIND
+            | fs_object::COPY_NODE_KIND
+            | fs_object::MOVE_NODE_KIND
+            | fs_object::MKDIR_NODE_KIND => {
+                let config: fs_object::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_FS_OBJECT",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                let operation = match node.kind.as_str() {
+                    fs_object::LIST_NODE_KIND => fs_object::Operation::List,
+                    fs_object::HEAD_NODE_KIND => fs_object::Operation::Head,
+                    fs_object::GET_NODE_KIND => fs_object::Operation::Get,
+                    fs_object::PUT_NODE_KIND => fs_object::Operation::Put,
+                    fs_object::DELETE_NODE_KIND => fs_object::Operation::Delete,
+                    fs_object::COPY_NODE_KIND => fs_object::Operation::Copy,
+                    fs_object::MOVE_NODE_KIND => fs_object::Operation::Move,
+                    fs_object::MKDIR_NODE_KIND => fs_object::Operation::Mkdir,
+                    _ => unreachable!(),
+                };
+                Ok(NodeDispatch::FsObject(fs_object::Node::new(
+                    config,
+                    platform.clone(),
+                    operation,
+                )?))
+            }
             table_convert::NODE_KIND => {
                 let config: table_convert::Config =
                     serde_json::from_value(node.config.clone()).unwrap_or_default();
@@ -968,7 +1001,7 @@ impl PipelineEngine for BasicPipelineEngine {
             graph.entry_nodes.clone()
         };
 
-        let step_tx = options.step_tx.clone();
+        let bus = options.bus.clone();
         // nodes_output: accumulates each completed node's output payload for $nodes access.
         // Declared here (before the initial queue push) so entry-node metadata can include it.
         let mut nodes_output = serde_json::Map::<String, Value>::new();
@@ -991,7 +1024,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     "trigger": ctx.trigger,
                     "nodes": Value::Object(nodes_output.clone()),
                 }),
-                step_tx: step_tx.clone(),
+                bus: bus.clone(),
             });
         }
 
@@ -1781,6 +1814,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::FileSave(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::FsObject(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::TableConvert(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -1866,8 +1900,8 @@ impl PipelineEngine for BasicPipelineEngine {
                     };
                     nodes_output.insert(trace_node_id.clone(), nodes_output_value);
                     node_trace.push(NodeTraceEntry {
-                        node_id: trace_node_id,
-                        node_kind: trace_node_kind,
+                        node_id: trace_node_id.clone(),
+                        node_kind: trace_node_kind.clone(),
                         config: redacted_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
                         input: redacted_input,
@@ -1907,7 +1941,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                     "trigger": ctx.trigger,
                                     "nodes": Value::Object(nodes_output.clone()),
                                 }),
-                                step_tx: step_tx.clone(),
+                                bus: bus.clone(),
                             });
                         }
                         continue;
@@ -1939,7 +1973,55 @@ impl PipelineEngine for BasicPipelineEngine {
                 outputs
             };
 
-            for output in outputs {
+            for mut output in outputs {
+                // ── __signal extraction ──────────────────────────────────────
+                // Strip `__signal` from node output and route through the bus.
+                // Supports: string, object {kind,message,data}, or array of either.
+                if let Some(raw_signal) = output
+                    .payload
+                    .as_object_mut()
+                    .and_then(|m| m.remove("__signal"))
+                {
+                    if let Some(ref bus) = bus {
+                        let emit = |s: &Value| {
+                            let signal = match s {
+                                Value::String(msg) => Signal {
+                                    kind: "signal".to_string(),
+                                    message: msg.clone(),
+                                    node_id: trace_node_id.clone(),
+                                    node_kind: trace_node_kind.clone(),
+                                    data: None,
+                                    at: format!("{}ms", node_start.elapsed().as_millis()),
+                                },
+                                Value::Object(obj) => Signal {
+                                    kind: obj
+                                        .get("kind")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("signal")
+                                        .to_string(),
+                                    message: obj
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    node_id: trace_node_id.clone(),
+                                    node_kind: trace_node_kind.clone(),
+                                    data: obj.get("data").cloned(),
+                                    at: format!("{}ms", node_start.elapsed().as_millis()),
+                                },
+                                _ => return,
+                            };
+                            bus.emit(signal);
+                        };
+                        if let Value::Array(items) = &raw_signal {
+                            for item in items {
+                                emit(item);
+                            }
+                        } else {
+                            emit(&raw_signal);
+                        }
+                    }
+                }
                 trace.extend(output.trace.clone());
                 last_value = output.payload.clone();
 
@@ -1985,7 +2067,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                             "trigger": ctx.trigger,
                                             "nodes": Value::Object(nodes_output.clone()),
                                         }),
-                                        step_tx: step_tx.clone(),
+                                        bus: bus.clone(),
                                     });
                                 }
                             } else {
@@ -2002,7 +2084,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "trigger": ctx.trigger,
                                         "nodes": Value::Object(nodes_output.clone()),
                                     }),
-                                    step_tx: step_tx.clone(),
+                                    bus: bus.clone(),
                                 });
                             }
                         }
@@ -2158,6 +2240,73 @@ mod tests {
 
         assert_eq!(out.value["b"]["user"]["id"], "u_42");
         assert_eq!(out.value["c"]["orders"][0]["id"], "o_1");
+    }
+
+    #[tokio::test]
+    async fn fs_object_nodes_cover_s3_like_crud_flow() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "fs_object_e2e";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+
+        let dsl = r#"
+[a] trigger.manual
+[b] fs.put --path qa/fs/hello.txt --text "hello fs"
+[c] fs.get --path qa/fs/hello.txt
+[d] fs.copy --from qa/fs/hello.txt --to qa/fs/copy.txt
+[e] fs.move --from qa/fs/copy.txt --to qa/fs/moved.txt
+[f] fs.list --path qa/fs
+[g] fs.delete --path qa/fs/hello.txt
+[h] fs.mkdir --path qa/fs/prefix
+
+[a] -> [b]
+[b] -> [c]
+[c] -> [d]
+[d] -> [e]
+[e] -> [f]
+[f] -> [g]
+[g] -> [h]
+"#;
+
+        let graph = build_pipeline_graph("fs-object-e2e", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform.clone());
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "fs-object-e2e".to_string(),
+                    request_id: "req-fs-object".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["fs"]["operation"], "mkdir");
+        assert_eq!(out.value["fs"]["object"]["kind"], "prefix");
+
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        let zebfs = LocalZebFs::new(layout.files_dir);
+        let moved = zebfs.get("qa/fs/moved.txt").expect("moved object");
+        assert_eq!(String::from_utf8(moved.bytes).expect("utf8"), "hello fs");
+        assert!(zebfs.head("qa/fs/prefix").is_ok());
+        assert!(zebfs.head("qa/fs/hello.txt").is_err());
+        assert!(zebfs.head("qa/fs/copy.txt").is_err());
     }
 
     #[tokio::test]
@@ -2776,6 +2925,7 @@ enum NodeDispatch {
     TriggerFunction(trigger_function::Node),
     FunctionCall(function_call::Node),
     FileSave(fs_save::Node),
+    FsObject(fs_object::Node),
     TableConvert(table_convert::Node),
     TableQuery(table_query::Node),
     FileCompress(fs_compress::Node),

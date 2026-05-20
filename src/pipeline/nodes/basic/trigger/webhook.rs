@@ -11,6 +11,23 @@
 //! | pg.query --credential main-db -- "SELECT ..."
 //! | n.web.response --template pages/blog-home.tsx
 //! ```
+//!
+//! # SSE streaming
+//!
+//! Clients can request execution progress as a Server-Sent Events stream by
+//! sending `Accept: text/event-stream`. The pipeline definition is identical
+//! for both modes — no config changes needed.
+//!
+//! ```text
+//! Normal:    curl -X POST /wh/owner/project/blog
+//!            → waits for full pipeline, returns final response
+//!
+//! Streaming: curl -X POST /wh/owner/project/blog -H "Accept: text/event-stream"
+//!            → event: step  {"step":"...","description":"...","at":"..."}
+//!            → event: step  ...
+//!            → event: done  {"ok":true,"value":{...}}
+//!            (or event: error on failure)
+//! ```
 
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
@@ -40,7 +57,13 @@ pub fn definition() -> NodeDefinition {
             GET query params appear at root and also at input.query. Path params at input.params. \
             Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
             jwt auth checks Authorization: Bearer header first, then Cookie: zebflow_session fallback — \
-            verified claims are injected into input.auth.".to_string(),
+            verified claims are injected into input.auth. \
+            Streaming: clients that send Accept: text/event-stream receive an SSE stream \
+            instead of a single response. Nodes that emit signals via the ExecutionBus \
+            (or return __signal in their output) are forwarded as event: signal messages. \
+            The final pipeline result is sent as event: done (or event: error) and the \
+            stream closes. The pipeline definition is identical for both modes — the \
+            Accept header is the only switch.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
             "description": "Normalised request payload. Body fields (JSON / form-urlencoded / multipart text) are merged to root. Files land under input.files.{field}. Query params also at input.query, path params at input.params, JWT claims at input.auth."
