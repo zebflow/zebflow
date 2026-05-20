@@ -13,7 +13,7 @@
 //!   │     LLM decomposes goal → HierarchicalPlan (subgoals + steps)
 //!   │
 //!   ├── Phase 2: Execution Loop  ✅ native function calling (M7 done)
-//!   │     LLM turn → tool_calls → execute via ToolRegistry → feed result → repeat
+//!   │     LLM turn → tool_calls → execute via caller-provided executor → feed result → repeat
 //!   │     Budget-bounded; emits ChainStep events for streaming UI
 //!   │
 //!   ├── Phase 3: Validation  [TODO M6]
@@ -33,7 +33,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::automaton::infra::llm_interface::{CallResult, LlmCall, ToolDef};
-use crate::automaton::infra::shell_tools::ToolRegistry;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,11 +121,14 @@ impl ZebtuneAgent {
     /// Run the agent: goal → execute → synthesize → result.
     ///
     /// Uses native function calling (OpenAI tools API).
+    /// `tool_defs` describes which tools the LLM may call.
+    /// `executor` resolves each tool call: `(name, args_json) -> Result<output, error>`.
     /// `step_callback` is called synchronously after each chain step.
     pub async fn run(
         &self,
         goal: &str,
-        tool_registry: &ToolRegistry,
+        tool_defs: Vec<ToolDef>,
+        executor: impl Fn(&str, &str) -> Result<String, String>,
         step_callback: Option<&StepCallback>,
     ) -> ZebtuneResult {
         let Some(ref llm) = self.llm else {
@@ -140,36 +142,11 @@ impl ZebtuneAgent {
             };
         };
 
-        // Build ToolDef list from registry for the LLM
-        let tool_defs: Vec<ToolDef> = tool_registry
-            .tool_names()
-            .into_iter()
-            .map(|name| {
-                let desc = tool_registry
-                    .get(&name)
-                    .map(|t| t.description().to_string())
-                    .unwrap_or_default();
-                ToolDef {
-                    name,
-                    description: desc,
-                    parameters: json!({
-                        "type": "object",
-                        "properties": {
-                            "path": { "type": "string", "description": "Optional path argument" }
-                        }
-                    }),
-                }
-            })
-            .collect();
-
         let system_content = self.config.system_prompt.clone().unwrap_or_else(|| {
             "You are Zebtune, an autonomous assistant. Use the available tools when helpful. \
              Provide a clear, concise final answer."
                 .to_string()
         });
-
-        let work_dir =
-            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
 
         let start = Instant::now();
         let mut trace = vec!["agent=zebtune".to_string()];
@@ -274,21 +251,18 @@ impl ZebtuneAgent {
 
                     // Execute each tool and append results
                     for tc in &calls {
-                        let args: Value = serde_json::from_str(&tc.arguments).unwrap_or(json!({}));
-
                         self.emit(
                             &mut chain,
                             step_callback,
                             "tool_call",
-                            &format!("RUN: {} {:?}", tc.name, args),
+                            &format!("RUN: {} {}", tc.name, tc.arguments),
                             &format_elapsed(start),
                         );
                         trace.push(format!("tool:{}", tc.name));
 
-                        let tool_out = match tool_registry.run_tool(&tc.name, &args, &work_dir) {
-                            Some(Ok(out)) => out,
-                            Some(Err(e)) => format!("Tool error: {}", e),
-                            None => format!("Unknown tool: {}", tc.name),
+                        let tool_out = match executor(&tc.name, &tc.arguments) {
+                            Ok(out) => out,
+                            Err(e) => format!("Tool error: {}", e),
                         };
 
                         let short_out = if tool_out.len() > 200 {

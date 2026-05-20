@@ -618,7 +618,15 @@ impl Node {
             llm,
         );
 
-        let full_registry = default_registry();
+        // Use the same tool discovery as direct mode: shell + node AI tools + function pipelines.
+        let tools = self.build_tool_defs(owner, project);
+        let registry = default_registry();
+        let work_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
+
+        let platform_clone = self.platform.clone();
+        let owner_s = owner.to_string();
+        let project_s = project.to_string();
 
         // Bridge step events to pipeline Signal via ExecutionBus
         let bus = input.bus.clone();
@@ -637,7 +645,48 @@ impl Node {
                 })
             });
 
-        let result = agent.run(query, &full_registry, callback.as_ref()).await;
+        let result = agent
+            .run(
+                query,
+                tools,
+                move |tool_name, args_json| {
+                    let args: Value = serde_json::from_str(args_json).unwrap_or(json!({}));
+
+                    // 1. Try shell tools first.
+                    if let Some(out) = registry.run_tool(tool_name, &args, &work_dir) {
+                        return out;
+                    }
+
+                    // 2. Try function pipeline tools (async → sync bridge).
+                    if let Some(platform) = &platform_clone {
+                        let platform = Arc::clone(platform);
+                        let slug = tool_name.to_string();
+                        let input = args.clone();
+                        let owner_s = owner_s.clone();
+                        let project_s = project_s.clone();
+
+                        let result = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async move {
+                                platform
+                                    .execute_function_pipeline(&owner_s, &project_s, &slug, input)
+                                    .await
+                            })
+                        });
+
+                        return match result {
+                            Ok(v) => {
+                                Ok(serde_json::to_string_pretty(&v)
+                                    .unwrap_or_else(|_| v.to_string()))
+                            }
+                            Err(e) => Err(e.to_string()),
+                        };
+                    }
+
+                    Err(format!("tool '{}' not found", tool_name))
+                },
+                callback.as_ref(),
+            )
+            .await;
 
         let payload = match &self.config.output_mode {
             OutputMode::Full => {
