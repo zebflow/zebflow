@@ -438,6 +438,10 @@ n.logic.match --help            # same
 | `mem.expire` | `n.mem.expire` | `--key <k> [--ttl <secs>]` — update TTL on an existing key without changing its value; `--ttl 0` removes expiry (persist forever) |
 | `mem.incr` | `n.mem.incr` | `--key <k> [--amount <n>] [--out-key <k>]` — atomically increment (negative to decrement) integer counter; starts at 0 if missing; replaces the payload with `{ [out_key]: new_value }` |
 | `mem.publish` | `n.mem.publish` | `--channel <name> [--message-path <ptr>]` — publish a message to an in-memory pub/sub channel; triggers all active `n.trigger.memsubscribe` pipelines on that channel |
+| `ms.publish` | `n.ms.publish` | `--name <id> --path <http_path> --source-path <zebfs_path> [--source-kind geojson_file\|geojson_artifact\|geoparquet] [--bbox-required] [--max-features <n>] [--allowed-properties <csv>] [--min-zoom <n>] [--max-zoom <n>] [--build-artifact]` — publish or update a map layer in the project registry |
+| `ms.unpublish` | `n.ms.unpublish` | `--name <id>` — remove a map layer from the registry |
+| `ms.get` | `n.ms.get` | `--name <id>` — get metadata for a published layer |
+| `ms.list` | `n.ms.list` | _(none)_ — list all published layers in the project registry |
 
 ### `sekejap.query` — SQL examples
 
@@ -751,6 +755,48 @@ Output payload of `n.trigger.memsubscribe`:
 
 Without `--room`, `ws.emit` reads `room_id` from the payload (set by `trigger.ws`).
 With `--room`, it is fully self-contained and works from webhook, schedule, or any trigger.
+
+---
+
+### `n.ms.*` — mapserver layer CRUD
+
+Dynamic map layer management for the project layer registry. Layers published via these nodes are immediately queryable on `/ms/{owner}/{project}/{path}`.
+
+```zf
+# Publish a GeoJSON layer
+| ms.publish --name districts --path /districts --source-path mapserver/districts.geojson --source-kind geojson_file
+
+# Publish with auto-artifact build for large GeoJSON files
+| ms.publish --name buildings --path /buildings --source-path mapserver/buildings.geojson --build-artifact
+
+# Publish a GeoParquet layer
+| ms.publish --name parcels --path /parcels --source-path mapserver/parcels.parquet --source-kind geoparquet --max-features 5000
+
+# Get layer metadata
+| ms.get --name districts
+
+# List all published layers
+| ms.list
+
+# Unpublish a layer
+| ms.unpublish --name districts
+```
+
+**`n.ms.publish` flags:**
+- `--name <id>` — unique layer identifier (required)
+- `--path <path>` — URL path under `/ms/{owner}/{project}/` (required)
+- `--source-path <zebfs_path>` — ZebFS path to source file (required; also accepted from input payload.source_path)
+- `--source-kind <kind>` — `geojson_file` (default), `geojson_artifact`, `geoparquet`
+- `--bbox-required` — enforce bbox in queries (default: true)
+- `--max-features <n>` — hard feature cap per query (default: 1000)
+- `--allowed-properties <csv>` — property whitelist (empty = all)
+- `--min-zoom <n>` / `--max-zoom <n>` — zoom visibility range
+- `--build-artifact` — auto-build chunked artifact for large GeoJSON files
+
+**Supported source kinds:**
+- `geojson_file` — reads a GeoJSON FeatureCollection from ZebFS
+- `geojson_artifact` — chunked spatial index built from a GeoJSON source (fast bbox queries)
+- `geoparquet` — queries a GeoParquet file via DataFusion with ST_* spatial functions
 
 ---
 

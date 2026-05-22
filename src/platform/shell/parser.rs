@@ -172,6 +172,10 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "mem.incr" | "n.mem.incr" => Some("n.mem.incr"),
         "mem.publish" | "n.mem.publish" => Some("n.mem.publish"),
         "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.memsubscribe"),
+        "ms.publish" | "n.ms.publish" => Some("n.ms.publish"),
+        "ms.unpublish" | "n.ms.unpublish" => Some("n.ms.unpublish"),
+        "ms.get" | "n.ms.get" => Some("n.ms.get"),
+        "ms.list" | "n.ms.list" => Some("n.ms.list"),
         _ => None,
     }
 }

@@ -13268,6 +13268,7 @@ async fn api_mapserver_layers_publish(
             format!("/{}", path)
         },
         source_path,
+        source_kind: "geojson_artifact".to_string(),
         artifact_manifest_path: Some(build.manifest_rel_path.clone()),
         mode: "features".to_string(),
         min_zoom,
@@ -18416,6 +18417,7 @@ async fn public_mapserver_ingress(
                 "geojson_artifact" => {
                     crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
                 }
+                "geoparquet" => crate::mapserver::publish::manifest::SourceKind::GeoParquet,
                 _ => crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
             },
             selected.trigger.source_path.clone(),
@@ -18547,7 +18549,7 @@ async fn public_mapserver_ingress(
             ));
         }
     };
-    crate::mapserver::resolve::cache::put_response_bytes(response_cache_key, body.clone());
+    crate::mapserver::resolve::cache::put_response_bytes(response_cache_key, body.clone(), &manifest.source_ref);
     let mut resp = (StatusCode::OK, body).into_response();
     resp.headers_mut().insert(
         CONTENT_TYPE,
@@ -18569,6 +18571,8 @@ struct MapserverLayerRecord {
     layer_id: String,
     path: String,
     source_path: String,
+    #[serde(default)]
+    source_kind: String,
     #[serde(default)]
     artifact_manifest_path: Option<String>,
     mode: String,
@@ -18668,7 +18672,10 @@ fn list_mapserver_source_files(
                 continue;
             }
             let lower = name.to_ascii_lowercase();
-            if !(lower.ends_with(".geojson") || lower.ends_with(".json")) {
+            if !(lower.ends_with(".geojson")
+                || lower.ends_with(".json")
+                || lower.ends_with(".parquet"))
+            {
                 continue;
             }
             let rel = format!("mapserver/{name}");
@@ -18691,44 +18698,50 @@ fn resolve_mapserver_manifest_for_path(
     path: &str,
 ) -> Result<Option<crate::mapserver::publish::manifest::PublishedLayerManifest>, PlatformError> {
     let layers = read_mapserver_layers(state, owner, project, "default-mapserver")?;
-    let layer = layers.into_iter().find(|item| item.path == path);
+    let normalized = path.trim_start_matches('/').trim_end_matches('/');
+    let layer = layers.into_iter().find(|item| item.path == normalized);
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(layer.map(|item| {
-        if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
-            crate::mapserver::publish::registry::manifest_from_runtime(
-                item.layer_id,
-                item.path,
+        let (source_kind, source_ref) = if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
+            (
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
                 layout
                     .files_dir
                     .join(artifact_rel.trim_start_matches('/'))
                     .display()
                     .to_string(),
-                item.mode,
-                item.min_zoom,
-                item.max_zoom,
-                item.bbox_required,
-                item.max_features,
-                item.allowed_properties,
+            )
+        } else if item.source_kind == "geoparquet" {
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoParquet,
+                layout
+                    .files_dir
+                    .join(item.source_path.trim_start_matches('/'))
+                    .display()
+                    .to_string(),
             )
         } else {
-            crate::mapserver::publish::registry::manifest_from_runtime(
-                item.layer_id,
-                item.path,
+            (
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
                 layout
                     .files_dir
                     .join(item.source_path.trim_start_matches('/'))
                     .display()
                     .to_string(),
-                item.mode,
-                item.min_zoom,
-                item.max_zoom,
-                item.bbox_required,
-                item.max_features,
-                item.allowed_properties,
             )
-        }
+        };
+        crate::mapserver::publish::registry::manifest_from_runtime(
+            item.layer_id,
+            item.path,
+            source_kind,
+            source_ref,
+            item.mode,
+            item.min_zoom,
+            item.max_zoom,
+            item.bbox_required,
+            item.max_features,
+            item.allowed_properties,
+        )
     }))
 }
 

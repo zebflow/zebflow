@@ -198,6 +198,42 @@
         "n.mem.set"
       ]
     },
+    "n.ms.get": {
+      "label": "MSGET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ms.get.svg",
+      "source_url": "",
+      "supports": [
+        "n.ms.get"
+      ]
+    },
+    "n.ms.list": {
+      "label": "MSLS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ms.list.svg",
+      "source_url": "",
+      "supports": [
+        "n.ms.list"
+      ]
+    },
+    "n.ms.publish": {
+      "label": "PUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ms.publish.svg",
+      "source_url": "",
+      "supports": [
+        "n.ms.publish"
+      ]
+    },
+    "n.ms.unpublish": {
+      "label": "UNPUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ms.unpublish.svg",
+      "source_url": "",
+      "supports": [
+        "n.ms.unpublish"
+      ]
+    },
     "n.pg.query": {
       "label": "PG",
       "method": "official-svg",
