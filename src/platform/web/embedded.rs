@@ -150,6 +150,22 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.mapserver.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.ms.publish.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ms.publish.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ms.unpublish.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ms.unpublish.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ms.get.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ms.get.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ms.list.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ms.list.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.trigger.memsubscribe.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.memsubscribe.svg"),
     },

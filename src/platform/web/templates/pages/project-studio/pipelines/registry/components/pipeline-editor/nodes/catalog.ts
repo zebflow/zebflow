@@ -27,6 +27,10 @@ export const nodeCategories: Record<string, string[]> = {
     "n.mem.expire",
     "n.mem.incr",
     "n.mem.publish",
+    "n.ms.publish",
+    "n.ms.unpublish",
+    "n.ms.get",
+    "n.ms.list",
   ],
   logic: [
     "n.script",
@@ -93,6 +97,10 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.sekejap.mutate": "#0f766e",
   "n.function.call": "#1e40af",
   "n.web.response": "#9d174d",
+  "n.ms.publish": "#0f766e",
+  "n.ms.unpublish": "#0f766e",
+  "n.ms.get": "#0f766e",
+  "n.ms.list": "#0f766e",
   "n.fs.list": "#0c4a6e",
   "n.fs.head": "#0c4a6e",
   "n.fs.get": "#0c4a6e",
@@ -138,6 +146,10 @@ export const NODE_KIND_ICONS: Record<string, string> = {
   "n.logic.reduce": "/assets/node-icons/zebflow/n.logic.reduce.svg",
   "n.logic.retry": "/assets/node-icons/zebflow/n.logic.retry.svg",
   "n.mem.set": "/assets/node-icons/zebflow/n.mem.set.svg",
+  "n.ms.publish": "/assets/node-icons/zebflow/n.ms.publish.svg",
+  "n.ms.unpublish": "/assets/node-icons/zebflow/n.ms.unpublish.svg",
+  "n.ms.get": "/assets/node-icons/zebflow/n.ms.get.svg",
+  "n.ms.list": "/assets/node-icons/zebflow/n.ms.list.svg",
   "n.pg.query": "/assets/node-icons/zebflow/n.pg.query.svg",
   "n.sekejap.query": "/assets/node-icons/zebflow/n.sekejap.query.svg",
   "n.table.convert": "/assets/node-icons/zebflow/n.table.convert.svg",
@@ -194,6 +206,7 @@ export function categoryForNodeKind(kind: string): string {
   }
   if (canonical.startsWith("n.trigger.")) return "trigger";
   if (canonical.startsWith("n.logic.") || canonical.startsWith("n.function.") || canonical.startsWith("n.ai.")) return "logic";
+  if (canonical.startsWith("n.ms.")) return "data";
   if (canonical.startsWith("n.fs.")) return "files";
   if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
   if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";

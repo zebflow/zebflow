@@ -13,14 +13,16 @@ use crate::mapserver::publish::manifest::PublishedLayerManifest;
 
 use super::ResolveRequest;
 
-const RESPONSE_CACHE_TTL: Duration = Duration::from_secs(10);
-const RESPONSE_CACHE_MAX_ENTRIES: usize = 8;
-const RESPONSE_CACHE_MAX_BODY_BYTES: usize = 768 * 1024;
+const RESPONSE_CACHE_TTL: Duration = Duration::from_secs(300);
+const RESPONSE_CACHE_MAX_ENTRIES: usize = 64;
+const RESPONSE_CACHE_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct ResponseCacheEntry {
     pub body_gzip: Vec<u8>,
     inserted_at: Instant,
+    source_ref: String,
+    source_version: String,
 }
 
 struct ResponseCacheState {
@@ -80,15 +82,29 @@ pub fn response_cache_key(manifest: &PublishedLayerManifest, request: &ResolveRe
 
 pub fn get_response_bytes(key: &str) -> Option<Vec<u8>> {
     let mut cache = response_cache().lock().ok()?;
-    let entry = cache.entries.get(key)?.clone();
-    if entry.inserted_at.elapsed() > RESPONSE_CACHE_TTL {
-        cache.entries.remove(key);
-        return None;
+    let entry = cache.entries.get(key)?;
+    if entry.inserted_at.elapsed() <= RESPONSE_CACHE_TTL {
+        return decode_gzip(&entry.body_gzip).ok();
     }
-    decode_gzip(&entry.body_gzip).ok()
+    // TTL expired — revalidate by checking source file mtime.
+    // The cache key already embeds source_version, so if the file changed
+    // this key would never be looked up. But if the same key is requeried
+    // and the file hasn't changed, we can extend the entry's lifetime.
+    let current_version = source_version(&entry.source_ref);
+    if current_version == entry.source_version {
+        // Source unchanged — refresh the entry
+        let body = decode_gzip(&entry.body_gzip).ok();
+        if let Some(entry) = cache.entries.get_mut(key) {
+            entry.inserted_at = Instant::now();
+        }
+        return body;
+    }
+    // Source changed — evict stale entry
+    cache.entries.remove(key);
+    None
 }
 
-pub fn put_response_bytes(key: String, body: Vec<u8>) {
+pub fn put_response_bytes(key: String, body: Vec<u8>, source_ref: &str) {
     if body.len() > RESPONSE_CACHE_MAX_BODY_BYTES {
         return;
     }
@@ -103,6 +119,8 @@ pub fn put_response_bytes(key: String, body: Vec<u8>) {
         ResponseCacheEntry {
             body_gzip,
             inserted_at: Instant::now(),
+            source_ref: source_ref.to_string(),
+            source_version: source_version(source_ref),
         },
     );
     cache.order.push_back(key);

@@ -16,6 +16,7 @@ pub mod fs_thumbnail;
 pub mod function_call;
 pub mod http_request;
 pub mod logic;
+pub mod mapserver_crud;
 pub mod mem_del;
 pub mod mem_exists;
 pub mod mem_expire;
@@ -57,6 +58,10 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         fs_object::copy_definition(),
         fs_object::move_definition(),
         fs_object::mkdir_definition(),
+        mapserver_crud::publish_definition(),
+        mapserver_crud::unpublish_definition(),
+        mapserver_crud::get_definition(),
+        mapserver_crud::list_definition(),
         fs_pdf_convert::definition(),
         fs_save::definition(),
         function_call::definition(),

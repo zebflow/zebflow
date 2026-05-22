@@ -31,9 +31,9 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
-    fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mem_del, mem_exists,
-    mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script, sekejap_query,
-    sqlite_mutate, sqlite_query, table_convert, table_query,
+    fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mapserver_crud,
+    mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
+    sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
     trigger::{
         function as trigger_function, manual, mapserver, mcp_trigger, memsubscribe, schedule,
         weberror, webhook,
@@ -730,6 +730,31 @@ impl BasicPipelineEngine {
                     _ => unreachable!(),
                 };
                 Ok(NodeDispatch::FsObject(fs_object::Node::new(
+                    config,
+                    platform.clone(),
+                    operation,
+                )?))
+            }
+            mapserver_crud::PUBLISH_KIND
+            | mapserver_crud::UNPUBLISH_KIND
+            | mapserver_crud::GET_KIND
+            | mapserver_crud::LIST_KIND => {
+                let config: mapserver_crud::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_MS",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                let operation = match node.kind.as_str() {
+                    mapserver_crud::PUBLISH_KIND => mapserver_crud::Operation::Publish,
+                    mapserver_crud::UNPUBLISH_KIND => mapserver_crud::Operation::Unpublish,
+                    mapserver_crud::GET_KIND => mapserver_crud::Operation::Get,
+                    mapserver_crud::LIST_KIND => mapserver_crud::Operation::List,
+                    _ => unreachable!(),
+                };
+                Ok(NodeDispatch::MapserverCrud(mapserver_crud::Node::new(
                     config,
                     platform.clone(),
                     operation,
@@ -1835,6 +1860,9 @@ impl PipelineEngine for BasicPipelineEngine {
                     }
                     NodeDispatch::FileSave(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FsObject(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::MapserverCrud(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
                     NodeDispatch::TableConvert(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -2952,6 +2980,7 @@ enum NodeDispatch {
     FunctionCall(function_call::Node),
     FileSave(fs_save::Node),
     FsObject(fs_object::Node),
+    MapserverCrud(mapserver_crud::Node),
     TableConvert(table_convert::Node),
     TableQuery(table_query::Node),
     FileCompress(fs_compress::Node),

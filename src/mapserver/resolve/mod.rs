@@ -4,6 +4,7 @@ use serde_json::Value;
 
 pub mod artifact;
 pub mod cache;
+pub mod geoparquet;
 pub mod query;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -48,7 +49,7 @@ pub fn resolve_features(
             }
         }
     }
-    match manifest.source_kind {
+    let mut response = match manifest.source_kind {
         SourceKind::GeoJsonFile => {
             query::resolve_feature_collection_from_geojson_file(manifest, request)
         }
@@ -57,5 +58,11 @@ pub fn resolve_features(
             request,
             std::path::Path::new(&manifest.source_ref),
         ),
-    }
+        SourceKind::GeoParquet => geoparquet::resolve_from_geoparquet(manifest, request),
+    }?;
+
+    // Post-process: simplify geometry at low zoom to reduce response size
+    crate::mapserver::infra::simplify::simplify_features(&mut response.features, request.zoom);
+
+    Ok(response)
 }
