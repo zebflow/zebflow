@@ -7,7 +7,7 @@
     "type": "git",
     "url": "https://github.com/zebflow/zebflow"
   },
-  "homepage": "https://github.com/zebflow/zebflow",
+  "homepage": "https://zebflow.com",
   "bin": {
     "zebflow": "run.js"
   },
