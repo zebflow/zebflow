@@ -74,8 +74,10 @@ export function initFilesBehavior() {
       if (resp.ok) {
         window.location.reload();
       } else {
-        const err = await resp.json().catch(() => ({ error: "unknown" }));
-        alert(`Failed: ${err.error ?? "unknown"}`);
+        const text = await resp.text().catch(() => "");
+        let msg = `Upload failed (HTTP ${resp.status})`;
+        try { const j = JSON.parse(text); msg = j.error ?? msg; } catch { if (text) msg += `: ${text.slice(0, 200)}`; }
+        alert(msg);
       }
       fileUploadInput.value = "";
     });
