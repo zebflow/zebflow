@@ -1,4 +1,4 @@
-//! `n.mem.set` — store a value in the per-project in-memory KV store.
+//! `n.kv.set` — store a value in the project-scoped KV store.
 //!
 //! # Config flags
 //!
@@ -7,12 +7,13 @@
 //! | `--key` | string | required | Storage key (supports `{{ expr }}`) |
 //! | `--value-path` | string | `""` | JSON pointer into payload to extract value; empty = whole payload |
 //! | `--ttl` | number | `0` | TTL in seconds; 0 = no expiry |
+//! | `--durable` | bool | `false` | Persist to durable storage (survives restart) |
 //!
 //! # Example
 //!
 //! ```text
 //! | n.trigger.webhook --path /save --method POST
-//! | n.mem.set --key "user:{{ input.user_id }}" --value-path /data --ttl 3600
+//! | n.kv.set --key "user:{{ input.user_id }}" --value-path /data --ttl 3600
 //! ```
 
 use async_trait::async_trait;
@@ -26,16 +27,16 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.set";
+pub const NODE_KIND: &str = "n.kv.set";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Set".to_string(),
-        description: "Store a value in the per-project in-memory KV store. \
-            Values are ephemeral (lost on server restart). \
+        title: "KV Set".to_string(),
+        description: "Store a value in the project-scoped KV store. \
+            Ephemeral by default, use --durable for persistence across restarts. \
             Use --key to name the slot (supports {{ expr }}). \
             Use --value-path to extract a sub-value from the payload; empty = whole payload. \
             Use --ttl for automatic expiry in seconds (0 = forever)."
@@ -78,15 +79,16 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Persist to durable storage (survives restart). Default: ephemeral."
+                    .to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
             NodeFieldDef {
                 name: "key".to_string(),
                 label: "Key".to_string(),
@@ -110,9 +112,20 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Auto-expire after N seconds. 0 = forever.".to_string()),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "durable".to_string(),
+                label: "Durable".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some(
+                    "Persist to durable storage (survives restart). Default: ephemeral."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -124,6 +137,8 @@ pub struct Config {
     pub value_path: String,
     #[serde(default)]
     pub ttl: Option<u64>,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -167,8 +182,8 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_SET_KEY",
-                "n.mem.set: --key is required",
+                "KV_SET_KEY",
+                "n.kv.set: --key is required",
             ));
         }
 
@@ -184,14 +199,20 @@ impl NodeHandler for Node {
         };
 
         let ttl = self.config.ttl.filter(|&t| t > 0);
-        self.state_bus
-            .set(owner, project, key, value, ttl)
-            .map_err(|err| PipelineError::new("MEM_SET_STATE_BUS", err.to_string()))?;
+        if self.config.durable {
+            self.state_bus
+                .durable_set(owner, project, key, value, ttl)
+                .map_err(|err| PipelineError::new("KV_SET_STATE_BUS", err.to_string()))?;
+        } else {
+            self.state_bus
+                .set(owner, project, key, value, ttl)
+                .map_err(|err| PipelineError::new("KV_SET_STATE_BUS", err.to_string()))?;
+        }
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec![format!("n.mem.set: key={} ttl={:?}", key, ttl)],
+            trace: vec![format!("n.kv.set: key={} ttl={:?} durable={}", key, ttl, self.config.durable)],
         })
     }
 }

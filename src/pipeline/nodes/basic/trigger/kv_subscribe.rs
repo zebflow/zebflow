@@ -1,15 +1,15 @@
-//! `n.trigger.memsubscribe` — subscribe a pipeline to an in-memory channel.
+//! `n.trigger.kv.subscribe` — listen for messages published on a named KV channel.
 //!
 //! This is a **passthrough trigger node** — it does not do any work at execution time.
 //! The real subscription happens in [`crate::infra::mem::subscriber::MemSubscriber`],
 //! which spawns a background task when the pipeline is activated.
 //!
-//! When a message is published to the channel via `n.mem.publish`, the background
+//! When a message is published to the channel via `n.kv.publish`, the background
 //! task fires this pipeline with:
 //!
 //! ```json
 //! {
-//!   "trigger": "memsubscribe",
+//!   "trigger": "kv.subscribe",
 //!   "channel": "<channel-name>",
 //!   "node_id": "<node-id>",
 //!   "message": { ... }
@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```text
-//! | n.trigger.memsubscribe --channel alerts
+//! | n.trigger.kv.subscribe --channel alerts
 //! | n.script -- "return { alert: input.message };"
 //! | n.ws.emit --event alert --room dashboard --to all
 //! ```
@@ -36,23 +36,23 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.trigger.memsubscribe";
+pub const NODE_KIND: &str = "n.trigger.kv.subscribe";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Subscribe".to_string(),
-        description: "Subscribe this pipeline to an in-memory pub/sub channel. \
-            Fires whenever n.mem.publish sends a message on the same channel. \
-            Output payload: { trigger: \"memsubscribe\", channel, node_id, message }. \
+        title: "KV Subscribe".to_string(),
+        description: "Listen for messages published on a named KV channel. \
+            Fires whenever n.kv.publish sends a message on the same channel. \
+            Output payload: { trigger: \"kv.subscribe\", channel, node_id, message }. \
             Access the published data via input.message in downstream nodes."
             .to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({
             "type": "object",
             "properties": {
-                "trigger": { "type": "string", "enum": ["memsubscribe"] },
+                "trigger": { "type": "string", "enum": ["kv.subscribe"] },
                 "channel": { "type": "string" },
                 "message": { "description": "Published message payload." }
             }
@@ -77,13 +77,6 @@ pub fn definition() -> NodeDefinition {
         }],
         fields: vec![
             NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "channel".to_string(),
                 label: "Channel".to_string(),
                 field_type: NodeFieldType::Text,
@@ -93,6 +86,7 @@ pub fn definition() -> NodeDefinition {
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -134,7 +128,7 @@ impl NodeHandler for Node {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.trigger.memsubscribe: channel={}",
+                "n.trigger.kv.subscribe: channel={}",
                 self.config.channel
             )],
         })

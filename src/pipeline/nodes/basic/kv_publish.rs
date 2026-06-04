@@ -1,6 +1,6 @@
-//! `n.mem.publish` — publish a message to a named in-memory channel.
+//! `n.kv.publish` — publish a message on a named channel in the project KV bus.
 //!
-//! All active pipelines subscribed via `n.trigger.memsubscribe` on the same
+//! All active pipelines subscribed via `n.trigger.kv.subscribe` on the same
 //! channel will receive the message and fire.
 //!
 //! # Config flags
@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! | n.trigger.webhook --path /alert --method POST
-//! | n.mem.publish --channel notifications
+//! | n.kv.publish --channel notifications
 //! ```
 
 use async_trait::async_trait;
@@ -28,16 +28,16 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.publish";
+pub const NODE_KIND: &str = "n.kv.publish";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Publish".to_string(),
-        description: "Publish a message to a named in-memory channel. \
-            All pipelines listening via n.trigger.memsubscribe on the same channel receive the message. \
+        title: "KV Publish".to_string(),
+        description: "Publish a message on a named channel in the project KV bus. \
+            All pipelines listening via n.trigger.kv.subscribe on the same channel receive the message. \
             Use --payload-path to send a sub-value; empty = whole payload."
             .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -71,12 +71,12 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
             NodeFieldDef { name: "channel".to_string(), label: "Channel".to_string(), field_type: NodeFieldType::Text, help: Some("Channel name. Supports {{ expr }}.".to_string()), ..Default::default() },
             NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer to extract message body. Empty = whole payload.".to_string()), ..Default::default() },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -129,8 +129,8 @@ impl NodeHandler for Node {
 
         if channel.is_empty() {
             return Err(PipelineError::new(
-                "MEM_PUBLISH_CHANNEL",
-                "n.mem.publish: --channel is required",
+                "KV_PUBLISH_CHANNEL",
+                "n.kv.publish: --channel is required",
             ));
         }
 
@@ -148,13 +148,13 @@ impl NodeHandler for Node {
         let receivers = self
             .state_bus
             .publish(owner, project, channel, message)
-            .map_err(|err| PipelineError::new("MEM_PUBLISH_STATE_BUS", err.to_string()))?;
+            .map_err(|err| PipelineError::new("KV_PUBLISH_STATE_BUS", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.mem.publish: channel={} receivers={}",
+                "n.kv.publish: channel={} receivers={}",
                 channel, receivers
             )],
         })

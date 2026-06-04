@@ -1,4 +1,4 @@
-//! `n.mem.incr` — atomically increment (or decrement) an integer counter.
+//! `n.kv.incr` — atomically increment (or decrement) an integer counter.
 //!
 //! The counter starts at 0 if the key doesn't exist.
 //! Non-integer values are reset to 0 before applying the increment.
@@ -11,12 +11,13 @@
 //! | `--key` | string | required | Counter key |
 //! | `--amount` | number | `1` | Increment amount (use negative to decrement) |
 //! | `--out-key` | string | `""` | Payload key to write new counter value (defaults to `--key`) |
+//! | `--durable` | bool | `false` | Increment in durable storage (survives restart). Default: ephemeral. |
 //!
 //! # Example
 //!
 //! ```text
 //! | n.trigger.webhook --path /click --method POST
-//! | n.mem.incr --key "clicks:{{ input.button }}" --out-key total
+//! | n.kv.incr --key "clicks:{{ input.button }}" --out-key total
 //! | n.script -- "return { total: input.total };"
 //! ```
 
@@ -31,18 +32,19 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.incr";
+pub const NODE_KIND: &str = "n.kv.incr";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Incr".to_string(),
+        title: "KV Incr".to_string(),
         description:
             "Atomically increment (or decrement with a negative amount) an integer counter \
-            in the per-project in-memory store. Counter starts at 0 if the key is missing. \
+            in the per-project KV store. Counter starts at 0 if the key is missing. \
             Replaces the payload with { [out_key]: new_value }. \
+            Use --durable to target durable (disk-backed) storage instead of ephemeral. \
             Use $trigger or $nodes references for upstream data."
                 .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -84,15 +86,16 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Increment in durable storage (survives restart). Default: ephemeral."
+                    .to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
             NodeFieldDef {
                 name: "key".to_string(),
                 label: "Key".to_string(),
@@ -116,9 +119,17 @@ pub fn definition() -> NodeDefinition {
                 help: Some("Payload key for the new value. Defaults to --key.".to_string()),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "durable".to_string(),
+                label: "Durable".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some("Check durable storage. Default: ephemeral.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -130,6 +141,8 @@ pub struct Config {
     pub amount: Option<serde_json::Value>,
     #[serde(default)]
     pub out_key: String,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -173,8 +186,8 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_INCR_KEY",
-                "n.mem.incr: --key is required",
+                "KV_INCR_KEY",
+                "n.kv.incr: --key is required",
             ));
         }
 
@@ -184,10 +197,15 @@ impl NodeHandler for Node {
             _ => 1,
         };
 
-        let new_val = self
-            .state_bus
-            .incr(owner, project, key, amount)
-            .map_err(|err| PipelineError::new("MEM_INCR_STATE_BUS", err.to_string()))?;
+        let new_val = if self.config.durable {
+            self.state_bus
+                .durable_incr(owner, project, key, amount)
+                .map_err(|err| PipelineError::new("KV_INCR_STATE_BUS", err.to_string()))?
+        } else {
+            self.state_bus
+                .incr(owner, project, key, amount)
+                .map_err(|err| PipelineError::new("KV_INCR_STATE_BUS", err.to_string()))?
+        };
 
         let out_key = if self.config.out_key.trim().is_empty() {
             key.to_string()
@@ -196,8 +214,8 @@ impl NodeHandler for Node {
         };
 
         let trace = format!(
-            "n.mem.incr: key={} amount={} new_val={} out_key={}",
-            key, amount, new_val, out_key
+            "n.kv.incr: key={} amount={} new_val={} out_key={} durable={}",
+            key, amount, new_val, out_key, self.config.durable
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
