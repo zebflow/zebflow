@@ -16,7 +16,7 @@ pub fn resolve_feature_collection_from_geojson_file(
     resolve_feature_collection_from_value(manifest, request, source_value)
 }
 
-fn resolve_feature_collection_from_value(
+pub fn resolve_feature_collection_from_value(
     manifest: &PublishedLayerManifest,
     request: &ResolveRequest,
     source_value: Value,
@@ -34,10 +34,17 @@ fn resolve_feature_collection_from_value(
         return Err("source GeoJSON missing features array".to_string());
     };
     let bbox = request.bbox.and_then(normalize_bbox);
-    let hard_limit = request
-        .limit
-        .unwrap_or(manifest.max_features)
-        .min(manifest.max_features);
+    let hard_limit = match request.limit {
+        Some(l) => l,
+        None => manifest.max_features,
+    };
+    let parsed_filter = request
+        .filter
+        .as_deref()
+        .map(super::filter_dsl::parse_filter)
+        .transpose()
+        .ok()
+        .flatten();
     let mut out = Vec::new();
     let mut matched = 0usize;
     for feature in features {
@@ -46,6 +53,11 @@ fn resolve_feature_collection_from_value(
             .unwrap_or(true);
         if !intersects {
             continue;
+        }
+        if let Some(ref filter) = parsed_filter {
+            if !super::filter_dsl::matches_geojson_feature(filter, feature) {
+                continue;
+            }
         }
         matched += 1;
         if out.len() < hard_limit {
@@ -101,12 +113,17 @@ mod tests {
             bbox_required: true,
             max_features: 1,
             allowed_properties: vec!["name".to_string()],
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
         };
         let req = ResolveRequest {
             layer_id: "adm1".to_string(),
             bbox: Some([106.0, -7.0, 108.0, -5.0]),
             zoom: Some(6),
-            limit: Some(10),
+            limit: Some(1), // Limit enforced by caller (web handler caps for GeoJSON)
+            filter: None,
         };
         let source = json!({
             "type": "FeatureCollection",

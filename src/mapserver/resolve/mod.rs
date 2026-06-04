@@ -4,8 +4,18 @@ use serde_json::Value;
 
 pub mod artifact;
 pub mod cache;
+pub mod function_cache;
 pub mod geoparquet;
+pub mod geoparquet_direct;
+pub mod geoparquet_optimize;
 pub mod query;
+pub mod filter_dsl;
+pub mod mvt;
+pub mod stats;
+pub mod style;
+pub mod style_dsl;
+pub mod tile;
+pub mod tile_cache;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResolveRequest {
@@ -13,6 +23,8 @@ pub struct ResolveRequest {
     pub bbox: Option<[f64; 4]>,
     pub zoom: Option<u8>,
     pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,6 +38,7 @@ pub struct ResolveResponse {
 pub fn resolve_features(
     manifest: &PublishedLayerManifest,
     request: &ResolveRequest,
+    preloaded: Option<&Value>,
 ) -> Result<ResolveResponse, String> {
     if let Some(zoom) = request.zoom {
         if let Some(min_zoom) = manifest.min_zoom {
@@ -59,6 +72,11 @@ pub fn resolve_features(
             std::path::Path::new(&manifest.source_ref),
         ),
         SourceKind::GeoParquet => geoparquet::resolve_from_geoparquet(manifest, request),
+        SourceKind::GeoJsonFunction => {
+            let fc = preloaded
+                .ok_or_else(|| "GeoJsonFunction: features not preloaded".to_string())?;
+            query::resolve_feature_collection_from_value(manifest, request, fc.clone())
+        }
     }?;
 
     // Post-process: simplify geometry at low zoom to reduce response size

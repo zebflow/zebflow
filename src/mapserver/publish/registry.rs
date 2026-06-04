@@ -11,6 +11,10 @@ pub fn manifest_from_runtime(
     bbox_required: bool,
     max_features: usize,
     allowed_properties: Vec<String>,
+    style: Option<serde_json::Value>,
+    filter: Option<String>,
+    function_slug: Option<String>,
+    cache_ttl_secs: Option<u64>,
 ) -> PublishedLayerManifest {
     PublishedLayerManifest {
         layer_id,
@@ -23,5 +27,9 @@ pub fn manifest_from_runtime(
         bbox_required,
         max_features,
         allowed_properties,
+        style,
+        filter,
+        function_slug,
+        cache_ttl_secs,
     }
 }

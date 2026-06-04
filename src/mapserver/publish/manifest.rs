@@ -6,6 +6,7 @@ pub enum SourceKind {
     GeoJsonFile,
     GeoJsonArtifact,
     GeoParquet,
+    GeoJsonFunction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -20,6 +21,14 @@ pub struct PublishedLayerManifest {
     pub bbox_required: bool,
     pub max_features: usize,
     pub allowed_properties: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
