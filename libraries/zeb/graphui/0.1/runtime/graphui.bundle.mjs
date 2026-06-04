@@ -1800,19 +1800,23 @@ function resolveNodeColor(kind, colorMap, fallbackColor) {
   return fallbackColor;
 }
 
-function resolveNodeTitle(kind, config) {
+function resolveNodeTitle(kind, config, catalogTitle) {
   const cfg = config && typeof config === "object" ? config : {};
+  // 1. Instance title (user-set)
   if (cfg.title) {
     return String(cfg.title);
   }
+  // 2. Special formatting for certain kinds
   if (kind === "n.trigger.webhook") {
     const method = String(cfg.method || "GET").toUpperCase();
     const path = String(cfg.path || "/").trim() || "/";
     return `${method} ${path}`;
   }
-  if (kind === "n.logic.match") {
-    return "Match";
+  // 3. Definition title (from catalog)
+  if (catalogTitle) {
+    return String(catalogTitle);
   }
+  // 4. Definition slug (kind) — final fallback
   return kind;
 }
 
@@ -1908,6 +1912,7 @@ export function createPipelineScene(pipeline, options = {}) {
   const fallbackNodeColor = options.fallbackNodeColor || "#334155";
   const colorMap = options.kindColors || null;
   const iconMap = options.kindIcons || null;
+  const titleMap = options.kindTitles || null;
   const defaultEdgeOptions = options.defaultEdgeOptions || {};
 
   const graphNodes = Array.isArray(pipeline?.nodes) ? pipeline.nodes : [];
@@ -1930,7 +1935,8 @@ export function createPipelineScene(pipeline, options = {}) {
         const inputs = sanitizePins(node?.input_pins, ["in"]);
         const kind = String(node?.kind || "node");
         const outputs = deriveOutputPins(kind, cfg, node?.output_pins, ["out"]);
-        const title = resolveNodeTitle(kind, cfg);
+        const catalogTitle = titleMap && titleMap[kind] ? titleMap[kind] : "";
+        const title = resolveNodeTitle(kind, cfg, catalogTitle);
         const color = resolveNodeColor(kind, colorMap, fallbackNodeColor);
         const icon = iconMap && iconMap[kind] ? iconMap[kind] : "";
 
@@ -2399,11 +2405,12 @@ export const PipelineGraph = (() => {
     stateRef.current.observer = obs;
   }
 
-  function _pgLoadScene(app, pipeline, kindColors, kindIcons) {
+  function _pgLoadScene(app, pipeline, kindColors, kindIcons, kindTitles) {
     if (!pipeline) return;
     const scene = createPipelineScene(pipeline, {
       kindColors: { ...DEFAULT_NODE_KIND_COLORS, ...(kindColors || {}) },
       kindIcons: kindIcons || {},
+      kindTitles: kindTitles || {},
     });
     app.registerScene("__pg", scene);
     app.loadScene("__pg");
@@ -2529,7 +2536,7 @@ export const PipelineGraph = (() => {
       app._pgOnOutputAdd = props.onOutputAdd || null;
       appRef.current = app;
       hostRef.current.__zebGraphApp = app;
-      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons);
+      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
       }, 0);
@@ -2554,12 +2561,12 @@ export const PipelineGraph = (() => {
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
       app.ui.readOnly = props.readOnly || false;
-      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons);
+      _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
       }, 0);
       _pgEnsureObserver(stateRef, app, props.onNodeEdit, props.onOutputAdd);
-    }, [props.pipeline, props.readOnly, props.kindIcons]);
+    }, [props.pipeline, props.readOnly, props.kindIcons, props.kindTitles]);
 
     _useEffect(function () {
       const app = appRef.current;
