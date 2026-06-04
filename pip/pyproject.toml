@@ -25,7 +25,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/zebflow/zebflow"
+Homepage = "https://zebflow.com"
 Repository = "https://github.com/zebflow/zebflow"
 Issues = "https://github.com/zebflow/zebflow/issues"
 
