@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
 use serde_json::{Map, Value, json};
@@ -10,6 +11,36 @@ use crate::platform::model::{
     ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition, now_ts,
     slug_segment,
 };
+
+// ── CoreDB connection pool ───────────────────────────────────────────────────
+//
+// Keyed by canonical directory path.  `RwLock<CoreDB>` gives concurrent readers
+// and exclusive writers.  The outer `Mutex` protects the pool map itself.
+
+type DbPool = HashMap<PathBuf, Arc<RwLock<sekejap::CoreDB>>>;
+
+static POOL: OnceLock<Mutex<DbPool>> = OnceLock::new();
+
+fn pool() -> &'static Mutex<DbPool> {
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<RwLock<sekejap::CoreDB>>, PlatformError> {
+    let dir = ensure_project_dir(data_root, owner, project)?;
+    let mut map = pool().lock().unwrap();
+    if let Some(db) = map.get(&dir) {
+        return Ok(Arc::clone(db));
+    }
+    let db = sekejap::CoreDB::open(&dir).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_OPEN",
+            format!("failed to open sekejap store: {err}"),
+        )
+    })?;
+    let arc = Arc::new(RwLock::new(db));
+    map.insert(dir, Arc::clone(&arc));
+    Ok(arc)
+}
 
 pub const BUILTIN_CONNECTION_SLUG: &str = "default-multimodel";
 pub const BUILTIN_CONNECTION_LABEL: &str = "Default Multimodel Store";
@@ -38,15 +69,6 @@ fn ensure_project_dir(
     Ok(dir)
 }
 
-fn open_db(data_root: &Path, owner: &str, project: &str) -> Result<sekejap::CoreDB, PlatformError> {
-    let dir = ensure_project_dir(data_root, owner, project)?;
-    sekejap::CoreDB::open(&dir).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_OPEN",
-            format!("failed to open sekejap store: {err}"),
-        )
-    })
-}
 
 fn load_catalog(
     data_root: &Path,
@@ -255,7 +277,8 @@ pub fn list_tables(
     owner: &str,
     project: &str,
 ) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
-    let db = open_db(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let db = db_arc.read().unwrap();
     let defs = load_catalog(data_root, owner, project)?;
     Ok(merge_catalog_with_live(&db, defs))
 }
@@ -275,7 +298,8 @@ pub fn create_table(
         ));
     }
 
-    let mut db = open_db(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
     db.execute(&build_create_table_sql(&def))
         .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_TABLE_CREATE", err.to_string()))?;
 
@@ -441,6 +465,35 @@ fn statement_is_show(sql: &str) -> bool {
     first == "SHOW"
 }
 
+/// Detect `EXPLAIN [ANALYZE] ...` statements.
+fn statement_is_explain(sql: &str) -> bool {
+    let first = sql
+        .trim_start()
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    first == "EXPLAIN"
+}
+
+/// Detect `EXPLAIN ANALYZE ...` specifically.
+fn statement_is_explain_analyze(sql: &str) -> bool {
+    let mut words = sql.trim_start().split_whitespace();
+    let first = words.next().unwrap_or("").to_ascii_uppercase();
+    let second = words.next().unwrap_or("").to_ascii_uppercase();
+    first == "EXPLAIN" && second == "ANALYZE"
+}
+
+/// Strip the `EXPLAIN [ANALYZE]` prefix and return the inner SQL.
+fn strip_explain_prefix(sql: &str) -> &str {
+    let rest = sql.trim_start().strip_prefix("EXPLAIN").unwrap_or(sql).trim_start();
+    // Also strip ANALYZE if present
+    rest.strip_prefix("ANALYZE")
+        .or_else(|| rest.strip_prefix("analyze"))
+        .unwrap_or(rest)
+        .trim_start()
+}
+
 fn statement_is_show_tables(sql: &str) -> bool {
     let normalized = sql.trim().trim_end_matches(';');
     let parts = normalized
@@ -492,7 +545,8 @@ pub fn execute_sql(
                 "write statement rejected in read-only mode",
             ));
         }
-        let mut db = open_db(data_root, owner, project)?;
+        let db_arc = get_db(data_root, owner, project)?;
+        let mut db = db_arc.write().unwrap();
         let affected_rows = if params.is_empty() {
             db.execute(trimmed)
         } else {
@@ -505,6 +559,57 @@ pub fn execute_sql(
             row_count: 0,
             truncated: false,
             affected_rows: Some(affected_rows as u64),
+            duration_ms: started.elapsed().as_millis() as u64,
+        });
+    }
+
+    if statement_is_explain(trimmed) {
+        let db_arc = get_db(data_root, owner, project)?;
+        let db = db_arc.read().unwrap();
+        let inner_sql = strip_explain_prefix(trimmed);
+        let hits = if statement_is_explain_analyze(trimmed) {
+            db.explain_analyze(inner_sql)
+        } else {
+            db.explain(inner_sql)
+        }
+        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
+
+        let max_rows = limit.clamp(1, 5_000);
+        let truncated = hits.len() > max_rows;
+        let mut column_names = Vec::<String>::new();
+        let mut row_maps = Vec::<Map<String, Value>>::new();
+        for hit in hits.into_iter().take(max_rows) {
+            let row = hit_to_row_map(hit);
+            for key in row.keys() {
+                if !column_names.iter().any(|existing| existing == key) {
+                    column_names.push(key.clone());
+                }
+            }
+            row_maps.push(row);
+        }
+        let columns = column_names
+            .iter()
+            .map(|name| DbQueryColumn {
+                name: name.clone(),
+                data_type: None,
+            })
+            .collect::<Vec<_>>();
+        let rows = row_maps
+            .into_iter()
+            .map(|row| {
+                column_names
+                    .iter()
+                    .map(|name| row.get(name).cloned().unwrap_or(Value::Null))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        return Ok(QueryPayload {
+            row_count: rows.len(),
+            columns,
+            rows,
+            truncated,
+            affected_rows: None,
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
@@ -537,7 +642,8 @@ pub fn execute_sql(
         });
     }
 
-    let db = open_db(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let db = db_arc.read().unwrap();
     let hits = if statement_is_show(trimmed) {
         db.show(trimmed)
             .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?
@@ -789,13 +895,15 @@ mod tests {
         )
         .expect("table");
 
-        let mut db = open_db(tmp.path(), "alice", "demo").expect("db");
+        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
+        let mut db = db_arc.write().unwrap();
         db.execute("INSERT INTO people (_key, name) VALUES ('alice', 'Alice')")
             .expect("insert alice");
         db.execute("INSERT INTO people (_key, name) VALUES ('bob', 'Bob')")
             .expect("insert bob");
         db.execute("INSERT ('people/alice')-[:knows]->('people/bob')")
             .expect("insert edge");
+        drop(db);
 
         let read = execute_sql(
             tmp.path(),
