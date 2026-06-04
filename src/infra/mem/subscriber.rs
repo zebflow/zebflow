@@ -1,6 +1,6 @@
-//! Background service driving `n.trigger.memsubscribe` pipelines.
+//! Background service driving `n.trigger.kv.subscribe` pipelines.
 //!
-//! When a pipeline with `n.trigger.memsubscribe` is activated, a dedicated
+//! When a pipeline with `n.trigger.kv.subscribe` is activated, a dedicated
 //! tokio task is spawned that listens on the named channel and fires the
 //! pipeline for every received message.  On deactivate the task is aborted.
 
@@ -21,8 +21,8 @@ use crate::platform::services::pipeline_hits::PipelineHitsService;
 use crate::platform::services::pipeline_runtime::PipelineRuntimeService;
 use crate::platform::services::project_config::ZebflowJsonService;
 
-/// Background task registry for mem-subscribe triggered pipelines.
-pub struct MemSubscriber {
+/// Background task registry for KV subscribe triggered pipelines.
+pub struct KvSubscriber {
     tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     state_bus: DynStateBus,
     runtime: Arc<PipelineRuntimeService>,
@@ -32,7 +32,7 @@ pub struct MemSubscriber {
     zebflow_cfg: Arc<ZebflowJsonService>,
 }
 
-impl MemSubscriber {
+impl KvSubscriber {
     pub fn new(
         state_bus: DynStateBus,
         runtime: Arc<PipelineRuntimeService>,
@@ -55,7 +55,7 @@ impl MemSubscriber {
     /// Register listener tasks for all currently active pipelines.
     pub async fn register_all(&self) {
         for pipeline in self.runtime.list_all() {
-            for trigger in &pipeline.mem_subscribe_triggers {
+            for trigger in &pipeline.kv_subscribe_triggers {
                 self.register_task(
                     &pipeline.owner,
                     &pipeline.project,
@@ -69,7 +69,7 @@ impl MemSubscriber {
         }
     }
 
-    /// Sync mem subscriptions for a single pipeline (called on activate / deactivate).
+    /// Sync KV subscriptions for a single pipeline (called on activate / deactivate).
     pub async fn sync_pipeline(&self, owner: &str, project: &str, file_rel_path: &str) {
         let key_prefix = format!("{}/{}/{}", owner, project, file_rel_path);
 
@@ -90,7 +90,7 @@ impl MemSubscriber {
 
         // Spawn fresh tasks if the pipeline is still active.
         if let Some(pipeline) = self.runtime.get(owner, project, file_rel_path) {
-            for trigger in &pipeline.mem_subscribe_triggers {
+            for trigger in &pipeline.kv_subscribe_triggers {
                 self.register_task(
                     owner,
                     project,
@@ -117,7 +117,7 @@ impl MemSubscriber {
 
         let Ok(mut rx) = self.state_bus.subscribe(owner, project, channel) else {
             eprintln!(
-                "MemSubscriber: failed subscribing to channel '{}' for {}/{}/{}",
+                "KvSubscriber: failed subscribing to channel '{}' for {}/{}/{}",
                 channel, owner, project, file_rel_path
             );
             return;
@@ -142,7 +142,7 @@ impl MemSubscriber {
                         let Some(compiled) = runtime.get(&owner_s, &project_s, &file_rel_path_s)
                         else {
                             eprintln!(
-                                "MemSubscriber: pipeline no longer active — stopping listener {}",
+                                "KvSubscriber: pipeline no longer active — stopping listener {}",
                                 file_rel_path_s
                             );
                             break;
@@ -173,7 +173,7 @@ impl MemSubscriber {
                             project: project_s.clone(),
                             pipeline: graph_id_s.clone(),
                             request_id: format!(
-                                "memsub-{}",
+                                "kvsub-{}",
                                 std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap_or_default()
@@ -181,12 +181,13 @@ impl MemSubscriber {
                             ),
                             route: String::new(),
                             input: json!({
-                                "trigger": "memsubscribe",
+                                "trigger": "kv.subscribe",
                                 "channel": channel_s,
                                 "node_id": node_id_s,
                                 "message": message,
                             }),
                             trigger: None,
+                            placeholder: None,
                         };
 
                         let exec_start = std::time::Instant::now();
@@ -203,7 +204,7 @@ impl MemSubscriber {
                                         at: fired_at.timestamp(),
                                         duration_ms,
                                         status: "ok".to_string(),
-                                        trigger: "memsubscribe".to_string(),
+                                        trigger: "kv.subscribe".to_string(),
                                         error: None,
                                         trace: output.node_trace,
                                     },
@@ -217,7 +218,7 @@ impl MemSubscriber {
                                     &owner_s,
                                     &project_s,
                                     &file_rel_path_s,
-                                    "memsubscribe",
+                                    "kv.subscribe",
                                     e.code,
                                     &e.message,
                                 );
@@ -230,7 +231,7 @@ impl MemSubscriber {
                                         at: fired_at.timestamp(),
                                         duration_ms,
                                         status: "error".to_string(),
-                                        trigger: "memsubscribe".to_string(),
+                                        trigger: "kv.subscribe".to_string(),
                                         error: Some(e.message.clone()),
                                         trace: e.node_trace.clone(),
                                     },
@@ -238,7 +239,7 @@ impl MemSubscriber {
                                     max_age_secs,
                                 );
                                 eprintln!(
-                                    "❌ MemSubscriber failed {}/{}/{}: {}",
+                                    "❌ KvSubscriber failed {}/{}/{}: {}",
                                     owner_s, project_s, file_rel_path_s, e
                                 );
                             }
@@ -246,7 +247,7 @@ impl MemSubscriber {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         eprintln!(
-                            "MemSubscriber: channel '{}' lagged by {} messages — some events dropped",
+                            "KvSubscriber: channel '{}' lagged by {} messages — some events dropped",
                             channel_s, n
                         );
                         // Continue — lag is recoverable

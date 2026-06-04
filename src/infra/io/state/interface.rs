@@ -1,7 +1,7 @@
 //! Trait definitions for Zebflow's shared state bus.
 //!
 //! The state bus is the seam between Zebflow runtime features and the concrete mechanism used to
-//! coordinate ephemeral project state. It intentionally covers the full current `n.mem.*` feature
+//! coordinate project state. It intentionally covers the full current `n.kv.*` feature
 //! set so the existing in-memory behavior can move behind one contract before Redis or another
 //! shared backend is introduced.
 //!
@@ -235,6 +235,63 @@ pub trait StateBus: Send + Sync {
         project: &str,
         channel: &str,
     ) -> Result<StateSubscription, StateBusError>;
+
+    // ── Durable KV operations (SQLite-backed, survive restart) ─────────────
+
+    /// Read one namespaced key from durable storage.
+    fn durable_get(&self, owner: &str, project: &str, key: &str) -> Result<Option<Value>, StateBusError> {
+        let _ = (owner, project, key);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
+
+    /// Set one namespaced key in durable storage with an optional TTL in seconds.
+    fn durable_set(
+        &self,
+        owner: &str,
+        project: &str,
+        key: &str,
+        value: Value,
+        ttl_secs: Option<u64>,
+    ) -> Result<(), StateBusError> {
+        let _ = (owner, project, key, value, ttl_secs);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
+
+    /// Check whether one namespaced key exists in durable storage.
+    fn durable_exists(&self, owner: &str, project: &str, key: &str) -> Result<bool, StateBusError> {
+        let _ = (owner, project, key);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
+
+    /// Update the TTL of an existing key in durable storage.
+    fn durable_expire(
+        &self,
+        owner: &str,
+        project: &str,
+        key: &str,
+        ttl_secs: Option<u64>,
+    ) -> Result<bool, StateBusError> {
+        let _ = (owner, project, key, ttl_secs);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
+
+    /// Atomically increment one integer key in durable storage.
+    fn durable_incr(
+        &self,
+        owner: &str,
+        project: &str,
+        key: &str,
+        amount: i64,
+    ) -> Result<i64, StateBusError> {
+        let _ = (owner, project, key, amount);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
+
+    /// Delete one namespaced key from durable storage.
+    fn durable_del(&self, owner: &str, project: &str, key: &str) -> Result<bool, StateBusError> {
+        let _ = (owner, project, key);
+        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+    }
 }
 
 /// Shared trait object used by schedulers, workers, and runtime services.
