@@ -63,6 +63,10 @@ pub fn cache_key(request: &ResolveRequest) -> String {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string())
     );
+    if let Some(ref filter) = request.filter {
+        let hash = super::filter_dsl::filter_hash(filter);
+        let _ = write!(key, ":flt={hash:016x}");
+    }
     key
 }
 

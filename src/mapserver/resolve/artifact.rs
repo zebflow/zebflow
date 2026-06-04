@@ -26,10 +26,17 @@ pub fn resolve_from_artifact(
     }
     let artifact = read_artifact_manifest(artifact_manifest_path)?;
     let bbox = request.bbox.and_then(normalize_bbox);
-    let hard_limit = request
-        .limit
-        .unwrap_or(manifest.max_features)
-        .min(manifest.max_features);
+    let hard_limit = match request.limit {
+        Some(l) => l,
+        None => manifest.max_features,
+    };
+    let parsed_filter = request
+        .filter
+        .as_deref()
+        .map(super::filter_dsl::parse_filter)
+        .transpose()
+        .ok()
+        .flatten();
     let artifact_root = artifact_manifest_path
         .parent()
         .ok_or_else(|| "artifact manifest missing parent directory".to_string())?;
@@ -56,6 +63,11 @@ pub fn resolve_from_artifact(
                 .map(|needle| intersects_bbox(item.bbox, needle))
                 .unwrap_or(true)
             {
+                if let Some(ref filter) = parsed_filter {
+                    if !super::filter_dsl::matches_geojson_feature(filter, &item.feature) {
+                        continue;
+                    }
+                }
                 if out.len() < hard_limit {
                     out.push(prune_feature_properties(
                         item.feature,
@@ -191,12 +203,17 @@ mod tests {
             bbox_required: true,
             max_features: 1,
             allowed_properties: vec!["name".to_string()],
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
         };
         let req = ResolveRequest {
             layer_id: "adm1".to_string(),
             bbox: Some([106.0, -7.0, 108.0, -5.0]),
             zoom: Some(6),
-            limit: Some(10),
+            limit: Some(1), // Limit enforced by caller (web handler caps for GeoJSON)
+            filter: None,
         };
         let out = resolve_from_artifact(&manifest, &req, &tmp.path().join("manifest.json"))
             .expect("resolve");
@@ -243,12 +260,17 @@ mod tests {
             bbox_required: true,
             max_features: 50,
             allowed_properties: vec![],
+            style: None,
+            filter: None,
+            function_slug: None,
+            cache_ttl_secs: None,
         };
         let req = ResolveRequest {
             layer_id: "adm4_villages".to_string(),
             bbox: Some([107.50, -7.10, 107.80, -6.80]),
             zoom: Some(11),
             limit: Some(50),
+            filter: None,
         };
         let resolved =
             resolve_from_artifact(&manifest, &req, &build.manifest_abs_path).expect("resolve");

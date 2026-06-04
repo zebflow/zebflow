@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::util::metadata_scope;
 use crate::pipeline::{
-    NodeDefinition, PipelineError,
+    NodeDefinition, NodeFieldDataSource, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
@@ -56,6 +56,16 @@ pub struct LayerRecord {
     pub feature_count: Option<usize>,
     #[serde(default)]
     pub chunk_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_stats_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 fn read_layers(
@@ -123,6 +133,11 @@ fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
         "allowed_properties": record.allowed_properties,
         "feature_count": record.feature_count,
         "chunk_count": record.chunk_count,
+        "style": record.style,
+        "filter": record.filter,
+        "column_stats_path": record.column_stats_path,
+        "function_slug": record.function_slug,
+        "cache_ttl_secs": record.cache_ttl_secs,
     })
 }
 
@@ -173,6 +188,36 @@ pub struct Config {
     pub max_zoom: Option<u8>,
     #[serde(default)]
     pub build_artifact: bool,
+    // Style fields for tile rendering
+    #[serde(default)]
+    pub fill: Option<String>,
+    #[serde(default)]
+    pub stroke: Option<String>,
+    #[serde(default)]
+    pub stroke_width: Option<String>,
+    #[serde(default)]
+    pub point_radius: Option<String>,
+    #[serde(default)]
+    pub point_color: Option<String>,
+    /// Style DSL expression (e.g. "cb(population,5,YlOrRd)").
+    /// When set, overrides individual fill/stroke/etc flags.
+    #[serde(default)]
+    pub style_dsl: Option<String>,
+    /// Default filter expression (e.g. "category:residential;value>100").
+    #[serde(default)]
+    pub filter: Option<String>,
+    // Spatial optimization
+    #[serde(default)]
+    pub optimize: bool,
+    /// Skip auto-conversion to optimized GeoParquet. Keeps original format.
+    #[serde(default)]
+    pub no_optimize: bool,
+    /// Function pipeline slug for GeoJsonFunction source kind.
+    #[serde(default)]
+    pub function: Option<String>,
+    /// Feature cache TTL in seconds for GeoJsonFunction layers.
+    #[serde(default)]
+    pub cache_ttl: Option<u64>,
 }
 
 // ── Node definitions ─────────────────────────────────────────────────────────
@@ -213,7 +258,8 @@ pub fn publish_definition() -> NodeDefinition {
         title: "MS Publish".to_string(),
         description: "Publish or update a map layer in the project layer registry. \
             The layer becomes immediately queryable on `/ms/{owner}/{project}/{path}`. \
-            Supports geojson_file, geojson_artifact, and geoparquet source kinds."
+            Supports geojson_file, geojson_artifact, geoparquet, and geojson_function source kinds. \
+            Use --function for dynamic layers backed by a function pipeline."
             .to_string(),
         input_schema: json!({"type": "object"}),
         output_schema: json!({
@@ -280,6 +326,33 @@ pub fn publish_definition() -> NodeDefinition {
                 "build_artifact",
                 "For geojson: auto-build chunked artifact for large files.",
             ),
+            scalar_flag("--fill", "fill", "Polygon fill CSS color (default: rgba(65,105,225,128))."),
+            scalar_flag("--stroke", "stroke", "Stroke CSS color (default: #1E3CA0DC)."),
+            scalar_flag("--stroke-width", "stroke_width", "Stroke width in pixels (default: 1.0)."),
+            scalar_flag("--point-radius", "point_radius", "Point radius in pixels (default: 4.0)."),
+            scalar_flag("--point-color", "point_color", "Point fill CSS color (default: #DC3232C8)."),
+            scalar_flag("--style", "style_dsl", "Style DSL expression (e.g. 'cb(population,5,YlOrRd)'). Overrides individual fill/stroke flags."),
+            scalar_flag("--filter", "filter", "Default filter expression (e.g. 'category:residential;value>100')"),
+            bool_flag(
+                "--optimize",
+                "optimize",
+                "Deprecated: optimization is now the default. Use --no-optimize to disable.",
+            ),
+            bool_flag(
+                "--no-optimize",
+                "no_optimize",
+                "Skip auto-conversion to optimized GeoParquet; keep the original source format.",
+            ),
+            scalar_flag(
+                "--function",
+                "function",
+                "Function pipeline slug for dynamic GeoJSON source. Mutually exclusive with --source-path.",
+            ),
+            scalar_flag(
+                "--cache-ttl",
+                "cache_ttl",
+                "Feature cache TTL in seconds for function layers. Default: 60.",
+            ),
         ],
         fields: vec![
             text_field("name", "Layer ID", "Unique layer identifier."),
@@ -303,8 +376,12 @@ pub fn publish_definition() -> NodeDefinition {
                         value: "geoparquet".to_string(),
                         label: "GeoParquet".to_string(),
                     },
+                    SelectOptionDef {
+                        value: "geojson_function".to_string(),
+                        label: "GeoJSON Function".to_string(),
+                    },
                 ],
-                help: Some("Type of geospatial source file.".to_string()),
+                help: Some("Type of geospatial source. Use 'GeoJSON Function' for dynamic data from a function pipeline.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -347,7 +424,38 @@ pub fn publish_definition() -> NodeDefinition {
                 label: "Build Artifact".to_string(),
                 field_type: NodeFieldType::Checkbox,
                 help: Some(
-                    "Auto-build chunked artifact for large GeoJSON files.".to_string(),
+                    "Deprecated: use default optimize behavior instead.".to_string(),
+                ),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "no_optimize".to_string(),
+                label: "Skip Optimization".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                default_value: Some(json!(false)),
+                help: Some(
+                    "Skip GeoParquet conversion. Keep the original source format as-is.".to_string(),
+                ),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "function".to_string(),
+                label: "Function".to_string(),
+                field_type: NodeFieldType::Datalist,
+                data_source: Some(NodeFieldDataSource::FunctionPipelines),
+                placeholder: Some("select or type a function pipeline slug".to_string()),
+                help: Some(
+                    "Function pipeline slug for dynamic GeoJSON source. The function must return a GeoJSON FeatureCollection.".to_string(),
+                ),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "cache_ttl".to_string(),
+                label: "Cache TTL (s)".to_string(),
+                field_type: NodeFieldType::Number,
+                default_value: Some(json!(60)),
+                help: Some(
+                    "Feature cache duration in seconds for function layers. Default: 60.".to_string(),
                 ),
                 ..Default::default()
             },
@@ -359,12 +467,7 @@ pub fn publish_definition() -> NodeDefinition {
                     LayoutItem::Field("path".to_string()),
                 ],
             },
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("source_path".to_string()),
-                    LayoutItem::Field("source_kind".to_string()),
-                ],
-            },
+            LayoutItem::Field("source_path".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("bbox_required".to_string()),
@@ -378,9 +481,16 @@ pub fn publish_definition() -> NodeDefinition {
                     LayoutItem::Field("max_zoom".to_string()),
                 ],
             },
-            LayoutItem::Field("build_artifact".to_string()),
+            LayoutItem::Field("no_optimize".to_string()),
+            LayoutItem::Row {
+                row: vec![
+                    LayoutItem::Field("function".to_string()),
+                    LayoutItem::Field("cache_ttl".to_string()),
+                ],
+            },
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -416,6 +526,7 @@ pub fn unpublish_definition() -> NodeDefinition {
         fields: vec![text_field("name", "Layer ID", "Layer identifier to remove.")],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -450,6 +561,7 @@ pub fn get_definition() -> NodeDefinition {
         fields: vec![text_field("name", "Layer ID", "Layer identifier to look up.")],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -481,6 +593,7 @@ pub fn list_definition() -> NodeDefinition {
         fields: vec![],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -560,8 +673,13 @@ impl Node {
         let name = require_non_empty(&self.config.name, "--name", "FW_NODE_MS_PUBLISH")?;
         let path = require_non_empty(&self.config.path, "--path", "FW_NODE_MS_PUBLISH")?;
 
-        // source_path: config takes priority, then input payload
-        let source_path = if !self.config.source_path.trim().is_empty() {
+        // ── GeoJsonFunction mode: --function set → skip source-path / optimization
+        let is_function_mode = self.config.function.as_ref().is_some_and(|s| !s.trim().is_empty());
+
+        // source_path: config takes priority, then input payload (not required for function mode)
+        let mut source_path = if is_function_mode {
+            String::new()
+        } else if !self.config.source_path.trim().is_empty() {
             self.config.source_path.trim().to_string()
         } else {
             input
@@ -573,44 +691,27 @@ impl Node {
                 .ok_or_else(|| {
                     PipelineError::new(
                         "FW_NODE_MS_PUBLISH",
-                        "--source-path is required (config or input payload.source_path)",
+                        "--source-path is required (config or input payload.source_path), or use --function for dynamic sources",
                     )
                 })?
         };
 
-        let source_kind = if self.config.source_kind.trim().is_empty() {
-            "geojson_file".to_string()
-        } else {
-            self.config.source_kind.trim().to_ascii_lowercase()
-        };
-
-        // Validate source_kind
-        if !matches!(
-            source_kind.as_str(),
-            "geojson_file" | "geojson_artifact" | "geoparquet"
-        ) {
-            return Err(PipelineError::new(
-                "FW_NODE_MS_PUBLISH",
-                format!(
-                    "unsupported --source-kind '{source_kind}'; \
-                     expected geojson_file, geojson_artifact, or geoparquet"
-                ),
-            ));
-        }
-
-        // Validate source file exists in ZebFS
         let layout = self
             .platform
             .file
             .ensure_project_layout(owner, project)
             .map_err(|e| PipelineError::new("FW_NODE_MS_PUBLISH", e.to_string()))?;
-        let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir.clone());
-        zebfs.head(&source_path).map_err(|e| {
-            PipelineError::new(
-                "FW_NODE_MS_PUBLISH",
-                format!("source file not found in ZebFS: {e}"),
-            )
-        })?;
+
+        if !is_function_mode {
+            // Validate source file exists in ZebFS
+            let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir.clone());
+            zebfs.head(&source_path).map_err(|e| {
+                PipelineError::new(
+                    "FW_NODE_MS_PUBLISH",
+                    format!("source file not found in ZebFS: {e}"),
+                )
+            })?;
+        }
 
         let bbox_required = if self.config.no_bbox_required.unwrap_or(false) {
             false
@@ -628,16 +729,218 @@ impl Node {
             .filter(|s| !s.is_empty())
             .collect();
 
-        // Build artifact for geojson if requested
         let mut artifact_manifest_path: Option<String> = None;
         let mut feature_count: Option<usize> = None;
         let mut chunk_count: Option<usize> = None;
+        let mut optimization_info: Option<Value> = None;
+        let mut column_stats_path: Option<String> = None;
 
-        let effective_kind =
+        // ── Auto-detect format and optimize ──────────────────────────────
+        let source_abs = layout.files_dir.join(source_path.trim_start_matches('/'));
+        let source_lower = source_path.to_ascii_lowercase();
+
+        // Determine if we should optimize (default=yes, opt-out with --no-optimize)
+        let should_optimize = !self.config.no_optimize && !is_function_mode;
+
+        let effective_kind = if is_function_mode {
+            "geojson_function".to_string()
+        } else if should_optimize {
+            // Auto-detect format from file extension
+            let is_geojson = source_lower.ends_with(".geojson") || source_lower.ends_with(".json");
+            let is_parquet = source_lower.ends_with(".parquet") || source_lower.ends_with(".pq");
+
+            if is_parquet {
+                // Check if already optimized
+                if crate::mapserver::resolve::geoparquet_optimize::is_already_optimized(&source_abs)
+                {
+                    eprintln!("geoparquet already optimized, registering as-is");
+                    optimization_info = Some(json!({
+                        "applied": false,
+                        "reason": "already_optimized",
+                        "source_format": "parquet",
+                    }));
+                    "geoparquet".to_string()
+                } else {
+                    // Optimize: add bbox columns, Hilbert sort, small row groups
+                    let optimized_dir = layout.files_dir.join("mapserver/.optimized");
+                    std::fs::create_dir_all(&optimized_dir).map_err(|e| {
+                        PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
+                    })?;
+                    let optimized_filename = format!("{name}.spatial.parquet");
+                    let optimized_abs = optimized_dir.join(&optimized_filename);
+                    let optimized_rel = format!("mapserver/.optimized/{optimized_filename}");
+
+                    let report =
+                        crate::mapserver::resolve::geoparquet_optimize::optimize_geoparquet(
+                            &source_abs,
+                            &optimized_abs,
+                        )
+                        .map_err(|e| {
+                            PipelineError::new(
+                                "FW_NODE_MS_PUBLISH",
+                                format!("optimize failed: {e}"),
+                            )
+                        })?;
+
+                    // Write column stats sidecar JSON
+                    let stats_filename = format!("{name}.spatial.stats.json");
+                    let stats_abs = optimized_dir.join(&stats_filename);
+                    let stats_rel = format!("mapserver/.optimized/{stats_filename}");
+                    let stats_report = crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
+                        row_count: report.rows,
+                        columns: report.column_stats.clone(),
+                    };
+                    if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
+                        let _ = std::fs::write(&stats_abs, stats_json);
+                    }
+
+                    eprintln!(
+                        "geoparquet optimized: {} rows, {} row groups, {:.1}MB → {:.1}MB, {} column stats",
+                        report.rows,
+                        report.row_groups,
+                        report.source_bytes as f64 / 1_048_576.0,
+                        report.dest_bytes as f64 / 1_048_576.0,
+                        report.column_stats.len(),
+                    );
+
+                    source_path = optimized_rel;
+                    feature_count = Some(report.rows);
+                    column_stats_path = Some(stats_rel.clone());
+                    optimization_info = Some(json!({
+                        "applied": true,
+                        "source_format": "parquet",
+                        "rows": report.rows,
+                        "row_groups": report.row_groups,
+                        "column_stats_count": report.column_stats.len(),
+                        "column_stats_path": stats_rel,
+                    }));
+                    "geoparquet".to_string()
+                }
+            } else if is_geojson {
+                // Convert GeoJSON → raw Parquet → optimize
+                let optimized_dir = layout.files_dir.join("mapserver/.optimized");
+                std::fs::create_dir_all(&optimized_dir).map_err(|e| {
+                    PipelineError::new("FW_NODE_MS_PUBLISH", format!("mkdir failed: {e}"))
+                })?;
+
+                let temp_raw = optimized_dir.join(format!("{name}.raw.parquet"));
+                let optimized_filename = format!("{name}.spatial.parquet");
+                let optimized_abs = optimized_dir.join(&optimized_filename);
+                let optimized_rel = format!("mapserver/.optimized/{optimized_filename}");
+
+                // Step 1: GeoJSON → raw GeoParquet
+                let convert_report =
+                    crate::mapserver::resolve::geoparquet_optimize::convert_geojson_to_geoparquet(
+                        &source_abs,
+                        &temp_raw,
+                    )
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_MS_PUBLISH",
+                            format!("GeoJSON conversion failed: {e}"),
+                        )
+                    })?;
+
+                eprintln!(
+                    "geojson converted: {} features, {} columns",
+                    convert_report.feature_count, convert_report.column_count,
+                );
+
+                // Step 2: optimize the raw parquet
+                let opt_report =
+                    crate::mapserver::resolve::geoparquet_optimize::optimize_geoparquet(
+                        &temp_raw,
+                        &optimized_abs,
+                    )
+                    .map_err(|e| {
+                        // Clean up temp file on error
+                        let _ = std::fs::remove_file(&temp_raw);
+                        PipelineError::new(
+                            "FW_NODE_MS_PUBLISH",
+                            format!("optimize failed: {e}"),
+                        )
+                    })?;
+
+                // Clean up intermediate raw parquet
+                let _ = std::fs::remove_file(&temp_raw);
+
+                // Write column stats sidecar JSON
+                let stats_filename = format!("{name}.spatial.stats.json");
+                let stats_abs = optimized_dir.join(&stats_filename);
+                let stats_rel = format!("mapserver/.optimized/{stats_filename}");
+                let stats_report = crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
+                    row_count: opt_report.rows,
+                    columns: opt_report.column_stats.clone(),
+                };
+                if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
+                    let _ = std::fs::write(&stats_abs, stats_json);
+                }
+
+                eprintln!(
+                    "geoparquet optimized: {} rows, {} row groups, {:.1}MB, {} column stats",
+                    opt_report.rows,
+                    opt_report.row_groups,
+                    opt_report.dest_bytes as f64 / 1_048_576.0,
+                    opt_report.column_stats.len(),
+                );
+
+                feature_count = Some(convert_report.feature_count);
+                source_path = optimized_rel;
+                column_stats_path = Some(stats_rel.clone());
+                optimization_info = Some(json!({
+                    "applied": true,
+                    "source_format": "geojson",
+                    "features": convert_report.feature_count,
+                    "columns": convert_report.column_count,
+                    "rows": opt_report.rows,
+                    "row_groups": opt_report.row_groups,
+                    "column_stats_count": opt_report.column_stats.len(),
+                    "column_stats_path": stats_rel,
+                }));
+                "geoparquet".to_string()
+            } else {
+                // Unknown format — cannot auto-optimize
+                return Err(PipelineError::new(
+                    "FW_NODE_MS_PUBLISH",
+                    format!(
+                        "cannot auto-detect format for '{}'; \
+                         use --no-optimize to publish without conversion, \
+                         or rename the file with a .geojson or .parquet extension",
+                        source_path
+                    ),
+                ));
+            }
+        } else {
+            // --no-optimize: legacy behavior
+            let source_kind = if self.config.source_kind.trim().is_empty() {
+                // Auto-detect source_kind for --no-optimize
+                if source_lower.ends_with(".parquet") || source_lower.ends_with(".pq") {
+                    "geoparquet".to_string()
+                } else {
+                    "geojson_file".to_string()
+                }
+            } else {
+                self.config.source_kind.trim().to_ascii_lowercase()
+            };
+
+            // Validate source_kind
+            if !matches!(
+                source_kind.as_str(),
+                "geojson_file" | "geojson_artifact" | "geoparquet" | "geojson_function"
+            ) {
+                return Err(PipelineError::new(
+                    "FW_NODE_MS_PUBLISH",
+                    format!(
+                        "unsupported --source-kind '{source_kind}'; \
+                         expected geojson_file, geojson_artifact, geoparquet, or geojson_function"
+                    ),
+                ));
+            }
+
+            // Legacy: build artifact for geojson if requested
             if (source_kind == "geojson_file" && self.config.build_artifact)
                 || source_kind == "geojson_artifact"
             {
-                let source_abs = layout.files_dir.join(source_path.trim_start_matches('/'));
                 let artifact_rel = format!("mapserver/.artifacts/{name}");
                 let artifact_abs = layout.files_dir.join(&artifact_rel);
                 let build_out = crate::mapserver::publish::build::build_geojson_artifact(
@@ -653,31 +956,48 @@ impl Node {
                 chunk_count = Some(build_out.chunk_count);
                 "geojson_artifact".to_string()
             } else {
-                source_kind.clone()
-            };
+                source_kind
+            }
+        };
 
-        // For geoparquet: quick validation — check file is a valid parquet
-        if effective_kind == "geoparquet" {
-            let abs = layout
-                .files_dir
-                .join(source_path.trim_start_matches('/'));
-            let file = std::fs::File::open(&abs).map_err(|e| {
-                PipelineError::new(
-                    "FW_NODE_MS_PUBLISH",
-                    format!("cannot open geoparquet file: {e}"),
-                )
-            })?;
-            // Quick schema check — try reading parquet metadata
-            use parquet::file::reader::FileReader;
-            let reader =
-                parquet::file::reader::SerializedFileReader::new(file).map_err(|e| {
-                    PipelineError::new(
-                        "FW_NODE_MS_PUBLISH",
-                        format!("invalid parquet file: {e}"),
-                    )
-                })?;
-            let _metadata = reader.metadata();
-        }
+        // Build style: prefer --style DSL over individual fill/stroke flags
+        let style = if let Some(ref dsl) = self.config.style_dsl {
+            // Validate DSL syntax at publish time
+            crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl)
+                .map_err(|e| PipelineError::new("MS_PUBLISH_STYLE", format!("invalid style DSL: {e}")))?;
+            Some(json!(dsl)) // Store as JSON string value
+        } else {
+            let mut obj = serde_json::Map::new();
+            if let Some(ref v) = self.config.fill {
+                obj.insert("fill".into(), json!(v));
+            }
+            if let Some(ref v) = self.config.stroke {
+                obj.insert("stroke".into(), json!(v));
+            }
+            if let Some(ref v) = self.config.stroke_width {
+                if let Ok(f) = v.parse::<f32>() {
+                    obj.insert("stroke_width".into(), json!(f));
+                }
+            }
+            if let Some(ref v) = self.config.point_radius {
+                if let Ok(f) = v.parse::<f32>() {
+                    obj.insert("point_radius".into(), json!(f));
+                }
+            }
+            if let Some(ref v) = self.config.point_color {
+                obj.insert("point_color".into(), json!(v));
+            }
+            if obj.is_empty() { None } else { Some(Value::Object(obj)) }
+        };
+
+        // Validate filter syntax at publish time
+        let filter = if let Some(ref f) = self.config.filter {
+            crate::mapserver::resolve::filter_dsl::parse_filter(f)
+                .map_err(|e| PipelineError::new("MS_PUBLISH_FILTER", format!("invalid filter: {e}")))?;
+            Some(f.clone())
+        } else {
+            None
+        };
 
         // Upsert into registry
         let record = LayerRecord {
@@ -694,6 +1014,19 @@ impl Node {
             allowed_properties,
             feature_count,
             chunk_count,
+            style,
+            filter,
+            column_stats_path,
+            function_slug: if is_function_mode {
+                self.config.function.clone()
+            } else {
+                None
+            },
+            cache_ttl_secs: if is_function_mode {
+                self.config.cache_ttl
+            } else {
+                None
+            },
         };
 
         let mut layers = read_layers(&self.platform, owner, project)?;
@@ -704,12 +1037,16 @@ impl Node {
         }
         write_layers(&self.platform, owner, project, &layers)?;
 
-        Ok(json!({
+        let mut result = json!({
             "ms": {
                 "operation": "publish",
                 "layer": layer_to_json(owner, project, &record)
             }
-        }))
+        });
+        if let Some(opt) = optimization_info {
+            result["ms"]["optimization"] = opt;
+        }
+        Ok(result)
     }
 
     fn exec_unpublish(&self, owner: &str, project: &str) -> Result<Value, PipelineError> {
@@ -720,7 +1057,7 @@ impl Node {
         let removed = layers.len() < before;
         write_layers(&self.platform, owner, project, &layers)?;
 
-        // Clean up artifact directory if it exists
+        // Clean up artifact directory and optimized file if they exist
         if removed {
             if let Ok(layout) = self.platform.file.ensure_project_layout(owner, project) {
                 let artifact_dir = layout
@@ -731,6 +1068,24 @@ impl Node {
                     .join(name);
                 if artifact_dir.exists() {
                     let _ = std::fs::remove_dir_all(&artifact_dir);
+                }
+
+                let optimized_file = layout
+                    .files_dir
+                    .join("mapserver")
+                    .join(".optimized")
+                    .join(format!("{}.spatial.parquet", name));
+                if optimized_file.exists() {
+                    let _ = std::fs::remove_file(&optimized_file);
+                }
+
+                let stats_file = layout
+                    .files_dir
+                    .join("mapserver")
+                    .join(".optimized")
+                    .join(format!("{}.spatial.stats.json", name));
+                if stats_file.exists() {
+                    let _ = std::fs::remove_file(&stats_file);
                 }
             }
         }

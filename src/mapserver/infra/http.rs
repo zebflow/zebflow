@@ -3,6 +3,7 @@ use std::collections::HashMap;
 pub fn parse_bbox_param(params: &HashMap<String, String>) -> Result<Option<[f64; 4]>, String> {
     let Some(raw) = params
         .get("bbox")
+        .or_else(|| params.get("BBOX"))
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     else {

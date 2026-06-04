@@ -2,15 +2,59 @@
 //!
 //! Queries a GeoParquet file using spatial SQL: `ST_Intersects(geometry, ST_MakeEnvelope(...))`
 //! with DataFusion for query execution and GeoDataFusion for ST_* functions.
+//!
+//! **Performance**: SessionContext + geometry column detection are cached per parquet file
+//! in a module-level pool. Cloning a SessionContext is cheap (Arc bump on internal state).
+//! File mtime+size are checked on every request to detect republished data.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
-use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion::prelude::{ParquetReadOptions, SessionConfig, SessionContext};
 use serde_json::{Value, json};
 
 use crate::mapserver::publish::manifest::PublishedLayerManifest;
 
 use super::{ResolveRequest, ResolveResponse};
+
+// ── SessionContext pool ──────────────────────────────────────────────
+// Uses tokio::sync::Mutex so the lock can be held across await points.
+// This serializes context creation per parquet file, preventing the
+// thundering herd problem where N concurrent tile requests would each
+// create their own SessionContext.
+
+struct BboxCols {
+    xmin: String,
+    ymin: String,
+    xmax: String,
+    ymax: String,
+}
+
+struct ContextEntry {
+    ctx: SessionContext,
+    geom_col: String,
+    bbox_cols: Option<BboxCols>,
+    file_mtime: u64,
+    file_size: u64,
+}
+
+fn context_pool() -> &'static tokio::sync::Mutex<HashMap<String, ContextEntry>> {
+    static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, ContextEntry>>> = OnceLock::new();
+    POOL.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+/// Get file mtime (seconds since epoch) and size for staleness checks.
+fn file_version(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some((mtime, meta.len()))
+}
 
 /// Resolve features from a GeoParquet file using DataFusion spatial queries.
 pub fn resolve_from_geoparquet(
@@ -40,22 +84,72 @@ async fn resolve_async(
     request: &ResolveRequest,
     source_path: &Path,
 ) -> Result<ResolveResponse, String> {
-    let ctx = SessionContext::new();
-    geodatafusion::register(&ctx);
+    let pool_key = source_path.to_string_lossy().to_string();
+    let current_version = file_version(source_path).unwrap_or((0, 0));
 
-    // Register parquet file as a table
-    let path_str = source_path.to_string_lossy();
-    ctx.register_parquet("layer", &path_str, ParquetReadOptions::default())
-        .await
-        .map_err(|e| format!("failed to register parquet: {e}"))?;
+    // Hold the async lock during both lookup and (if needed) creation.
+    // This serializes context creation per file — the first request creates
+    // the context, subsequent concurrent requests wait and then clone it.
+    let (ctx, geom_col, bbox_cols) = {
+        let mut pool = context_pool().lock().await;
 
-    // Detect geometry column name
-    let geom_col = detect_geometry_column(&ctx).await?;
+        let needs_create = pool
+            .get(&pool_key)
+            .map(|entry| {
+                entry.file_mtime != current_version.0 || entry.file_size != current_version.1
+            })
+            .unwrap_or(true);
 
-    let hard_limit = request
-        .limit
-        .unwrap_or(manifest.max_features)
-        .min(manifest.max_features);
+        if needs_create {
+            let config = SessionConfig::new()
+                .set_bool("datafusion.execution.parquet.pushdown_filters", true)
+                .set_bool("datafusion.execution.parquet.reorder_filters", true);
+            let ctx = SessionContext::new_with_config(config);
+            geodatafusion::register(&ctx);
+
+            let path_str = source_path.to_string_lossy();
+            ctx.register_parquet("layer", &path_str, ParquetReadOptions::default())
+                .await
+                .map_err(|e| format!("failed to register parquet: {e}"))?;
+
+            let geom_col = detect_geometry_column(&ctx).await?;
+            let bbox_cols = detect_bbox_columns(&ctx).await;
+
+            pool.insert(
+                pool_key.clone(),
+                ContextEntry {
+                    ctx: ctx.clone(),
+                    geom_col: geom_col.clone(),
+                    bbox_cols: bbox_cols.as_ref().map(|b| BboxCols {
+                        xmin: b.xmin.clone(),
+                        ymin: b.ymin.clone(),
+                        xmax: b.xmax.clone(),
+                        ymax: b.ymax.clone(),
+                    }),
+                    file_mtime: current_version.0,
+                    file_size: current_version.1,
+                },
+            );
+            (ctx, geom_col, bbox_cols)
+        } else {
+            let entry = pool.get(&pool_key).unwrap();
+            let bbox = entry.bbox_cols.as_ref().map(|b| BboxCols {
+                xmin: b.xmin.clone(),
+                ymin: b.ymin.clone(),
+                xmax: b.xmax.clone(),
+                ymax: b.ymax.clone(),
+            });
+            (entry.ctx.clone(), entry.geom_col.clone(), bbox)
+        }
+    };
+
+    // Use the caller-provided limit directly if set (tile rendering passes
+    // a tile_limit that is not capped by max_features — same as GeoServer WMS).
+    // Only fall back to / cap at max_features when no explicit limit is given.
+    let hard_limit = match request.limit {
+        Some(l) => l,
+        None => manifest.max_features,
+    };
 
     // Build property selection
     let select_cols = if manifest.allowed_properties.is_empty() {
@@ -70,15 +164,44 @@ async fn resolve_async(
         cols.join(", ")
     };
 
-    // Build WHERE clause for spatial filter
-    // geodatafusion 0.4.0 does not have ST_MakeEnvelope — use ST_GeomFromText with a WKT polygon
-    let where_clause = if let Some(bbox) = request.bbox {
-        let (min_x, min_y, max_x, max_y) = (bbox[0], bbox[1], bbox[2], bbox[3]);
-        format!(
-            "WHERE ST_Intersects(\"{geom_col}\", ST_GeomFromText('POLYGON(({min_x} {min_y}, {max_x} {min_y}, {max_x} {max_y}, {min_x} {max_y}, {min_x} {min_y}))'))"
-        )
-    } else {
-        String::new()
+    // Build WHERE clause for spatial + attribute filters.
+    // When bbox covering columns exist (from optimized parquet), prepend a
+    // float-comparison pre-filter that DataFusion can pushdown to the parquet
+    // reader for row group pruning. ST_Intersects runs as a precise filter
+    // on the candidate rows that survive the pre-filter.
+    let where_clause = {
+        let mut conditions = Vec::new();
+
+        // Spatial conditions
+        if let Some(bbox) = request.bbox {
+            let (min_x, min_y, max_x, max_y) = (bbox[0], bbox[1], bbox[2], bbox[3]);
+
+            // Pre-filter: bbox covering columns (pushdown-friendly float comparisons)
+            if let Some(ref bc) = bbox_cols {
+                conditions.push(format!(
+                    "\"{}\" <= {max_x} AND \"{}\" >= {min_x} AND \"{}\" <= {max_y} AND \"{}\" >= {min_y}",
+                    bc.xmin, bc.xmax, bc.ymin, bc.ymax
+                ));
+            }
+
+            // Precise filter: spatial intersection
+            conditions.push(format!(
+                "ST_Intersects(\"{geom_col}\", ST_GeomFromText('POLYGON(({min_x} {min_y}, {max_x} {min_y}, {max_x} {max_y}, {min_x} {max_y}, {min_x} {min_y}))'))"
+            ));
+        }
+
+        // Attribute filter
+        if let Some(ref filter_str) = request.filter {
+            if let Ok(filter) = super::filter_dsl::parse_filter(filter_str) {
+                conditions.push(super::filter_dsl::filter_to_sql(&filter));
+            }
+        }
+
+        if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        }
     };
 
     let sql = format!(
@@ -116,6 +239,10 @@ async fn resolve_async(
                     geometry = parse_geometry_value(&value);
                 } else {
                     let name = field.name().clone();
+                    // Skip internal bbox covering columns from output
+                    if matches!(name.as_str(), "xmin" | "ymin" | "xmax" | "ymax") {
+                        continue;
+                    }
                     properties.insert(name, value);
                 }
             }
@@ -171,6 +298,40 @@ async fn detect_geometry_column(ctx: &SessionContext) -> Result<String, String> 
     Err("no geometry column found in geoparquet file; \
          expected one of: geometry, geom, wkb_geometry, the_geom, shape"
         .to_string())
+}
+
+/// Detect bbox covering columns (xmin, ymin, xmax, ymax) in the schema.
+/// These are added by the spatial optimizer and enable row group pruning.
+async fn detect_bbox_columns(ctx: &SessionContext) -> Option<BboxCols> {
+    let df = ctx.sql("SELECT * FROM layer LIMIT 0").await.ok()?;
+    let schema = df.schema();
+
+    // Check for all four bbox columns as Float64
+    let names = [
+        ("xmin", "ymin", "xmax", "ymax"),
+        ("min_x", "min_y", "max_x", "max_y"),
+        ("bbox_xmin", "bbox_ymin", "bbox_xmax", "bbox_ymax"),
+    ];
+
+    for (xmin, ymin, xmax, ymax) in names {
+        let has_all = [xmin, ymin, xmax, ymax].iter().all(|name| {
+            schema
+                .field_with_unqualified_name(name)
+                .ok()
+                .map(|f| matches!(f.data_type(), datafusion::arrow::datatypes::DataType::Float64))
+                .unwrap_or(false)
+        });
+        if has_all {
+            return Some(BboxCols {
+                xmin: xmin.to_string(),
+                ymin: ymin.to_string(),
+                xmax: xmax.to_string(),
+                ymax: ymax.to_string(),
+            });
+        }
+    }
+
+    None
 }
 
 /// Extract a scalar value from an Arrow array at a given row index.
