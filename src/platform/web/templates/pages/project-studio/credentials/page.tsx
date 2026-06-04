@@ -44,61 +44,39 @@ async function requestJson(url, options: any = {}) {
   });
 }
 
-// ── Secret field schemas ──────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-const ALGORITHMS = [
-  { value: "HS256", label: "HS256 — HMAC-SHA256 (symmetric)" },
-  { value: "HS384", label: "HS384 — HMAC-SHA384 (symmetric)" },
-  { value: "HS512", label: "HS512 — HMAC-SHA512 (symmetric)" },
-  { value: "RS256", label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)" },
-  { value: "RS384", label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)" },
-  { value: "RS512", label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)" },
-  { value: "ES256", label: "ES256 — ECDSA P-256 (asymmetric)" },
-  { value: "ES384", label: "ES384 — ECDSA P-384 (asymmetric)" },
-];
-
-const CREDENTIAL_KINDS = [
+const FALLBACK_KINDS = [
   "postgres", "mysql", "openai", "http", "github", "gitlab",
-  "jwt_signing_key", "browser_browserless", "secure_request", "oauth2", "hmac", "api_key", "tts", "custom",
+  "jwt_signing_key", "browser_browserless", "oauth2", "hmac", "api_key", "tts", "secure_request", "custom",
 ];
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
-const TTS_PROVIDERS = [{ value: "piper", label: "Piper" }];
 
-function defaultSecretForKind(kind: string): Record<string, any> {
-  if (kind === "tts") {
-    return { provider: "piper" };
-  }
+function defaultSecretForKind(kind: string, types: any[]): Record<string, any> {
+  // Complex types with interactive defaults
   if (kind === "oauth2") {
     return {
-      provider: "",
-      client_id: "",
-      client_secret: "",
-      authorize_url: "",
-      token_url: "",
-      scopes: "",
-      redirect_uri: "",
-      refresh_token: "",
-      access_token: "",
-      expires_at: 0,
-      token_type: "Bearer",
+      provider: "", client_id: "", client_secret: "", authorize_url: "",
+      token_url: "", scopes: "", redirect_uri: "", refresh_token: "",
+      access_token: "", expires_at: 0, token_type: "Bearer",
     };
   }
   if (kind === "hmac") {
     return {
-      provider: "generic",
-      secret: "",
-      signature_header: "X-Hub-Signature-256",
-      signature_encoding: "hex",
-      signature_prefix: "sha256=",
-      algorithm: "sha256",
+      provider: "generic", secret: "", signature_header: "X-Hub-Signature-256",
+      signature_encoding: "hex", signature_prefix: "sha256=", algorithm: "sha256",
       replay_tolerance: 0,
     };
   }
-  if (kind === "api_key") {
-    return { key: "" };
+  // Derive defaults from API field definitions
+  const typeDef = types.find((t) => t.kind === kind);
+  if (!typeDef) return {};
+  const defaults: Record<string, any> = {};
+  for (const field of typeDef.fields || []) {
+    if (field.default != null) defaults[field.key] = field.default;
   }
-  return {};
+  return defaults;
 }
 
 function generateHex(bytes: number): string {
@@ -290,145 +268,90 @@ function SecureRequestVariablesEditor({
   );
 }
 
-// ── SecretFields ──────────────────────────────────────────────────────────────
+// ── Dynamic field renderer (driven by credential-types API) ───────────────────
 
-function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record<string, any>; onChange: (key: string, val: any) => void }) {
-  const s = (key: string, fallback = "") => secret[key] ?? fallback;
+function DynamicField({ field, secret, onChange }: { field: any; secret: Record<string, any>; onChange: (key: string, val: any) => void }) {
+  const value = secret[field.key] ?? field.default ?? "";
+  const className = field.fullWidth ? "col-span-2" : "";
+  const ft = field.type || "text";
 
-  if (kind === "postgres") return (
-    <div className="grid grid-cols-2 gap-3">
-      <Field label="Host" description="Hostname or IP of PostgreSQL server."><Input value={s("host")} onChange={(e) => onChange("host", e.target.value)} onInput={(e:any)=>onChange("host",e.target.value)} /></Field>
-      <Field label="Port" description="TCP port for PostgreSQL."><Input value={s("port")} onChange={(e) => onChange("port", e.target.value)} onInput={(e:any)=>onChange("port",e.target.value)} placeholder="5432" /></Field>
-      <Field label="Database" description="Database name."><Input value={s("database")} onChange={(e) => onChange("database", e.target.value)} onInput={(e:any)=>onChange("database",e.target.value)} /></Field>
-      <Field label="User" description="Login username."><Input value={s("user")} onChange={(e) => onChange("user", e.target.value)} onInput={(e:any)=>onChange("user",e.target.value)} /></Field>
-      <Field label="Password" description="Login password." className="col-span-2"><Input type="password" value={s("password")} onChange={(e) => onChange("password", e.target.value)} onInput={(e:any)=>onChange("password",e.target.value)} /></Field>
-      <Field label="SSL Mode" description="disable, prefer, require, verify-ca, verify-full."><Input value={s("sslmode")} onChange={(e) => onChange("sslmode", e.target.value)} onInput={(e:any)=>onChange("sslmode",e.target.value)} placeholder="prefer" /></Field>
-    </div>
-  );
-
-  if (kind === "mysql") return (
-    <div className="grid grid-cols-2 gap-3">
-      <Field label="Host"><Input value={s("host")} onChange={(e) => onChange("host", e.target.value)} onInput={(e:any)=>onChange("host",e.target.value)} /></Field>
-      <Field label="Port"><Input value={s("port")} onChange={(e) => onChange("port", e.target.value)} onInput={(e:any)=>onChange("port",e.target.value)} placeholder="3306" /></Field>
-      <Field label="Database"><Input value={s("database")} onChange={(e) => onChange("database", e.target.value)} onInput={(e:any)=>onChange("database",e.target.value)} /></Field>
-      <Field label="User"><Input value={s("user")} onChange={(e) => onChange("user", e.target.value)} onInput={(e:any)=>onChange("user",e.target.value)} /></Field>
-      <Field label="Password" className="col-span-2"><Input type="password" value={s("password")} onChange={(e) => onChange("password", e.target.value)} onInput={(e:any)=>onChange("password",e.target.value)} /></Field>
-    </div>
-  );
-
-  if (kind === "openai") return (
-    <div className="flex flex-col gap-3">
-      <Field label="API Key" description="Provider API token."><Input type="password" value={s("api_key")} onChange={(e) => onChange("api_key", e.target.value)} onInput={(e:any)=>onChange("api_key",e.target.value)} /></Field>
-      <Field label="Base URL" description="Custom endpoint if needed."><Input value={s("base_url")} onChange={(e) => onChange("base_url", e.target.value)} onInput={(e:any)=>onChange("base_url",e.target.value)} placeholder="https://api.openai.com/v1" /></Field>
-      <Field label="Default Model"><Input value={s("model")} onChange={(e) => onChange("model", e.target.value)} onInput={(e:any)=>onChange("model",e.target.value)} /></Field>
-    </div>
-  );
-
-  if (kind === "http") return (
-    <div className="flex flex-col gap-3">
-      <Field label="Base URL"><Input value={s("base_url")} onChange={(e) => onChange("base_url", e.target.value)} onInput={(e:any)=>onChange("base_url",e.target.value)} /></Field>
-      <Field label="Token" description="Bearer token or API key."><Input type="password" value={s("token")} onChange={(e) => onChange("token", e.target.value)} onInput={(e:any)=>onChange("token",e.target.value)} /></Field>
-    </div>
-  );
-
-  if (kind === "github") return (
-    <div className="grid grid-cols-2 gap-3">
-      <Field label="GitHub Username"><Input value={s("username")} onChange={(e) => onChange("username", e.target.value)} onInput={(e:any)=>onChange("username",e.target.value)} /></Field>
-      <Field label="Git Name" description="Full name for git commits."><Input value={s("git_name")} onChange={(e) => onChange("git_name", e.target.value)} onInput={(e:any)=>onChange("git_name",e.target.value)} /></Field>
-      <Field label="Git Email" description="Email for git commits."><Input value={s("git_email")} onChange={(e) => onChange("git_email", e.target.value)} onInput={(e:any)=>onChange("git_email",e.target.value)} /></Field>
-      <Field label="Personal Access Token" description="PAT with repo scope." className="col-span-2"><Input type="password" value={s("token")} onChange={(e) => onChange("token", e.target.value)} onInput={(e:any)=>onChange("token",e.target.value)} /></Field>
-    </div>
-  );
-
-  if (kind === "gitlab") return (
-    <div className="grid grid-cols-2 gap-3">
-      <Field label="Instance URL" className="col-span-2"><Input value={s("url")} onChange={(e) => onChange("url", e.target.value)} onInput={(e:any)=>onChange("url",e.target.value)} placeholder="https://gitlab.com" /></Field>
-      <Field label="GitLab Username"><Input value={s("username")} onChange={(e) => onChange("username", e.target.value)} onInput={(e:any)=>onChange("username",e.target.value)} /></Field>
-      <Field label="Personal Access Token" className="col-span-2"><Input type="password" value={s("token")} onChange={(e) => onChange("token", e.target.value)} onInput={(e:any)=>onChange("token",e.target.value)} /></Field>
-      <Field label="Git Name"><Input value={s("git_name")} onChange={(e) => onChange("git_name", e.target.value)} onInput={(e:any)=>onChange("git_name",e.target.value)} /></Field>
-      <Field label="Git Email"><Input value={s("git_email")} onChange={(e) => onChange("git_email", e.target.value)} onInput={(e:any)=>onChange("git_email",e.target.value)} /></Field>
-    </div>
-  );
-
-  if (kind === "jwt_signing_key") return (
-    <div className="flex flex-col gap-3">
-      <Field label="Algorithm" description="HS* uses a shared secret; RS*/ES* use a private key.">
-        <Select value={s("algorithm", "HS256")} onChange={(e) => onChange("algorithm", e.target.value)}>
-          {ALGORITHMS.map((a) => <SelectOption key={a.value} value={a.value} label={a.label} />)}
+  if (ft === "select") {
+    return (
+      <Field label={field.label} description={field.help} className={className}>
+        <Select value={value} onChange={(e) => onChange(field.key, e.target.value)}>
+          {(field.options || []).map((o) => <SelectOption key={o.value} value={o.value} label={o.label} />)}
         </Select>
       </Field>
-      <Field label="HMAC Secret" description="Secret for HS* algorithms.">
-        <div className="flex gap-1.5">
-          <Input type="password" value={s("secret")} onChange={(e) => onChange("secret", e.target.value)} onInput={(e:any)=>onChange("secret",e.target.value)} className="flex-1" />
-          <Button type="button" variant="outline" size="sm" onClick={() => onChange("secret", generateHex(32))}>Generate</Button>
-        </div>
-      </Field>
-      <Field label="Private Key (PEM)" description="PEM private key for RS*/ES* algorithms. Leave blank for HS*.">
+    );
+  }
+
+  if (ft === "textarea") {
+    return (
+      <Field label={field.label} description={field.help} className={className}>
         <textarea
-          value={s("private_key")}
-          onChange={(e) => onChange("private_key", e.target.value)}
-          onInput={(e:any) => onChange("private_key", e.target.value)}
-          rows={5}
+          value={value}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          onInput={(e: any) => onChange(field.key, e.target.value)}
+          rows={field.rows || 4}
+          placeholder={field.placeholder || ""}
           className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 disabled:opacity-50"
         />
       </Field>
-      <Field label="Unauthenticated Redirect" description="Where to redirect when token is missing/invalid. Leave blank for 401 JSON.">
-        <Input value={s("auth_redirect")} onChange={(e) => onChange("auth_redirect", e.target.value)} onInput={(e:any)=>onChange("auth_redirect",e.target.value)} placeholder="/login" />
-      </Field>
-      <Field label="Forbidden Redirect" description="Where to redirect when token is valid but role is insufficient. Leave blank for 403 JSON.">
-        <Input value={s("auth_forbidden_redirect")} onChange={(e) => onChange("auth_forbidden_redirect", e.target.value)} onInput={(e:any)=>onChange("auth_forbidden_redirect",e.target.value)} placeholder="/403" />
-      </Field>
-      <Field label="Allowed Roles" description="Roles available for this credential. Used by webhook nodes to populate the Required Role checkboxes.">
+    );
+  }
+
+  if (ft === "tags") {
+    return (
+      <Field label={field.label} description={field.help} className={className}>
         <TagsInput
-          value={Array.isArray(secret.auth_roles) ? secret.auth_roles : []}
-          onChange={(roles) => onChange("auth_roles", roles)}
-          placeholder="e.g. admin"
+          value={Array.isArray(secret[field.key]) ? secret[field.key] : []}
+          onChange={(val) => onChange(field.key, val)}
+          placeholder={field.placeholder || "Add tag…"}
         />
       </Field>
-    </div>
-  );
+    );
+  }
 
-  if (kind === "browser_browserless") return (
-    <div className="flex flex-col gap-3">
-      <Field label="URL" description="Browserless instance root URL."><Input value={s("url")} onChange={(e) => onChange("url", e.target.value)} onInput={(e:any)=>onChange("url",e.target.value)} placeholder="http://localhost:3000" /></Field>
-      <Field label="Token" description="Optional API token."><Input type="password" value={s("token")} onChange={(e) => onChange("token", e.target.value)} onInput={(e:any)=>onChange("token",e.target.value)} /></Field>
-    </div>
-  );
+  // text, password, number
+  const inputType = ft === "password" ? "password" : ft === "number" ? "number" : "text";
 
-  if (kind === "tts") return (
-    <div className="flex flex-col gap-4">
-      <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-        <p className="text-sm font-medium text-body">Local TTS Runtime Binding</p>
-        <p className="mt-1 text-xs leading-relaxed text-body-soft">
-          These paths are Zebflow FS object paths.
-          For Piper, point to the ONNX model, its JSON config, and the
-          <code>espeak-ng-data</code> directory.
-        </p>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Provider">
-          <Select value={s("provider", "piper")} onChange={(e) => onChange("provider", e.target.value)}>
-            {TTS_PROVIDERS.map((provider) => (
-              <SelectOption key={provider.value} value={provider.value} label={provider.label} />
-            ))}
-          </Select>
-        </Field>
-        <Field label="Voice Label" description="Optional human label for this voice preset.">
-          <Input value={s("voice")} onInput={(e:any)=>onChange("voice", e.target.value)} placeholder="arin" />
-        </Field>
-        <Field label="Model File" className="col-span-2" description="Private-relative ONNX model path. Example: voices/arin/arin-2449.onnx">
-          <Input value={s("model_file")} onInput={(e:any)=>onChange("model_file", e.target.value)} placeholder="voices/arin/arin-2449.onnx" />
-        </Field>
-        <Field label="Config File" className="col-span-2" description="Private-relative Piper JSON config path. Example: voices/arin/arin-2449.onnx.json">
-          <Input value={s("config_file")} onInput={(e:any)=>onChange("config_file", e.target.value)} placeholder="voices/arin/arin-2449.onnx.json" />
-        </Field>
-        <Field label="Espeak Data Dir" className="col-span-2" description="Private-relative directory path to espeak-ng-data. Example: runtime/espeak-ng-data">
-          <Input value={s("espeak_data_dir")} onInput={(e:any)=>onChange("espeak_data_dir", e.target.value)} placeholder="runtime/espeak-ng-data" />
-        </Field>
-      </div>
-    </div>
-  );
+  if (field.generate) {
+    return (
+      <Field label={field.label} description={field.help} className={className}>
+        <div className="flex gap-1.5">
+          <Input
+            type={inputType}
+            value={value}
+            onChange={(e) => onChange(field.key, e.target.value)}
+            onInput={(e: any) => onChange(field.key, e.target.value)}
+            placeholder={field.placeholder || ""}
+            className="flex-1"
+          />
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange(field.key, generateHex(32))}>Generate</Button>
+        </div>
+      </Field>
+    );
+  }
 
+  return (
+    <Field label={field.label} description={field.help} className={className}>
+      <Input
+        type={inputType}
+        value={value}
+        onChange={(e) => onChange(field.key, e.target.value)}
+        onInput={(e: any) => onChange(field.key, e.target.value)}
+        placeholder={field.placeholder || ""}
+      />
+    </Field>
+  );
+}
+
+// ── SecretFields ──────────────────────────────────────────────────────────────
+
+function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: string; secret: Record<string, any>; onChange: (key: string, val: any) => void; credentialTypes: any[] }) {
+  const s = (key: string, fallback = "") => secret[key] ?? fallback;
+
+  // ─── OAuth2: custom UI with status indicator + authorize flow ───
   if (kind === "oauth2") {
     const statusLabel = s("refresh_token") ? (Number(s("expires_at", "0")) * 1000 > Date.now() ? "Authorized" : "Token Expired") : "Not Configured";
     const statusColor = s("refresh_token") ? (Number(s("expires_at", "0")) * 1000 > Date.now() ? "bg-green-500" : "bg-amber-500") : "bg-zinc-400";
@@ -480,6 +403,7 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
     );
   }
 
+  // ─── HMAC: custom UI with provider preset auto-fill ───
   if (kind === "hmac") {
     const HMAC_PROVIDERS = [
       { value: "generic", label: "Generic" },
@@ -552,26 +476,7 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
     );
   }
 
-  if (kind === "api_key") {
-    return (
-      <div className="flex flex-col gap-4">
-        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
-          <p className="text-sm font-medium text-body">API Key</p>
-          <p className="mt-1 text-xs leading-relaxed text-body-soft">
-            Static API key for webhook authentication. Callers send it via <code>X-API-Key</code> header
-            or <code>Authorization: ApiKey &lt;key&gt;</code>.
-          </p>
-        </div>
-        <Field label="Key" description="The API key value. Generate a random one or paste an existing key.">
-          <div className="flex gap-2">
-            <Input type="password" className="flex-1" value={s("key")} onInput={(e: any) => onChange("key", e.target.value)} placeholder="zf_..." />
-            <Button type="button" variant="outline" size="sm" onClick={() => onChange("key", generateHex(32))}>Generate</Button>
-          </div>
-        </Field>
-      </div>
-    );
-  }
-
+  // ─── Secure Request: custom UI with KV editors + variables ───
   if (kind === "secure_request") {
     const request = secret.request && typeof secret.request === "object" ? secret.request : {};
     const variables = Array.isArray(secret.variables) ? secret.variables : [];
@@ -651,24 +556,52 @@ function SecretFields({ kind, secret, onChange }: { kind: string; secret: Record
     );
   }
 
-  // custom
+  // ─── Custom: raw JSON editor ───
+  if (kind === "custom") {
+    return (
+      <Field label="Secret JSON" description="Stored as raw JSON object.">
+        <textarea
+          value={typeof secret === "object" ? JSON.stringify(secret, null, 2) : String(secret ?? "")}
+          onChange={(e) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
+          onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
+          rows={8}
+          placeholder={'{\n  "key": "value"\n}'}
+          className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+        />
+      </Field>
+    );
+  }
+
+  // ─── Dynamic rendering from credential-types API ───
+  const typeDef = credentialTypes.find((t) => t.kind === kind);
+  if (!typeDef || !typeDef.fields?.length) {
+    // Unknown type — fallback to raw JSON editor
+    return (
+      <Field label="Secret JSON" description="Stored as raw JSON object.">
+        <textarea
+          value={typeof secret === "object" ? JSON.stringify(secret, null, 2) : String(secret ?? "")}
+          onChange={(e) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
+          onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
+          rows={8}
+          placeholder={'{\n  "key": "value"\n}'}
+          className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+        />
+      </Field>
+    );
+  }
+
   return (
-    <Field label="Secret JSON" description="Stored as raw JSON object.">
-      <textarea
-        value={typeof secret === "object" ? JSON.stringify(secret, null, 2) : String(secret ?? "")}
-        onChange={(e) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
-        onInput={(e: any) => { try { onChange("__json__", JSON.parse(e.target.value)); } catch { onChange("__json_raw__", e.target.value); } }}
-        rows={8}
-        placeholder={'{\n  "key": "value"\n}'}
-        className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
-      />
-    </Field>
+    <div className="grid grid-cols-2 gap-3">
+      {typeDef.fields.map((field) => (
+        <DynamicField key={field.key} field={field} secret={secret} onChange={onChange} />
+      ))}
+    </div>
   );
 }
 
 // ── CredentialDialog ──────────────────────────────────────────────────────────
 
-function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase, onSaved }) {
+function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase, onSaved, credentialTypes }) {
   const [credentialId, setCredentialId] = useState("");
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState("postgres");
@@ -683,7 +616,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
     if (!open) return;
     if (mode === "create") {
       setCredentialId(""); setTitle(""); setKind("postgres");
-      setNotes(""); setSecret(defaultSecretForKind("postgres")); setStatus("Fill fields and save."); setStatusTone("info");
+      setNotes(""); setSecret(defaultSecretForKind("postgres", credentialTypes)); setStatus("Fill fields and save."); setStatusTone("info");
       return;
     }
     if (!editItem) return;
@@ -769,8 +702,11 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
               />
             </Field>
             <Field label="Kind">
-              <Select value={kind} onChange={(e) => { const nextKind = e.target.value; setKind(nextKind); setSecret(defaultSecretForKind(nextKind)); }} disabled={busy}>
-                {CREDENTIAL_KINDS.map((k) => <SelectOption key={k} value={k} label={k} />)}
+              <Select value={kind} onChange={(e) => { const nextKind = e.target.value; setKind(nextKind); setSecret(defaultSecretForKind(nextKind, credentialTypes)); }} disabled={busy}>
+                {credentialTypes.length > 0
+                  ? credentialTypes.map((t) => <SelectOption key={t.kind} value={t.kind} label={t.title} />)
+                  : FALLBACK_KINDS.map((k) => <SelectOption key={k} value={k} label={k} />)
+                }
               </Select>
             </Field>
             <Field label="Title" className="col-span-2">
@@ -779,7 +715,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
           </div>
 
           {/* Dynamic secret fields */}
-          <SecretFields kind={kind} secret={secret} onChange={setSecretField} />
+          <SecretFields kind={kind} secret={secret} onChange={setSecretField} credentialTypes={credentialTypes} />
 
           {/* Notes */}
           <Field label="Notes">
@@ -826,6 +762,7 @@ export default function Page(input) {
   const apiItemBase = input?.credentials?.api?.item_base ?? "";
 
   const [items, setItems] = useState<any[]>([]);
+  const [credentialTypes, setCredentialTypes] = useState<any[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogMode, setDialogMode] = useState<"create" | "edit">("create");
   const [editItem, setEditItem] = useState<any>(null);
@@ -839,6 +776,10 @@ export default function Page(input) {
 
   useEffect(() => {
     loadList();
+    // Fetch credential type definitions from API
+    requestJson(`/api/projects/${input.owner}/${input.project}/credential-types`)
+      .then((data) => { if (data?.types) setCredentialTypes(data.types); })
+      .catch(() => {});
     // Handle OAuth callback redirect params
     const params = new URLSearchParams(window.location.search);
     const oauthResult = params.get("oauth");
@@ -951,6 +892,7 @@ export default function Page(input) {
         apiList={apiList}
         apiItemBase={apiItemBase}
         onSaved={loadList}
+        credentialTypes={credentialTypes}
       />
     </ProjectStudioShell>
   );

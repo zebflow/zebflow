@@ -1,6 +1,6 @@
 //! Project credential management service.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -8,6 +8,7 @@ use serde_json::Value;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
+    CredentialFieldDef, CredentialFieldOption, CredentialTypeDef,
     ProjectCredential, ProjectCredentialListItem, SecureRequestVariableDefinition,
     UpsertProjectCredentialRequest, now_ts, slug_segment,
 };
@@ -505,6 +506,234 @@ fn derive_oauth2_status(secret: &Value) -> String {
         "expired".to_string()
     } else {
         "authorized".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Built-in credential type definitions
+// ---------------------------------------------------------------------------
+
+/// Returns all official credential type definitions shipped with Zebflow.
+/// Same format as custom types from composite/WASM packages.
+pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
+    use CredentialFieldDef as F;
+    use CredentialFieldOption as O;
+
+    let f = |key: &str, label: &str| -> F {
+        F { key: key.into(), label: label.into(), ..Default::default() }
+    };
+    let fp = |key: &str, label: &str| -> F {
+        F { key: key.into(), label: label.into(), field_type: "password".into(), ..Default::default() }
+    };
+
+    vec![
+        CredentialTypeDef {
+            kind: "postgres".into(),
+            title: "PostgreSQL".into(),
+            description: "PostgreSQL database connection.".into(),
+            fields: vec![
+                F { help: Some("Hostname or IP of PostgreSQL server.".into()), ..f("host", "Host") },
+                F { placeholder: Some("5432".into()), help: Some("TCP port for PostgreSQL.".into()), ..f("port", "Port") },
+                F { help: Some("Database name.".into()), ..f("database", "Database") },
+                F { help: Some("Login username.".into()), ..f("user", "User") },
+                F { full_width: true, help: Some("Login password.".into()), ..fp("password", "Password") },
+                F { placeholder: Some("prefer".into()), help: Some("disable, prefer, require, verify-ca, verify-full.".into()), ..f("sslmode", "SSL Mode") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "mysql".into(),
+            title: "MySQL".into(),
+            description: "MySQL database connection.".into(),
+            fields: vec![
+                F { help: Some("Hostname or IP of MySQL server.".into()), ..f("host", "Host") },
+                F { placeholder: Some("3306".into()), help: Some("TCP port for MySQL.".into()), ..f("port", "Port") },
+                F { help: Some("Database name.".into()), ..f("database", "Database") },
+                F { help: Some("Login username.".into()), ..f("user", "User") },
+                F { help: Some("Login password.".into()), full_width: true, ..fp("password", "Password") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "openai".into(),
+            title: "OpenAI / LLM".into(),
+            description: "OpenAI-compatible LLM provider.".into(),
+            fields: vec![
+                F { full_width: true, help: Some("Provider API token.".into()), ..fp("api_key", "API Key") },
+                F { full_width: true, placeholder: Some("https://api.openai.com/v1".into()), help: Some("Custom endpoint if needed.".into()), ..f("base_url", "Base URL") },
+                F { full_width: true, help: Some("Fallback model id for requests.".into()), ..f("model", "Default Model") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "http".into(),
+            title: "HTTP".into(),
+            description: "HTTP Bearer token or API key.".into(),
+            fields: vec![
+                F { help: Some("Service root URL.".into()), ..f("base_url", "Base URL") },
+                F { help: Some("Bearer token or API key.".into()), ..fp("token", "Token") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "github".into(),
+            title: "GitHub".into(),
+            description: "GitHub API and git operations.".into(),
+            fields: vec![
+                F { help: Some("Your GitHub username for API auth and git push.".into()), ..f("username", "GitHub Username") },
+                F { help: Some("Full name for git commits (git config user.name).".into()), ..f("git_name", "Git Name") },
+                F { help: Some("Email for git commits (git config user.email). Must match GitHub account.".into()), ..f("git_email", "Git Email") },
+                F { full_width: true, help: Some("PAT with repo scope. Starts with ghp_ or github_pat_.".into()), ..fp("token", "Personal Access Token") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "gitlab".into(),
+            title: "GitLab".into(),
+            description: "GitLab API and git operations.".into(),
+            fields: vec![
+                F { full_width: true, placeholder: Some("https://gitlab.com".into()), help: Some("GitLab instance URL. Use https://gitlab.com for SaaS.".into()), ..f("url", "Instance URL") },
+                F { help: Some("Your GitLab username for API auth and git push.".into()), ..f("username", "GitLab Username") },
+                F { full_width: true, help: Some("PAT with read_repository and write_repository scope.".into()), ..fp("token", "Personal Access Token") },
+                F { help: Some("Full name for git commits (git config user.name).".into()), ..f("git_name", "Git Name") },
+                F { help: Some("Email for git commits (git config user.email).".into()), ..f("git_email", "Git Email") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "jwt_signing_key".into(),
+            title: "JWT Signing Key".into(),
+            description: "JWT signing for auth tokens and webhook verification.".into(),
+            fields: vec![
+                F {
+                    field_type: "select".into(),
+                    default: Some("HS256".into()),
+                    options: vec![
+                        O { value: "HS256".into(), label: "HS256 — HMAC-SHA256 (symmetric)".into() },
+                        O { value: "HS384".into(), label: "HS384 — HMAC-SHA384 (symmetric)".into() },
+                        O { value: "HS512".into(), label: "HS512 — HMAC-SHA512 (symmetric)".into() },
+                        O { value: "RS256".into(), label: "RS256 — RSA-PKCS1v15-SHA256 (asymmetric)".into() },
+                        O { value: "RS384".into(), label: "RS384 — RSA-PKCS1v15-SHA384 (asymmetric)".into() },
+                        O { value: "RS512".into(), label: "RS512 — RSA-PKCS1v15-SHA512 (asymmetric)".into() },
+                        O { value: "ES256".into(), label: "ES256 — ECDSA P-256 (asymmetric)".into() },
+                        O { value: "ES384".into(), label: "ES384 — ECDSA P-384 (asymmetric)".into() },
+                    ],
+                    help: Some("JWT signing algorithm. HS* uses a shared secret; RS*/ES* use a private key.".into()),
+                    ..f("algorithm", "Algorithm")
+                },
+                F { full_width: true, generate: Some("random_hex_32".into()), help: Some("Secret for HS* algorithms. Click Generate for a secure 256-bit random value.".into()), ..fp("secret", "HMAC Secret") },
+                F { field_type: "textarea".into(), rows: Some(6), full_width: true, help: Some("PEM private key for RS*/ES* algorithms. Leave blank for HS*.".into()), ..f("private_key", "Private Key (PEM)") },
+                F { placeholder: Some("/login".into()), help: Some("Where to redirect when the token is missing or invalid. Leave blank to return 401 JSON.".into()), ..f("auth_redirect", "Unauthenticated Redirect") },
+                F { placeholder: Some("/403".into()), help: Some("Where to redirect when the token is valid but the role is insufficient. Leave blank to return 403 JSON.".into()), ..f("auth_forbidden_redirect", "Forbidden Redirect") },
+                F { field_type: "tags".into(), full_width: true, placeholder: Some("e.g. admin".into()), help: Some("Roles available for this credential. Used by webhook nodes to populate the Required Role checkboxes.".into()), ..f("auth_roles", "Allowed Roles") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "browser_browserless".into(),
+            title: "Browserless".into(),
+            description: "Browserless browser automation service.".into(),
+            fields: vec![
+                F { full_width: true, placeholder: Some("http://localhost:3000".into()), help: Some("Browserless instance root URL. Self-hosted or cloud endpoint.".into()), ..f("url", "URL") },
+                F { full_width: true, help: Some("Optional API token. Leave blank for unauthenticated self-hosted instances.".into()), ..fp("token", "Token") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "oauth2".into(),
+            title: "OAuth2".into(),
+            description: "OAuth2 authorization code flow with automatic token refresh.".into(),
+            fields: vec![
+                F { help: Some("OAuth2 client identifier.".into()), ..f("client_id", "Client ID") },
+                F { help: Some("OAuth2 client secret.".into()), ..fp("client_secret", "Client Secret") },
+                F { full_width: true, placeholder: Some("https://provider.com/oauth/token".into()), help: Some("Token endpoint URL.".into()), ..f("token_url", "Token URL") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "hmac".into(),
+            title: "HMAC".into(),
+            description: "HMAC signing secret for webhook verification.".into(),
+            fields: vec![
+                F { full_width: true, generate: Some("random_hex_32".into()), help: Some("HMAC shared secret.".into()), ..fp("secret", "Secret") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "api_key".into(),
+            title: "API Key".into(),
+            description: "Static API key for X-API-Key or Authorization header.".into(),
+            fields: vec![
+                F { full_width: true, generate: Some("random_hex_32".into()), help: Some("API key value.".into()), ..fp("key", "Key") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "tts".into(),
+            title: "TTS".into(),
+            description: "Local text-to-speech runtime binding. Paths are Zebflow FS object paths. For Piper, point to the ONNX model, its JSON config, and the espeak-ng-data directory.".into(),
+            fields: vec![
+                F {
+                    field_type: "select".into(),
+                    default: Some("piper".into()),
+                    options: vec![O { value: "piper".into(), label: "Piper".into() }],
+                    help: Some("TTS engine provider.".into()),
+                    ..f("provider", "Provider")
+                },
+                F { placeholder: Some("arin".into()), help: Some("Optional human label for this voice preset.".into()), ..f("voice", "Voice Label") },
+                F { full_width: true, placeholder: Some("voices/arin/arin-2449.onnx".into()), help: Some("Private-relative ONNX model path.".into()), ..f("model_file", "Model File") },
+                F { full_width: true, placeholder: Some("voices/arin/arin-2449.onnx.json".into()), help: Some("Private-relative Piper JSON config path.".into()), ..f("config_file", "Config File") },
+                F { full_width: true, placeholder: Some("runtime/espeak-ng-data".into()), help: Some("Private-relative directory path to espeak-ng-data.".into()), ..f("espeak_data_dir", "Espeak Data Dir") },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "secure_request".into(),
+            title: "Secure Request".into(),
+            description: "HTTP request template with secret placeholders and runtime variable bindings.".into(),
+            fields: vec![], // Complex UI rendered client-side
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "custom".into(),
+            title: "Custom".into(),
+            description: "Freeform JSON secret for custom integrations.".into(),
+            fields: vec![
+                F { field_type: "textarea".into(), rows: Some(10), full_width: true, placeholder: Some("{\n  \"key\": \"value\"\n}".into()), help: Some("Stored as raw JSON object for custom nodes.".into()), ..f("json", "Secret JSON") },
+            ],
+            ..Default::default()
+        },
+    ]
+}
+
+impl Default for CredentialTypeDef {
+    fn default() -> Self {
+        Self {
+            kind: String::new(),
+            title: String::new(),
+            description: String::new(),
+            fields: Vec::new(),
+            placeholders: HashMap::new(),
+            config_key: String::new(),
+        }
+    }
+}
+
+impl Default for CredentialFieldDef {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            label: String::new(),
+            field_type: "text".into(),
+            required: false,
+            placeholder: None,
+            help: None,
+            default: None,
+            generate: None,
+            options: Vec::new(),
+            full_width: false,
+            rows: None,
+        }
     }
 }
 
