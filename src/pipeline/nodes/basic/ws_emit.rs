@@ -162,7 +162,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "event".to_string(), label: "Event".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("message")), ..Default::default() },
                 NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
                 NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Select, options: vec![
@@ -173,11 +172,12 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("event".to_string())] },
+            LayoutItem::Field("event".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("room".to_string()), LayoutItem::Field("to".to_string())] },
             LayoutItem::Field("payload_path".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

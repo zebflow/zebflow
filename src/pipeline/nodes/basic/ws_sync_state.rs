@@ -170,7 +170,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, help: Some("WebSocket room to sync state into.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "op".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
                     SelectOptionDef { value: "set".to_string(), label: "Set — replace entire state".to_string() },
@@ -184,11 +183,12 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("room".to_string())] },
+            LayoutItem::Field("room".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("op".to_string()), LayoutItem::Field("path".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("value_path".to_string()), LayoutItem::Field("silent".to_string())] },
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -69,7 +69,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType};
+use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, NodeFieldDataSource, SelectOptionDef};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -133,6 +133,20 @@ pub fn definition() -> NodeDefinition {
                 "event": {
                     "type": "string",
                     "description": "Event name to match. Empty string (default) matches any event sent by the client. Exact string equality."
+                },
+                "auth_type": {
+                    "type": "string",
+                    "enum": ["none", "jwt", "hmac", "api_key"],
+                    "description": "Authentication mode. none = open (default). jwt/hmac/api_key require auth_credential."
+                },
+                "auth_credential": {
+                    "type": "string",
+                    "description": "Credential ID used for auth verification. Required when auth_type is not none."
+                },
+                "auth_required_role": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Required roles for this trigger. JWT claim 'roles' must match one. Empty = any authenticated user."
                 }
             }
         }),
@@ -153,15 +167,29 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--auth-type".to_string(),
+                config_key: "auth_type".to_string(),
+                description: "Authentication mode: none (default), jwt, hmac, api_key.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--auth-credential".to_string(),
+                config_key: "auth_credential".to_string(),
+                description: "Credential ID for auth verification. Required when auth_type != none.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--auth-required-role".to_string(),
+                config_key: "auth_required_role".to_string(),
+                description: "Comma-separated roles required for this trigger. JWT claim 'roles' must match one. E.g. lecturer,student. Empty = any authenticated user.".to_string(),
+                kind: DslFlagKind::CommaSeparatedList,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title for this node.".to_string()),
-                ..Default::default()
-            },
             NodeFieldDef {
                 name: "room".to_string(),
                 label: "Room".to_string(),
@@ -176,17 +204,44 @@ pub fn definition() -> NodeDefinition {
                 help: Some("WebSocket event name to listen for.".to_string()),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "auth_type".to_string(),
+                label: "Auth Type".to_string(),
+                field_type: NodeFieldType::Select,
+                options: vec![
+                    SelectOptionDef { value: "none".to_string(), label: "None (public)".to_string() },
+                    SelectOptionDef { value: "jwt".to_string(), label: "JWT Bearer".to_string() },
+                    SelectOptionDef { value: "hmac".to_string(), label: "HMAC Signature".to_string() },
+                    SelectOptionDef { value: "api_key".to_string(), label: "API Key (X-API-Key)".to_string() },
+                ],
+                help: Some("Trigger-level auth. On failure the event is silently dropped.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "auth_credential".to_string(),
+                label: "Auth Credential".to_string(),
+                field_type: NodeFieldType::Select,
+                data_source: Some(NodeFieldDataSource::CredentialsWebhookAuth),
+                help: Some("Credential for signing key / secret / api_key.".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "auth_required_role".to_string(),
+                label: "Required Role".to_string(),
+                field_type: NodeFieldType::MultiCheckbox,
+                data_source: Some(NodeFieldDataSource::CredentialJwtRoles),
+                help: Some("Roles allowed to access this trigger. Populated from the selected JWT credential's registered roles. Empty = any authenticated user.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("title".to_string()),
-                    LayoutItem::Field("room".to_string()),
-                ],
-            },
+            LayoutItem::Field("room".to_string()),
             LayoutItem::Field("event".to_string()),
+            LayoutItem::Field("auth_type".to_string()),
+            LayoutItem::Row { row: vec![LayoutItem::Field("auth_credential".to_string()), LayoutItem::Field("auth_required_role".to_string())] },
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -207,6 +262,19 @@ pub struct Config {
     /// Matched against the `"event"` field in the client's JSON message.
     #[serde(default)]
     pub event: String,
+
+    /// Auth type: `"none"` (default), `"jwt"`, `"hmac"`, `"api_key"`.
+    #[serde(default)]
+    pub auth_type: String,
+
+    /// Credential ID to use for auth verification (required when `auth_type != "none"`).
+    #[serde(default)]
+    pub auth_credential: String,
+
+    /// Required roles for this trigger. JWT claim `roles` must match one of these.
+    /// Empty = any authenticated user may access.
+    #[serde(default)]
+    pub auth_required_role: Vec<String>,
 }
 
 /// `n.trigger.ws` node instance.
