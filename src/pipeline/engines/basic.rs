@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
+use crate::infra::ws_client::WsClientManager;
 use crate::language::{DenoSandboxEngine, LanguageEngine};
 use crate::pipeline::expr::{resolve_config_expressions, scanner::scan as scan_exprs};
 use crate::pipeline::interface::PipelineEngine;
@@ -32,14 +33,14 @@ use crate::pipeline::model::{
 use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mapserver_crud,
-    mem_del, mem_exists, mem_expire, mem_get, mem_incr, mem_publish, mem_set, pg_query, script,
+    kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, pg_query, script,
     sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
     trigger::{
-        function as trigger_function, manual, mapserver, mcp_trigger, memsubscribe, schedule,
-        weberror, webhook,
+        function as trigger_function, manual, mcp_trigger, kv_subscribe, schedule,
+        weberror, webhook, ws_client as trigger_ws_client,
     },
-    web_docs_generate, web_response, web_static_generate, web_static_site, ws_emit, ws_sync_state,
-    ws_trigger,
+    web_docs_generate, web_response, web_static_generate, web_static_site, ws_client_send,
+    ws_emit, ws_sync_state, ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::platform::services::CredentialService;
@@ -307,6 +308,7 @@ pub struct BasicPipelineEngine {
     credentials: Option<Arc<CredentialService>>,
     template_cache: Option<TemplateCache>,
     ws_hub: Option<Arc<WsHub>>,
+    ws_client_manager: Option<Arc<WsClientManager>>,
     state_bus: Option<DynStateBus>,
     platform: Option<Arc<PlatformService>>,
     /// Filesystem root for resolving `@/` alias imports in TSX templates.
@@ -324,6 +326,7 @@ impl Default for BasicPipelineEngine {
             credentials: None,
             template_cache: None,
             ws_hub: None,
+            ws_client_manager: None,
             state_bus: None,
             platform: None,
             template_root: None,
@@ -344,6 +347,7 @@ impl BasicPipelineEngine {
             credentials,
             template_cache: None,
             ws_hub: None,
+            ws_client_manager: None,
             state_bus: None,
             platform: None,
             template_root: None,
@@ -370,7 +374,13 @@ impl BasicPipelineEngine {
         self
     }
 
-    /// Attach the state bus so `n.mem.*` nodes can access the shared project-scoped KV/pubsub layer.
+    /// Attach the WS client manager so n.ws.client.send nodes can send through outbound connections.
+    pub fn with_ws_client_manager(mut self, mgr: Arc<WsClientManager>) -> Self {
+        self.ws_client_manager = Some(mgr);
+        self
+    }
+
+    /// Attach the state bus so `n.kv.*` nodes can access the shared project-scoped KV/pubsub layer.
     pub fn with_state_bus(mut self, bus: DynStateBus) -> Self {
         self.state_bus = Some(bus);
         self
@@ -411,11 +421,6 @@ impl BasicPipelineEngine {
             manual::NODE_KIND => Ok(NodeDispatch::Manual(manual::Node::new(
                 serde_json::from_value(node.config.clone())
                     .map_err(|err| PipelineError::new("FW_NODE_MANUAL_CONFIG", err.to_string()))?,
-            ))),
-            mapserver::NODE_KIND => Ok(NodeDispatch::Mapserver(mapserver::Node::new(
-                serde_json::from_value(node.config.clone()).map_err(|err| {
-                    PipelineError::new("FW_NODE_MAPSERVER_CONFIG", err.to_string())
-                })?,
             ))),
             script::NODE_KIND => Ok(NodeDispatch::Script(script::Node::new(
                 &node.id,
@@ -831,97 +836,97 @@ impl BasicPipelineEngine {
                     platform.clone(),
                 )?))
             }
-            mem_set::NODE_KIND => {
+            kv_set::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemSet(mem_set::Node::new(
+                Ok(NodeDispatch::KvSet(kv_set::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_SET_CONFIG", e.to_string()))?,
+                        .map_err(|e| PipelineError::new("FW_NODE_KV_SET_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            mem_get::NODE_KIND => {
+            kv_get::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemGet(mem_get::Node::new(
+                Ok(NodeDispatch::KvGet(kv_get::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_GET_CONFIG", e.to_string()))?,
+                        .map_err(|e| PipelineError::new("FW_NODE_KV_GET_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            mem_del::NODE_KIND => {
+            kv_del::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemDel(mem_del::Node::new(
+                Ok(NodeDispatch::KvDel(kv_del::Node::new(
                     serde_json::from_value(node.config.clone())
-                        .map_err(|e| PipelineError::new("FW_NODE_MEM_DEL_CONFIG", e.to_string()))?,
+                        .map_err(|e| PipelineError::new("FW_NODE_KV_DEL_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
-            mem_incr::NODE_KIND => {
+            kv_incr::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemIncr(mem_incr::Node::new(
+                Ok(NodeDispatch::KvIncr(kv_incr::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_MEM_INCR_CONFIG", e.to_string())
+                        PipelineError::new("FW_NODE_KV_INCR_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
             }
-            mem_publish::NODE_KIND => {
+            kv_publish::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemPublish(mem_publish::Node::new(
+                Ok(NodeDispatch::KvPublish(kv_publish::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_MEM_PUBLISH_CONFIG", e.to_string())
+                        PipelineError::new("FW_NODE_KV_PUBLISH_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
             }
-            mem_exists::NODE_KIND => {
+            kv_exists::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemExists(mem_exists::Node::new(
+                Ok(NodeDispatch::KvExists(kv_exists::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_MEM_EXISTS_CONFIG", e.to_string())
+                        PipelineError::new("FW_NODE_KV_EXISTS_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
             }
-            mem_expire::NODE_KIND => {
+            kv_expire::NODE_KIND => {
                 let Some(state_bus) = &self.state_bus else {
                     return Err(PipelineError::new(
                         "FW_NODE_MEM_UNAVAILABLE",
                         "state bus is not configured on this pipeline engine",
                     ));
                 };
-                Ok(NodeDispatch::MemExpire(mem_expire::Node::new(
+                Ok(NodeDispatch::KvExpire(kv_expire::Node::new(
                     serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_MEM_EXPIRE_CONFIG", e.to_string())
+                        PipelineError::new("FW_NODE_KV_EXPIRE_CONFIG", e.to_string())
                     })?,
                     state_bus.clone(),
                 )))
@@ -931,11 +936,70 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_MCP_TRIGGER_CONFIG", err.to_string())
                 })?,
             ))),
-            memsubscribe::NODE_KIND => Ok(NodeDispatch::MemSubscribe(memsubscribe::Node::new(
+            kv_subscribe::NODE_KIND => Ok(NodeDispatch::KvSubscribe(kv_subscribe::Node::new(
                 serde_json::from_value(node.config.clone()).map_err(|e| {
-                    PipelineError::new("FW_NODE_MEM_SUBSCRIBE_CONFIG", e.to_string())
+                    PipelineError::new("FW_NODE_KV_SUBSCRIBE_CONFIG", e.to_string())
                 })?,
             ))),
+            trigger_ws_client::NODE_KIND => {
+                Ok(NodeDispatch::WsClientTrigger(trigger_ws_client::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string())
+                    })?,
+                )))
+            }
+            ws_client_send::NODE_KIND => {
+                let Some(ws_client_manager) = &self.ws_client_manager else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_WS_CLIENT_SEND_UNAVAILABLE",
+                        "ws client manager is not configured on this framework engine",
+                    ));
+                };
+                Ok(NodeDispatch::WsClientSend(ws_client_send::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|e| {
+                        PipelineError::new("FW_NODE_WS_CLIENT_SEND_CONFIG", e.to_string())
+                    })?,
+                    ws_client_manager.clone(),
+                )?))
+            }
+            // Composite trigger nodes act as pipeline entry points.
+            // They pass through the webhook payload, optionally running the
+            // package's `on_message` transform function.
+            other if other.starts_with("n.c.trigger.") => {
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_COMPOSITE_NO_PLATFORM",
+                        format!(
+                            "composite trigger '{}': platform service not injected into engine",
+                            other
+                        ),
+                    ));
+                };
+                Ok(NodeDispatch::CompositeTrigger {
+                    kind: other.to_string(),
+                    config: node.config.clone(),
+                    platform: platform.clone(),
+                })
+            }
+            other if other.starts_with("n.c.") => {
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_COMPOSITE_NO_PLATFORM",
+                        format!(
+                            "composite node '{}': platform service not injected into engine",
+                            other
+                        ),
+                    ));
+                };
+                Ok(NodeDispatch::CompositeNode {
+                    kind: other.to_string(),
+                    config: node.config.clone(),
+                    platform: platform.clone(),
+                })
+            }
+            other if other.starts_with("n.wasm.") => Ok(NodeDispatch::WasmNodeStub {
+                kind: other.to_string(),
+            }),
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -1059,6 +1123,7 @@ impl PipelineEngine for BasicPipelineEngine {
                     "route": ctx.route,
                     "trigger": ctx.trigger,
                     "nodes": Value::Object(nodes_output.clone()),
+                    "placeholder": ctx.placeholder,
                 }),
                 bus: bus.clone(),
             });
@@ -1143,7 +1208,6 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::Webhook(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Schedule(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Manual(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::Mapserver(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::Script(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::HttpRequest(node) => {
                         node.execute_many_async(input_for_exec).await
@@ -1879,17 +1943,57 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::ImgThumbnail(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::MemSet(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemGet(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemDel(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemExists(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemExpire(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemIncr(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemPublish(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvSet(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvGet(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvDel(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvExists(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvExpire(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvIncr(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::KvPublish(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::McpTrigger(node) => node.execute_many_async(input_for_exec).await,
-                    NodeDispatch::MemSubscribe(node) => {
+                    NodeDispatch::KvSubscribe(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
+                    NodeDispatch::WsClientTrigger(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::WsClientSend(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::CompositeTrigger {
+                        kind,
+                        config,
+                        platform,
+                    } => {
+                        execute_composite_trigger(
+                            &kind,
+                            &config,
+                            &platform,
+                            vec![input_for_exec],
+                        )
+                        .await
+                    }
+                    NodeDispatch::CompositeNode {
+                        kind,
+                        config,
+                        platform,
+                    } => {
+                        execute_composite_node(
+                            &kind,
+                            &config,
+                            &platform,
+                            vec![input_for_exec],
+                        )
+                        .await
+                    }
+                    NodeDispatch::WasmNodeStub { kind } => Err(PipelineError::new(
+                        "FW_NODE_WASM_UNAVAILABLE",
+                        format!(
+                            "WASM runtime not available. Node '{}' requires Extism, \
+                             planned for a future release.",
+                            kind
+                        ),
+                    )),
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -1994,6 +2098,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                     "route": ctx.route,
                                     "trigger": ctx.trigger,
                                     "nodes": Value::Object(nodes_output.clone()),
+                                    "placeholder": ctx.placeholder,
                                 }),
                                 bus: bus.clone(),
                             });
@@ -2120,6 +2225,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                             "route": ctx.route,
                                             "trigger": ctx.trigger,
                                             "nodes": Value::Object(nodes_output.clone()),
+                                            "placeholder": ctx.placeholder,
                                         }),
                                         bus: bus.clone(),
                                     });
@@ -2137,6 +2243,7 @@ impl PipelineEngine for BasicPipelineEngine {
                                         "route": ctx.route,
                                         "trigger": ctx.trigger,
                                         "nodes": Value::Object(nodes_output.clone()),
+                                        "placeholder": ctx.placeholder,
                                     }),
                                     bus: bus.clone(),
                                 });
@@ -2287,6 +2394,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2343,6 +2451,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2405,6 +2514,7 @@ mod tests {
                         ]
                     }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2476,6 +2586,7 @@ mod tests {
                     route: String::new(),
                     input: json!({ "post_id": 1 }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2551,6 +2662,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2639,6 +2751,7 @@ mod tests {
                     route: String::new(),
                     input: json!({ "post_id": 2 }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2689,6 +2802,7 @@ mod tests {
                         ],
                     }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2728,6 +2842,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2766,6 +2881,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2801,6 +2917,7 @@ mod tests {
                         ]
                     }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2849,6 +2966,7 @@ mod tests {
                         ]
                     }),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2886,6 +3004,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2922,6 +3041,7 @@ mod tests {
                     route: String::new(),
                     input: json!({}),
                     trigger: None,
+                    placeholder: None,
                 },
             )
             .await
@@ -2941,7 +3061,6 @@ enum NodeDispatch {
     Webhook(webhook::Node),
     Schedule(schedule::Node),
     Manual(manual::Node),
-    Mapserver(mapserver::Node),
     Script(script::Node),
     HttpRequest(http_request::Node),
     BrowserRun(browser_run::Node),
@@ -2987,17 +3106,358 @@ enum NodeDispatch {
     FileDecompress(fs_decompress::Node),
     FilePdfConvert(fs_pdf_convert::Node),
     ImgThumbnail(fs_thumbnail::Node),
-    MemSet(mem_set::Node),
-    MemGet(mem_get::Node),
-    MemDel(mem_del::Node),
-    MemExists(mem_exists::Node),
-    MemExpire(mem_expire::Node),
-    MemIncr(mem_incr::Node),
-    MemPublish(mem_publish::Node),
-    MemSubscribe(memsubscribe::Node),
+    KvSet(kv_set::Node),
+    KvGet(kv_get::Node),
+    KvDel(kv_del::Node),
+    KvExists(kv_exists::Node),
+    KvExpire(kv_expire::Node),
+    KvIncr(kv_incr::Node),
+    KvPublish(kv_publish::Node),
+    KvSubscribe(kv_subscribe::Node),
+    WsClientTrigger(trigger_ws_client::Node),
+    WsClientSend(ws_client_send::Node),
     McpTrigger(mcp_trigger::Node),
+    /// Composite trigger node: acts as pipeline entry point, runs `on_message`
+    /// transform function from the package manifest on the incoming payload.
+    CompositeTrigger {
+        kind: String,
+        config: serde_json::Value,
+        platform: std::sync::Arc<crate::platform::services::PlatformService>,
+    },
+    /// Composite node: executes an inner function pipeline with placeholder injection.
+    CompositeNode {
+        kind: String,
+        config: serde_json::Value,
+        platform: std::sync::Arc<crate::platform::services::PlatformService>,
+    },
+    /// WASM node stub: returns a clear error until WASM runtime is available.
+    WasmNodeStub {
+        kind: String,
+    },
 }
 
 fn is_logic_collect(node: &PipelineNode) -> bool {
     node.kind == logic::collect::NODE_KIND
+}
+
+/// Execute a composite node by loading its inner function pipeline and running it.
+///
+/// Reuses the same pattern as `PlatformService::execute_function_pipeline`:
+/// loads the inner pipeline graph, creates a sub-engine, and executes it.
+///
+/// Executes a composite trigger node (`n.c.trigger.*`).
+///
+/// Composite triggers act as pipeline entry points. If the package manifest declares
+/// an `on_message` function, the raw inbound payload is transformed through that
+/// function pipeline. Otherwise the payload passes through unchanged (like
+/// `n.trigger.webhook`).
+async fn execute_composite_trigger(
+    kind: &str,
+    config: &Value,
+    platform: &Arc<crate::platform::services::PlatformService>,
+    inputs: Vec<crate::pipeline::nodes::NodeExecutionInput>,
+) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
+    use crate::pipeline::nodes::NodeExecutionOutput;
+
+    let mut results = Vec::with_capacity(inputs.len());
+
+    for input in inputs {
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        // Check manifest for on_message transform function.
+        let on_message_fn = platform
+            .node_registry
+            .get_manifest(&owner, &project, kind)
+            .and_then(|m| m.trigger.and_then(|t| t.on_message));
+
+        if let Some(fn_name) = on_message_fn {
+            // Load and execute the on_message transform pipeline.
+            let graph = match platform
+                .node_registry
+                .load_composite_function(&owner, &project, kind, Some(&fn_name))
+            {
+                Ok(g) => g,
+                Err(e) => {
+                    // If transform function fails to load, pass through raw payload.
+                    eprintln!(
+                        "composite_trigger: on_message '{}' load failed for '{}': {}, passing through raw",
+                        fn_name, kind, e.message
+                    );
+                    results.push(NodeExecutionOutput {
+                        output_pins: vec!["out".to_string()],
+                        payload: input.payload.clone(),
+                        trace: vec![format!(
+                            "composite trigger '{}' on_message load error, raw passthrough",
+                            kind
+                        )],
+                    });
+                    continue;
+                }
+            };
+
+            let placeholder_map =
+                build_composite_placeholder_map(kind, config, &owner, &project, platform);
+
+            // The input to the transform is the webhook body.
+            let transform_input = if let Some(body) = input.payload.get("body") {
+                body.clone()
+            } else {
+                input.payload.clone()
+            };
+
+            let ctx = PipelineContext {
+                owner: owner.clone(),
+                project: project.clone(),
+                pipeline: format!("composite_trigger::{}::on_message", kind),
+                request_id: format!(
+                    "ct-{}-{}",
+                    kind,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                ),
+                route: Default::default(),
+                input: transform_input,
+                trigger: None,
+                placeholder: if placeholder_map.is_empty() {
+                    None
+                } else {
+                    Some(json!(placeholder_map))
+                },
+            };
+
+            let engine = BasicPipelineEngine::new(
+                Arc::new(DenoSandboxEngine::default()),
+                crate::rwe::resolve_engine_or_default(None),
+                Some(platform.credentials.clone()),
+            )
+            .with_platform(platform.clone())
+            .with_ws_hub(platform.ws_hub.clone())
+            .with_state_bus(platform.state_bus.clone())
+            .with_data_root(platform.config.data_root.clone());
+
+            match engine.execute_async(&graph, &ctx).await {
+                Ok(output) => {
+                    results.push(NodeExecutionOutput {
+                        output_pins: vec!["out".to_string()],
+                        payload: output.value,
+                        trace: vec![format!("composite trigger '{}' on_message ok", kind)],
+                    });
+                }
+                Err(e) => {
+                    // Transform failed — pass through raw payload so pipeline can still work.
+                    eprintln!(
+                        "composite_trigger: on_message '{}' exec failed for '{}': {}, passing through raw",
+                        fn_name, kind, e.message
+                    );
+                    results.push(NodeExecutionOutput {
+                        output_pins: vec!["out".to_string()],
+                        payload: input.payload.clone(),
+                        trace: vec![format!(
+                            "composite trigger '{}' on_message error: {}, raw passthrough",
+                            kind, e.message
+                        )],
+                    });
+                }
+            }
+        } else {
+            // No on_message — pass through like n.trigger.webhook.
+            results.push(NodeExecutionOutput {
+                output_pins: vec!["out".to_string()],
+                payload: input.payload.clone(),
+                trace: vec![format!("composite trigger '{}' passthrough", kind)],
+            });
+        }
+    }
+
+    Ok(results)
+}
+
+/// Builds a `$placeholder` map from the composite manifest's credential declarations,
+/// resolving each credential's secret fields into named placeholders. This map is
+/// injected into the inner pipeline's execution context so `{{ $placeholder.X }}`
+/// expressions resolve to actual credential values.
+async fn execute_composite_node(
+    kind: &str,
+    config: &Value,
+    platform: &Arc<crate::platform::services::PlatformService>,
+    inputs: Vec<crate::pipeline::nodes::NodeExecutionInput>,
+) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
+    use crate::pipeline::nodes::NodeExecutionOutput;
+
+    let mut results = Vec::with_capacity(inputs.len());
+
+    for input in inputs {
+        let owner = input
+            .metadata
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let project = input
+            .metadata
+            .get("project")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        // Load the inner pipeline graph from the installed package.
+        let graph = match platform.node_registry.load_composite_pipeline(&owner, &project, kind) {
+            Ok(g) => g,
+            Err(e) => {
+                results.push(NodeExecutionOutput {
+                    output_pins: vec!["error".to_string()],
+                    payload: json!({"error": format!("{}: {}", e.code, e.message)}),
+                    trace: vec![format!("composite '{}' load error: {}", kind, e.message)],
+                });
+                continue;
+            }
+        };
+
+        // Build $placeholder map from credential declarations in the manifest.
+        let placeholder_map = build_composite_placeholder_map(
+            kind, config, &owner, &project, platform,
+        );
+
+        // Build execution context — same pattern as execute_function_pipeline.
+        let ctx = PipelineContext {
+            owner: owner.clone(),
+            project: project.clone(),
+            pipeline: format!("composite::{}", kind),
+            request_id: format!(
+                "composite-{}-{}",
+                kind,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
+            route: Default::default(),
+            input: input.payload.clone(),
+            trigger: None,
+            placeholder: if placeholder_map.is_empty() {
+                None
+            } else {
+                Some(json!(placeholder_map))
+            },
+        };
+
+        let engine = BasicPipelineEngine::new(
+            Arc::new(DenoSandboxEngine::default()),
+            crate::rwe::resolve_engine_or_default(None),
+            Some(platform.credentials.clone()),
+        )
+        .with_platform(platform.clone())
+        .with_ws_hub(platform.ws_hub.clone())
+        .with_state_bus(platform.state_bus.clone())
+        .with_data_root(platform.config.data_root.clone());
+
+        match engine.execute_async(&graph, &ctx).await {
+            Ok(output) => {
+                results.push(NodeExecutionOutput {
+                    output_pins: vec!["out".to_string()],
+                    payload: output.value,
+                    trace: vec![format!("composite '{}' ok", kind)],
+                });
+            }
+            Err(e) => {
+                results.push(NodeExecutionOutput {
+                    output_pins: vec!["error".to_string()],
+                    payload: json!({"error": format!("{}: {}", e.code, e.message)}),
+                    trace: vec![format!(
+                        "composite '{}' error: {} — {}",
+                        kind, e.code, e.message
+                    )],
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Builds a placeholder name → resolved value map from a composite node's
+/// credential declarations and the user's config.
+///
+/// For each credential declaration in the manifest:
+/// 1. Read `config_key` to find which config field holds the credential ID.
+/// 2. Fetch the credential from `CredentialService`.
+/// 3. For each `placeholders` entry (e.g. `"BOT_TOKEN" -> "bot_token"`),
+///    read the secret field and map the placeholder name to the actual value.
+pub fn build_composite_placeholder_map(
+    kind: &str,
+    config: &Value,
+    owner: &str,
+    project: &str,
+    platform: &Arc<crate::platform::services::PlatformService>,
+) -> serde_json::Map<String, Value> {
+    let mut placeholder_map = serde_json::Map::new();
+
+    let manifest = match platform.node_registry.get_manifest(owner, project, kind) {
+        Some(m) => m,
+        None => return placeholder_map,
+    };
+
+    for cred_decl in &manifest.credentials {
+        if cred_decl.config_key.is_empty() || cred_decl.placeholders.is_empty() {
+            continue;
+        }
+
+        // Read the credential ID from the composite node's config.
+        let credential_id = match config.get(&cred_decl.config_key).and_then(|v| v.as_str()) {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => {
+                eprintln!(
+                    "composite '{}': config key '{}' is empty or missing",
+                    kind, cred_decl.config_key
+                );
+                continue;
+            }
+        };
+
+        // Fetch the credential from the credential service.
+        let credential = match platform.credentials.get_project_credential(
+            owner, project, &credential_id,
+        ) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                eprintln!(
+                    "composite '{}': credential '{}' not found",
+                    kind, credential_id
+                );
+                continue;
+            }
+            Err(e) => {
+                eprintln!(
+                    "composite '{}': failed to fetch credential '{}': {}",
+                    kind, credential_id, e.message
+                );
+                continue;
+            }
+        };
+
+        // Build placeholder entries from the manifest's placeholder map.
+        for (placeholder_name, secret_field) in &cred_decl.placeholders {
+            if let Some(value) = credential.secret.get(secret_field) {
+                placeholder_map.insert(
+                    placeholder_name.clone(),
+                    value.clone(),
+                );
+            }
+        }
+    }
+
+    placeholder_map
 }

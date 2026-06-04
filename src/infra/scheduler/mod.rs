@@ -186,6 +186,7 @@ impl PipelineScheduler {
                         "node_id": node_id,
                     }),
                     trigger: None,
+                    placeholder: None,
                 };
 
                 let exec_start = std::time::Instant::now();
