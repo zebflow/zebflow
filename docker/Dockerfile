@@ -15,6 +15,7 @@ WORKDIR /app
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY libraries ./libraries
+COPY composites ./composites
 COPY src ./src
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -37,6 +38,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Now copy source and build only the application code (fast after cache hit).
 COPY Cargo.toml Cargo.lock build.rs ./
+COPY composites ./composites
 COPY src ./src
 ARG BUILD_VERSION
 RUN BUILD_VERSION=${BUILD_VERSION} cargo build --release --bin zebflow
