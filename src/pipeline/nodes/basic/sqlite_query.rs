@@ -77,6 +77,7 @@ pub fn definition() -> NodeDefinition {
                 "required": ["sql"]
             }),
         },
+        ..Default::default()
     }
 }
 

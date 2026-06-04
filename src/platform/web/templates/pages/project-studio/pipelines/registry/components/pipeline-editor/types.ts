@@ -8,7 +8,7 @@ export interface SelectOptionDef {
 
 export type NodeFieldType = "text" | "textarea" | "code_editor" | "select" | "datalist" | "method_buttons" | "copy_url" | "checkbox" | "section" | "multi_checkbox" | "key_value_pairs" | "claims_pairs" | "params_builder" | "number" | "secure_request_bindings" | "match_cases" | "source_bindings";
 
-export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "credentials_http_auth" | "credentials_webhook_auth" | "ai_tools" | "function_pipelines" | "credential_jwt_roles";
+export type NodeFieldDataSource = "credentials_all" | "credentials_postgres" | "credentials_jwt" | "templates_pages" | "credentials_browser" | "credentials_open_ai" | "credentials_secure_request" | "credentials_http_auth" | "credentials_webhook_auth" | "ai_tools" | "function_pipelines" | "credential_jwt_roles" | `credentials:${string}`;
 
 export interface SidebarItem {
   label: string;
@@ -50,12 +50,17 @@ export interface NodeCatalogEntry {
   title: string;
   description?: string;
   icon?: string;
+  icon_url?: string;
+  icon_hash?: string;
+  ui_category?: string;
+  ui_category_label?: string;
+  source?: string;
   input_pins?: string[];
   output_pins?: string[];
   color?: string;
   fields?: NodeFieldDef[];
   layout?: LayoutItem[];
-  ai_tool?: { registered: boolean; tool_name: string; tool_description: string };
+  ai_tool?: { registered: boolean; tool_name: string; tool_description: string; tool_input_schema?: any };
 }
 
 export interface EditorDataState {

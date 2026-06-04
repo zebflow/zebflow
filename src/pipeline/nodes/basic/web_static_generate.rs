@@ -477,6 +477,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("route".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -720,6 +721,7 @@ export default function LyricPage(input) {
                 "lyric_line": "Namaku Bento."
             }),
             trigger: None,
+            placeholder: None,
         };
         let engine = BasicPipelineEngine::new(
             Arc::new(DenoSandboxEngine::default()),
@@ -916,6 +918,7 @@ export default function LyricPage(input) {
                 "lyric_line": "I was listening to the ocean."
             }),
             trigger: None,
+            placeholder: None,
         };
         let iwan_ctx = PipelineContext {
             owner: "superadmin".to_string(),
@@ -932,6 +935,7 @@ export default function LyricPage(input) {
                 "lyric_line": "Namaku Bento."
             }),
             trigger: None,
+            placeholder: None,
         };
 
         engine

@@ -51,13 +51,6 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title for this node.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "cron".to_string(),
                 label: "Cron".to_string(),
                 field_type: NodeFieldType::Text,
@@ -75,7 +68,6 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Field("title".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("cron".to_string()),
@@ -84,6 +76,7 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

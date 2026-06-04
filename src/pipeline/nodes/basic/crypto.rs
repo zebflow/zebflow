@@ -161,7 +161,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "op".to_string(), label: "Operation".to_string(), field_type: NodeFieldType::Select, options: vec![
                     SelectOptionDef { value: "sha256".to_string(), label: "SHA-256 hash".to_string() },
                     SelectOptionDef { value: "sha512".to_string(), label: "SHA-512 hash".to_string() },
@@ -182,12 +181,13 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("op".to_string())] },
+            LayoutItem::Field("op".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("input_path".to_string()), LayoutItem::Field("hash_path".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("key_path".to_string()), LayoutItem::Field("cost".to_string())] },
             LayoutItem::Field("length".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

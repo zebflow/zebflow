@@ -252,16 +252,27 @@ pub struct DslFlag {
 
 /// DSL flags available on **every** node kind, consumed by the engine.
 pub fn engine_common_dsl_flags() -> Vec<DslFlag> {
-    vec![DslFlag {
-        flag: "--timeout".to_string(),
-        config_key: "timeout_secs".to_string(),
-        description: "Engine-level execution timeout for this node in seconds. \
-            Overrides the project-level pipeline_node_timeout_secs. \
-            Clamped to 5–3600s."
-            .to_string(),
-        kind: DslFlagKind::Scalar,
-        required: false,
-    }]
+    vec![
+        DslFlag {
+            flag: "--title".to_string(),
+            config_key: "title".to_string(),
+            description: "Custom display title for this node instance. \
+                Overrides the default node kind title shown on the canvas."
+                .to_string(),
+            kind: DslFlagKind::Scalar,
+            required: false,
+        },
+        DslFlag {
+            flag: "--timeout".to_string(),
+            config_key: "timeout_secs".to_string(),
+            description: "Engine-level execution timeout for this node in seconds. \
+                Overrides the project-level pipeline_node_timeout_secs. \
+                Clamped to 5–3600s."
+                .to_string(),
+            kind: DslFlagKind::Scalar,
+            required: false,
+        },
+    ]
 }
 
 /// UI fields for engine-level common config, injected into every node definition.
@@ -340,8 +351,7 @@ impl Default for NodeFieldType {
 }
 
 /// Where a select/datalist field's options come from at runtime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeFieldDataSource {
     /// All live project credentials regardless of kind.
     CredentialsAll,
@@ -372,6 +382,63 @@ pub enum NodeFieldDataSource {
     /// Credentials usable as webhook auth: `jwt_signing_key`, `hmac`, and `api_key` kinds.
     /// Used by `n.trigger.webhook` auth_credential field.
     CredentialsWebhookAuth,
+    /// Credentials filtered by a specific kind string (e.g. `"credentials:telegram_bot"`).
+    /// Used by composite node packages that define custom credential types.
+    CredentialsByKind(String),
+}
+
+impl serde::Serialize for NodeFieldDataSource {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::CredentialsAll => serializer.serialize_str("credentials_all"),
+            Self::CredentialsPostgres => serializer.serialize_str("credentials_postgres"),
+            Self::CredentialsJwt => serializer.serialize_str("credentials_jwt"),
+            Self::TemplatesPages => serializer.serialize_str("templates_pages"),
+            Self::CredentialsBrowser => serializer.serialize_str("credentials_browser"),
+            Self::CredentialsOpenAi => serializer.serialize_str("credentials_open_ai"),
+            Self::CredentialsSecureRequest => serializer.serialize_str("credentials_secure_request"),
+            Self::AiTools => serializer.serialize_str("ai_tools"),
+            Self::FunctionPipelines => serializer.serialize_str("function_pipelines"),
+            Self::CredentialJwtRoles => serializer.serialize_str("credential_jwt_roles"),
+            Self::CredentialsHttpAuth => serializer.serialize_str("credentials_http_auth"),
+            Self::CredentialsWebhookAuth => serializer.serialize_str("credentials_webhook_auth"),
+            Self::CredentialsByKind(kind) => serializer.serialize_str(&format!("credentials:{}", kind)),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NodeFieldDataSource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "credentials_all" => Ok(Self::CredentialsAll),
+            "credentials_postgres" => Ok(Self::CredentialsPostgres),
+            "credentials_jwt" => Ok(Self::CredentialsJwt),
+            "templates_pages" => Ok(Self::TemplatesPages),
+            "credentials_browser" => Ok(Self::CredentialsBrowser),
+            "credentials_open_ai" => Ok(Self::CredentialsOpenAi),
+            "credentials_secure_request" => Ok(Self::CredentialsSecureRequest),
+            "ai_tools" => Ok(Self::AiTools),
+            "function_pipelines" => Ok(Self::FunctionPipelines),
+            "credential_jwt_roles" => Ok(Self::CredentialJwtRoles),
+            "credentials_http_auth" => Ok(Self::CredentialsHttpAuth),
+            "credentials_webhook_auth" => Ok(Self::CredentialsWebhookAuth),
+            other => {
+                if let Some(kind) = other.strip_prefix("credentials:") {
+                    Ok(Self::CredentialsByKind(kind.to_string()))
+                } else {
+                    Err(serde::de::Error::unknown_variant(
+                        other,
+                        &["credentials_all", "credentials_postgres", "credentials_jwt",
+                          "templates_pages", "credentials_browser", "credentials_open_ai",
+                          "credentials_secure_request", "ai_tools", "function_pipelines",
+                          "credential_jwt_roles", "credentials_http_auth",
+                          "credentials_webhook_auth", "credentials:<kind>"],
+                    ))
+                }
+            }
+        }
+    }
 }
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.
@@ -759,6 +826,15 @@ pub struct NodeDefinition {
     /// Empty = fall back to flat 2-column grid using `fields` order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layout: Vec<LayoutItem>,
+    /// UI category path for grouping in the pipeline editor catalog.
+    /// Dot-separated: `root.subcategory` (e.g. `"data.postgres"`, `"files.fs"`).
+    /// First segment = root category button; second = subcategory header.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_category: String,
+    /// Human-readable label for the leaf subcategory.
+    /// If empty, the frontend title-cases the subcategory slug.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_category_label: String,
 }
 
 /// Script bridge capability as exposed in a [`NodeUsageMatrix`].
@@ -849,6 +925,28 @@ pub struct NodeContractItem {
     /// Hierarchical layout tree — passed through from [`NodeDefinition::layout`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layout: Vec<LayoutItem>,
+    /// UI category path (e.g. `"data.postgres"`). Same as [`NodeDefinition::ui_category`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_category: String,
+    /// Subcategory display label. Same as [`NodeDefinition::ui_category_label`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ui_category_label: String,
+    /// Unified icon URL for this node kind (resolved at API response time).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon_url: String,
+    /// Content hash of the icon SVG (first 8 hex chars of SHA-256) for cache-busting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon_hash: String,
+    /// Source of this node: `"native"`, `"composite"`, or `"wasm"`.
+    #[serde(default = "default_node_source")]
+    pub source: String,
+    /// Node tier: `"official"` (native or platform-bundled) or `"community"` (installed per-project).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tier: String,
+}
+
+fn default_node_source() -> String {
+    "native".to_string()
 }
 
 /// Root response envelope for `GET /docs/node`.
@@ -895,6 +993,15 @@ impl From<NodeDefinition> for NodeContractItem {
             .as_ref()
             .map(|bridge| (bridge.name.clone(), bridge.enabled))
             .unwrap_or_else(|| (String::new(), false));
+        let source = if value.kind.starts_with("n.c.") {
+            "composite".to_string()
+        } else if value.kind.starts_with("n.wasm.") {
+            "wasm".to_string()
+        } else {
+            default_node_source()
+        };
+        let ui_category = value.ui_category;
+        let ui_category_label = value.ui_category_label;
         Self {
             kind: value.kind,
             title: value.title,
@@ -921,6 +1028,12 @@ impl From<NodeDefinition> for NodeContractItem {
                     tool_input_schema: value.ai_tool.tool_input_schema,
                 },
             },
+            ui_category,
+            ui_category_label,
+            icon_url: String::new(),
+            icon_hash: String::new(),
+            source,
+            tier: String::new(),
         }
     }
 }
@@ -1044,6 +1157,14 @@ pub struct PipelineContext {
     /// For schedule/manual/WS triggers: `None`.
     #[serde(default)]
     pub trigger: Option<Value>,
+    /// Credential placeholder map for composite/WASM node execution.
+    ///
+    /// Maps placeholder names (e.g. `"BOT_TOKEN"`) to resolved credential values.
+    /// Injected into every node's metadata under `"placeholder"` so that
+    /// `$placeholder.BOT_TOKEN` resolves in `{{ expr }}` expressions.
+    /// Only set for composite inner pipelines; `None` for regular pipelines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<Value>,
 }
 
 /// Per-node execution record captured by the pipeline engine during a run.

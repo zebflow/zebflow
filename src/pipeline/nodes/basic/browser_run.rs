@@ -61,7 +61,6 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Browser script timeout in milliseconds (default 30000).".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef { name: "credential_id".to_string(), label: "Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsBrowser), help: Some("Browser credential (kind: browser_browserless or similar).".to_string()), ..Default::default() },
             NodeFieldDef {
                 name: "code".to_string(),
@@ -90,11 +89,12 @@ pub fn definition() -> NodeDefinition {
             NodeFieldDef { name: "timeout_ms".to_string(), label: "Timeout (ms)".to_string(), field_type: NodeFieldType::Text, help: Some("HTTP request timeout in milliseconds. Default 60000.".to_string()), ..Default::default() },
         ],
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Field("credential_id".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("timeout_ms".to_string())] },
             LayoutItem::Field("code".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

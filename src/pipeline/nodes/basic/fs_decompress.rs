@@ -158,6 +158,7 @@ pub fn definition() -> NodeDefinition {
             ],
         }],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

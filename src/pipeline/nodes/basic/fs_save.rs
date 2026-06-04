@@ -43,6 +43,7 @@ pub enum AllowedKind {
     Glb,
     Audio,
     Video,
+    Archive,
 }
 
 impl AllowedKind {
@@ -74,6 +75,18 @@ impl AllowedKind {
                 "audio/m4a",
             ],
             AllowedKind::Video => &["video/mp4", "video/webm", "video/ogg", "video/x-m4v"],
+            AllowedKind::Archive => &[
+                "application/zip",
+                "application/gzip",
+                "application/x-tar",
+                "application/x-gzip",
+                "application/x-bzip2",
+                "application/x-7z-compressed",
+                "application/x-rar-compressed",
+                "application/vnd.android.package-archive",
+                "application/java-archive",
+                "application/vnd.apple.installer+xml",
+            ],
         }
     }
 
@@ -86,6 +99,7 @@ impl AllowedKind {
             AllowedKind::Glb => "3D Models (GLB)",
             AllowedKind::Audio => "Audio",
             AllowedKind::Video => "Video",
+            AllowedKind::Archive => "Archives (ZIP/APK/JAR/TAR)",
         }
     }
 }
@@ -144,7 +158,19 @@ fn is_ogg_theora(bytes: &[u8]) -> bool {
 fn browser_mime_matches_detected(browser_mime: &str, detected_mime: &str) -> bool {
     let browser = normalized_mime(browser_mime);
     let detected = normalized_mime(detected_mime);
-    browser.is_empty() || browser == "application/octet-stream" || browser == detected
+    if browser.is_empty() || browser == "application/octet-stream" || browser == detected {
+        return true;
+    }
+    // ZIP-based formats: APK, JAR, DOCX, etc. have ZIP magic bytes so infer
+    // reports application/zip, but the browser sends a more specific MIME.
+    if detected == "application/zip" {
+        let zip_based = [
+            "application/vnd.android.package-archive",
+            "application/java-archive",
+        ];
+        return zip_based.contains(&browser.as_str());
+    }
+    false
 }
 
 fn default_allowed_kinds() -> Vec<AllowedKind> {
@@ -382,6 +408,7 @@ pub fn definition() -> NodeDefinition {
             tool_description: String::new(),
             tool_input_schema: json!({}),
         },
+        ..Default::default()
     }
 }
 
@@ -700,6 +727,13 @@ fn safe_extension(original_name: &str, mime: &str) -> String {
         "audio/ogg" => "ogg",
         "audio/mp4" => "m4a",
         "model/gltf-binary" => "glb",
+        "application/gzip" | "application/x-gzip" => "gz",
+        "application/x-tar" => "tar",
+        "application/x-bzip2" => "bz2",
+        "application/x-7z-compressed" => "7z",
+        "application/x-rar-compressed" => "rar",
+        "application/vnd.android.package-archive" => "apk",
+        "application/java-archive" => "jar",
         _ => "",
     }
     .to_string()

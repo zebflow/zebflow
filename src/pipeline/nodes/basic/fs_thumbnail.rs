@@ -330,6 +330,7 @@ pub fn definition() -> NodeDefinition {
             tool_description: String::new(),
             tool_input_schema: json!({}),
         },
+        ..Default::default()
     }
 }
 

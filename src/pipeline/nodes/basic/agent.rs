@@ -136,6 +136,35 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--success-schema".to_string(),
+                config_key: "success_schema".to_string(),
+                description: "Strategic mode: JSON Schema (subset: type, required, properties, \
+                    items, enum, minItems, minLength) the final output must satisfy. Enables \
+                    verify-and-repair."
+                    .to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--max-repairs".to_string(),
+                config_key: "max_repairs".to_string(),
+                description: "Strategic mode: max repair attempts when the success contract fails \
+                    (default 0)."
+                    .to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--verify".to_string(),
+                config_key: "verify_function".to_string(),
+                description: "Strategic mode: slug of a function pipeline that verifies the final \
+                    answer. Receives {candidate, goal}, returns {pass, reason}. Runs after the \
+                    JSON schema check; failure triggers repair."
+                    .to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: vec![
             NodeFieldDef {
@@ -178,13 +207,6 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "max_iterations".to_string(),
                 label: "Max Iterations / Budget".to_string(),
                 field_type: NodeFieldType::Text,
@@ -207,6 +229,37 @@ pub fn definition() -> NodeDefinition {
                 span: Some("full".to_string()),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "success_schema".to_string(),
+                label: "Success Contract (JSON Schema)".to_string(),
+                field_type: NodeFieldType::Textarea,
+                rows: Some(6),
+                help: Some("Strategic mode only. Optional JSON Schema (subset: type, required, \
+                    properties, items, enum, minItems, minLength). The agent must produce output \
+                    satisfying this contract; failures trigger up to 'Max Repairs' retries. Leave \
+                    empty to disable verification.".to_string()),
+                span: Some("full".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "max_repairs".to_string(),
+                label: "Max Repairs".to_string(),
+                field_type: NodeFieldType::Text,
+                help: Some("Strategic mode only. How many times to retry when the success contract \
+                    fails. Default 0 (accept best effort, marked unverified).".to_string()),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "verify_function".to_string(),
+                label: "Verifier (function pipeline)".to_string(),
+                field_type: NodeFieldType::Select,
+                data_source: Some(NodeFieldDataSource::FunctionPipelines),
+                help: Some("Strategic mode only. Optional function pipeline that semantically \
+                    verifies the final answer. It receives {candidate, goal} and must return \
+                    {pass: bool, reason: string}. Runs after the JSON schema check; a failure \
+                    triggers repair. Leave empty to disable.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![
             LayoutItem::Field("mode".to_string()),
@@ -218,13 +271,16 @@ pub fn definition() -> NodeDefinition {
                 LayoutItem::Field("model".to_string()),
                 LayoutItem::Field("max_iterations".to_string()),
             ]},
-        LayoutItem::Row { row: vec![
-                LayoutItem::Field("title".to_string()),
-            ]},
             LayoutItem::Field("system_prompt".to_string()),
             LayoutItem::Field("tools".to_string()),
+            LayoutItem::Field("success_schema".to_string()),
+            LayoutItem::Row { row: vec![
+                LayoutItem::Field("max_repairs".to_string()),
+                LayoutItem::Field("verify_function".to_string()),
+            ]},
         ],
         ai_tool: NodeAiToolDefinition::default(),
+        ..Default::default()
     }
 }
 
@@ -258,7 +314,7 @@ pub struct Config {
     /// Tool names to expose to the agent. Empty = all available.
     #[serde(default)]
     pub tools: Vec<String>,
-    /// System prompt override.
+    /// System prompt override. Supports {{ expr }} interpolation.
     pub system_prompt: Option<String>,
     /// Direct mode: max LLM iterations (default 5). Strategic mode: step budget (default 10).
     /// Stored in a single field; the UI label adapts based on mode.
@@ -270,6 +326,23 @@ pub struct Config {
     /// Output verbosity.
     #[serde(default)]
     pub output_mode: OutputMode,
+    /// Strategic mode: optional success contract as a JSON Schema (subset:
+    /// type, required, properties, items, enum, minItems, minLength). Stored as
+    /// a string (DSL flag / UI textarea); parsed to JSON at run time. When set,
+    /// the agent verifies its final output and repairs on failure.
+    #[serde(default)]
+    pub success_schema: Option<String>,
+    /// Strategic mode: max repair attempts when the success contract fails.
+    /// Default 0 (no repair).
+    #[serde(default)]
+    pub max_repairs: u32,
+    /// Strategic mode: optional semantic verifier (Phase B). The slug of a
+    /// function pipeline that receives `{candidate, goal}` and returns
+    /// `{pass: bool, reason: string}`. Runs after the JSON schema check; a
+    /// `pass=false` triggers repair just like a schema failure. `None`/empty
+    /// disables it.
+    #[serde(default)]
+    pub verify_function: Option<String>,
 }
 
 // ── Node ─────────────────────────────────────────────────────────────────────
@@ -609,11 +682,46 @@ impl Node {
             OutputMode::FinalOnly => ZebtuneOutputMode::FinalOnly,
         };
 
+        // Parse the optional success contract.
+        //
+        // Fail-loud rule: an absent or empty schema means "no contract" (fine).
+        // But a NON-EMPTY schema that fails to parse is a configuration error and
+        // must NOT be silently downgraded to "no contract" — doing so would run
+        // the agent unverified while the operator believes verification is on
+        // (a fail-open security hole; also masks the DSL double-quote pitfall
+        // where `--success-schema "{...}"` strips inner quotes). Surface it.
+        let success_schema = match self
+            .config
+            .success_schema
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => match serde_json::from_str::<Value>(s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    return Err(PipelineError::new(
+                        "FW_NODE_AGENT_BAD_SCHEMA",
+                        format!(
+                            "success_schema is set but is not valid JSON: {}. \
+                             A malformed contract is refused rather than silently ignored \
+                             (which would run the agent unverified). If authoring via DSL, \
+                             wrap the schema in single quotes: --success-schema '{{...}}'.",
+                            e
+                        ),
+                    ));
+                }
+            },
+            None => None,
+        };
+
         let agent = ZebtuneAgent::new(
             ZebtuneConfig {
                 step_budget: budget,
                 system_prompt: self.config.system_prompt.clone(),
                 output_mode: zebtune_output_mode,
+                success_schema,
+                max_repairs: self.config.max_repairs,
             },
             llm,
         );
@@ -644,6 +752,60 @@ impl Node {
                     });
                 })
             });
+
+        // Build the optional semantic verifier (Phase B) from `verify_function`.
+        // Mirrors the tool executor's async→sync pipeline bridge so the agent
+        // stays decoupled. The verifier pipeline receives `{candidate, goal}`
+        // and must return `{pass: bool, reason: string}`.
+        let verify_slug = self
+            .config
+            .verify_function
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let verify_fn: Option<Box<crate::automaton::agents::zebtune::VerifyFn>> =
+            match (verify_slug, &self.platform) {
+                (Some(slug), Some(platform_arc)) => {
+                    let platform = Arc::clone(platform_arc);
+                    let owner_v = owner.to_string();
+                    let project_v = project.to_string();
+                    Some(Box::new(move |candidate: &str, goal: &str| -> (bool, String) {
+                        let platform = Arc::clone(&platform);
+                        let slug = slug.clone();
+                        let owner_v = owner_v.clone();
+                        let project_v = project_v.clone();
+                        let input = json!({ "candidate": candidate, "goal": goal });
+                        let res = tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(async move {
+                                platform
+                                    .execute_function_pipeline(&owner_v, &project_v, &slug, input)
+                                    .await
+                            })
+                        });
+                        match res {
+                            Ok(v) => match v.get("pass").and_then(|x| x.as_bool()) {
+                                Some(pass) => {
+                                    let reason = v
+                                        .get("reason")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    (pass, reason)
+                                }
+                                None => (
+                                    false,
+                                    format!(
+                                        "verifier did not return a boolean 'pass' field; got: {}",
+                                        v
+                                    ),
+                                ),
+                            },
+                            Err(e) => (false, format!("verifier pipeline error: {}", e)),
+                        }
+                    }))
+                }
+                _ => None,
+            };
 
         let result = agent
             .run(
@@ -684,6 +846,7 @@ impl Node {
 
                     Err(format!("tool '{}' not found", tool_name))
                 },
+                verify_fn.as_deref(),
                 callback.as_ref(),
             )
             .await;
@@ -694,6 +857,9 @@ impl Node {
                     json!({
                         "final_content":    result.final_content,
                         "budget_exhausted": result.budget_exhausted,
+                        "verified":         result.verified,
+                        "repairs_used":     result.repairs_used,
+                        "metrics":          result.metrics,
                         "trace":            result.trace,
                     })
                 } else {
@@ -701,11 +867,19 @@ impl Node {
                         "final_content":    result.final_content,
                         "chain":            result.chain,
                         "budget_exhausted": result.budget_exhausted,
+                        "verified":         result.verified,
+                        "repairs_used":     result.repairs_used,
+                        "metrics":          result.metrics,
                         "trace":            result.trace,
                     })
                 }
             }
-            OutputMode::FinalOnly => json!({ "final_content": result.final_content }),
+            // Even in final_only we include metrics — it's the benchmark meter,
+            // cheap, and harmless to consumers that ignore it.
+            OutputMode::FinalOnly => json!({
+                "final_content": result.final_content,
+                "metrics":       result.metrics,
+            }),
         };
 
         Ok(NodeExecutionOutput {

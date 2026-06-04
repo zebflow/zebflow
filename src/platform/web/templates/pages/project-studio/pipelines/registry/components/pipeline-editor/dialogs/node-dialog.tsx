@@ -39,6 +39,7 @@ export default function NodeDialog({
   const initFormState = () => {
     const s: Record<string, unknown> = {
       __node_slug: nodeData?.zfPipelineNodeId || "",
+      title: config.title || "",
     };
     serverFields.forEach((f) => {
       if (f.type === "match_cases") {
@@ -206,18 +207,32 @@ export default function NodeDialog({
         <p className="pipeline-editor-subtitle">{subtitle}</p>
 
         <div className="pipeline-editor-node-fields">
-          {/* Node slug — always shown at top */}
-          <Field>
-            <Label>Node Slug</Label>
-            <Input
-              type="text"
-              value={String(formState.__node_slug || "")}
-              onInput={(e) => handleChange("__node_slug", e.currentTarget.value)}
-            />
-            <small className="text-xs text-gray-500 mt-1">
-              Unique key for this node in pipeline graph edges.
-            </small>
-          </Field>
+          {/* Instance slug + title — framework fields, always shown at top */}
+          <div className="pipeline-editor-fields-grid">
+            <Field>
+              <Label>Slug</Label>
+              <Input
+                type="text"
+                value={String(formState.__node_slug || "")}
+                onInput={(e) => handleChange("__node_slug", e.currentTarget.value)}
+              />
+              <small className="text-xs text-gray-500 mt-1">
+                Unique key for this node in pipeline graph edges.
+              </small>
+            </Field>
+            <Field>
+              <Label>Title</Label>
+              <Input
+                type="text"
+                value={String(formState.title || "")}
+                onInput={(e) => handleChange("title", e.currentTarget.value)}
+                placeholder={catalogEntry?.title || kind}
+              />
+              <small className="text-xs text-gray-500 mt-1">
+                Custom display label. Falls back to node kind title.
+              </small>
+            </Field>
+          </div>
 
           {/* Server-driven fields via NodeForm.
               For n.function.call with params loaded: hide input_path (replaced by param inputs below). */}
@@ -268,6 +283,31 @@ export default function NodeDialog({
                     No params defined — passes full payload through.
                   </span>
                 )}
+                <span className="ml-auto">
+                  {(() => {
+                    const fnSlug = String(formState.function || "").trim();
+                    const fnMatch = fnSlug
+                      ? (Array.isArray(dataState.functionPipelines) ? dataState.functionPipelines : [])
+                          .find((fp: any) => (fp?.meta?.name || fp?.name || "") === fnSlug)
+                      : null;
+                    const fnFileRel = fnMatch?.meta?.file_rel_path;
+                    const fnVPath = fnMatch?.meta?.virtual_path || "";
+                    if (!fnFileRel) return null;
+                    const href = `/projects/${encodeURIComponent(String(dataState.owner || ""))}/${encodeURIComponent(String(dataState.project || ""))}/pipelines/registry?type=pipeline&path=${encodeURIComponent(fnVPath)}&file=${encodeURIComponent(fnFileRel)}`;
+                    return (
+                      <a
+                        href={href}
+                        className="inline-flex items-center gap-1 text-[0.68rem] font-medium text-accent hover:underline"
+                        title={`Open ${fnSlug} definition`}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+                          <path fillRule="evenodd" d="M4.22 11.78a.75.75 0 0 1 0-1.06L9.44 5.5H5.75a.75.75 0 0 1 0-1.5h5.5a.75.75 0 0 1 .75.75v5.5a.75.75 0 0 1-1.5 0V6.56l-5.22 5.22a.75.75 0 0 1-1.06 0Z" clipRule="evenodd" />
+                        </svg>
+                        Go to Definition
+                      </a>
+                    );
+                  })()}
+                </span>
               </div>
               {functionParams && Object.keys(functionParams).length > 0 && (
                 <div className="px-3 py-3 flex flex-col gap-3">

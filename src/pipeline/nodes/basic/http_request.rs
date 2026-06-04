@@ -76,7 +76,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "credential_id".to_string(), label: "Request Profile".to_string(), field_type: NodeFieldType::Select, data_source: Some(crate::pipeline::model::NodeFieldDataSource::CredentialsHttpAuth), help: Some("Credential for HTTP authentication. secure_request: template-driven request. oauth2: Bearer token auto-refresh.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "request_bindings".to_string(), label: "Profile Bindings".to_string(), field_type: NodeFieldType::SecureRequestBindings, help: Some("JS expressions for the variables declared by the selected secure_request profile. Example: input.player_id or ctx.nodes.n3.unit.code".to_string()), span: Some("full".to_string()), ..Default::default() },
                 NodeFieldDef { name: "url".to_string(), label: "URL".to_string(), field_type: NodeFieldType::Text, help: Some("Fallback URL when url_expr is empty.".to_string()), default_value: Some(serde_json::json!("https://example.com")), ..Default::default() },
@@ -117,7 +116,7 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Field("credential_id".to_string()),
             LayoutItem::Field("request_bindings".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("method".to_string()), LayoutItem::Field("timeout_ms".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("response_type".to_string()), LayoutItem::Field("body_type".to_string())] },
@@ -146,6 +145,7 @@ pub fn definition() -> NodeDefinition {
                 "required": ["url"]
             }),
         },
+        ..Default::default()
     }
 }
 

@@ -178,6 +178,16 @@ function enrichFields(
       const cred = (dataState.jwtCredentials as any[]).find((c: any) => c.credential_id === selectedCredId);
       const roles: string[] = Array.isArray(cred?.auth_roles) ? cred.auth_roles : [];
       options = roles.map((r: string) => ({ value: r, label: r }));
+    } else if (f.data_source && (f.data_source as string).startsWith("credentials:")) {
+      // Dynamic credential kind filter (composite node packages).
+      const kind = (f.data_source as string).slice("credentials:".length);
+      const filtered = (dataState.allCredentials as any[]).filter(
+        (c: any) => c.kind === kind
+      );
+      options = buildCredentialOptions(filtered, value as string);
+      if (options.length === 1 && options[0].value === "") {
+        options[0].label = `No ${kind} credential available`;
+      }
     }
 
     if (f.type === "copy_url") {

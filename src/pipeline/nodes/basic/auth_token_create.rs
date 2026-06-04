@@ -92,7 +92,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "credential_id".to_string(), label: "Signing Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsJwt), help: Some("JWT signing key credential (kind: jwt_signing_key). Algorithm is determined by the credential.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "expires_in".to_string(), label: "Expires In (seconds)".to_string(), field_type: NodeFieldType::Text, placeholder: Some("900".to_string()), ..Default::default() },
                 NodeFieldDef { name: "issuer".to_string(), label: "Issuer (iss)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
@@ -101,12 +100,13 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("expires_in".to_string())] },
+            LayoutItem::Field("expires_in".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("credential_id".to_string())] },
             LayoutItem::Row { row: vec![LayoutItem::Field("issuer".to_string()), LayoutItem::Field("audience".to_string())] },
             LayoutItem::Field("claims".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

@@ -68,13 +68,6 @@ pub fn definition() -> NodeDefinition {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
                 NodeFieldDef {
-                    name: "title".to_string(),
-                    label: "Title".to_string(),
-                    field_type: NodeFieldType::Text,
-                    help: Some("Override display title for this node.".to_string()),
-                    ..Default::default()
-                },
-                NodeFieldDef {
                     name: "items_expr".to_string(),
                     label: "Items".to_string(),
                     field_type: NodeFieldType::Text,
@@ -103,16 +96,12 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("title".to_string()),
-                    LayoutItem::Field("dispatch".to_string()),
-                ],
-            },
+            LayoutItem::Field("dispatch".to_string()),
             LayoutItem::Field("items_expr".to_string()),
             LayoutItem::Field("chunk_size".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

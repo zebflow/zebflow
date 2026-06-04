@@ -152,13 +152,6 @@ pub fn definition() -> NodeDefinition {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource};
             vec![
                 NodeFieldDef {
-                    name: "title".to_string(),
-                    label: "Title".to_string(),
-                    field_type: NodeFieldType::Text,
-                    help: Some("Override display title.".to_string()),
-                    ..Default::default()
-                },
-                NodeFieldDef {
                     name: "template".to_string(),
                     label: "Template".to_string(),
                     field_type: NodeFieldType::Datalist,
@@ -221,7 +214,6 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Field("title".to_string()),
             LayoutItem::Row {
                 row: vec![
                     LayoutItem::Field("status".to_string()),
@@ -240,6 +232,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("load_scripts".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
