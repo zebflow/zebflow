@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::llm_interface::{CallResult, LlmCall, Message, MessageRole, ToolCall, ToolDef};
+use super::llm_interface::{CallResult, LlmCall, Message, MessageRole, ToolCall, ToolDef, Usage};
 
 // ── OpenAI-compatible client ──────────────────────────────────────────────────
 
@@ -102,7 +102,7 @@ impl LlmCall for OpenAiHttpClient {
         &self,
         messages: Vec<Value>,
         tools: &[ToolDef],
-    ) -> Result<CallResult, String> {
+    ) -> Result<(CallResult, Usage), String> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let tools_json: Vec<Value> = tools
             .iter()
@@ -136,6 +136,7 @@ impl LlmCall for OpenAiHttpClient {
         if !status.is_success() {
             return Err(format!("LLM error {}: {}", status, val));
         }
+        let usage = Usage::from_response(&val);
         let choice = val
             .get("choices")
             .and_then(Value::as_array)
@@ -166,7 +167,7 @@ impl LlmCall for OpenAiHttpClient {
                         .collect()
                 })
                 .unwrap_or_default();
-            return Ok(CallResult::ToolCalls(tool_calls));
+            return Ok((CallResult::ToolCalls(tool_calls), usage));
         }
         let text = choice
             .get("message")
@@ -175,7 +176,7 @@ impl LlmCall for OpenAiHttpClient {
             .unwrap_or("")
             .trim()
             .to_string();
-        Ok(CallResult::Text(text))
+        Ok((CallResult::Text(text), usage))
     }
 }
 

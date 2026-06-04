@@ -27,6 +27,7 @@
 //! Implementations of the `AutomatonEngine` trait (plan/execute contract).
 //! `NoopAutomatonEngine` is the reference implementation used in tests.
 
+pub mod contract;
 pub mod engines;
 pub mod tool_caller;
 pub mod zebtune;
