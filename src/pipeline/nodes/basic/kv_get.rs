@@ -1,4 +1,4 @@
-//! `n.mem.get` — retrieve a value from the per-project in-memory KV store.
+//! `n.kv.get` — retrieve a value from the project-scoped KV store.
 //!
 //! Replaces the payload with `{ [out_key]: value }`.
 //! Use `$trigger` or `$nodes` references for upstream data.
@@ -10,11 +10,12 @@
 //! | `--key` | string | required | Storage key to retrieve |
 //! | `--out-key` | string | `""` | Payload key to write into (default = same as `--key`) |
 //! | `--default` | string | `null` | JSON value to inject if key is missing |
+//! | `--durable` | bool | `false` | Read from durable storage (survives restart) |
 //!
 //! # Example
 //!
 //! ```text
-//! | n.mem.get --key "user:{{ input.user_id }}" --out-key profile
+//! | n.kv.get --key "user:{{ input.user_id }}" --out-key profile
 //! | n.script -- "return { name: input.profile?.name ?? 'Guest' };"
 //! ```
 
@@ -29,15 +30,16 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.get";
+pub const NODE_KIND: &str = "n.kv.get";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Get".to_string(),
-        description: "Read a value from the per-project in-memory KV store. \
+        title: "KV Get".to_string(),
+        description: "Read a value from the project-scoped KV store. \
+            Ephemeral by default, use --durable for persistence across restarts. \
             Replaces the payload with { [out_key]: value }. \
             Use --out-key to control the output key name (defaults to the storage key). \
             Use --default to supply a fallback JSON value when the key is missing or expired. \
@@ -74,15 +76,16 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Persist to durable storage (survives restart). Default: ephemeral."
+                    .to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
             NodeFieldDef {
                 name: "key".to_string(),
                 label: "Key".to_string(),
@@ -107,9 +110,20 @@ pub fn definition() -> NodeDefinition {
                 ),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "durable".to_string(),
+                label: "Durable".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some(
+                    "Persist to durable storage (survives restart). Default: ephemeral."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -121,6 +135,8 @@ pub struct Config {
     pub out_key: String,
     #[serde(default)]
     pub default: Option<Value>,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -164,17 +180,24 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_GET_KEY",
-                "n.mem.get: --key is required",
+                "KV_GET_KEY",
+                "n.kv.get: --key is required",
             ));
         }
 
-        let value = self
-            .state_bus
-            .get(owner, project, key)
-            .map_err(|err| PipelineError::new("MEM_GET_STATE_BUS", err.to_string()))?
-            .or_else(|| self.config.default.clone())
-            .unwrap_or(Value::Null);
+        let value = if self.config.durable {
+            self.state_bus
+                .durable_get(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_GET_STATE_BUS", err.to_string()))?
+                .or_else(|| self.config.default.clone())
+                .unwrap_or(Value::Null)
+        } else {
+            self.state_bus
+                .get(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_GET_STATE_BUS", err.to_string()))?
+                .or_else(|| self.config.default.clone())
+                .unwrap_or(Value::Null)
+        };
 
         let out_key = if self.config.out_key.trim().is_empty() {
             key.to_string()
@@ -182,7 +205,7 @@ impl NodeHandler for Node {
             self.config.out_key.trim().to_string()
         };
 
-        let trace = format!("n.mem.get: key={} out_key={}", key, out_key);
+        let trace = format!("n.kv.get: key={} out_key={} durable={}", key, out_key, self.config.durable);
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({ out_key: value }),

@@ -1,4 +1,4 @@
-//! `n.mem.exists` — check whether a key exists in the per-project in-memory KV store.
+//! `n.kv.exists` — check whether a key exists in the per-project KV store.
 //!
 //! Replaces the payload with `{ [out_key]: boolean }` (default out_key: "exists").
 //! Useful for cache-check patterns before expensive lookups.
@@ -9,12 +9,13 @@
 //! |---|---|---|---|
 //! | `--key` | string | required | Key to check (supports `{{ expr }}`) |
 //! | `--out-key` | string | `"exists"` | Payload key to write the boolean result into |
+//! | `--durable` | bool | `false` | Check durable storage (survives restart). Default: ephemeral. |
 //!
 //! # Example
 //!
 //! ```text
 //! | n.trigger.webhook --path /profile --method GET
-//! | n.mem.exists --key "profile:{{ input.user_id }}" --out-key cached
+//! | n.kv.exists --key "profile:{{ input.user_id }}" --out-key cached
 //! | n.logic.if --cond "input.cached" --then cached-branch --else fetch-branch
 //! ```
 
@@ -29,17 +30,18 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.exists";
+pub const NODE_KIND: &str = "n.kv.exists";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Exists".to_string(),
+        title: "KV Exists".to_string(),
         description: "Check whether a key exists and is not expired in the per-project \
-            in-memory KV store. Replaces the payload with { [out_key]: boolean } (default out_key: \"exists\"). \
+            KV store. Replaces the payload with { [out_key]: boolean } (default out_key: \"exists\"). \
             Useful for cache-hit checks before expensive DB queries or API calls. \
+            Use --durable to check durable (disk-backed) storage instead of ephemeral. \
             Use $trigger or $nodes references for upstream data."
             .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -74,14 +76,22 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Check durable storage (survives restart). Default: ephemeral.".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
             NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Key to check. Supports {{ expr }}.".to_string()), ..Default::default() },
             NodeFieldDef { name: "out_key".to_string(), label: "Output Key".to_string(), field_type: NodeFieldType::Text, help: Some("Payload key for the boolean result. Default: \"exists\".".to_string()), ..Default::default() },
+            NodeFieldDef { name: "durable".to_string(), label: "Durable".to_string(), field_type: NodeFieldType::Checkbox, help: Some("Check durable storage. Default: ephemeral.".to_string()), ..Default::default() },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -91,6 +101,8 @@ pub struct Config {
     pub key: String,
     #[serde(default)]
     pub out_key: String,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -134,15 +146,20 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_EXISTS_KEY",
-                "n.mem.exists: --key is required",
+                "KV_EXISTS_KEY",
+                "n.kv.exists: --key is required",
             ));
         }
 
-        let exists = self
-            .state_bus
-            .exists(owner, project, key)
-            .map_err(|err| PipelineError::new("MEM_EXISTS_STATE_BUS", err.to_string()))?;
+        let exists = if self.config.durable {
+            self.state_bus
+                .durable_exists(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_EXISTS_STATE_BUS", err.to_string()))?
+        } else {
+            self.state_bus
+                .exists(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_EXISTS_STATE_BUS", err.to_string()))?
+        };
 
         let out_key = if self.config.out_key.trim().is_empty() {
             "exists".to_string()
@@ -151,8 +168,8 @@ impl NodeHandler for Node {
         };
 
         let trace = format!(
-            "n.mem.exists: key={} exists={} out_key={}",
-            key, exists, out_key
+            "n.kv.exists: key={} exists={} out_key={} durable={}",
+            key, exists, out_key, self.config.durable
         );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],

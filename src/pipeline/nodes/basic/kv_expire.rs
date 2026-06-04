@@ -1,4 +1,4 @@
-//! `n.mem.expire` — update the TTL of an existing key without changing its value.
+//! `n.kv.expire` — update the TTL of an existing key without changing its value.
 //!
 //! Pass `--ttl 0` to remove the expiry (persist the key forever).
 //! Payload passes through unchanged.
@@ -9,12 +9,13 @@
 //! |---|---|---|---|
 //! | `--key` | string | required | Key to update (supports `{{ expr }}`) |
 //! | `--ttl` | number | required | New TTL in seconds; 0 = remove expiry (persist) |
+//! | `--durable` | bool | `false` | Expire in durable storage (survives restart). Default: ephemeral. |
 //!
 //! # Example
 //!
 //! ```text
 //! | n.trigger.webhook --path /refresh --method POST
-//! | n.mem.expire --key "session:{{ input.token }}" --ttl 1800
+//! | n.kv.expire --key "session:{{ input.token }}" --ttl 1800
 //! ```
 
 use async_trait::async_trait;
@@ -28,17 +29,18 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.expire";
+pub const NODE_KIND: &str = "n.kv.expire";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Expire".to_string(),
-        description: "Update the TTL of an existing key in the per-project in-memory KV store \
+        title: "KV Expire".to_string(),
+        description: "Update the TTL of an existing key in the per-project KV store \
             without changing its value. Pass --ttl 0 to remove the expiry (persist forever). \
             No-ops silently if the key is missing or already expired. \
+            Use --durable to target durable (disk-backed) storage instead of ephemeral. \
             Payload passes through unchanged."
             .to_string(),
         input_schema: json!({ "type": "object" }),
@@ -70,15 +72,15 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Expire in durable storage (survives restart). Default: ephemeral.".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title.".to_string()),
-                ..Default::default()
-            },
             NodeFieldDef {
                 name: "key".to_string(),
                 label: "Key".to_string(),
@@ -95,9 +97,19 @@ pub fn definition() -> NodeDefinition {
                 ),
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "durable".to_string(),
+                label: "Durable".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some(
+                    "Check durable storage. Default: ephemeral.".to_string(),
+                ),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -107,6 +119,8 @@ pub struct Config {
     pub key: String,
     #[serde(default)]
     pub ttl: Option<u64>,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -150,22 +164,27 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_EXPIRE_KEY",
-                "n.mem.expire: --key is required",
+                "KV_EXPIRE_KEY",
+                "n.kv.expire: --key is required",
             ));
         }
 
-        let updated = self
-            .state_bus
-            .expire(owner, project, key, self.config.ttl)
-            .map_err(|err| PipelineError::new("MEM_EXPIRE_STATE_BUS", err.to_string()))?;
+        let updated = if self.config.durable {
+            self.state_bus
+                .durable_expire(owner, project, key, self.config.ttl)
+                .map_err(|err| PipelineError::new("KV_EXPIRE_STATE_BUS", err.to_string()))?
+        } else {
+            self.state_bus
+                .expire(owner, project, key, self.config.ttl)
+                .map_err(|err| PipelineError::new("KV_EXPIRE_STATE_BUS", err.to_string()))?
+        };
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
             trace: vec![format!(
-                "n.mem.expire: key={} ttl={:?} updated={}",
-                key, self.config.ttl, updated
+                "n.kv.expire: key={} ttl={:?} updated={} durable={}",
+                key, self.config.ttl, updated, self.config.durable
             )],
         })
     }

@@ -1,4 +1,4 @@
-//! `n.mem.del` — delete a key from the per-project in-memory KV store.
+//! `n.kv.del` — delete a key from the project-scoped KV store.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -11,15 +11,15 @@ use crate::pipeline::{
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 
-pub const NODE_KIND: &str = "n.mem.del";
+pub const NODE_KIND: &str = "n.kv.del";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
         kind: NODE_KIND.to_string(),
-        title: "Mem Del".to_string(),
-        description: "Delete a key from the per-project in-memory KV store. Passes the payload through unchanged.".to_string(),
+        title: "KV Del".to_string(),
+        description: "Delete a key from the project-scoped KV store. Ephemeral by default, use --durable for persistence across restarts. Passes the payload through unchanged.".to_string(),
         input_schema: json!({ "type": "object" }),
         output_schema: json!({ "type": "object" }),
         input_pins: vec![INPUT_PIN_IN.to_string()],
@@ -41,13 +41,31 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: true,
             },
+            DslFlag {
+                flag: "--durable".to_string(),
+                config_key: "durable".to_string(),
+                description: "Persist to durable storage (survives restart). Default: ephemeral."
+                    .to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title.".to_string()), ..Default::default() },
             NodeFieldDef { name: "key".to_string(), label: "Key".to_string(), field_type: NodeFieldType::Text, help: Some("Key to delete.".to_string()), ..Default::default() },
+            NodeFieldDef {
+                name: "durable".to_string(),
+                label: "Durable".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some(
+                    "Persist to durable storage (survives restart). Default: ephemeral."
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
         ],
         layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -55,6 +73,8 @@ pub fn definition() -> NodeDefinition {
 pub struct Config {
     #[serde(default)]
     pub key: String,
+    #[serde(default)]
+    pub durable: bool,
 }
 
 pub struct Node {
@@ -98,20 +118,25 @@ impl NodeHandler for Node {
 
         if key.is_empty() {
             return Err(PipelineError::new(
-                "MEM_DEL_KEY",
-                "n.mem.del: --key is required",
+                "KV_DEL_KEY",
+                "n.kv.del: --key is required",
             ));
         }
 
-        let existed = self
-            .state_bus
-            .del(owner, project, key)
-            .map_err(|err| PipelineError::new("MEM_DEL_STATE_BUS", err.to_string()))?;
+        let existed = if self.config.durable {
+            self.state_bus
+                .durable_del(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_DEL_STATE_BUS", err.to_string()))?
+        } else {
+            self.state_bus
+                .del(owner, project, key)
+                .map_err(|err| PipelineError::new("KV_DEL_STATE_BUS", err.to_string()))?
+        };
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec![format!("n.mem.del: key={} existed={}", key, existed)],
+            trace: vec![format!("n.kv.del: key={} existed={} durable={}", key, existed, self.config.durable)],
         })
     }
 }
