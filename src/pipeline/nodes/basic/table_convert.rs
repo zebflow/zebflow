@@ -275,6 +275,7 @@ pub fn definition() -> NodeDefinition {
         script_available: false,
         script_bridge: None,
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

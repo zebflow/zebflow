@@ -123,13 +123,6 @@ pub fn definition() -> NodeDefinition {
         }],
         fields: vec![
             NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title for this node.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "code".to_string(),
                 label: "Error Code Pattern".to_string(),
                 field_type: NodeFieldType::Select,
@@ -155,13 +148,9 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
         ],
-        layout: vec![LayoutItem::Row {
-            row: vec![
-                LayoutItem::Field("title".to_string()),
-                LayoutItem::Field("code".to_string()),
-            ],
-        }],
+        layout: vec![LayoutItem::Field("code".to_string())],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

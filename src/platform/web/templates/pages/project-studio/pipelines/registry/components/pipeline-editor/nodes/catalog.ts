@@ -1,76 +1,13 @@
 import type { NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
 
-export const nodeCategories: Record<string, string[]> = {
-  trigger: [
-    "n.trigger.webhook",
-    "n.trigger.mapserver",
-    "n.trigger.mcp",
-    "n.trigger.schedule",
-    "n.trigger.manual",
-    "n.trigger.ws",
-    "n.trigger.memsubscribe",
-    "n.trigger.weberror",
-    "n.trigger.function",
-  ],
-  data: [
-    "n.sekejap.query",
-    "n.sekejap.mutate",
-    "n.sqlite.query",
-    "n.sqlite.mutate",
-    "n.table.convert",
-    "n.table.query",
-    "n.pg.query",
-    "n.mem.set",
-    "n.mem.get",
-    "n.mem.exists",
-    "n.mem.del",
-    "n.mem.expire",
-    "n.mem.incr",
-    "n.mem.publish",
-    "n.ms.publish",
-    "n.ms.unpublish",
-    "n.ms.get",
-    "n.ms.list",
-  ],
-  logic: [
-    "n.script",
-    "n.logic.if",
-    "n.logic.match",
-    "n.logic.collect",
-    "n.logic.foreach",
-    "n.logic.reduce",
-    "n.logic.retry",
-    "n.function.call",
-    "n.ai.agent",
-    "n.ai.tts",
-  ],
-  web: ["n.http.request", "n.browser.run", "n.web.render", "n.web.response", "n.web.static.generate", "n.web.docs.generate", "n.ws.sync_state", "n.ws.emit"],
-  security: ["n.auth.token.create", "n.crypto"],
-  files: [
-    "n.fs.list",
-    "n.fs.head",
-    "n.fs.get",
-    "n.fs.put",
-    "n.fs.delete",
-    "n.fs.copy",
-    "n.fs.move",
-    "n.fs.mkdir",
-    "n.fs.save",
-    "n.fs.compress",
-    "n.fs.decompress",
-    "n.fs.pdf.convert",
-    "n.fs.thumbnail",
-  ],
-};
-
 const NODE_KIND_COLORS: Record<string, string> = {
   "n.trigger.webhook": "#065f46",
-  "n.trigger.mapserver": "#0f766e",
   "n.trigger.mcp": "#155e75",
   "n.trigger.schedule": "#14532d",
   "n.trigger.manual": "#166534",
   "n.trigger.weberror": "#7f1d1d",
   "n.trigger.ws": "#064e3b",
+  "n.trigger.ws.client": "#064e3b",
   "n.script": "#1e3a8a",
   "n.http.request": "#7c2d12",
   "n.sekejap.query": "#0f766e",
@@ -90,6 +27,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.logic.retry": "#0e7490",
   "n.ws.sync_state": "#064e3b",
   "n.ws.emit": "#065f46",
+  "n.ws.client.send": "#064e3b",
   "n.auth.token.create": "#78350f",
   "n.crypto": "#6b21a8",
   "n.browser.run": "#0369a1",
@@ -114,72 +52,21 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.fs.decompress": "#0c4a6e",
   "n.fs.pdf.convert": "#0c4a6e",
   "n.fs.thumbnail": "#4a1d96",
-  "n.mem.set": "#b45309",
-  "n.mem.get": "#b45309",
-  "n.mem.exists": "#b45309",
-  "n.mem.del": "#b45309",
-  "n.mem.expire": "#b45309",
-  "n.mem.incr": "#b45309",
-  "n.mem.publish": "#b45309",
-  "n.trigger.memsubscribe": "#b45309",
-};
-
-export const NODE_KIND_ICONS: Record<string, string> = {
-  "n.ai.agent": "/assets/node-icons/zebflow/n.ai.agent.svg",
-  "n.auth.token.create": "/assets/node-icons/zebflow/n.auth.token.create.svg",
-  "n.crypto": "/assets/node-icons/zebflow/n.crypto.svg",
-  "n.fs.list": "/assets/node-icons/zebflow/n.fs.list.svg",
-  "n.fs.head": "/assets/node-icons/zebflow/n.fs.head.svg",
-  "n.fs.get": "/assets/node-icons/zebflow/n.fs.get.svg",
-  "n.fs.put": "/assets/node-icons/zebflow/n.fs.put.svg",
-  "n.fs.delete": "/assets/node-icons/zebflow/n.fs.delete.svg",
-  "n.fs.copy": "/assets/node-icons/zebflow/n.fs.copy.svg",
-  "n.fs.move": "/assets/node-icons/zebflow/n.fs.move.svg",
-  "n.fs.mkdir": "/assets/node-icons/zebflow/n.fs.mkdir.svg",
-  "n.fs.save": "/assets/node-icons/zebflow/n.fs.save.svg",
-  "n.function.call": "/assets/node-icons/zebflow/n.function.call.svg",
-  "n.http.request": "/assets/node-icons/zebflow/n.http.request.svg",
-  "n.logic.collect": "/assets/node-icons/zebflow/n.logic.collect.svg",
-  "n.logic.foreach": "/assets/node-icons/zebflow/n.logic.foreach.svg",
-  "n.logic.if": "/assets/node-icons/zebflow/n.logic.if.svg",
-  "n.logic.match": "/assets/node-icons/zebflow/n.logic.match.svg",
-  "n.logic.reduce": "/assets/node-icons/zebflow/n.logic.reduce.svg",
-  "n.logic.retry": "/assets/node-icons/zebflow/n.logic.retry.svg",
-  "n.mem.set": "/assets/node-icons/zebflow/n.mem.set.svg",
-  "n.ms.publish": "/assets/node-icons/zebflow/n.ms.publish.svg",
-  "n.ms.unpublish": "/assets/node-icons/zebflow/n.ms.unpublish.svg",
-  "n.ms.get": "/assets/node-icons/zebflow/n.ms.get.svg",
-  "n.ms.list": "/assets/node-icons/zebflow/n.ms.list.svg",
-  "n.pg.query": "/assets/node-icons/zebflow/n.pg.query.svg",
-  "n.sekejap.query": "/assets/node-icons/zebflow/n.sekejap.query.svg",
-  "n.table.convert": "/assets/node-icons/zebflow/n.table.convert.svg",
-  "n.table.query": "/assets/node-icons/zebflow/n.table.query.svg",
-  "n.script": "/assets/node-icons/zebflow/n.script.svg",
-  "n.sqlite.mutate": "/assets/node-icons/zebflow/n.sqlite.mutate.svg",
-  "n.sqlite.query": "/assets/node-icons/zebflow/n.sqlite.query.svg",
-  "n.fs.thumbnail": "/assets/node-icons/zebflow/n.fs.thumbnail.svg",
-  "n.trigger.function": "/assets/node-icons/zebflow/n.trigger.function.svg",
-  "n.trigger.manual": "/assets/node-icons/zebflow/n.trigger.manual.svg",
-  "n.trigger.mapserver": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
-  "n.trigger.mcp": "/assets/node-icons/zebflow/n.trigger.manual.svg",
-  "n.trigger.memsubscribe": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
-  "n.trigger.schedule": "/assets/node-icons/zebflow/n.trigger.schedule.svg",
-  "n.trigger.webhook": "/assets/node-icons/zebflow/n.trigger.webhook.svg",
-  "n.trigger.weberror": "/assets/node-icons/zebflow/n.trigger.weberror.svg",
-  "n.trigger.ws": "/assets/node-icons/zebflow/n.trigger.ws.svg",
-  "n.web.docs.generate": "/assets/node-icons/zebflow/n.web.docs.generate.svg",
-  "n.web.response": "/assets/node-icons/zebflow/n.web.response.svg",
-  "n.web.static.generate": "/assets/node-icons/zebflow/n.web.static.generate.svg",
-  "n.ws.emit": "/assets/node-icons/zebflow/n.ws.emit.svg",
-  "n.ws.sync_state": "/assets/node-icons/zebflow/n.ws.sync_state.svg",
+  "n.kv.set": "#b45309",
+  "n.kv.get": "#b45309",
+  "n.kv.exists": "#b45309",
+  "n.kv.del": "#b45309",
+  "n.kv.expire": "#b45309",
+  "n.kv.incr": "#b45309",
+  "n.kv.publish": "#b45309",
+  "n.trigger.kv.subscribe": "#b45309",
 };
 
 export function nodeColor(kind: string): string {
-  return NODE_KIND_COLORS[kind] || "#334155";
-}
-
-export function nodeIcon(kind: string): string {
-  return NODE_KIND_ICONS[canonicalNodeKind(kind)] || "";
+  if (NODE_KIND_COLORS[kind]) return NODE_KIND_COLORS[kind];
+  if (kind.startsWith("n.c.")) return "#6d28d9";
+  if (kind.startsWith("n.wasm.")) return "#dc2626";
+  return "#334155";
 }
 
 export function canonicalNodeKind(kind: string): string {
@@ -199,42 +86,80 @@ export function triggerKindFromNodeKind(kind: string): string {
   return isTriggerNodeKind(canonical) ? canonical.slice("n.trigger.".length) : "";
 }
 
+/** Fallback category derivation from node kind prefix (used when ui_category is not set). */
 export function categoryForNodeKind(kind: string): string {
   const canonical = canonicalNodeKind(kind);
-  for (const [category, kinds] of Object.entries(nodeCategories)) {
-    if ((kinds || []).includes(canonical)) return category;
-  }
   if (canonical.startsWith("n.trigger.")) return "trigger";
   if (canonical.startsWith("n.logic.") || canonical.startsWith("n.function.") || canonical.startsWith("n.ai.")) return "logic";
   if (canonical.startsWith("n.ms.")) return "data";
   if (canonical.startsWith("n.fs.")) return "files";
   if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
   if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";
-  if (canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
+  if (canonical.startsWith("n.kv.") || canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
+  if (canonical.startsWith("n.c.")) return "composite";
+  if (canonical.startsWith("n.wasm.")) return "wasm";
+  if (canonical === "n.script") return "logic";
   return "other";
 }
 
-export function groupedCatalogEntries(catalog: Map<string, NodeCatalogEntry>): Record<string, NodeCatalogEntry[]> {
-  const grouped: Record<string, NodeCatalogEntry[]> = {};
-  const seen = new Set<string>();
-  for (const [category, kinds] of Object.entries(nodeCategories)) {
-    for (const kind of kinds || []) {
-      const entry = catalog.get(kind);
-      if (!entry || seen.has(entry.kind)) continue;
-      (grouped[category] ||= []).push(entry);
-      seen.add(entry.kind);
+// ── Backend-driven catalog grouping ──────────────────────────────────────────
+
+export interface CategoryGroup {
+  subcategory: string;
+  label: string;
+  entries: NodeCatalogEntry[];
+}
+
+/** Groups catalog entries by root category with subcategory structure, driven by backend `ui_category`. */
+export function groupedCatalogEntries(catalog: Map<string, NodeCatalogEntry>): Record<string, CategoryGroup[]> {
+  const byRoot: Record<string, Map<string, { label: string; entries: NodeCatalogEntry[] }>> = {};
+
+  for (const entry of catalog.values()) {
+    if (!entry?.kind) continue;
+    const uiCat = entry.ui_category || categoryForNodeKind(entry.kind);
+    const dotIdx = uiCat.indexOf(".");
+    const root = dotIdx > 0 ? uiCat.slice(0, dotIdx) : uiCat;
+    const sub = dotIdx > 0 ? uiCat.slice(dotIdx + 1) : "";
+    const label = entry.ui_category_label || (sub ? sub.charAt(0).toUpperCase() + sub.slice(1) : "");
+
+    if (!byRoot[root]) byRoot[root] = new Map();
+    const subMap = byRoot[root];
+    if (!subMap.has(sub)) subMap.set(sub, { label, entries: [] });
+    subMap.get(sub)!.entries.push(entry);
+  }
+
+  const result: Record<string, CategoryGroup[]> = {};
+  for (const [root, subMap] of Object.entries(byRoot)) {
+    result[root] = Array.from(subMap.entries()).map(([sub, group]) => ({
+      subcategory: sub,
+      label: group.label,
+      entries: group.entries,
+    }));
+  }
+  return result;
+}
+
+/** Builds the kindTitles map from catalog entries (kind → definition title). */
+export function buildKindTitles(catalog: Map<string, NodeCatalogEntry>): Record<string, string> {
+  const titles: Record<string, string> = {};
+  for (const [kind, entry] of catalog.entries()) {
+    if (entry.title) titles[kind] = entry.title;
+  }
+  return titles;
+}
+
+/** Builds the kindIcons map from catalog entries (icon_url + icon_hash for cache-busting). */
+export function buildKindIcons(catalog: Map<string, NodeCatalogEntry>): Record<string, string> {
+  const icons: Record<string, string> = {};
+  for (const [kind, entry] of catalog.entries()) {
+    if (entry.icon_url) {
+      icons[kind] = entry.icon_hash ? `${entry.icon_url}?h=${entry.icon_hash}` : entry.icon_url;
     }
   }
-  Array.from(catalog.values())
-    .filter((entry) => entry?.kind && !seen.has(entry.kind))
-    .sort((a, b) => String(a.kind).localeCompare(String(b.kind)))
-    .forEach((entry) => {
-      const category = categoryForNodeKind(entry.kind);
-      (grouped[category] ||= []).push(entry);
-      seen.add(entry.kind);
-    });
-  return grouped;
+  return icons;
 }
+
+// ── Catalog builder ──────────────────────────────────────────────────────────
 
 export function buildNodeCatalog(items: any[]): Map<string, NodeCatalogEntry> {
   const map = new Map<string, NodeCatalogEntry>();
@@ -249,6 +174,8 @@ export function buildNodeCatalog(items: any[]): Map<string, NodeCatalogEntry> {
   return map;
 }
 
+// ── Pin normalization ────────────────────────────────────────────────────────
+
 export function normalizeNodePins(
   kind: string,
   pinRole: "input" | "output",
@@ -260,7 +187,6 @@ export function normalizeNodePins(
   if (
     pinRole === "input" &&
     (canonicalKind === "n.trigger.webhook" ||
-      canonicalKind === "n.trigger.mapserver" ||
       canonicalKind === "n.trigger.schedule" ||
       canonicalKind === "n.trigger.manual")
   ) {

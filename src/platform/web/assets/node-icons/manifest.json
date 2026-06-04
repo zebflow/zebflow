@@ -189,13 +189,13 @@
         "n.logic.retry"
       ]
     },
-    "n.mem.set": {
+    "n.kv.set": {
       "label": "SET",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.mem.set.svg",
+      "path": "/assets/node-icons/zebflow/n.kv.set.svg",
       "source_url": "",
       "supports": [
-        "n.mem.set"
+        "n.kv.set"
       ]
     },
     "n.ms.get": {
@@ -315,22 +315,13 @@
         "n.trigger.manual"
       ]
     },
-    "n.trigger.mapserver": {
-      "label": "MAP",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
-      "source_url": "",
-      "supports": [
-        "n.trigger.mapserver"
-      ]
-    },
-    "n.trigger.memsubscribe": {
+    "n.trigger.kv.subscribe": {
       "label": "SUB",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.kv.subscribe.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.memsubscribe"
+        "n.trigger.kv.subscribe"
       ]
     },
     "n.trigger.schedule": {
@@ -369,6 +360,15 @@
         "n.trigger.ws"
       ]
     },
+    "n.trigger.ws.client": {
+      "label": "WSC",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.ws.client.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.ws.client"
+      ]
+    },
     "n.web.docs.generate": {
       "label": "DOCS",
       "method": "direct-svg",
@@ -394,6 +394,15 @@
       "source_url": "",
       "supports": [
         "n.web.static.generate"
+      ]
+    },
+    "n.ws.client.send": {
+      "label": "SEND",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ws.client.send.svg",
+      "source_url": "",
+      "supports": [
+        "n.ws.client.send"
       ]
     },
     "n.ws.emit": {

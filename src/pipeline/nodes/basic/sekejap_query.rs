@@ -175,6 +175,7 @@ pub fn definition() -> NodeDefinition {
                 }
             }),
         },
+        ..Default::default()
     }
 }
 

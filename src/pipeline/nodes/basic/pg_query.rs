@@ -55,7 +55,6 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, NodeFieldDataSource, SidebarSection, SidebarItem};
             vec![
-                NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "credential_id".to_string(), label: "Credential".to_string(), field_type: NodeFieldType::Select, data_source: Some(NodeFieldDataSource::CredentialsPostgres), help: Some("Loaded from project credentials filtered by kind=postgres.".to_string()), ..Default::default() },
                 NodeFieldDef {
                     name: "query".to_string(),
@@ -89,7 +88,7 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("credential_id".to_string())] },
+            LayoutItem::Field("credential_id".to_string()),
             LayoutItem::Field("query".to_string()),
             LayoutItem::Field("params_path".to_string()),
             LayoutItem::Field("params_expr".to_string()),
@@ -108,6 +107,7 @@ pub fn definition() -> NodeDefinition {
                 "required": ["query"]
             }),
         },
+        ..Default::default()
     }
 }
 

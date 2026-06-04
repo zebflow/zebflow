@@ -61,13 +61,6 @@ pub fn definition() -> NodeDefinition {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
             vec![
                 NodeFieldDef {
-                    name: "title".to_string(),
-                    label: "Title".to_string(),
-                    field_type: NodeFieldType::Text,
-                    help: Some("Override display title for this node.".to_string()),
-                    ..Default::default()
-                },
-                NodeFieldDef {
                     name: "init_expr".to_string(),
                     label: "Init Expression".to_string(),
                     field_type: NodeFieldType::Textarea,
@@ -84,11 +77,11 @@ pub fn definition() -> NodeDefinition {
             ]
         },
         layout: vec![
-            LayoutItem::Field("title".to_string()),
             LayoutItem::Field("init_expr".to_string()),
             LayoutItem::Field("step_expr".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

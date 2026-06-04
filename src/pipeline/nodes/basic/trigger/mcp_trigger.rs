@@ -131,13 +131,6 @@ pub fn definition() -> NodeDefinition {
         ],
         fields: vec![
             NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title for this node.".to_string()),
-                ..Default::default()
-            },
-            NodeFieldDef {
                 name: "tool_name".to_string(),
                 label: "Tool Name".to_string(),
                 field_type: NodeFieldType::Text,
@@ -164,16 +157,12 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("title".to_string()),
-                    LayoutItem::Field("tool_name".to_string()),
-                ],
-            },
+            LayoutItem::Field("tool_name".to_string()),
             LayoutItem::Field("tool_description".to_string()),
             LayoutItem::Field("parameters".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

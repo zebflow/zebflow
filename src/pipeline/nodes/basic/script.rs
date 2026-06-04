@@ -54,7 +54,6 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef {
                 name: "language".to_string(),
                 label: "Language".to_string(),
@@ -107,7 +106,7 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("language".to_string())] },
+            LayoutItem::Field("language".to_string()),
             LayoutItem::Field("source".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
@@ -122,6 +121,7 @@ pub fn definition() -> NodeDefinition {
                 "required": ["code"]
             }),
         },
+        ..Default::default()
     }
 }
 

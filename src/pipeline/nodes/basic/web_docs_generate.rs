@@ -339,6 +339,7 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("meta_file".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
@@ -1878,6 +1879,7 @@ mod tests {
             route: String::new(),
             input: json!({}),
             trigger: None,
+            placeholder: None,
         };
 
         let engine = BasicPipelineEngine::new(

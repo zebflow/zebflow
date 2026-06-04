@@ -17,13 +17,13 @@ pub mod function_call;
 pub mod http_request;
 pub mod logic;
 pub mod mapserver_crud;
-pub mod mem_del;
-pub mod mem_exists;
-pub mod mem_expire;
-pub mod mem_get;
-pub mod mem_incr;
-pub mod mem_publish;
-pub mod mem_set;
+pub mod kv_del;
+pub mod kv_exists;
+pub mod kv_expire;
+pub mod kv_get;
+pub mod kv_incr;
+pub mod kv_publish;
+pub mod kv_set;
 pub mod pg_query;
 pub mod script;
 pub mod sekejap_query;
@@ -37,6 +37,7 @@ pub mod web_docs_generate;
 pub mod web_response;
 pub mod web_static_generate;
 pub mod web_static_site;
+pub mod ws_client_send;
 pub mod ws_emit;
 pub mod ws_sync_state;
 pub mod ws_trigger;
@@ -66,16 +67,15 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         fs_save::definition(),
         function_call::definition(),
         fs_thumbnail::definition(),
-        mem_del::definition(),
-        mem_exists::definition(),
-        mem_expire::definition(),
-        mem_get::definition(),
-        mem_incr::definition(),
-        mem_publish::definition(),
-        mem_set::definition(),
+        kv_del::definition(),
+        kv_exists::definition(),
+        kv_expire::definition(),
+        kv_get::definition(),
+        kv_incr::definition(),
+        kv_publish::definition(),
+        kv_set::definition(),
         trigger::function::definition(),
-        trigger::mapserver::definition(),
-        trigger::memsubscribe::definition(),
+        trigger::kv_subscribe::definition(),
         trigger::webhook::definition(),
         trigger::schedule::definition(),
         trigger::manual::definition(),
@@ -92,8 +92,10 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         web_response::definition(),
         web_docs_generate::definition(),
         web_static_generate::definition(),
+        ws_client_send::definition(),
         ws_sync_state::definition(),
         ws_emit::definition(),
+        trigger::ws_client::definition(),
         logic::if_::definition(),
         logic::match_::definition(),
         logic::collect::definition(),
@@ -123,6 +125,69 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         }
     }
 
+    // Assign ui_category by prefix for builtins that don't declare one explicitly.
+    for def in &mut items {
+        if !def.ui_category.is_empty() {
+            continue;
+        }
+        let (cat, label) = ui_category_for_kind(&def.kind);
+        def.ui_category = cat.to_string();
+        def.ui_category_label = label.to_string();
+    }
+
     items.sort_by(|a, b| a.kind.cmp(&b.kind));
     items
+}
+
+/// Derives the UI category and subcategory label from a node kind string.
+fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
+    if kind.starts_with("n.trigger.") {
+        return ("trigger", "");
+    }
+    if kind.starts_with("n.sekejap.") {
+        return ("data.sekejap", "Sekejap");
+    }
+    if kind.starts_with("n.sqlite.") {
+        return ("data.sqlite", "SQLite");
+    }
+    if kind.starts_with("n.pg.") {
+        return ("data.postgres", "Postgres");
+    }
+    if kind.starts_with("n.mem.") {
+        return ("data.memory", "Memory");
+    }
+    if kind.starts_with("n.table.") {
+        return ("data.table", "Table");
+    }
+    if kind.starts_with("n.ms.") {
+        return ("data.mapserver", "MapServer");
+    }
+    if kind.starts_with("n.ai.") {
+        return ("logic.ai", "AI");
+    }
+    if kind.starts_with("n.logic.") || kind.starts_with("n.function.") || kind == "n.script" {
+        return ("logic", "");
+    }
+    if kind.starts_with("n.browser.") {
+        return ("web.browser", "Browser");
+    }
+    if kind.starts_with("n.ws.") {
+        return ("web.websocket", "WebSocket");
+    }
+    if kind.starts_with("n.http.") || kind.starts_with("n.web.") {
+        return ("web", "");
+    }
+    if kind.starts_with("n.auth.") || kind == "n.crypto" {
+        return ("security", "");
+    }
+    if kind.starts_with("n.fs.") {
+        return ("files.fs", "File System");
+    }
+    if kind.starts_with("n.c.") {
+        return ("composite", "");
+    }
+    if kind.starts_with("n.wasm.") {
+        return ("wasm", "");
+    }
+    ("other", "")
 }

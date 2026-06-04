@@ -329,6 +329,7 @@ fn object_definition(
         fields,
         layout,
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

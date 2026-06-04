@@ -24,11 +24,11 @@ import DialogTitle from "@/components/ui/dialog-title";
 import type { EditorApi, EditorDataState, PipelineNodeData, PipelineMeta, GitFile, NodeCatalogEntry } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/types";
 import {
   buildNodeCatalog,
+  buildKindIcons,
+  buildKindTitles,
   normalizeGraphForEditor,
   normalizeNodePins,
-  NODE_KIND_ICONS,
   nodeColor,
-  nodeIcon,
   deriveNodeOutputPins,
   deriveNodeOutputLabels,
   canonicalNodeKind,
@@ -93,6 +93,20 @@ const CAT_ICONS: Record<string, any> = {
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
       <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
       <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+    </svg>
+  ),
+  composite: (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+      <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
+      <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
+      <rect x="8.5" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
+      <path d="M6.5 10v2.5a1.5 1.5 0 001.5 1.5h.5M17.5 10v2.5a1.5 1.5 0 01-1.5 1.5h-.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+    </svg>
+  ),
+  wasm: (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
+      <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
+      <path d="M12 12L3 7M12 12l9-5M12 12v10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
     </svg>
   ),
 };
@@ -237,6 +251,8 @@ export default function PipelineEditor({
 
   // ── Async data state ────────────────────────────────────────────────────────
   const [catalog, setCatalog] = useState<Map<string, NodeCatalogEntry>>(new Map());
+  const [kindIcons, setKindIcons] = useState<Record<string, string>>({});
+  const [kindTitles, setKindTitles] = useState<Record<string, string>>({});
   const [dataState, setDataState] = useState<EditorDataState>({
     allCredentials: [],
     pgCredentials: [],
@@ -306,6 +322,8 @@ export default function PipelineEditor({
           const data = await requestJson(api.nodes);
           const catalogMap = buildNodeCatalog(data?.items || []);
           setCatalog(catalogMap);
+          setKindIcons(buildKindIcons(catalogMap));
+          setKindTitles(buildKindTitles(catalogMap));
           // Derive aiTools list from catalog entries that have ai_tool.registered = true
           const aiTools = (data?.items || [])
             .filter((item: any) => item?.ai_tool?.registered === true)
@@ -460,14 +478,20 @@ export default function PipelineEditor({
         badge.classList.toggle("long", slug.length > 2);
       }
       rawNode.zfConfig = config;
-      if (config.title) {
-        rawNode.title = String(config.title);
+      // Update canvas label: instance.title → definition.title → definition.slug
+      {
+        const kind = nodeData.zfKind || "";
+        const catalogEntry = catalog.get(kind);
+        const displayTitle = config.title
+          ? String(config.title)
+          : (catalogEntry?.title || kind);
+        rawNode.title = displayTitle;
         const label = rawNode.el?.querySelector?.(".zgu-node-label");
         const header = rawNode.el?.querySelector?.(".zgu-node-header");
         if (label) {
-          label.textContent = String(config.title);
+          label.textContent = displayTitle;
         } else if (header) {
-          header.textContent = String(config.title);
+          header.textContent = displayTitle;
         }
       }
       const nextOutputs = deriveNodeOutputPins(
@@ -700,16 +724,14 @@ export default function PipelineEditor({
       const node = app.factory.custom(x, y, {
         title: entry?.title || kind,
         color: nodeColor(kind),
-        icon: nodeIcon(kind),
+        icon: kindIcons[kind] || "",
         inputs: normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]),
         outputs: normalizeNodePins(kind, "output", entry?.output_pins || [], ["out"]),
       });
       node.zfKind = kind;
       node.zfConfig = canonicalNodeKind(kind) === "n.trigger.webhook"
         ? { method: "GET" }
-        : canonicalNodeKind(kind) === "n.trigger.mapserver"
-          ? { mode: "features", source_kind: "geojson_file", bbox_required: true, max_features: 1000 }
-          : {};
+        : {};
       node.zfOutputLabels = deriveNodeOutputLabels(
         kind,
         node.zfConfig,
@@ -741,7 +763,7 @@ export default function PipelineEditor({
     graphRef.current.addNode(kind, {
       title: entry?.title || kind,
       color: nodeColor(kind),
-      icon: nodeIcon(kind),
+      icon: kindIcons[kind] || "",
       input_pins: normalizeNodePins(kind, "input", entry?.input_pins || [], ["in"]),
       output_pins: outputPins,
     });
@@ -751,9 +773,6 @@ export default function PipelineEditor({
     const canonical = canonicalNodeKind(kind);
     if (canonical === "n.trigger.webhook") {
       return { method: "GET" };
-    }
-    if (canonical === "n.trigger.mapserver") {
-      return { mode: "features", source_kind: "geojson_file", bbox_required: true, max_features: 1000 };
     }
     if (canonical === "n.logic.match") {
       return { cases: [], default: { pin: "default", label: "Default" } };
@@ -796,7 +815,7 @@ export default function PipelineEditor({
     const node = app.factory.custom(x, y, {
       title: entry?.title || kind,
       color: nodeColor(kind),
-      icon: nodeIcon(kind),
+      icon: kindIcons[kind] || "",
       inputs: inputPins,
       outputs: outputPins,
     });
@@ -861,8 +880,10 @@ export default function PipelineEditor({
       : `inherit project default (${projectDefaultMaxInvocations})`;
   const catalogGroups = groupedCatalogEntries(catalog);
   const catalogCategoryByKind = new Map<string, string>();
-  Object.entries(catalogGroups).forEach(([category, entries]) => {
-    entries.forEach((entry) => catalogCategoryByKind.set(entry.kind, category));
+  Object.entries(catalogGroups).forEach(([category, groups]) => {
+    groups.forEach((group) => {
+      group.entries.forEach((entry) => catalogCategoryByKind.set(entry.kind, category));
+    });
   });
   const continuationItems = Array.from(catalog.values())
     .map((entry) => ({ category: catalogCategoryByKind.get(entry.kind) || "other", entry }))
@@ -1063,8 +1084,10 @@ export default function PipelineEditor({
       <div className="flex-1 min-h-0 border-b border-border-soft relative">
         {/* Category buttons */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
-          {Object.entries(catalogGroups).map(([cat, items]) => {
-            if (!items.length) return null;
+          {Object.entries(catalogGroups).map(([cat, groups]) => {
+            const flatItems = groups.flatMap((g) => g.entries);
+            if (!flatItems.length) return null;
+            const hasSubcategories = groups.length > 1 || (groups.length === 1 && groups[0].subcategory);
             return (
               <DropdownMenu
                 key={cat}
@@ -1079,13 +1102,20 @@ export default function PipelineEditor({
                   </button>
                 }
               >
-                {items.map((item) => (
-                  <DropdownMenuItem
-                    key={item.kind}
-                    label={item.title || item.kind}
-                    onClick={() => handleAddNode(item.kind)}
-                  />
-                ))}
+                {groups.map((group) => [
+                  hasSubcategories && group.label ? (
+                    <div key={`hdr-${group.subcategory}`} className="px-3 py-1.5 text-[10px] font-semibold text-body-muted uppercase tracking-wider select-none">
+                      {group.label}
+                    </div>
+                  ) : null,
+                  ...group.entries.map((item) => (
+                    <DropdownMenuItem
+                      key={item.kind}
+                      label={item.title || item.kind}
+                      onClick={() => handleAddNode(item.kind)}
+                    />
+                  )),
+                ])}
               </DropdownMenu>
             );
           })}
@@ -1099,7 +1129,8 @@ export default function PipelineEditor({
             readOnly={currentLocked}
             snapToGrid={snapToGrid}
             gridSize={30}
-            kindIcons={NODE_KIND_ICONS}
+            kindIcons={kindIcons}
+            kindTitles={kindTitles}
             id="pipeline-canvas"
             className="w-full h-full"
             onNodeEdit={currentLocked ? undefined : handleNodeEdit}

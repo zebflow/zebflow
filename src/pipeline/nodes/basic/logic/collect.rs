@@ -6,7 +6,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::model::LayoutItem;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -29,18 +28,10 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: vec![],
-        fields: {
-            use crate::pipeline::model::{NodeFieldDef, NodeFieldType};
-            vec![NodeFieldDef {
-                name: "title".to_string(),
-                label: "Title".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Override display title for this node.".to_string()),
-                ..Default::default()
-            }]
-        },
-        layout: vec![LayoutItem::Field("title".to_string())],
+        fields: vec![],
+        layout: vec![],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 

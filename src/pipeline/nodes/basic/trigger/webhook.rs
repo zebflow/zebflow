@@ -50,11 +50,14 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "Webhook Trigger".to_string(),
         description: "Start pipeline run from inbound HTTP path + method. \
-            Body fields are always merged to root regardless of encoding: \
-            application/json → fields at root; \
-            application/x-www-form-urlencoded → fields at root (percent-decoded); \
-            multipart/form-data → text fields at root, files under input.files.{field} as {filename,content_type,size,data(base64)}. \
-            GET query params appear at root and also at input.query. Path params at input.params. \
+            User-submitted data is namespaced under input.body to prevent collisions with request context: \
+            application/json → parsed value at input.body; \
+            application/x-www-form-urlencoded → form fields at input.body (percent-decoded); \
+            multipart/form-data → text fields at input.body, files under input.files.{field} as {filename,content_type,size,data(base64)}. \
+            GET requests → input.body is null. \
+            Request context is at root: input.query (URL query params), input.params (path params), \
+            input.path (request path), input.method (HTTP method). \
+            Also available via $trigger: $trigger.query, $trigger.params, $trigger.auth, $trigger.headers. \
             Use --auth-type jwt/hmac/api_key and --auth-credential <id> to protect the route. \
             jwt auth checks Authorization: Bearer header first, then Cookie: zebflow_session fallback — \
             verified claims are injected into input.auth. \
@@ -66,7 +69,7 @@ pub fn definition() -> NodeDefinition {
             Accept header is the only switch.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
-            "description": "Normalised request payload. Body fields (JSON / form-urlencoded / multipart text) are merged to root. Files land under input.files.{field}. Query params also at input.query, path params at input.params, JWT claims at input.auth."
+            "description": "Structured request payload. User body at input.body (JSON/form/multipart text). Request context at root: input.query, input.params, input.path, input.method. Files at input.files.{field}. JWT claims at input.auth."
         }),
         output_schema: serde_json::json!({
             "type":"object",
@@ -106,7 +109,6 @@ pub fn definition() -> NodeDefinition {
             }
         }),
         fields: vec![
-            NodeFieldDef { name: "title".to_string(), label: "Title".to_string(), field_type: NodeFieldType::Text, help: Some("Override display title for this node.".to_string()), ..Default::default() },
             NodeFieldDef { name: "method".to_string(), label: "Method".to_string(), field_type: NodeFieldType::MethodButtons, options: vec!["GET","POST","PUT","PATCH","DELETE"].iter().map(|m| SelectOptionDef { value: m.to_string(), label: m.to_string() }).collect(), help: Some("HTTP method accepted by webhook trigger.".to_string()), ..Default::default() },
             NodeFieldDef { name: "path".to_string(), label: "Path".to_string(), field_type: NodeFieldType::Text, help: Some("Webhook relative path under /wh/{owner}/{project}.".to_string()), ..Default::default() },
             NodeFieldDef { name: "__webhook_public_url".to_string(), label: "Public URL".to_string(), field_type: NodeFieldType::CopyUrl, help: Some("Copy-ready URL for this trigger.".to_string()), ..Default::default() },
@@ -157,13 +159,14 @@ pub fn definition() -> NodeDefinition {
             },
         ],
         layout: vec![
-            LayoutItem::Row { row: vec![LayoutItem::Field("title".to_string()), LayoutItem::Field("path".to_string())] },
+            LayoutItem::Field("path".to_string()),
             LayoutItem::Field("method".to_string()),
             LayoutItem::Field("__webhook_public_url".to_string()),
             LayoutItem::Row { row: vec![LayoutItem::Field("auth_type".to_string()), LayoutItem::Field("auth_credential".to_string())] },
             LayoutItem::Field("auth_required_role".to_string()),
         ],
         ai_tool: Default::default(),
+        ..Default::default()
     }
 }
 
