@@ -1398,6 +1398,7 @@ impl ZebflowMcpHandler {
                 "kind": "mcp",
                 "source": format!("tools/call:{tool_name}"),
             })),
+            placeholder: None,
         };
 
         let exec_start = std::time::Instant::now();

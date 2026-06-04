@@ -20,9 +20,9 @@ use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
     DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService, MarketplaceService,
-    McpSessionService, PipelineHitsService, PipelineRuntimeService, ProjectInviteService,
-    ProjectMembershipService, ProjectOperationService, ProjectService, ProjectTransferService,
-    UserService, ZebLockService, ZebflowJsonService,
+    McpSessionService, NodeRegistryService, PipelineHitsService, PipelineRuntimeService,
+    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
+    ProjectTransferService, UserService, ZebLockService, ZebflowJsonService,
 };
 
 /// Main platform service graph, created once per process.
@@ -74,6 +74,8 @@ pub struct PlatformService {
     pub project_transfer: Arc<ProjectTransferService>,
     /// Active production pipeline registry compiled from activated snapshots.
     pub pipeline_runtime: Arc<PipelineRuntimeService>,
+    /// Runtime registry of installed composite/WASM node packages.
+    pub node_registry: Arc<NodeRegistryService>,
     /// Lightweight execution hit/error counters per pipeline.
     pub pipeline_hits: Arc<PipelineHitsService>,
     /// MCP session management (in-memory tokens for project-scoped remote control).
@@ -151,6 +153,7 @@ impl PlatformService {
             config.data_root.join("platform").join("project-operations"),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
+        let node_registry = Arc::new(NodeRegistryService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(
             data.clone(),
@@ -158,7 +161,7 @@ impl PlatformService {
         ));
         let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
-        let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub((*mem_hub).clone()));
+        let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub_with_durable((*mem_hub).clone(), config.data_root.clone()));
         let cluster_bootstrap = Arc::new(ClusterBootstrapService::new(config.cluster.clone()));
         let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
         let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));
@@ -194,6 +197,7 @@ impl PlatformService {
             project_operations,
             project_transfer,
             pipeline_runtime,
+            node_registry,
             pipeline_hits,
             mcp_sessions,
             ws_hub,
@@ -213,8 +217,17 @@ impl PlatformService {
                 if let Ok(projects) = svc.projects.list_projects(&user.owner) {
                     for project in &projects {
                         let _ = svc
-                            .pipeline_runtime
+                            .node_registry
                             .refresh_project(&user.owner, &project.project);
+                        if let Err(e) = svc
+                            .pipeline_runtime
+                            .refresh_project(&user.owner, &project.project)
+                        {
+                            eprintln!(
+                                "⚠ pipeline bootstrap {}/{}: {}",
+                                user.owner, project.project, e.message
+                            );
+                        }
                     }
                 }
             }
@@ -316,6 +329,7 @@ impl PlatformService {
             route: Default::default(),
             input,
             trigger: None,
+            placeholder: None,
         };
 
         let engine = crate::pipeline::BasicPipelineEngine::new(

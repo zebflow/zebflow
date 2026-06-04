@@ -164,18 +164,20 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "fs.copy" | "n.fs.copy" => Some("n.fs.copy"),
         "fs.move" | "n.fs.move" => Some("n.fs.move"),
         "fs.mkdir" | "n.fs.mkdir" => Some("n.fs.mkdir"),
-        "mem.set" | "n.mem.set" => Some("n.mem.set"),
-        "mem.get" | "n.mem.get" => Some("n.mem.get"),
-        "mem.del" | "n.mem.del" => Some("n.mem.del"),
-        "mem.exists" | "n.mem.exists" => Some("n.mem.exists"),
-        "mem.expire" | "n.mem.expire" => Some("n.mem.expire"),
-        "mem.incr" | "n.mem.incr" => Some("n.mem.incr"),
-        "mem.publish" | "n.mem.publish" => Some("n.mem.publish"),
-        "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.memsubscribe"),
+        "kv.set" | "n.kv.set" | "mem.set" | "n.mem.set" => Some("n.kv.set"),
+        "kv.get" | "n.kv.get" | "mem.get" | "n.mem.get" => Some("n.kv.get"),
+        "kv.del" | "n.kv.del" | "mem.del" | "n.mem.del" => Some("n.kv.del"),
+        "kv.exists" | "n.kv.exists" | "mem.exists" | "n.mem.exists" => Some("n.kv.exists"),
+        "kv.expire" | "n.kv.expire" | "mem.expire" | "n.mem.expire" => Some("n.kv.expire"),
+        "kv.incr" | "n.kv.incr" | "mem.incr" | "n.mem.incr" => Some("n.kv.incr"),
+        "kv.publish" | "n.kv.publish" | "mem.publish" | "n.mem.publish" => Some("n.kv.publish"),
+        "trigger.kv.subscribe" | "n.trigger.kv.subscribe" | "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.kv.subscribe"),
         "ms.publish" | "n.ms.publish" => Some("n.ms.publish"),
         "ms.unpublish" | "n.ms.unpublish" => Some("n.ms.unpublish"),
         "ms.get" | "n.ms.get" => Some("n.ms.get"),
         "ms.list" | "n.ms.list" => Some("n.ms.list"),
+        "trigger.ws.client" | "n.trigger.ws.client" => Some("n.trigger.ws.client"),
+        "ws.client.send" | "n.ws.client.send" => Some("n.ws.client.send"),
         _ => None,
     }
 }
@@ -203,8 +205,10 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         // Return just ["default"] as the fallback; actual pins are set after config is parsed.
         "n.logic.match" => (vec!["in".to_string()], vec!["default".to_string()]),
         "n.web.response" => (vec!["in".to_string()], vec!["out".to_string()]),
-        "n.trigger.ws" => (vec![], vec!["out".to_string()]),
-        "n.ws.emit" | "n.ws.sync_state" => (vec!["in".to_string()], vec!["out".to_string()]),
+        "n.trigger.ws" | "n.trigger.ws.client" => (vec![], vec!["out".to_string()]),
+        "n.ws.emit" | "n.ws.sync_state" | "n.ws.client.send" => {
+            (vec!["in".to_string()], vec!["out".to_string()])
+        }
         "n.function.call" => (
             vec!["in".to_string()],
             vec!["out".to_string(), "error".to_string()],

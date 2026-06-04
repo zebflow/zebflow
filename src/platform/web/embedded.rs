@@ -106,8 +106,8 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.logic.retry.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.mem.set.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.mem.set.svg"),
+        path: "zebflow/n.kv.set.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.set.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.pg.query.svg",
@@ -146,10 +146,6 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.manual.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.trigger.mapserver.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.mapserver.svg"),
-    },
-    EmbeddedAsset {
         path: "zebflow/n.ms.publish.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.ms.publish.svg"),
     },
@@ -166,8 +162,8 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.ms.list.svg"),
     },
     EmbeddedAsset {
-        path: "zebflow/n.trigger.memsubscribe.svg",
-        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.memsubscribe.svg"),
+        path: "zebflow/n.trigger.kv.subscribe.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.kv.subscribe.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.trigger.schedule.svg",
@@ -186,6 +182,10 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.ws.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.trigger.ws.client.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.ws.client.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.web.docs.generate.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.web.docs.generate.svg"),
     },
@@ -196,6 +196,10 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zebflow/n.web.static.generate.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.web.static.generate.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.ws.client.send.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ws.client.send.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.ws.emit.svg",
@@ -210,6 +214,37 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
 pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
     let normalized = path.trim_start_matches('/').replace('\\', "/");
     PLATFORM_NODE_ICON_ASSETS
+        .iter()
+        .find(|asset| asset.path == normalized)
+        .map(|asset| asset.bytes)
+}
+
+/// Embedded official composite node packages.
+///
+/// Each entry uses path format: `{slug}/node.json`, `{slug}/pipeline.zf.json`, `{slug}/icon.svg`.
+/// To add an official composite node, create the package under `composites/{slug}/` and add
+/// `include_bytes!()` entries here.
+pub const PLATFORM_COMPOSITE_NODE_ASSETS: &[EmbeddedAsset] = &[
+    // ── Telegram (multi-node package) ───────────────────────────────────
+    EmbeddedAsset { path: "telegram/definition.json", bytes: include_bytes!("../../../composites/telegram/definition.json") },
+    EmbeddedAsset { path: "telegram/icon.svg", bytes: include_bytes!("../../../composites/telegram/icon.svg") },
+    EmbeddedAsset { path: "telegram/icons/trigger.svg", bytes: include_bytes!("../../../composites/telegram/icons/trigger.svg") },
+    EmbeddedAsset { path: "telegram/icons/send.svg", bytes: include_bytes!("../../../composites/telegram/icons/send.svg") },
+    EmbeddedAsset { path: "telegram/icons/send-photo.svg", bytes: include_bytes!("../../../composites/telegram/icons/send-photo.svg") },
+    EmbeddedAsset { path: "telegram/icons/send-document.svg", bytes: include_bytes!("../../../composites/telegram/icons/send-document.svg") },
+    EmbeddedAsset { path: "telegram/icons/edit.svg", bytes: include_bytes!("../../../composites/telegram/icons/edit.svg") },
+    EmbeddedAsset { path: "telegram/functions/send-message.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/send-message.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/send-photo.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/send-photo.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/send-document.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/send-document.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/edit-message.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/edit-message.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/register-webhook.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/register-webhook.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/delete-webhook.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/delete-webhook.zf.json") },
+    EmbeddedAsset { path: "telegram/functions/transform-update.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/transform-update.zf.json") },
+];
+
+pub fn platform_composite_node_asset(path: &str) -> Option<&'static [u8]> {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    PLATFORM_COMPOSITE_NODE_ASSETS
         .iter()
         .find(|asset| asset.path == normalized)
         .map(|asset| asset.bytes)

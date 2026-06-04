@@ -141,6 +141,82 @@ pub struct PlatformProject {
     pub updated_at: i64,
 }
 
+// ---------------------------------------------------------------------------
+// Credential type definitions
+// ---------------------------------------------------------------------------
+
+/// Defines a credential type (e.g. `postgres`, `telegram_bot`).
+/// Same format for official (built-in) and custom (from composite/WASM packages).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CredentialTypeDef {
+    /// Unique kind identifier, e.g. `"postgres"`, `"telegram_bot"`.
+    pub kind: String,
+    /// Human-readable title shown in UI.
+    pub title: String,
+    /// Short description of this credential type.
+    #[serde(default)]
+    pub description: String,
+    /// Form fields for creating/editing a credential of this type.
+    pub fields: Vec<CredentialFieldDef>,
+    /// Placeholder mappings for composite nodes.
+    /// Maps placeholder name → secret field key.
+    /// Only used by composite/WASM packages. Empty for built-in types.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub placeholders: HashMap<String, String>,
+    /// Config key in the composite node that holds the credential ID.
+    /// E.g. `"credential_id"` — the composite's `config.credential_id` value is
+    /// used to look up the credential at runtime.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_key: String,
+}
+
+/// One field in a credential type definition form.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CredentialFieldDef {
+    /// Secret JSON key this field writes to.
+    pub key: String,
+    /// Display label.
+    pub label: String,
+    /// Field type: `"text"`, `"password"`, `"select"`, `"textarea"`, `"number"`, `"tags"`.
+    #[serde(default = "default_field_type", rename = "type")]
+    pub field_type: String,
+    /// Whether this field is required.
+    #[serde(default)]
+    pub required: bool,
+    /// Input placeholder text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Help text shown below the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
+    /// Default value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Auto-generation hint, e.g. `"random_hex_32"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generate: Option<String>,
+    /// Options for `select` field type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<CredentialFieldOption>,
+    /// Whether this field should span full width in UI.
+    #[serde(default, rename = "fullWidth")]
+    pub full_width: bool,
+    /// Number of rows for `textarea` field type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+}
+
+/// Option for a `select` credential field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CredentialFieldOption {
+    pub value: String,
+    pub label: String,
+}
+
+fn default_field_type() -> String {
+    "text".to_string()
+}
+
 /// Stored project credential record used by runtime nodes and management APIs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectCredential {
@@ -1722,6 +1798,201 @@ pub struct ProjectFileLayout {
     pub zebflow_json_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
+    /// `.../repo/nodes` — installed composite/WASM node packages.
+    pub repo_nodes_dir: PathBuf,
+}
+
+// ── Node package system ─────────────────────────────────────────────────────
+
+/// Source type of a node package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NodePackageSource {
+    /// Composite node: function pipeline + manifest.
+    Composite,
+    /// WASM node: sandboxed binary module (Extism).
+    Wasm,
+}
+
+/// Runtime configuration for a composite node package.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompositeNodeRuntime {
+    /// Relative filename of the inner function pipeline (e.g. `"pipeline.zf.json"`).
+    pub pipeline: String,
+}
+
+/// Runtime configuration for a WASM node package (future).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WasmNodeRuntime {
+    /// Relative filename of the WASM module (e.g. `"module.wasm"`).
+    pub module: String,
+    /// ABI identifier (e.g. `"extism-json-v1"`).
+    pub abi: String,
+    /// Export function map.
+    #[serde(default)]
+    pub exports: HashMap<String, String>,
+}
+
+/// Parsed `node.json` / `definition.json` manifest for an installed node package.
+///
+/// For single-node packages (v1 `node.json`), `definition` is set directly.
+/// For multi-node packages (`definition.json`), the loader explodes the package
+/// into one `NodePackageManifest` per node, each carrying the shared credentials
+/// and functions map.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NodePackageManifest {
+    /// Package source type.
+    pub source: NodePackageSource,
+    /// Semver version string.
+    pub version: String,
+    /// The node definition (same struct as native nodes).
+    pub definition: crate::pipeline::NodeDefinition,
+    /// Custom credential type definitions provided by this package.
+    #[serde(default)]
+    pub credentials: Vec<CredentialTypeDef>,
+    /// Composite runtime config (present when `source == Composite`, v1 single-pipeline).
+    #[serde(default)]
+    pub runtime: Option<CompositeNodeRuntime>,
+    /// WASM runtime config (present when `source == Wasm`).
+    #[serde(default)]
+    pub wasm_runtime: Option<WasmNodeRuntime>,
+    /// Function name → relative file path map (multi-node packages).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub functions: HashMap<String, String>,
+    /// Name of the main function (action nodes in multi-node packages).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_function: Option<String>,
+    /// Trigger configuration (composite trigger nodes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<PackageTriggerConfig>,
+    /// Lifecycle hooks (on_activate, on_deactivate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<PackageLifecycleConfig>,
+    /// Package slug (directory name), set by the loader.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub package_slug: String,
+}
+
+/// Trigger configuration for a composite trigger node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PackageTriggerConfig {
+    /// Trigger type: "webhook", "ws", "ws_client", "cron".
+    #[serde(rename = "type")]
+    pub trigger_type: String,
+    /// Webhook path template with `{{ config_key }}` placeholders.
+    /// E.g. `"/tg/{{ bot_credential_id }}"` resolves from node config.
+    #[serde(default)]
+    pub path_template: Option<String>,
+    /// Function name that transforms inbound events.
+    #[serde(default)]
+    pub on_message: Option<String>,
+}
+
+/// Lifecycle hook configuration for a composite node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PackageLifecycleConfig {
+    /// Function to run when the pipeline is activated.
+    #[serde(default)]
+    pub on_activate: Option<String>,
+    /// Function to run when the pipeline is deactivated.
+    #[serde(default)]
+    pub on_deactivate: Option<String>,
+}
+
+/// Multi-node package definition (`definition.json` format).
+///
+/// A single file declaring N nodes, shared credentials, and reusable function pipelines.
+/// The loader explodes this into N `NodePackageManifest` entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiNodePackageDefinition {
+    /// Package identifier.
+    pub package: String,
+    /// Semver version.
+    pub version: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Package description.
+    #[serde(default)]
+    pub description: String,
+    /// Package-level icon path.
+    #[serde(default)]
+    pub icon: String,
+    /// Credential type definitions shared by all nodes.
+    #[serde(default)]
+    pub credentials: Vec<CredentialTypeDef>,
+    /// Function name → relative pipeline file path.
+    #[serde(default)]
+    pub functions: HashMap<String, String>,
+    /// Node entries.
+    pub nodes: Vec<MultiNodeEntry>,
+}
+
+/// A single node entry within a multi-node package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiNodeEntry {
+    /// Node kind (e.g. `"n.c.tg.send"`).
+    pub kind: String,
+    /// Node title.
+    pub title: String,
+    /// Node description.
+    #[serde(default)]
+    pub description: String,
+    /// Per-node icon path (relative to package).
+    #[serde(default)]
+    pub icon: String,
+    /// UI category for Project Studio node picker.
+    #[serde(default)]
+    pub ui_category: String,
+    /// UI category label.
+    #[serde(default)]
+    pub ui_category_label: String,
+    /// Main function name (action nodes).
+    #[serde(default)]
+    pub main: Option<String>,
+    /// Trigger configuration (trigger nodes).
+    #[serde(default)]
+    pub trigger: Option<PackageTriggerConfig>,
+    /// Lifecycle hooks.
+    #[serde(default)]
+    pub lifecycle: Option<PackageLifecycleConfig>,
+    /// Node definition (pins, schema, fields, layout, dsl_flags).
+    pub definition: MultiNodeEntryDefinition,
+}
+
+/// Partial node definition within a multi-node entry.
+/// The full `NodeDefinition` is constructed by the loader, filling in kind/title/description
+/// from the parent `MultiNodeEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiNodeEntryDefinition {
+    #[serde(default)]
+    pub input_pins: Vec<String>,
+    #[serde(default)]
+    pub output_pins: Vec<String>,
+    #[serde(default)]
+    pub config_schema: serde_json::Value,
+    #[serde(default)]
+    pub fields: Vec<crate::pipeline::NodeFieldDef>,
+    #[serde(default)]
+    pub layout: Vec<crate::pipeline::model::LayoutItem>,
+    #[serde(default)]
+    pub dsl_flags: Vec<crate::pipeline::model::DslFlag>,
+}
+
+/// Runtime-enriched entry for an installed node package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstalledNodePackage {
+    /// The slug (directory name under `repo/nodes/`).
+    pub slug: String,
+    /// Owner this package belongs to.
+    pub owner: String,
+    /// Project this package belongs to.
+    pub project: String,
+    /// Parsed manifest.
+    pub manifest: NodePackageManifest,
+    /// Absolute path to the package directory on disk.
+    pub package_dir: String,
+    /// Whether an `icon.svg` exists in the package.
+    pub has_icon: bool,
 }
 
 /// Request payload for user creation.
