@@ -1,0 +1,30 @@
+{
+  "id": "tg-transform-update",
+  "nodes": [
+    {
+      "id": "trigger",
+      "kind": "n.trigger.function",
+      "title": "Entry",
+      "config": {},
+      "input_pins": [],
+      "output_pins": ["out"],
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "transform",
+      "kind": "n.script",
+      "title": "Transform Update",
+      "config": {
+        "source": "var update = input; var out = { update_id: update.update_id }; if (update.message) { var m = update.message; out.type = 'message'; out.message_id = m.message_id; out.chat_id = m.chat.id; out.chat_type = m.chat.type; out.from_id = m.from ? m.from.id : null; out.from_username = m.from ? m.from.username : null; out.from_first_name = m.from ? m.from.first_name : null; out.text = m.text || ''; out.date = m.date; if (m.photo) out.photo = m.photo; if (m.document) out.document = m.document; if (m.reply_to_message) out.reply_to_message_id = m.reply_to_message.message_id; } else if (update.callback_query) { var cb = update.callback_query; out.type = 'callback_query'; out.callback_query_id = cb.id; out.chat_id = cb.message ? cb.message.chat.id : null; out.message_id = cb.message ? cb.message.message_id : null; out.from_id = cb.from.id; out.from_username = cb.from.username; out.data = cb.data; } else if (update.edited_message) { var em = update.edited_message; out.type = 'edited_message'; out.message_id = em.message_id; out.chat_id = em.chat.id; out.from_id = em.from ? em.from.id : null; out.text = em.text || ''; out.date = em.edit_date; } else if (update.inline_query) { var iq = update.inline_query; out.type = 'inline_query'; out.inline_query_id = iq.id; out.from_id = iq.from.id; out.query = iq.query; } else { out.type = 'unknown'; out.raw = update; } return out;"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 200,
+      "y": 0
+    }
+  ],
+  "edges": [
+    { "from_node": "trigger", "from_pin": "out", "to_node": "transform", "to_pin": "in" }
+  ]
+}

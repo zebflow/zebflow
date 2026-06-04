@@ -1,0 +1,47 @@
+{
+  "id": "tg-delete-webhook",
+  "nodes": [
+    {
+      "id": "trigger",
+      "kind": "n.trigger.function",
+      "title": "Entry",
+      "config": {},
+      "input_pins": [],
+      "output_pins": ["out"],
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "delete",
+      "kind": "n.http.request",
+      "title": "deleteWebhook",
+      "config": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/deleteWebhook",
+        "headers": { "Content-Type": "application/json" },
+        "body": "{}",
+        "response_type": "json"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 200,
+      "y": 0
+    },
+    {
+      "id": "clear",
+      "kind": "n.kv.del",
+      "title": "Clear registration state",
+      "config": {
+        "key": "webhook_registered"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 400,
+      "y": 0
+    }
+  ],
+  "edges": [
+    { "from_node": "trigger", "from_pin": "out", "to_node": "delete", "to_pin": "in" },
+    { "from_node": "delete", "from_pin": "out", "to_node": "clear", "to_pin": "in" }
+  ]
+}
