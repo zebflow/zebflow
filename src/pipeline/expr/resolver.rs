@@ -12,14 +12,15 @@
 //!
 //! # Scope variables
 //!
-//! | Variable    | Contents                                                   |
-//! |-------------|-------------------------------------------------------------|
-//! | `$input`    | Current node's input payload                               |
-//! | `$item`     | Current foreach item (`input.item` when present)           |
-//! | `$index`    | Current foreach index (`input.index` when present)         |
-//! | `$count`    | Current foreach count (`input.count` when present)         |
-//! | `$trigger`  | Immutable trigger snapshot (`auth`, `params`, `query`, `headers`) |
-//! | `$nodes`    | Map of completed node IDs → their output payloads          |
+//! | Variable       | Contents                                                   |
+//! |----------------|-------------------------------------------------------------|
+//! | `$input`       | Current node's input payload                               |
+//! | `$item`        | Current foreach item (`input.item` when present)           |
+//! | `$index`       | Current foreach index (`input.index` when present)         |
+//! | `$count`       | Current foreach count (`input.count` when present)         |
+//! | `$trigger`     | Immutable trigger snapshot (`auth`, `params`, `query`, `headers`) |
+//! | `$nodes`       | Map of completed node IDs → their output payloads          |
+//! | `$placeholder` | Opaque credential references for composite/WASM nodes. Values are placeholder strings resolved only by platform consumers (HTTP client, script sandbox), never in traces or logs. |
 //!
 //! # Type preservation
 //!
@@ -42,12 +43,13 @@ use crate::pipeline::PipelineError;
 /// Build the flat DSL expression scope used by config expressions and logic nodes.
 pub fn build_expression_scope_input(input: &Value, metadata: &Value) -> Value {
     json!({
-        "$input":   input,
-        "$item":    input.get("item").cloned().unwrap_or(Value::Null),
-        "$index":   input.get("index").cloned().unwrap_or(Value::Null),
-        "$count":   input.get("count").cloned().unwrap_or(Value::Null),
-        "$trigger": metadata.get("trigger").cloned().unwrap_or(Value::Null),
-        "$nodes":   metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+        "$input":       input,
+        "$item":        input.get("item").cloned().unwrap_or(Value::Null),
+        "$index":       input.get("index").cloned().unwrap_or(Value::Null),
+        "$count":       input.get("count").cloned().unwrap_or(Value::Null),
+        "$trigger":     metadata.get("trigger").cloned().unwrap_or(Value::Null),
+        "$nodes":       metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+        "$placeholder": metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),
     })
 }
 
@@ -87,7 +89,8 @@ pub fn resolve_config_expressions(
          var $index = input.$index;\n\
          var $count = input.$count;\n\
          var $trigger = input.$trigger || null;\n\
-         var $nodes = input.$nodes || {};\n",
+         var $nodes = input.$nodes || {};\n\
+         var $placeholder = input.$placeholder || {};\n",
     );
     for (i, expr) in exprs.iter().enumerate() {
         body.push_str(&format!("var _e{i} = null;\n"));

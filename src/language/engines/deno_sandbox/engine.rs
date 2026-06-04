@@ -230,6 +230,7 @@ impl LanguageEngine for DenoSandboxEngine {
             "request_id": ctx.request_id,
             "trigger": ctx.trigger,
             "nodes": ctx.metadata.get("nodes").cloned().unwrap_or_else(|| json!({})),
+            "placeholder": ctx.metadata.get("placeholder").cloned().unwrap_or_else(|| json!({})),
         });
         let value = self.run_compiled(&script, &input, ctx_json)?;
 
