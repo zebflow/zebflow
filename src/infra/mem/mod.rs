@@ -11,17 +11,17 @@
 //!
 //! ```text
 //! | n.trigger.webhook --path /counter --method POST
-//! | n.mem.incr --key visits --out-key count
+//! | n.kv.incr --key visits --out-key count
 //! | n.script -- "return { count: input.count };"
 //! ```
 //!
 //! ```text
 //! | n.trigger.webhook --path /notify --method POST
-//! | n.mem.publish --channel alerts
+//! | n.kv.publish --channel alerts
 //! ```
 //!
 //! ```text
-//! | n.trigger.memsubscribe --channel alerts
+//! | n.trigger.kv.subscribe --channel alerts
 //! | n.script -- "return { received: input.message };"
 //! ```
 
