@@ -83,6 +83,7 @@ impl FileAdapter for FilesystemFileAdapter {
         let repo_git_dir = repo_dir.join(".git");
         let repo_pipelines_dir = repo_dir.join("pipelines");
         let repo_docs_dir = repo_dir.join("docs");
+        let repo_nodes_dir = repo_dir.join("nodes");
         let zebflow_json_file = repo_dir.join("zebflow.json");
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
@@ -122,6 +123,7 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_docs_dir,
             zebflow_json_file,
             agent_docs_dir,
+            repo_nodes_dir,
         })
     }
 }

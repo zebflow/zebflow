@@ -30,8 +30,9 @@ use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
 use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
-use crate::infra::mem::subscriber::MemSubscriber;
+use crate::infra::mem::subscriber::KvSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
+use crate::infra::ws_client::WsClientManager;
 use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
@@ -242,8 +243,10 @@ pub struct PlatformAppState {
     template_cache: crate::pipeline::engines::basic::TemplateCache,
     /// Background cron scheduler — kept alive for the lifetime of the process.
     scheduler: Arc<PipelineScheduler>,
-    /// Background mem-subscribe listener service.
-    mem_subscriber: Arc<MemSubscriber>,
+    /// Background KV subscribe listener service.
+    kv_subscriber: Arc<KvSubscriber>,
+    /// Background WS client connection service.
+    ws_client_manager: Arc<WsClientManager>,
     /// Live preview toggle registry. Key: "{owner}/{project}/{file_rel}".
     preview_registry: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     /// Server-side platform web sessions keyed by random cookie token.
@@ -295,16 +298,29 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
 
     println!("✅ Pipeline scheduler started");
 
-    let mem_subscriber = Arc::new(MemSubscriber::new(
+    let kv_subscriber = Arc::new(KvSubscriber::new(
         platform.state_bus.clone(),
+        platform.pipeline_runtime.clone(),
+        sched_engine.clone(),
+        platform.pipeline_hits.clone(),
+        platform.data.clone(),
+        platform.zebflow_cfg.clone(),
+    ));
+    kv_subscriber.register_all().await;
+    println!("✅ KV subscriber started");
+
+    let sessions: Arc<std::sync::Mutex<HashMap<String, PlatformWebSession>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+
+    let ws_client_manager = Arc::new(WsClientManager::new(
         platform.pipeline_runtime.clone(),
         sched_engine,
         platform.pipeline_hits.clone(),
         platform.data.clone(),
         platform.zebflow_cfg.clone(),
     ));
-    mem_subscriber.register_all().await;
-    println!("✅ Mem subscriber started");
+    ws_client_manager.register_all().await;
+    println!("✅ WS client manager started");
 
     let template_cache = crate::pipeline::engines::basic::new_template_cache();
     let mcp_service =
@@ -430,6 +446,22 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/nodes",
             get(api_list_node_definitions),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/nodes/by-kind/{kind}",
+            get(api_get_node_definition),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/nodes/install",
+            post(api_install_node_package),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/nodes/uninstall/{kind}",
+            delete(api_uninstall_node_package),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/nodes/icon/{kind}",
+            get(api_node_icon),
         )
         .route("/api/users", get(api_list_users).post(api_create_user))
         .route("/api/cluster/workers", get(api_cluster_workers))
@@ -652,6 +684,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/files/rm",
             post(api_files_rm),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/credential-types",
+            get(api_list_credential_types),
         )
         .route(
             "/api/projects/{owner}/{project}/credentials",
@@ -978,9 +1014,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         render_script_cache,
         template_cache,
         scheduler,
-        mem_subscriber,
+        kv_subscriber,
+        ws_client_manager,
         preview_registry: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-        sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        sessions,
         oauth_state_secret: {
             let mut bytes = [0u8; 32];
             rand::rng().fill(&mut bytes);
@@ -4492,7 +4529,10 @@ async fn render_project_pipelines_with_tab(
                         )
                     };
 
-                let node_catalog = crate::pipeline::nodes::builtin_node_definitions()
+                let node_catalog = state
+                    .platform
+                    .node_registry
+                    .merged_definitions(&owner, &project)
                     .into_iter()
                     .map(|def| {
                         json!({
@@ -5142,7 +5182,10 @@ async fn render_project_editor(
                 )
             };
 
-        let node_catalog = crate::pipeline::nodes::builtin_node_definitions()
+        let node_catalog = state
+            .platform
+            .node_registry
+            .merged_definitions(&owner, &project)
             .into_iter()
             .map(|def| {
                 json!({
@@ -8320,11 +8363,219 @@ async fn api_list_node_definitions(
     ) {
         return response;
     }
+    let defs = state
+        .platform
+        .node_registry
+        .merged_definitions(&owner, &project);
+
+    let items: Vec<crate::pipeline::NodeContractItem> = defs
+        .into_iter()
+        .map(|def| {
+            let kind = def.kind.clone();
+            let mut item = crate::pipeline::NodeContractItem::from(def);
+
+            // Set tier: official (native or embedded composite) vs community (installed).
+            item.tier = if state.platform.node_registry.is_official(&kind) {
+                "official".to_string()
+            } else {
+                "community".to_string()
+            };
+
+            // Resolve icon URL + content hash for cache-busting.
+            let icon_bytes: Option<Vec<u8>> = state
+                .platform
+                .node_registry
+                .load_icon_any(&owner, &project, &kind)
+                .or_else(|| {
+                    let path = format!("zebflow/{}.svg", kind);
+                    platform_node_icon_asset(&path).map(|b| b.to_vec())
+                });
+
+            if let Some(bytes) = icon_bytes {
+                item.icon_url =
+                    format!("/api/projects/{}/{}/nodes/icon/{}", owner, project, kind);
+                use sha2::{Digest, Sha256};
+                let hash = Sha256::digest(&bytes);
+                item.icon_hash = format!(
+                    "{:02x}{:02x}{:02x}{:02x}",
+                    hash[0], hash[1], hash[2], hash[3]
+                );
+            }
+
+            item
+        })
+        .collect();
+
     Json(json!({
         "ok": true,
-        "items": crate::pipeline::nodes::builtin_node_definitions()
+        "items": items
     }))
     .into_response()
+}
+
+async fn api_get_node_definition(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, kind)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    let merged = state
+        .platform
+        .node_registry
+        .merged_definitions(&owner, &project);
+    match merged.into_iter().find(|d| d.kind == kind) {
+        Some(def) => {
+            let mut item = crate::pipeline::NodeContractItem::from(def);
+            item.tier = if state.platform.node_registry.is_official(&kind) {
+                "official".to_string()
+            } else {
+                "community".to_string()
+            };
+            Json(json!({ "ok": true, "item": item })).into_response()
+        }
+        None => Json(json!({
+            "ok": false,
+            "error": format!("node kind '{}' not found", kind)
+        }))
+        .into_response(),
+    }
+}
+
+// ── Node package install/uninstall/icon ─────────────────────────────────────
+
+async fn api_install_node_package(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(body): Json<NodePackageInstallRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    match state.platform.node_registry.install_package(
+        &owner,
+        &project,
+        &body.manifest,
+        body.pipeline_source.as_deref(),
+        body.icon_svg.as_deref(),
+    ) {
+        Ok(pkg) => Json(json!({
+            "ok": true,
+            "kind": pkg.manifest.definition.kind,
+            "slug": pkg.slug,
+        }))
+        .into_response(),
+        Err(e) => Json(json!({
+            "ok": false,
+            "error": format!("{}: {}", e.code, e.message)
+        }))
+        .into_response(),
+    }
+}
+
+async fn api_uninstall_node_package(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, kind)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    // Reject uninstalling official nodes (native + embedded composites).
+    if state.platform.node_registry.is_official(&kind) {
+        return Json(json!({
+            "ok": false,
+            "error": "cannot uninstall official node kinds"
+        }))
+        .into_response();
+    }
+    match state
+        .platform
+        .node_registry
+        .uninstall_package(&owner, &project, &kind)
+    {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => Json(json!({
+            "ok": false,
+            "error": format!("{}: {}", e.code, e.message)
+        }))
+        .into_response(),
+    }
+}
+
+async fn api_node_icon(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, kind)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    // 1. Check installed + embedded composite node packages first.
+    if let Some(svg_bytes) = state
+        .platform
+        .node_registry
+        .load_icon_any(&owner, &project, &kind)
+    {
+        return (
+            [
+                (CONTENT_TYPE, "image/svg+xml"),
+                (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            svg_bytes,
+        )
+            .into_response();
+    }
+
+    // 2. Fall back to embedded builtin icon.
+    let icon_path = format!("zebflow/{}.svg", kind);
+    if let Some(bytes) = platform_node_icon_asset(&icon_path) {
+        return (
+            [
+                (CONTENT_TYPE, "image/svg+xml"),
+                (CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes.to_vec(),
+        )
+            .into_response();
+    }
+
+    StatusCode::NOT_FOUND.into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct NodePackageInstallRequest {
+    manifest: crate::platform::model::NodePackageManifest,
+    #[serde(default)]
+    pipeline_source: Option<String>,
+    #[serde(default)]
+    icon_svg: Option<String>,
 }
 
 // ── Admin DB endpoints ──────────────────────────────────────────────────────
@@ -11506,9 +11757,18 @@ async fn api_activate_pipeline_definition(
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
             state
-                .mem_subscriber
+                .kv_subscriber
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
+            state
+                .ws_client_manager
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
+            // Run composite lifecycle hooks (on_activate).
+            run_composite_lifecycle_hooks(
+                &state, &owner, &project, &req.file_rel_path, "on_activate",
+            )
+            .await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
@@ -11553,6 +11813,11 @@ async fn api_deactivate_pipeline_definition(
         &req.file_rel_path,
     ) {
         Ok(meta) => {
+            // Run composite lifecycle hooks (on_deactivate) before eviction.
+            run_composite_lifecycle_hooks(
+                &state, &owner, &project, &req.file_rel_path, "on_deactivate",
+            )
+            .await;
             state
                 .platform
                 .pipeline_runtime
@@ -11562,12 +11827,165 @@ async fn api_deactivate_pipeline_definition(
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
             state
-                .mem_subscriber
+                .kv_subscriber
+                .sync_pipeline(&owner, &project, &req.file_rel_path)
+                .await;
+            state
+                .ws_client_manager
                 .sync_pipeline(&owner, &project, &req.file_rel_path)
                 .await;
             Json(json!({"ok": true, "meta": meta})).into_response()
         }
         Err(err) => internal_error(err),
+    }
+}
+
+/// Runs composite lifecycle hooks (on_activate or on_deactivate) for all composite
+/// nodes found in a pipeline graph.
+///
+/// Scans the pipeline graph nodes, checks each against the node registry for lifecycle
+/// hooks, and executes the corresponding function pipeline.
+async fn run_composite_lifecycle_hooks(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    file_rel_path: &str,
+    hook: &str, // "on_activate" or "on_deactivate"
+) {
+    // Read the pipeline source to get the graph.
+    let source = match state
+        .platform
+        .projects
+        .read_pipeline_source(owner, project, file_rel_path)
+    {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let graph: crate::pipeline::PipelineGraph = match serde_json::from_str(&source) {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    // Check each node for composite lifecycle hooks.
+    for node in &graph.nodes {
+        if !node.kind.starts_with("n.c.") {
+            continue;
+        }
+        let manifest = match state.platform.node_registry.get_manifest(owner, project, &node.kind) {
+            Some(m) => m,
+            None => continue,
+        };
+        let lifecycle = match &manifest.lifecycle {
+            Some(lc) => lc,
+            None => continue,
+        };
+        let function_name = match hook {
+            "on_activate" => lifecycle.on_activate.as_deref(),
+            "on_deactivate" => lifecycle.on_deactivate.as_deref(),
+            _ => None,
+        };
+        let function_name = match function_name {
+            Some(f) => f,
+            None => continue,
+        };
+
+        // Load the lifecycle function pipeline.
+        let function_graph = match state.platform.node_registry.load_composite_function(
+            owner,
+            project,
+            &node.kind,
+            Some(function_name),
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!(
+                    "composite_lifecycle: failed loading {} for '{}': {}",
+                    hook, node.kind, e.message
+                );
+                continue;
+            }
+        };
+
+        // Resolve credential placeholders from the composite node's config.
+        let placeholder_map = crate::pipeline::build_composite_placeholder_map(
+            &node.kind,
+            &node.config,
+            owner,
+            project,
+            &state.platform,
+        );
+
+        // Resolve public URL for platform context.
+        let public_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
+            .unwrap_or_else(|_| {
+                let port = std::env::var("ZEBFLOW_PORT").unwrap_or_else(|_| "10611".to_string());
+                format!("http://localhost:{}", port)
+            });
+
+        // Build execution context with node config, placeholders, and platform info.
+        let ctx = crate::pipeline::PipelineContext {
+            owner: owner.to_string(),
+            project: project.to_string(),
+            pipeline: function_graph.id.clone(),
+            request_id: format!(
+                "lifecycle-{}-{}-{}",
+                hook,
+                node.kind,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ),
+            route: Default::default(),
+            input: serde_json::json!({
+                "node_id": node.id,
+                "node_kind": node.kind,
+                "config": node.config,
+                "hook": hook,
+                "pipeline": file_rel_path,
+                "owner": owner,
+                "project": project,
+                "platform": {
+                    "public_url": public_url,
+                },
+            }),
+            trigger: None,
+            placeholder: if placeholder_map.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!(placeholder_map))
+            },
+        };
+
+        // Build engine with credential support.
+        let engine = crate::pipeline::BasicPipelineEngine::new(
+            std::sync::Arc::new(crate::language::DenoSandboxEngine::default()),
+            crate::rwe::resolve_engine_or_default(None),
+            Some(state.platform.credentials.clone()),
+        )
+        .with_platform(state.platform.clone())
+        .with_ws_hub(state.platform.ws_hub.clone())
+        .with_state_bus(state.platform.state_bus.clone())
+        .with_data_root(state.platform.config.data_root.clone());
+
+        // Execute — fire and forget (log errors but don't block activation).
+        match engine.execute_async(&function_graph, &ctx).await {
+            Ok(output) => {
+                eprintln!(
+                    "composite_lifecycle: {} for '{}' in '{}' OK: {}",
+                    hook,
+                    node.kind,
+                    file_rel_path,
+                    serde_json::to_string(&output.value).unwrap_or_default()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "composite_lifecycle: {} for '{}' in '{}' FAILED: {}",
+                    hook, node.kind, file_rel_path, e.message
+                );
+            }
+        }
     }
 }
 
@@ -11806,6 +12224,7 @@ async fn execute_pipeline_local(
         route: Default::default(),
         input: req.input.clone(),
         trigger: None,
+        placeholder: None,
     };
     let engine = BasicPipelineEngine::new(
         Arc::new(DenoSandboxEngine::default()),
@@ -11822,6 +12241,7 @@ async fn execute_pipeline_local(
             .ok(),
     )
     .with_ws_hub(state.platform.ws_hub.clone())
+    .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
     match engine.execute_async(&graph_for_run, &ctx).await {
@@ -13285,6 +13705,10 @@ async fn api_mapserver_layers_publish(
         allowed_properties,
         feature_count: Some(build.feature_count),
         chunk_count: Some(build.chunk_count),
+        style: None,
+        filter: None,
+        function_slug: None,
+        cache_ttl_secs: None,
     };
     items.retain(|item| item.layer_id != record.layer_id);
     items.push(record.clone());
@@ -13358,6 +13782,34 @@ async fn api_mapserver_layers_delete(
         }
     }
     Json(json!({"ok": true})).into_response()
+}
+
+async fn api_list_credential_types(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsRead,
+    ) {
+        return response;
+    }
+    // Built-in types + custom types from installed composite/WASM packages.
+    let mut types = crate::platform::services::credential::builtin_credential_types();
+    for ct in state
+        .platform
+        .node_registry
+        .all_package_credential_types(&owner, &project)
+    {
+        if !types.iter().any(|t| t.kind == ct.kind) {
+            types.push(ct);
+        }
+    }
+    Json(json!({"ok": true, "types": types})).into_response()
 }
 
 async fn api_list_credentials(
@@ -14727,7 +15179,7 @@ async fn run_assistant_loop(
     use crate::automaton::infra::llm_interface::CallResult;
 
     for step in 1..=max_steps {
-        let result = match llm.call_with_tools(messages.clone(), &tool_defs).await {
+        let (result, _usage) = match llm.call_with_tools(messages.clone(), &tool_defs).await {
             Ok(r) => r,
             Err(err) => {
                 let content = format!("(LLM error: {err})");
@@ -17579,6 +18031,7 @@ async fn dispatch_weberror(
             .ok(),
     )
     .with_ws_hub(state.platform.ws_hub.clone())
+    .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
@@ -17590,6 +18043,7 @@ async fn dispatch_weberror(
         route: Default::default(),
         input: error_payload,
         trigger: None,
+        placeholder: None,
     };
 
     let output = engine.execute_async(&compiled.graph, &ctx).await.ok()?;
@@ -17882,6 +18336,7 @@ async fn public_webhook_ingress(
         route: path.clone(),
         input: input.clone(),
         trigger: Some(trigger),
+        placeholder: None,
     };
     let file_rel_path = selected.compiled.file_rel_path.clone();
     let engine = BasicPipelineEngine::new(
@@ -17899,6 +18354,7 @@ async fn public_webhook_ingress(
             .ok(),
     )
     .with_ws_hub(state.platform.ws_hub.clone())
+    .with_ws_client_manager(state.ws_client_manager.clone())
     .with_state_bus(state.platform.state_bus.clone())
     .with_data_root(state.platform.config.data_root.clone());
 
@@ -18355,43 +18811,7 @@ async fn public_mapserver_ingress(
             Err(err) => internal_error(err),
         };
     }
-    let path = format!("/{}", tail.trim_start_matches('/'));
-
-    struct Candidate {
-        compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
-        trigger: crate::platform::services::pipeline_runtime::MapserverTriggerSpec,
-        static_segments: usize,
-        dynamic_segments: usize,
-        total_segments: usize,
-    }
-
-    let mut candidates = Vec::<Candidate>::new();
-    for compiled in state
-        .platform
-        .pipeline_runtime
-        .list_project(&owner, &project)
-    {
-        for trigger in &compiled.mapserver_triggers {
-            let Some(path_match) = match_webhook_path(&trigger.path, &path) else {
-                continue;
-            };
-            candidates.push(Candidate {
-                compiled: compiled.clone(),
-                trigger: trigger.clone(),
-                static_segments: path_match.static_segments,
-                dynamic_segments: path_match.dynamic_segments,
-                total_segments: path_match.total_segments,
-            });
-        }
-    }
-
-    candidates.sort_by(|a, b| {
-        b.static_segments
-            .cmp(&a.static_segments)
-            .then(a.dynamic_segments.cmp(&b.dynamic_segments))
-            .then(b.total_segments.cmp(&a.total_segments))
-            .then(a.compiled.file_rel_path.cmp(&b.compiled.file_rel_path))
-    });
+    let raw_path = format!("/{}", tail.trim_start_matches('/'));
 
     let params = uri
         .query()
@@ -18409,62 +18829,131 @@ async fn public_mapserver_ingress(
         }
     };
 
-    let selected = if let Some(selected) = candidates.into_iter().next() {
-        Some((
-            selected.trigger.node_id.clone(),
-            selected.trigger.path.clone(),
-            match selected.trigger.source_kind.as_str() {
-                "geojson_artifact" => {
-                    crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact
-                }
-                "geoparquet" => crate::mapserver::publish::manifest::SourceKind::GeoParquet,
-                _ => crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-            },
-            selected.trigger.source_path.clone(),
-            selected.trigger.mode.clone(),
-            selected.trigger.min_zoom,
-            selected.trigger.max_zoom,
-            selected.trigger.bbox_required,
-            selected.trigger.max_features,
-            selected.trigger.allowed_properties.clone(),
-        ))
-    } else {
-        match resolve_mapserver_manifest_for_path(&state, &owner, &project, &path) {
-            Ok(Some(manifest)) => Some((
-                manifest.layer_id,
-                manifest.path,
-                manifest.source_kind,
-                manifest.source_ref,
-                manifest.mode,
-                manifest.min_zoom,
-                manifest.max_zoom,
-                manifest.bbox_required,
-                manifest.max_features,
-                manifest.allowed_properties,
-            )),
-            Ok(None) => None,
-            Err(err) => return internal_error(err),
+    // ── Z/X/Y tile URL detection ──────────────────────────────────────
+    // Detect /{z}/{x}/{y}.{ext} suffix (e.g. /10/825/565.mvt)
+    struct ZxyTileMatch {
+        z: u8,
+        x: u32,
+        y: u32,
+        ext: String,       // "mvt", "pbf", or "png"
+        layer_path: String, // path with z/x/y stripped
+    }
+
+    fn parse_zxy_tile_url(path: &str) -> Option<ZxyTileMatch> {
+        let trimmed = path.trim_end_matches('/');
+        // Split from the right to get /{z}/{x}/{y}.{ext}
+        let segments: Vec<&str> = trimmed.rsplitn(4, '/').collect();
+        if segments.len() < 4 {
+            return None;
         }
+        // segments[0] = "{y}.{ext}", segments[1] = "{x}", segments[2] = "{z}", segments[3] = rest
+        let y_ext = segments[0];
+        let x_str = segments[1];
+        let z_str = segments[2];
+        let layer_rest = segments[3];
+
+        // Parse {y}.{ext}
+        let dot_pos = y_ext.rfind('.')?;
+        let y_str = &y_ext[..dot_pos];
+        let ext = &y_ext[dot_pos + 1..];
+
+        // Validate extension
+        let ext_lower = ext.to_ascii_lowercase();
+        if !matches!(ext_lower.as_str(), "mvt" | "pbf" | "png") {
+            return None;
+        }
+
+        let z: u8 = z_str.parse().ok()?;
+        let x: u32 = x_str.parse().ok()?;
+        let y: u32 = y_str.parse().ok()?;
+
+        // Validate bounds
+        let max_tile = 1u32.checked_shl(z as u32)?;
+        if x >= max_tile || y >= max_tile {
+            return None;
+        }
+
+        // Reconstruct layer path (everything before /{z}/...)
+        let layer_path = if layer_rest.is_empty() {
+            "/".to_string()
+        } else {
+            layer_rest.to_string()
+        };
+
+        Some(ZxyTileMatch {
+            z,
+            x,
+            y,
+            ext: ext_lower,
+            layer_path,
+        })
+    }
+
+    let zxy_match = parse_zxy_tile_url(&raw_path);
+
+    // ── /stats suffix detection ───────────────────────────────────────
+    let is_stats_request = zxy_match.is_none()
+        && raw_path
+            .trim_end_matches('/')
+            .ends_with("/stats");
+
+    // Determine the layer path for manifest lookup
+    let path = if let Some(ref zm) = zxy_match {
+        zm.layer_path.clone()
+    } else if is_stats_request {
+        let stripped = raw_path.trim_end_matches('/');
+        stripped[..stripped.len() - "/stats".len()].to_string()
+    } else {
+        raw_path.clone()
     };
-    let Some((
-        layer_id,
-        layer_path,
-        source_kind,
-        source_path,
-        mode,
-        min_zoom,
-        max_zoom,
-        bbox_required,
-        max_features,
-        allowed_properties,
-    )) = selected
-    else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "map layer not found"})),
-        )
-            .into_response();
+
+    let manifest = match resolve_mapserver_manifest_for_path(&state, &owner, &project, &path) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"ok": false, "error": "map layer not found"})),
+            )
+                .into_response();
+        }
+        Err(err) => return internal_error(err),
     };
+    // ── Stats endpoint: early return ─────────────────────────────────
+    if is_stats_request {
+        match crate::mapserver::resolve::stats::compute_layer_stats(&manifest) {
+            Ok(stats_json) => {
+                let mut resp = (StatusCode::OK, Json(stats_json)).into_response();
+                resp.headers_mut().insert(
+                    HeaderName::from_static("access-control-allow-origin"),
+                    HeaderValue::from_static("*"),
+                );
+                return resp;
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": format!("stats computation failed: {err}")})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let layer_id = manifest.layer_id;
+    let layer_path = manifest.path;
+    let source_kind = manifest.source_kind;
+    let source_path = manifest.source_ref;
+    let mode = manifest.mode;
+    let min_zoom = manifest.min_zoom;
+    let max_zoom = manifest.max_zoom;
+    let bbox_required = manifest.bbox_required;
+    let max_features = manifest.max_features;
+    let allowed_properties = manifest.allowed_properties;
+    let layer_style_json = manifest.style;
+    let layer_default_filter = manifest.filter;
+    let function_slug = manifest.function_slug;
+    let cache_ttl_secs = manifest.cache_ttl_secs;
+
     if !mode.eq_ignore_ascii_case("features") {
         return (
             StatusCode::NOT_IMPLEMENTED,
@@ -18473,18 +18962,87 @@ async fn public_mapserver_ingress(
             .into_response();
     }
 
-    let bbox = match crate::mapserver::infra::http::parse_bbox_param(&params) {
-        Ok(v) => v,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"ok": false, "error": err})),
-            )
-                .into_response();
+    // ── Point query detection (GetFeatureInfo) ────────────────────────
+    // ?lat=...&lon=... constructs a bbox around the point and returns features
+    let point_query_lat = params
+        .get("lat")
+        .or_else(|| params.get("LAT"))
+        .or_else(|| params.get("y"))
+        .or_else(|| params.get("Y"))
+        .and_then(|s| s.parse::<f64>().ok());
+    let point_query_lon = params
+        .get("lon")
+        .or_else(|| params.get("LON"))
+        .or_else(|| params.get("x"))
+        .or_else(|| params.get("X"))
+        .and_then(|s| s.parse::<f64>().ok());
+
+    // ── Z/X/Y tile: compute bbox and override format flags ───────────
+    let (is_tile_request, is_mvt_request, bbox_override, zoom_override) =
+        if let Some(ref zm) = zxy_match {
+            let tile_bbox = crate::mapserver::resolve::tile::tile_to_bbox(zm.z, zm.x, zm.y);
+            let is_png = zm.ext == "png";
+            let is_mvt = zm.ext == "mvt" || zm.ext == "pbf";
+            (is_png, is_mvt, Some(tile_bbox), Some(zm.z))
+        } else {
+            (false, false, None, None)
+        };
+
+    // WMS clients send uppercase params (FORMAT, REQUEST, BBOX, WIDTH, HEIGHT).
+    // Support both cases for compatibility.
+    let format_val = params.get("format").or_else(|| params.get("FORMAT"));
+
+    // Detect tile request: format=image/png or REQUEST=GetMap (or z/x/y override)
+    let is_tile_request = is_tile_request
+        || format_val
+            .map(|f| f.eq_ignore_ascii_case("image/png") || f.eq_ignore_ascii_case("png"))
+            .unwrap_or(false)
+        || params
+            .get("REQUEST")
+            .or(params.get("request"))
+            .map(|r| r.eq_ignore_ascii_case("GetMap"))
+            .unwrap_or(false);
+
+    // Detect MVT vector tile request: format=mvt or format=pbf (or z/x/y override)
+    let is_mvt_request = is_mvt_request
+        || format_val
+            .map(|f| {
+                f.eq_ignore_ascii_case("mvt")
+                    || f.eq_ignore_ascii_case("pbf")
+                    || f.eq_ignore_ascii_case("application/vnd.mapbox-vector-tile")
+            })
+            .unwrap_or(false);
+
+    // Point query: build bbox from lat/lon + tolerance
+    let point_query_bbox = if let (Some(lat), Some(lon)) = (point_query_lat, point_query_lon) {
+        let tolerance: f64 = params
+            .get("tolerance")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001); // ~111m at equator
+        Some([lon - tolerance, lat - tolerance, lon + tolerance, lat + tolerance])
+    } else {
+        None
+    };
+
+    // bbox priority: z/x/y tile > point query > URL ?bbox= param
+    let bbox = if let Some(tb) = bbox_override {
+        Some(tb)
+    } else if let Some(pq) = point_query_bbox {
+        Some(pq)
+    } else {
+        match crate::mapserver::infra::http::parse_bbox_param(&params) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err})),
+                )
+                    .into_response();
+            }
         }
     };
     let limit = match crate::mapserver::infra::http::parse_limit_param(&params, max_features) {
-        Ok(v) => v,
+        Ok(v) => v.min(max_features), // Cap at max_features for GeoJSON feature download
         Err(err) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -18493,7 +19051,24 @@ async fn public_mapserver_ingress(
                 .into_response();
         }
     };
-    let zoom = params.get("zoom").and_then(|s| s.parse::<u8>().ok());
+    // For tile rendering (PNG/MVT), bbox already constrains the spatial extent.
+    // max_features is designed for GeoJSON feature download (unbounded response size).
+    // Tile rendering should not be capped by max_features — use a generous per-tile
+    // safety limit instead (same as how GeoServer/MapServer WMS ignores maxFeatures).
+    let tile_limit: usize = if is_tile_request || is_mvt_request {
+        params
+            .get("limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(500_000)
+            .min(500_000)
+    } else {
+        limit
+    };
+    // zoom priority: z/x/y tile > URL ?zoom= param
+    let zoom = zoom_override.or_else(|| {
+        params.get("zoom").or_else(|| params.get("ZOOM")).and_then(|s| s.parse::<u8>().ok())
+    });
+    let style_param = params.get("style").or_else(|| params.get("STYLE")).cloned();
 
     let manifest = crate::mapserver::publish::registry::manifest_from_runtime(
         layer_id,
@@ -18506,13 +19081,580 @@ async fn public_mapserver_ingress(
         bbox_required,
         max_features,
         allowed_properties,
+        layer_style_json,
+        layer_default_filter,
+        function_slug,
+        cache_ttl_secs,
     );
+
+    let filter_param = params.get("filter").cloned();
+    // Merge: URL filter param > manifest default filter
+    let effective_filter: Option<String> = filter_param.or_else(|| manifest.filter.clone());
+    // Validate filter syntax early (return 400 on parse error)
+    if let Some(ref f) = effective_filter {
+        if let Err(e) = crate::mapserver::resolve::filter_dsl::parse_filter(f) {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("invalid filter: {e}"),
+            )
+                .into_response();
+        }
+    }
     let request = crate::mapserver::resolve::ResolveRequest {
         layer_id: manifest.layer_id.clone(),
         bbox,
         zoom,
         limit: Some(limit),
+        filter: effective_filter.clone(),
     };
+    // Tile request uses tile_limit (not capped by max_features)
+    let tile_request = crate::mapserver::resolve::ResolveRequest {
+        layer_id: manifest.layer_id.clone(),
+        bbox,
+        zoom,
+        limit: Some(tile_limit),
+        filter: effective_filter.clone(),
+    };
+
+    // ── GeoJsonFunction: preload features from function pipeline ──────
+    let render_format = if is_mvt_request {
+        "mvt"
+    } else if is_tile_request {
+        "png"
+    } else {
+        "geojson"
+    };
+    let preloaded_features: Option<serde_json::Value> =
+        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction {
+            let slug = manifest.function_slug.as_deref().unwrap_or("");
+            if slug.is_empty() {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false, "error": "geojson_function layer has no function_slug"})),
+                )
+                    .into_response();
+            }
+            let cache_key = crate::mapserver::resolve::function_cache::cache_key(&owner, &project, slug);
+            if let Some(cached) = crate::mapserver::resolve::function_cache::get_cached(&cache_key) {
+                Some(cached)
+            } else {
+                let fn_input = serde_json::json!({
+                    "layer": {
+                        "id": manifest.layer_id,
+                        "path": manifest.path,
+                    },
+                    "request": {
+                        "bbox": bbox,
+                        "zoom": zoom,
+                        "format": render_format,
+                        "filter": effective_filter,
+                        "limit": limit,
+                    },
+                    "owner": owner,
+                    "project": project,
+                });
+                match state
+                    .platform
+                    .execute_function_pipeline(&owner, &project, slug, fn_input)
+                    .await
+                {
+                    Ok(result) => {
+                        let ttl = manifest.cache_ttl_secs.unwrap_or(60);
+                        crate::mapserver::resolve::function_cache::put_cached(&cache_key, &result, ttl);
+                        Some(result)
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({"ok": false, "error": format!("function pipeline error: {}", e.message)})),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+    // ── MVT vector tile branch ─────────────────────────────────────────
+    if is_mvt_request {
+        let tile_bbox = match bbox {
+            Some(b) => b,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": "bbox is required for MVT requests"})),
+                )
+                    .into_response();
+            }
+        };
+        let mvt_layer_name = manifest.layer_id.clone();
+
+        // MVT cache key (format="mvt", width/height fixed at 4096 extent)
+        let mvt_key = crate::mapserver::resolve::tile_cache::tile_cache_key(
+            &manifest.layer_id,
+            &tile_bbox,
+            4096,
+            4096,
+            zoom,
+            &manifest.source_ref,
+            None,
+            effective_filter.as_deref(),
+            "mvt",
+        );
+        if let Some(cached_mvt) = crate::mapserver::resolve::tile_cache::get_tile(&mvt_key) {
+            let mut resp = (StatusCode::OK, cached_mvt).into_response();
+            resp.headers_mut().insert(
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/vnd.mapbox-vector-tile"),
+            );
+            resp.headers_mut().insert(
+                HeaderName::from_static("content-encoding"),
+                HeaderValue::from_static("gzip"),
+            );
+            resp.headers_mut().insert(
+                HeaderName::from_static("access-control-allow-origin"),
+                HeaderValue::from_static("*"),
+            );
+            return resp;
+        }
+
+        // ── Direct GeoParquet → MVT fast path ─────────────────────────────
+        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet {
+            let source_path = std::path::Path::new(&manifest.source_ref);
+            if source_path.exists() {
+                let parsed_filter = effective_filter
+                    .as_deref()
+                    .and_then(|f| crate::mapserver::resolve::filter_dsl::parse_filter(f).ok());
+                if let Ok(mvt_bytes) =
+                    crate::mapserver::resolve::geoparquet_direct::render_mvt_direct(
+                        source_path,
+                        tile_bbox,
+                        &mvt_layer_name,
+                        zoom,
+                        parsed_filter.as_ref(),
+                        &manifest.allowed_properties,
+                        tile_limit,
+                    )
+                {
+                    crate::mapserver::resolve::tile_cache::put_tile(
+                        mvt_key,
+                        mvt_bytes.clone(),
+                        &manifest.source_ref,
+                    );
+                    let mut resp = (StatusCode::OK, mvt_bytes).into_response();
+                    resp.headers_mut().insert(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("application/vnd.mapbox-vector-tile"),
+                    );
+                    resp.headers_mut().insert(
+                        HeaderName::from_static("content-encoding"),
+                        HeaderValue::from_static("gzip"),
+                    );
+                    resp.headers_mut().insert(
+                        HeaderName::from_static("access-control-allow-origin"),
+                        HeaderValue::from_static("*"),
+                    );
+                    return resp;
+                }
+                // Direct path failed — fall through to GeoJSON → MVT
+            }
+        }
+
+        // ── GeoJSON → MVT fallback ────────────────────────────────────────
+        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &tile_request, preloaded_features.as_ref()) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err})),
+                )
+                    .into_response();
+            }
+        };
+
+        let mvt_bytes = crate::mapserver::resolve::mvt::features_to_mvt_gz(
+            &mvt_layer_name,
+            &resolved.features,
+            &tile_bbox,
+            &manifest.allowed_properties,
+        );
+
+        crate::mapserver::resolve::tile_cache::put_tile(
+            mvt_key,
+            mvt_bytes.clone(),
+            &manifest.source_ref,
+        );
+
+        let mut resp = (StatusCode::OK, mvt_bytes).into_response();
+        resp.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/vnd.mapbox-vector-tile"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("content-encoding"),
+            HeaderValue::from_static("gzip"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("access-control-allow-origin"),
+            HeaderValue::from_static("*"),
+        );
+        return resp;
+    }
+
+    // ── Tile rendering branch ───────────────────────────────────────────
+    if is_tile_request {
+        let tile_bbox = match bbox {
+            Some(b) => b,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": "bbox is required for tile requests"})),
+                )
+                    .into_response();
+            }
+        };
+        let tile_width = params
+            .get("width")
+            .or_else(|| params.get("WIDTH"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(256)
+            .min(1024)
+            .max(1);
+        let tile_height = params
+            .get("height")
+            .or_else(|| params.get("HEIGHT"))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(256)
+            .min(1024)
+            .max(1);
+
+        // ── Style resolution ─────────────────────────────────────────────
+        // Priority: ?style= URL param > manifest DSL string > manifest JSON > defaults
+        let style_dsl_str: Option<String> = style_param.clone().or_else(|| {
+            manifest.style.as_ref().and_then(|v| v.as_str().map(|s| s.to_string()))
+        });
+
+        // Base layer style (uniform fallback)
+        let style_config: Option<crate::mapserver::resolve::style::LayerStyleConfig> =
+            if style_dsl_str.is_none() {
+                manifest.style.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok())
+            } else {
+                None
+            };
+        let style = crate::mapserver::resolve::style::resolve_layer_style(
+            style_config.as_ref(),
+            zoom,
+        );
+
+        // Resolve DSL → ResolvedStyle for per-feature data-driven styling
+        let resolved_style: Option<crate::mapserver::resolve::style_dsl::ResolvedStyle> =
+            style_dsl_str.as_deref().and_then(|dsl| {
+                let def = crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl).ok()?;
+                let source_path = std::path::Path::new(&manifest.source_ref);
+                let stats = if def.needs_stats() {
+                    def.field_name().and_then(|fname| {
+                        crate::mapserver::resolve::geoparquet_direct::get_field_stats(source_path, fname)
+                    })
+                } else {
+                    None
+                };
+                let distinct = if def.needs_distinct() {
+                    def.field_name().and_then(|fname| {
+                        crate::mapserver::resolve::geoparquet_direct::get_field_distinct(source_path, fname, 50)
+                    })
+                } else {
+                    None
+                };
+                crate::mapserver::resolve::style_dsl::resolve_style(
+                    &def, stats.as_ref(), distinct.as_ref(), zoom,
+                ).ok()
+            });
+
+        // If resolved style is Uniform, override the base LayerStyle
+        let style = if let Some(crate::mapserver::resolve::style_dsl::ResolvedStyle::Uniform(ref fs)) = resolved_style {
+            crate::mapserver::resolve::style::LayerStyle {
+                fill_color: fs.fill_color,
+                stroke_color: fs.stroke_color,
+                stroke_width: fs.stroke_width,
+                point_radius: fs.point_radius,
+                point_color: fs.point_color,
+            }
+        } else {
+            style
+        };
+
+        // Check tile cache (style hash included in key)
+        let tile_key = crate::mapserver::resolve::tile_cache::tile_cache_key(
+            &manifest.layer_id,
+            &tile_bbox,
+            tile_width,
+            tile_height,
+            zoom,
+            &manifest.source_ref,
+            style_dsl_str.as_deref(),
+            effective_filter.as_deref(),
+            "png",
+        );
+        if let Some(cached_png) = crate::mapserver::resolve::tile_cache::get_tile(&tile_key) {
+            let mut resp = (StatusCode::OK, cached_png).into_response();
+            resp.headers_mut()
+                .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+            resp.headers_mut().insert(
+                HeaderName::from_static("access-control-allow-origin"),
+                HeaderValue::from_static("*"),
+            );
+            return resp;
+        }
+
+        // ── Direct parquet fast path (bypasses DataFusion entirely) ─────
+        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoParquet {
+            let source_path = std::path::Path::new(&manifest.source_ref);
+            if source_path.exists() {
+                let parsed_filter = effective_filter
+                    .as_deref()
+                    .and_then(|f| crate::mapserver::resolve::filter_dsl::parse_filter(f).ok());
+                if let Ok(png_bytes) =
+                    crate::mapserver::resolve::geoparquet_direct::render_tile_direct(
+                        source_path,
+                        tile_bbox,
+                        tile_width,
+                        tile_height,
+                        zoom,
+                        &style,
+                        resolved_style.as_ref(),
+                        parsed_filter.as_ref(),
+                        tile_limit,
+                    )
+                {
+                    crate::mapserver::resolve::tile_cache::put_tile(
+                        tile_key,
+                        png_bytes.clone(),
+                        &manifest.source_ref,
+                    );
+                    let mut resp = (StatusCode::OK, png_bytes).into_response();
+                    resp.headers_mut()
+                        .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                    resp.headers_mut().insert(
+                        HeaderName::from_static("access-control-allow-origin"),
+                        HeaderValue::from_static("*"),
+                    );
+                    return resp;
+                }
+                // Direct path failed — fall through to DataFusion path
+            }
+        }
+
+        // ── Metatile pixmap cache: zoom >= 8 and standard 256×256 tiles ──
+        // Non-blocking: if a metatile pixmap is cached, slice from it (very fast).
+        // Otherwise, render the individual tile normally and spawn a background
+        // task to render+cache the metatile pixmap for future requests.
+        let use_metatile = zoom.map(|z| z >= 8).unwrap_or(false)
+            && tile_width == 256
+            && tile_height == 256;
+
+        if use_metatile {
+            const META_GRID: u32 = 4;
+            let meta_info =
+                crate::mapserver::resolve::tile::compute_metatile_info(&tile_bbox, META_GRID);
+            let meta_key = crate::mapserver::resolve::tile_cache::metatile_cache_key(
+                &manifest.layer_id,
+                &meta_info.bbox,
+                zoom,
+                &manifest.source_ref,
+                style_dsl_str.as_deref(),
+                effective_filter.as_deref(),
+            );
+
+            // Fast path: metatile pixmap already cached — slice our tile from it
+            if let Some(png_bytes) = crate::mapserver::resolve::tile_cache::get_metatile_tile(
+                &meta_key,
+                &tile_bbox,
+                tile_width,
+                tile_height,
+            ) {
+                crate::mapserver::resolve::tile_cache::put_tile(
+                    tile_key,
+                    png_bytes.clone(),
+                    &manifest.source_ref,
+                );
+                let mut resp = (StatusCode::OK, png_bytes).into_response();
+                resp.headers_mut()
+                    .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                resp.headers_mut().insert(
+                    HeaderName::from_static("access-control-allow-origin"),
+                    HeaderValue::from_static("*"),
+                );
+                return resp;
+            }
+
+            // No cached pixmap — spawn background metatile render (non-blocking)
+            if crate::mapserver::resolve::tile_cache::try_claim_metatile(&meta_key) {
+                let bg_manifest = manifest.clone();
+                let bg_style = style.clone();
+                let bg_resolved_style = resolved_style.clone();
+                let bg_meta_key = meta_key.clone();
+                let bg_meta_bbox = meta_info.bbox;
+                let bg_filter = effective_filter.clone();
+                let bg_preloaded = preloaded_features.clone();
+                tokio::task::spawn_blocking(move || {
+                    // Delay so individual tile queries get priority on the DataFusion mutex
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let meta_request = crate::mapserver::resolve::ResolveRequest {
+                        layer_id: bg_manifest.layer_id.clone(),
+                        bbox: Some(bg_meta_bbox),
+                        zoom,
+                        limit: Some(tile_limit),
+                        filter: bg_filter,
+                    };
+                    let meta_resolved = match crate::mapserver::resolve::resolve_features(
+                        &bg_manifest,
+                        &meta_request,
+                        bg_preloaded.as_ref(),
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            crate::mapserver::resolve::tile_cache::release_metatile(&bg_meta_key);
+                            return;
+                        }
+                    };
+                    let meta_tile_req = crate::mapserver::resolve::tile::TileRenderRequest {
+                        bbox: bg_meta_bbox,
+                        width: tile_width * META_GRID,
+                        height: tile_height * META_GRID,
+                        zoom,
+                    };
+                    if let Ok(pm) = crate::mapserver::resolve::tile::render_features_to_pixmap(
+                        &meta_resolved.features,
+                        &meta_tile_req,
+                        &bg_style,
+                        bg_resolved_style.as_ref(),
+                    ) {
+                        crate::mapserver::resolve::tile_cache::put_metatile_pixmap(
+                            bg_meta_key.clone(),
+                            pm.data().to_vec(),
+                            pm.width(),
+                            pm.height(),
+                            bg_meta_bbox,
+                        );
+                    }
+                    crate::mapserver::resolve::tile_cache::release_metatile(&bg_meta_key);
+                });
+            }
+            // Fall through to individual tile rendering below
+        }
+
+        // ── Individual tile rendering ──────────────────────────────────────
+        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &tile_request, preloaded_features.as_ref()) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err})),
+                )
+                    .into_response();
+            }
+        };
+
+        let tile_request = crate::mapserver::resolve::tile::TileRenderRequest {
+            bbox: tile_bbox,
+            width: tile_width,
+            height: tile_height,
+            zoom,
+        };
+        let png_bytes = match crate::mapserver::resolve::tile::render_features_to_png(
+            &resolved.features,
+            &tile_request,
+            &style,
+            resolved_style.as_ref(),
+        ) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                return internal_error(PlatformError::new(
+                    "MAPSERVER_TILE_RENDER",
+                    format!("tile rendering failed: {err}"),
+                ));
+            }
+        };
+
+        crate::mapserver::resolve::tile_cache::put_tile(
+            tile_key,
+            png_bytes.clone(),
+            &manifest.source_ref,
+        );
+
+        let mut resp = (StatusCode::OK, png_bytes).into_response();
+        resp.headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        resp.headers_mut().insert(
+            HeaderName::from_static("access-control-allow-origin"),
+            HeaderValue::from_static("*"),
+        );
+        return resp;
+    }
+
+    // ── Point query (GetFeatureInfo) branch ──────────────────────────
+    if let (Some(lat), Some(lon)) = (point_query_lat, point_query_lon) {
+        let pq_limit = params
+            .get("limit")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(10)
+            .min(100);
+        let tolerance: f64 = params
+            .get("tolerance")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.001);
+        let pq_request = crate::mapserver::resolve::ResolveRequest {
+            layer_id: manifest.layer_id.clone(),
+            bbox: Some([lon - tolerance, lat - tolerance, lon + tolerance, lat + tolerance]),
+            zoom: None,
+            limit: Some(pq_limit),
+            filter: effective_filter.clone(),
+        };
+        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &pq_request, preloaded_features.as_ref()) {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"ok": false, "error": err})),
+                )
+                    .into_response();
+            }
+        };
+        let payload = json!({
+            "type": "FeatureCollection",
+            "layer": resolved.layer,
+            "count": resolved.count,
+            "truncated": resolved.truncated,
+            "query": {
+                "lat": lat,
+                "lon": lon,
+                "tolerance": tolerance,
+            },
+            "features": resolved.features
+        });
+        let body = match serde_json::to_vec(&payload) {
+            Ok(body) => body,
+            Err(err) => {
+                return internal_error(PlatformError::new(
+                    "MAPSERVER_RESPONSE_SERIALIZE",
+                    format!("failed serializing point query payload: {err}"),
+                ));
+            }
+        };
+        let mut resp = (StatusCode::OK, body).into_response();
+        resp.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/geo+json; charset=utf-8"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("access-control-allow-origin"),
+            HeaderValue::from_static("*"),
+        );
+        return resp;
+    }
+
+    // ── GeoJSON features branch ─────────────────────────────────────────
     let response_cache_key =
         crate::mapserver::resolve::cache::response_cache_key(&manifest, &request);
     if let Some(body) = crate::mapserver::resolve::cache::get_response_bytes(&response_cache_key) {
@@ -18521,9 +19663,13 @@ async fn public_mapserver_ingress(
             CONTENT_TYPE,
             HeaderValue::from_static("application/geo+json; charset=utf-8"),
         );
+        resp.headers_mut().insert(
+            HeaderName::from_static("access-control-allow-origin"),
+            HeaderValue::from_static("*"),
+        );
         return resp;
     }
-    let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &request) {
+    let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &request, preloaded_features.as_ref()) {
         Ok(v) => v,
         Err(err) => {
             return (
@@ -18554,6 +19700,10 @@ async fn public_mapserver_ingress(
     resp.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static("application/geo+json; charset=utf-8"),
+    );
+    resp.headers_mut().insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        HeaderValue::from_static("*"),
     );
     resp
 }
@@ -18587,6 +19737,14 @@ struct MapserverLayerRecord {
     feature_count: Option<usize>,
     #[serde(default)]
     chunk_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    style: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    filter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    function_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_ttl_secs: Option<u64>,
 }
 
 fn mapserver_layers_manifest_path(
@@ -18720,6 +19878,11 @@ fn resolve_mapserver_manifest_for_path(
                     .display()
                     .to_string(),
             )
+        } else if item.source_kind == "geojson_function" {
+            (
+                crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction,
+                String::new(),
+            )
         } else {
             (
                 crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
@@ -18741,6 +19904,10 @@ fn resolve_mapserver_manifest_for_path(
             item.bbox_required,
             item.max_features,
             item.allowed_properties,
+            item.style,
+            item.filter,
+            item.function_slug,
+            item.cache_ttl_secs,
         )
     }))
 }
@@ -18771,6 +19938,31 @@ fn safe_headers(headers: &HeaderMap) -> Value {
     Value::Object(map)
 }
 
+/// Build the structured webhook payload.
+///
+/// User-submitted data lives under `input.body` — never at root.
+/// Server request context (`query`, `params`, `path`, `method`) lives at root.
+/// This prevents collisions when user body contains fields like "query" or "path".
+fn build_structured_payload(
+    body: Value,
+    query: &Value,
+    params: &Value,
+    path: &str,
+    method: &str,
+    files: Option<Value>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("body".to_string(), body);
+    obj.insert("query".to_string(), query.clone());
+    obj.insert("params".to_string(), params.clone());
+    obj.insert("path".to_string(), Value::String(path.to_string()));
+    obj.insert("method".to_string(), Value::String(method.to_string()));
+    if let Some(f) = files {
+        obj.insert("files".to_string(), f);
+    }
+    Value::Object(obj)
+}
+
 async fn build_webhook_ingress_input(
     method: &Method,
     uri: &Uri,
@@ -18783,42 +19975,16 @@ async fn build_webhook_ingress_input(
 
     let query = parse_query_to_json(uri.query());
     let params = Value::Object(path_params.clone());
-    let method_value = method.as_str().to_string();
+    let method_str = method.as_str();
 
-    let attach_context = |obj: &mut serde_json::Map<String, Value>| {
-        if let Value::Object(path_map) = &params {
-            for (key, value) in path_map {
-                obj.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
-        obj.insert("query".to_string(), query.clone());
-        obj.insert("params".to_string(), params.clone());
-        obj.insert("path".to_string(), Value::String(path.to_string()));
-        obj.insert("method".to_string(), Value::String(method_value.clone()));
-        obj.insert(
-            "ctx".to_string(),
-            json!({
-                "path": path,
-                "method": method.as_str(),
-                "query": query,
-                "params": params,
-            }),
-        );
-    };
-
+    // GET with no body: body is null, query params at root
     if method == Method::GET && body.is_empty() {
-        let mut obj = match query.clone() {
-            Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        attach_context(&mut obj);
-        return Value::Object(obj);
+        return build_structured_payload(Value::Null, &query, &params, path, method_str, None);
     }
 
+    // Non-GET with empty body
     if body.is_empty() {
-        let mut obj = serde_json::Map::new();
-        attach_context(&mut obj);
-        return Value::Object(obj);
+        return build_structured_payload(Value::Null, &query, &params, path, method_str, None);
     }
 
     let content_type = headers
@@ -18828,45 +19994,33 @@ async fn build_webhook_ingress_input(
         .to_string();
     let content_type_lc = content_type.to_ascii_lowercase();
 
+    // JSON body → user data under .body
     if content_type_lc.contains("application/json")
         && let Ok(parsed) = serde_json::from_slice::<Value>(body)
     {
-        if let Value::Object(mut obj) = parsed {
-            attach_context(&mut obj);
-            return Value::Object(obj);
-        }
-        return json!({
-            "body": parsed,
-            "query": query,
-            "params": params,
-            "path": path,
-            "method": method.as_str(),
-            "ctx": {
-                "path": path,
-                "method": method.as_str(),
-                "query": query,
-                "params": params
-            }
-        });
+        return build_structured_payload(parsed, &query, &params, path, method_str, None);
     }
 
+    // Form-urlencoded → form fields under .body
     if content_type_lc.contains("application/x-www-form-urlencoded") {
         if let Ok(fields) = serde_urlencoded::from_bytes::<Vec<(String, String)>>(body) {
-            let mut obj = serde_json::Map::new();
+            let mut form_obj = serde_json::Map::new();
             for (k, v) in fields {
-                obj.insert(k, Value::String(v));
+                form_obj.insert(k, Value::String(v));
             }
-            attach_context(&mut obj);
-            return Value::Object(obj);
+            return build_structured_payload(
+                Value::Object(form_obj), &query, &params, path, method_str, None,
+            );
         }
     }
 
+    // Multipart → text fields under .body, files at root .files
     if content_type_lc.contains("multipart/form-data") {
         if let Ok(boundary) = multer::parse_boundary(&content_type) {
             let body_clone = body.clone();
             let stream = futures::stream::once(async move { Ok::<_, std::io::Error>(body_clone) });
             let mut mp = multer::Multipart::new(stream, boundary);
-            let mut obj = serde_json::Map::new();
+            let mut text_fields = serde_json::Map::new();
             let mut files = serde_json::Map::new();
             while let Ok(Some(mut field)) = mp.next_field().await {
                 let name = field.name().unwrap_or("").to_string();
@@ -18890,31 +20044,21 @@ async fn build_webhook_ingress_input(
                     );
                 } else {
                     let text = String::from_utf8_lossy(&data).to_string();
-                    obj.insert(name, Value::String(text));
+                    text_fields.insert(name, Value::String(text));
                 }
             }
-            if !files.is_empty() {
-                obj.insert("files".to_string(), Value::Object(files));
-            }
-            attach_context(&mut obj);
-            return Value::Object(obj);
+            let files_val = if files.is_empty() { None } else { Some(Value::Object(files)) };
+            return build_structured_payload(
+                Value::Object(text_fields), &query, &params, path, method_str, files_val,
+            );
         }
     }
 
+    // Raw text / unknown content type
     let body_text = String::from_utf8_lossy(body).to_string();
-    json!({
-        "body": body_text,
-        "query": query,
-        "params": params,
-        "path": path,
-        "method": method.as_str(),
-        "ctx": {
-            "path": path,
-            "method": method.as_str(),
-            "query": query,
-            "params": params
-        }
-    })
+    build_structured_payload(
+        Value::String(body_text), &query, &params, path, method_str, None,
+    )
 }
 
 fn parse_query_to_json(raw_query: Option<&str>) -> Value {
@@ -19840,15 +20984,6 @@ async fn ws_room_handler(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::ProjectRead,
-    ) {
-        return response;
-    }
     let session_id = format!(
         "ws-{:016x}",
         std::time::SystemTime::now()
@@ -19856,8 +20991,8 @@ async fn ws_room_handler(
             .unwrap_or_default()
             .as_nanos()
     );
-    ws.on_upgrade(move |socket| handle_ws_room(socket, owner, project, room_id, session_id, state))
-        .into_response()
+    // Capture connection headers for per-trigger auth checks on incoming messages.
+    ws.on_upgrade(move |socket| handle_ws_room(socket, owner, project, room_id, session_id, headers, state))
 }
 
 async fn handle_ws_room(
@@ -19866,6 +21001,7 @@ async fn handle_ws_room(
     project: String,
     room_id: String,
     session_id: String,
+    connection_headers: HeaderMap,
     state: PlatformAppState,
 ) {
     let room_key = format!("{}/{}/{}", owner, project, room_id);
@@ -19929,7 +21065,7 @@ async fn handle_ws_room(
                             // Dispatch to matching WS pipelines (non-blocking — fires in background).
                             ws_dispatch_event(
                                 &owner, &project, &room_id, &session_id,
-                                &event, payload, &state,
+                                &event, payload, &connection_headers, &state,
                             ).await;
                         }
                     }
@@ -19945,6 +21081,10 @@ async fn handle_ws_room(
 }
 
 /// Dispatch an incoming WS event to all matching `n.trigger.ws` pipelines.
+///
+/// Auth is checked per-trigger using the connection's initial HTTP headers
+/// (which carry cookies set by the login pipeline). Same mechanism as webhook
+/// auth — `verify_webhook_auth` is reused.
 async fn ws_dispatch_event(
     owner: &str,
     project: &str,
@@ -19952,31 +21092,87 @@ async fn ws_dispatch_event(
     session_id: &str,
     event: &str,
     payload: Value,
+    connection_headers: &HeaderMap,
     state: &PlatformAppState,
 ) {
     let pipelines = state.platform.pipeline_runtime.list_project(owner, project);
-    let matching: Vec<_> = pipelines
+
+    // Collect (compiled_pipeline, matched_trigger) pairs so we can access the
+    // trigger's auth fields.
+    struct Match {
+        compiled: crate::platform::services::pipeline_runtime::CompiledPipeline,
+        auth_type: String,
+        auth_credential: String,
+        auth_required_role: Vec<String>,
+    }
+
+    let matching: Vec<Match> = pipelines
         .into_iter()
-        .filter(|p| {
-            p.ws_triggers.iter().any(|t| {
+        .filter_map(|p| {
+            let trigger = p.ws_triggers.iter().find(|t| {
                 let room_match = t.room.is_empty() || t.room == room_id;
                 let event_match = t.event.is_empty() || t.event == event;
                 room_match && event_match
+            })?;
+            Some(Match {
+                auth_type: trigger.auth_type.clone(),
+                auth_credential: trigger.auth_credential.clone(),
+                auth_required_role: trigger.auth_required_role.clone(),
+                compiled: p,
             })
         })
         .collect();
 
-    for compiled in matching {
-        let input = json!({
+    for m in matching {
+        // Per-trigger auth check using the connection's initial HTTP headers.
+        let auth_claims = if m.auth_type.is_empty() || m.auth_type == "none" {
+            // No auth configured — open trigger.
+            Ok(None)
+        } else if has_valid_cluster_token(state, connection_headers) {
+            // Cluster-internal traffic bypasses project-level auth.
+            Ok(None)
+        } else {
+            verify_webhook_auth(
+                connection_headers,
+                &axum::body::Bytes::new(), // WS messages don't have a body for HMAC — use empty.
+                &m.auth_type,
+                &m.auth_credential,
+                &m.auth_required_role,
+                &state.platform.credentials,
+                owner,
+                project,
+            )
+        };
+
+        let auth_claims = match auth_claims {
+            Ok(claims) => claims,
+            Err(_) => {
+                // Auth failed — silently skip this trigger (same as a 401 on webhook).
+                continue;
+            }
+        };
+
+        let mut input = json!({
             "room_id": room_id,
             "session_id": session_id,
             "event": event,
             "payload": payload,
         });
+        // Inject JWT claims as `auth` field (same as webhook).
+        if let Some(claims) = &auth_claims {
+            if let Value::Object(ref mut map) = input {
+                map.insert("auth".to_string(), claims.clone());
+            }
+        }
+
+        let trigger = json!({
+            "auth": auth_claims.clone().unwrap_or(Value::Null),
+        });
+
         let ctx = PipelineContext {
             owner: owner.to_string(),
             project: project.to_string(),
-            pipeline: compiled.graph.id.clone(),
+            pipeline: m.compiled.graph.id.clone(),
             request_id: format!(
                 "ws-{}-{}",
                 session_id,
@@ -19987,12 +21183,14 @@ async fn ws_dispatch_event(
             ),
             route: Default::default(),
             input,
-            trigger: None,
+            trigger: Some(trigger),
+            placeholder: None,
         };
-        let graph = compiled.graph.clone();
+        let graph = m.compiled.graph.clone();
         let credentials = state.platform.credentials.clone();
         let rwe = state.frontend.rwe.clone();
         let ws_hub = state.platform.ws_hub.clone();
+        let ws_client_mgr = state.ws_client_manager.clone();
         let state_bus = state.platform.state_bus.clone();
         let data_root = state.platform.config.data_root.clone();
         let platform_clone = state.platform.clone();
@@ -20004,6 +21202,7 @@ async fn ws_dispatch_event(
             )
             .with_platform(platform_clone)
             .with_ws_hub(ws_hub)
+            .with_ws_client_manager(ws_client_mgr)
             .with_state_bus(state_bus)
             .with_data_root(data_root);
             let _ = engine.execute_async(&graph, &ctx).await;

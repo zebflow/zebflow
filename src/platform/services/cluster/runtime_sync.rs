@@ -451,7 +451,6 @@ fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
         .iter()
         .find_map(|node| match node.kind.as_str() {
             "n.trigger.webhook" => Some("webhook".to_string()),
-            "n.trigger.mapserver" => Some("mapserver".to_string()),
             "n.trigger.schedule" => Some("schedule".to_string()),
             "n.trigger.ws" => Some("ws".to_string()),
             "n.trigger.memsubscribe" => Some("memsubscribe".to_string()),
