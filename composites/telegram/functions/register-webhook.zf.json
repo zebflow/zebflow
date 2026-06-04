@@ -1,0 +1,62 @@
+{
+  "id": "tg-register-webhook",
+  "nodes": [
+    {
+      "id": "trigger",
+      "kind": "n.trigger.function",
+      "title": "Entry",
+      "config": {},
+      "input_pins": [],
+      "output_pins": ["out"],
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "prepare",
+      "kind": "n.script",
+      "title": "Build setWebhook body",
+      "config": {
+        "source": "var body = { url: input.platform.public_url + '/wh/' + input.owner + '/' + input.project + '/tg/' + input.config.bot_credential_id }; if (input.config.allowed_updates) { body.allowed_updates = input.config.allowed_updates.split(',').map(function(s) { return s.trim(); }); } if (ctx.placeholder && ctx.placeholder.WEBHOOK_SECRET) { body.secret_token = ctx.placeholder.WEBHOOK_SECRET; } return body;"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 200,
+      "y": 0
+    },
+    {
+      "id": "register",
+      "kind": "n.http.request",
+      "title": "setWebhook",
+      "config": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/setWebhook",
+        "headers": { "Content-Type": "application/json" },
+        "body_path": "",
+        "response_type": "json"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 400,
+      "y": 0
+    },
+    {
+      "id": "store",
+      "kind": "n.kv.set",
+      "title": "Store registration",
+      "config": {
+        "key": "webhook_registered",
+        "value_path": "",
+        "ttl": 0
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 600,
+      "y": 0
+    }
+  ],
+  "edges": [
+    { "from_node": "trigger", "from_pin": "out", "to_node": "prepare", "to_pin": "in" },
+    { "from_node": "prepare", "from_pin": "out", "to_node": "register", "to_pin": "in" },
+    { "from_node": "register", "from_pin": "out", "to_node": "store", "to_pin": "in" }
+  ]
+}

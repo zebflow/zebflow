@@ -1,0 +1,41 @@
+{
+  "source": "composite",
+  "version": "1.0.0",
+  "definition": {
+    "kind": "n.c.tg.send.document",
+    "title": "Telegram Send Document",
+    "description": "Send a document/file via Telegram Bot API. Accepts a URL or file_id.",
+    "input_pins": ["in"],
+    "output_pins": ["out", "error"],
+    "config_schema": {},
+    "dsl_flags": [],
+    "fields": [],
+    "layout": [],
+    "ui_category": "composite.telegram",
+    "ui_category_label": "Telegram"
+  },
+  "credentials": [
+    {
+      "kind": "telegram_bot",
+      "title": "Telegram Bot",
+      "description": "Bot token from @BotFather on Telegram.",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Bot Token",
+          "type": "password",
+          "required": true,
+          "placeholder": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+          "help": "Get this from @BotFather on Telegram"
+        }
+      ],
+      "placeholders": {
+        "BOT_TOKEN": "token"
+      },
+      "config_key": "bot_credential_id"
+    }
+  ],
+  "runtime": {
+    "pipeline": "pipeline.zf.json"
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "id": "n-c-tg-send",
+  "nodes": [
+    {
+      "id": "trigger",
+      "kind": "n.trigger.function",
+      "title": "Entry",
+      "config": {},
+      "input_pins": [],
+      "output_pins": ["out"],
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "prepare",
+      "kind": "n.script",
+      "title": "Prepare Body",
+      "config": {
+        "source": "var body = { chat_id: String(input.chat_id), text: String(input.text) }; if (input.parse_mode) body.parse_mode = String(input.parse_mode); if (input.disable_notification) body.disable_notification = true; if (input.reply_to_message_id) body.reply_to_message_id = Number(input.reply_to_message_id); return body;"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 200,
+      "y": 0
+    },
+    {
+      "id": "send",
+      "kind": "n.http.request",
+      "title": "Send to Telegram",
+      "config": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot{{ $placeholder.BOT_TOKEN }}/sendMessage",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body_path": "",
+        "response_type": "json"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 400,
+      "y": 0
+    }
+  ],
+  "edges": [
+    { "from_node": "trigger", "from_pin": "out", "to_node": "prepare", "to_pin": "in" },
+    { "from_node": "prepare", "from_pin": "out", "to_node": "send", "to_pin": "in" }
+  ]
+}

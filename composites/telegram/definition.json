@@ -1,0 +1,193 @@
+{
+  "format": "zebflow-package-v2",
+  "package": "telegram",
+  "version": "1.0.0",
+  "title": "Telegram",
+  "description": "Telegram Bot — send messages, photos, documents, receive updates via webhook.",
+  "icon": "icon.svg",
+
+  "credentials": [
+    {
+      "kind": "telegram_bot",
+      "title": "Telegram Bot",
+      "description": "Bot token from @BotFather on Telegram.",
+      "fields": [
+        {
+          "key": "token",
+          "label": "Bot Token",
+          "type": "password",
+          "required": true,
+          "placeholder": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+          "help": "Get this from @BotFather on Telegram."
+        },
+        {
+          "key": "webhook_secret",
+          "label": "Webhook Secret",
+          "type": "password",
+          "required": false,
+          "generate": "random_hex_32",
+          "help": "Optional secret token for verifying webhook requests. Auto-generated if empty."
+        }
+      ],
+      "placeholders": {
+        "BOT_TOKEN": "token",
+        "WEBHOOK_SECRET": "webhook_secret"
+      },
+      "config_key": "bot_credential_id"
+    }
+  ],
+
+  "functions": {
+    "send-message":       "functions/send-message.zf.json",
+    "send-photo":         "functions/send-photo.zf.json",
+    "send-document":      "functions/send-document.zf.json",
+    "edit-message":       "functions/edit-message.zf.json",
+    "register-webhook":   "functions/register-webhook.zf.json",
+    "delete-webhook":     "functions/delete-webhook.zf.json",
+    "transform-update":   "functions/transform-update.zf.json"
+  },
+
+  "nodes": [
+    {
+      "kind": "n.c.trigger.tg",
+      "title": "Telegram Trigger",
+      "description": "Receive Telegram bot updates via webhook.",
+      "icon": "icons/trigger.svg",
+      "ui_category": "composite.telegram",
+      "ui_category_label": "Telegram",
+      "trigger": {
+        "type": "webhook",
+        "path_template": "/tg/{{ bot_credential_id }}",
+        "on_message": "transform-update"
+      },
+      "lifecycle": {
+        "on_activate": "register-webhook",
+        "on_deactivate": "delete-webhook"
+      },
+      "definition": {
+        "input_pins": [],
+        "output_pins": ["out"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "bot_credential_id": { "type": "string" },
+            "allowed_updates": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "bot_credential_id", "kind": "scalar", "required": true, "description": "Telegram bot credential." },
+          { "flag": "--allowed-updates", "config_key": "allowed_updates", "kind": "scalar", "required": false, "description": "Comma-separated update types: message,callback_query,etc." }
+        ],
+        "fields": [
+          { "name": "bot_credential_id", "label": "Bot Credential", "type": "select", "data_source": "credentials:telegram_bot", "help": "Select your Telegram bot credential." },
+          { "name": "allowed_updates", "label": "Allowed Updates", "type": "text", "help": "Comma-separated: message, edited_message, callback_query, inline_query, etc. Empty = all." }
+        ],
+        "layout": ["bot_credential_id", "allowed_updates"]
+      }
+    },
+    {
+      "kind": "n.c.tg.send",
+      "title": "Telegram Send Message",
+      "description": "Send a text message via Telegram Bot API.",
+      "icon": "icons/send.svg",
+      "ui_category": "composite.telegram",
+      "ui_category_label": "Telegram",
+      "main": "send-message",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "bot_credential_id": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "bot_credential_id", "kind": "scalar", "required": true, "description": "Telegram bot credential." }
+        ],
+        "fields": [
+          { "name": "bot_credential_id", "label": "Bot Credential", "type": "select", "data_source": "credentials:telegram_bot", "help": "Select your Telegram bot credential." }
+        ],
+        "layout": ["bot_credential_id"]
+      }
+    },
+    {
+      "kind": "n.c.tg.send.photo",
+      "title": "Telegram Send Photo",
+      "description": "Send a photo via Telegram Bot API. Accepts a URL or file_id.",
+      "icon": "icons/send-photo.svg",
+      "ui_category": "composite.telegram",
+      "ui_category_label": "Telegram",
+      "main": "send-photo",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "bot_credential_id": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "bot_credential_id", "kind": "scalar", "required": true, "description": "Telegram bot credential." }
+        ],
+        "fields": [
+          { "name": "bot_credential_id", "label": "Bot Credential", "type": "select", "data_source": "credentials:telegram_bot", "help": "Select your Telegram bot credential." }
+        ],
+        "layout": ["bot_credential_id"]
+      }
+    },
+    {
+      "kind": "n.c.tg.send.document",
+      "title": "Telegram Send Document",
+      "description": "Send a document/file via Telegram Bot API. Accepts a URL or file_id.",
+      "icon": "icons/send-document.svg",
+      "ui_category": "composite.telegram",
+      "ui_category_label": "Telegram",
+      "main": "send-document",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "bot_credential_id": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "bot_credential_id", "kind": "scalar", "required": true, "description": "Telegram bot credential." }
+        ],
+        "fields": [
+          { "name": "bot_credential_id", "label": "Bot Credential", "type": "select", "data_source": "credentials:telegram_bot", "help": "Select your Telegram bot credential." }
+        ],
+        "layout": ["bot_credential_id"]
+      }
+    },
+    {
+      "kind": "n.c.tg.edit",
+      "title": "Telegram Edit Message",
+      "description": "Edit an existing text message via Telegram Bot API.",
+      "icon": "icons/edit.svg",
+      "ui_category": "composite.telegram",
+      "ui_category_label": "Telegram",
+      "main": "edit-message",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "bot_credential_id": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "bot_credential_id", "kind": "scalar", "required": true, "description": "Telegram bot credential." }
+        ],
+        "fields": [
+          { "name": "bot_credential_id", "label": "Bot Credential", "type": "select", "data_source": "credentials:telegram_bot", "help": "Select your Telegram bot credential." }
+        ],
+        "layout": ["bot_credential_id"]
+      }
+    }
+  ]
+}
