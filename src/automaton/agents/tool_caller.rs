@@ -119,7 +119,9 @@ impl ToolCallerAgent {
                 ));
             }
 
-            let result = self.llm.call_with_tools(messages.clone(), &tools).await?;
+            // Phase-A/B note: token usage is captured by ZebtuneAgent's metrics.
+            // ToolCallerAgent (direct mode) ignores it for now.
+            let (result, _usage) = self.llm.call_with_tools(messages.clone(), &tools).await?;
 
             match result {
                 CallResult::Text(text) => {

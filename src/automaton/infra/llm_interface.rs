@@ -4,17 +4,47 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Token usage reported by the provider for a single call. Fields are `0` when
+/// the provider does not return a `usage` block (e.g. some local endpoints).
+/// Never estimated — only populated from the provider's own numbers.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+impl Usage {
+    /// Parse from a provider response's `usage` object (OpenAI shape).
+    /// Returns `Usage::default()` (zeros) when absent or malformed.
+    pub fn from_response(val: &Value) -> Self {
+        let u = match val.get("usage") {
+            Some(u) => u,
+            None => return Usage::default(),
+        };
+        Usage {
+            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            completion_tokens: u
+                .get("completion_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        }
+    }
+}
+
 /// Abstract LLM interface. Host provides implementation.
 #[async_trait]
 pub trait LlmCall: Send + Sync {
     async fn call(&self, messages: Vec<Message>) -> Result<String, String>;
 
     /// Native tool calling. Default falls back to text-only `call` (ignores tools).
+    ///
+    /// Returns the result paired with token [`Usage`]. The fallback reports
+    /// zero usage (the text-only `call` does not surface a usage block).
     async fn call_with_tools(
         &self,
         messages: Vec<Value>,
         tools: &[ToolDef],
-    ) -> Result<CallResult, String> {
+    ) -> Result<(CallResult, Usage), String> {
         // Fallback: strip to simple messages, call without tools
         let simple: Vec<Message> = messages
             .into_iter()
@@ -32,7 +62,7 @@ pub trait LlmCall: Send + Sync {
             .collect();
         let _ = tools; // unused in fallback
         let text = self.call(simple).await?;
-        Ok(CallResult::Text(text))
+        Ok((CallResult::Text(text), Usage::default()))
     }
 }
 
