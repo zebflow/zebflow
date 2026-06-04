@@ -800,8 +800,8 @@ mod tests {
 
     #[test]
     fn tile_to_bbox_z10_jakarta() {
-        // z=10, x=825, y=565 should be near Jakarta
-        let bbox = tile_to_bbox(10, 825, 565);
+        // z=10, x=815, y=529 should be near Jakarta (106.8, -6.2)
+        let bbox = tile_to_bbox(10, 815, 529);
         assert!(bbox[0] > 106.0 && bbox[0] < 107.0);
         assert!(bbox[1] > -7.0 && bbox[1] < -6.0);
     }
