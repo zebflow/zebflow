@@ -3385,6 +3385,18 @@ async fn execute_composite_node(
             }
         }
 
+        // Allow runtime input `__config` to override CONFIG_<KEY> placeholders,
+        // enabling dynamic per-run config (e.g. model selection like n.ai.agent).
+        if let Some(runtime_cfg) = input.payload.get("__config").and_then(|v| v.as_object()) {
+            for (key, val) in runtime_cfg {
+                if key.ends_with("_credential_id") || key == "credential_id" {
+                    continue;
+                }
+                let placeholder_key = format!("CONFIG_{}", key.to_uppercase());
+                placeholder_map.insert(placeholder_key, val.clone());
+            }
+        }
+
         // Build execution context — same pattern as execute_function_pipeline.
         let ctx = PipelineContext {
             owner: owner.clone(),
