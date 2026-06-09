@@ -1,0 +1,63 @@
+{
+  "id": "openai-embed",
+  "nodes": [
+    {
+      "id": "trigger",
+      "kind": "n.trigger.function",
+      "title": "Entry",
+      "config": {},
+      "input_pins": [],
+      "output_pins": ["out"],
+      "x": 0,
+      "y": 0
+    },
+    {
+      "id": "prepare",
+      "kind": "n.script",
+      "title": "Prepare Request",
+      "config": {
+        "source": "function getPath(obj,path){var parts=path.split('.');var cur=obj;for(var i=0;i<parts.length;i++){if(cur==null)return undefined;cur=cur[parts[i].trim()];}return cur;} var p=ctx.placeholder||{}; var expr=(p.CONFIG_INPUT_EXPR||'').trim(); var text; if(expr&&expr!=='$placeholder.CONFIG_INPUT_EXPR'){if(expr.charAt(0)==='['&&expr.charAt(expr.length-1)===']'){var items=expr.slice(1,-1).split(',');text=items.map(function(item){return getPath({input:input},item.trim());});}else if(expr.indexOf('||')!==-1){var alts=expr.split('||');for(var i=0;i<alts.length;i++){var val=getPath({input:input},alts[i].trim());if(val){text=val;break;}}if(!text)text='';}else{text=getPath({input:input},expr);}if(text===undefined)text=input.text||input.input||'';}else{text=input.text||input.input||'';} if(Array.isArray(text)){text=text.map(function(t){return String(t);});}else{text=String(text);} var model=p.CONFIG_MODEL||p.MODEL||'text-embedding-3-small'; if(!model||model.indexOf('$placeholder.')===0)model='text-embedding-3-small'; return {model:model,input:text};"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 200,
+      "y": 0
+    },
+    {
+      "id": "call",
+      "kind": "n.http.request",
+      "title": "Call Embeddings API",
+      "config": {
+        "method": "POST",
+        "url": "{{ $placeholder.BASE_URL || 'https://api.openai.com/v1' }}/embeddings",
+        "headers": {
+          "Authorization": "Bearer {{ $placeholder.API_KEY }}",
+          "Content-Type": "application/json"
+        },
+        "body_path": "",
+        "response_type": "json"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 400,
+      "y": 0
+    },
+    {
+      "id": "extract",
+      "kind": "n.script",
+      "title": "Extract Embeddings",
+      "config": {
+        "source": "var body = (input && input.response && input.response.body) ? input.response.body : input; if (!body || !body.data) return { error: body && body.error ? body.error : 'no embedding data', raw: input }; var embeddings = body.data.map(function(d) { return d.embedding; }); return { embeddings: embeddings, model: body.model, usage: body.usage };"
+      },
+      "input_pins": ["in"],
+      "output_pins": ["out"],
+      "x": 600,
+      "y": 0
+    }
+  ],
+  "edges": [
+    { "from_node": "trigger", "from_pin": "out", "to_node": "prepare", "to_pin": "in" },
+    { "from_node": "prepare", "from_pin": "out", "to_node": "call", "to_pin": "in" },
+    { "from_node": "call", "from_pin": "out", "to_node": "extract", "to_pin": "in" }
+  ]
+}

@@ -57,6 +57,7 @@ import {
   GridCellLayer,
   PointCloudLayer,
   BitmapLayer,
+  GeoJsonLayer,
 } from "@deck.gl/layers";
 
 import {
@@ -68,7 +69,6 @@ import {
 } from "@deck.gl/aggregation-layers";
 
 import {
-  GeoJsonLayer,
   TileLayer,
   MVTLayer,
 } from "@deck.gl/geo-layers";
@@ -252,11 +252,11 @@ function buildLayer(cfg) {
     /* TileLayer renderSubLayers shorthand: "bitmap" → auto BitmapLayer */
     if (k === "renderSubLayers" && v === "bitmap") {
       props.renderSubLayers = (tileProps) => {
-        const { boundingBox: [[west, south], [east, north]], data: image } = tileProps;
+        const { west, south, east, north } = tileProps.tile.bbox;
         return new BitmapLayer({
           ...tileProps,
           data: null,
-          image,
+          image: tileProps.data,
           bounds: [west, south, east, north],
         });
       };

@@ -15,8 +15,6 @@ import { useState, useEffect, useRef, useCallback, useNavigate, cx } from "zeb";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import Button from "@/components/ui/button";
 import Badge from "@/components/ui/badge";
-import DropdownMenu from "@/components/ui/dropdown-menu";
-import DropdownMenuItem from "@/components/ui/dropdown-menu-item";
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
 import DialogHeader from "@/components/ui/dialog-header";
@@ -93,14 +91,6 @@ const CAT_ICONS: Record<string, any> = {
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
       <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
       <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
-    </svg>
-  ),
-  composite: (
-    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
-      <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
-      <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
-      <rect x="8.5" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.7"/>
-      <path d="M6.5 10v2.5a1.5 1.5 0 001.5 1.5h.5M17.5 10v2.5a1.5 1.5 0 01-1.5 1.5h-.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
     </svg>
   ),
   wasm: (
@@ -288,6 +278,8 @@ export default function PipelineEditor({
   const [retentionMaxAgeDays, setRetentionMaxAgeDays] = useState("");
   const [continuationRequest, setContinuationRequest] = useState<ContinuationRequest | null>(null);
   const [nodePickerQuery, setNodePickerQuery] = useState("");
+  const [nodePickerCategory, setNodePickerCategory] = useState("all");
+  const [nodePickerOpen, setNodePickerOpen] = useState(false);
 
   // ── Git commit dialog state ─────────────────────────────────────────────────
   const [gitDialogOpen, setGitDialogOpen] = useState(false);
@@ -438,6 +430,7 @@ export default function PipelineEditor({
   const handleOutputAdd = useCallback((req: ContinuationRequest) => {
     setContinuationRequest(req);
     setNodePickerQuery("");
+    setNodePickerCategory("all");
   }, []);
 
   useEffect(() => {
@@ -467,57 +460,49 @@ export default function PipelineEditor({
     slug: string,
     config: Record<string, unknown>
   ) {
-    // Mutate live graph node via _raw escape hatch
-    const rawNode = nodeData._raw;
     const app = graphRef.current?.getApp?.();
-    if (rawNode) {
-      rawNode.zfPipelineNodeId = slug;
-      const badge = rawNode.el?.querySelector?.(".zf-node-slug");
-      if (badge) {
-        badge.textContent = slug;
-        badge.classList.toggle("long", slug.length > 2);
-      }
-      rawNode.zfConfig = config;
-      // Update canvas label: instance.title → definition.title → definition.slug
-      {
-        const kind = nodeData.zfKind || "";
-        const catalogEntry = catalog.get(kind);
-        const displayTitle = config.title
-          ? String(config.title)
-          : (catalogEntry?.title || kind);
-        rawNode.title = displayTitle;
-        const label = rawNode.el?.querySelector?.(".zgu-node-label");
-        const header = rawNode.el?.querySelector?.(".zgu-node-header");
-        if (label) {
-          label.textContent = displayTitle;
-        } else if (header) {
-          header.textContent = displayTitle;
-        }
-      }
-      const nextOutputs = deriveNodeOutputPins(
-        nodeData.zfKind,
-        config,
-        (rawNode.outputs || []).map((pin: any) => pin.name),
-        ["out"]
-      );
-      rawNode.zfOutputLabels = deriveNodeOutputLabels(nodeData.zfKind, config, nextOutputs);
-      const currentOutputs = (rawNode.outputs || []).map((pin: any) => pin.name);
-      if (
-        app?.updateNodePins &&
-        (nextOutputs.length !== currentOutputs.length ||
-          nextOutputs.some((pin, index) => pin !== currentOutputs[index]))
-      ) {
-        app.updateNodePins(rawNode, {
-          inputs: (rawNode.inputs || []).map((pin: any) => pin.name),
-          outputs: nextOutputs,
-        });
-      } else {
-        app?.updateNodePins?.(rawNode, {
-          inputs: (rawNode.inputs || []).map((pin: any) => pin.name),
-          outputs: nextOutputs,
-        });
-      }
+    if (!app) { setDialogNode(null); setWebRenderNode(null); return; }
+
+    // Resolve live graph node — prefer _raw if still in graph, else find by id.
+    const graphNodes: any[] = app.graph?.nodes || [];
+    let rawNode = nodeData._raw;
+    if (!rawNode || !graphNodes.includes(rawNode)) {
+      rawNode = graphNodes.find((n: any) => n.id === nodeData.graphNodeId) || null;
     }
+    if (!rawNode) { setDialogNode(null); setWebRenderNode(null); return; }
+
+    rawNode.zfPipelineNodeId = slug;
+    rawNode.zfConfig = config;
+
+    // Update canvas label
+    const kind = nodeData.zfKind || "";
+    const catalogEntry = catalog.get(kind);
+    const displayTitle = config.title
+      ? String(config.title)
+      : (catalogEntry?.title || kind);
+    rawNode.title = displayTitle;
+    const label = rawNode.el?.querySelector?.(".zgu-node-label");
+    const header = rawNode.el?.querySelector?.(".zgu-node-header");
+    if (label) label.textContent = displayTitle;
+    else if (header) header.textContent = displayTitle;
+    const badge = rawNode.el?.querySelector?.(".zf-node-slug");
+    if (badge) {
+      badge.textContent = slug;
+      badge.classList.toggle("long", slug.length > 2);
+    }
+
+    // Update output pins
+    const nextOutputs = deriveNodeOutputPins(
+      kind, config,
+      (rawNode.outputs || []).map((pin: any) => pin.name),
+      ["out"]
+    );
+    rawNode.zfOutputLabels = deriveNodeOutputLabels(kind, config, nextOutputs);
+    app.updateNodePins(rawNode, {
+      inputs: (rawNode.inputs || []).map((pin: any) => pin.name),
+      outputs: nextOutputs,
+    });
+
     setDialogNode(null);
     setWebRenderNode(null);
   }
@@ -788,6 +773,16 @@ export default function PipelineEditor({
       .join("-") || "node";
   }
 
+  function handleNodePickerSelect(kind: string) {
+    if (continuationRequest) {
+      handleContinuationAdd(kind);
+    } else {
+      handleAddNode(kind);
+      setNodePickerOpen(false);
+      setNodePickerQuery("");
+    }
+  }
+
   function handleContinuationAdd(kind: string) {
     if (!graphRef.current || currentLocked || !continuationRequest) return;
     const app = (graphRef.current as any)?.getApp?.();
@@ -887,11 +882,18 @@ export default function PipelineEditor({
   });
   const continuationItems = Array.from(catalog.values())
     .map((entry) => ({ category: catalogCategoryByKind.get(entry.kind) || "other", entry }))
-    .filter(({ entry }) => !isTriggerNodeKind(entry.kind))
+    .filter(({ entry }) => {
+      if (nodePickerCategory === "trigger") return isTriggerNodeKind(entry.kind);
+      return !isTriggerNodeKind(entry.kind);
+    })
     .sort((a, b) => {
       const category = a.category.localeCompare(b.category);
       if (category !== 0) return category;
       return String(a.entry.title || a.entry.kind).localeCompare(String(b.entry.title || b.entry.kind));
+    })
+    .filter(({ category }) => {
+      if (nodePickerCategory === "all" || nodePickerCategory === "trigger") return true;
+      return category === nodePickerCategory;
     })
     .filter(({ entry }) => {
       const q = nodePickerQuery.trim().toLowerCase();
@@ -1082,41 +1084,26 @@ export default function PipelineEditor({
 
       {/* Canvas + category tools */}
       <div className="flex-1 min-h-0 border-b border-border-soft relative">
-        {/* Category buttons */}
+        {/* Category buttons — open node picker dialog filtered by category */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
           {Object.entries(catalogGroups).map(([cat, groups]) => {
             const flatItems = groups.flatMap((g) => g.entries);
             if (!flatItems.length) return null;
-            const hasSubcategories = groups.length > 1 || (groups.length === 1 && groups[0].subcategory);
             return (
-              <DropdownMenu
+              <button
                 key={cat}
-                trigger={
-                  <button
-                    type="button"
-                    className="w-8 h-8 shrink-0 rounded-md border border-border-soft bg-surface-2 text-body-muted flex items-center justify-center p-0 hover:bg-surface-3 hover:text-body hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
-                    title={cat.charAt(0).toUpperCase() + cat.slice(1)}
-                    disabled={currentLocked || !currentMeta}
-                  >
-                    {CAT_ICONS[cat]}
-                  </button>
-                }
+                type="button"
+                className="w-8 h-8 shrink-0 rounded-md border border-border-soft bg-surface-2 text-body-muted flex items-center justify-center p-0 hover:bg-surface-3 hover:text-body hover:border-border transition-colors disabled:opacity-40 disabled:cursor-default"
+                title={cat.charAt(0).toUpperCase() + cat.slice(1)}
+                disabled={currentLocked || !currentMeta}
+                onClick={() => {
+                  setNodePickerCategory(cat);
+                  setNodePickerQuery("");
+                  setNodePickerOpen(true);
+                }}
               >
-                {groups.map((group) => [
-                  hasSubcategories && group.label ? (
-                    <div key={`hdr-${group.subcategory}`} className="px-3 py-1.5 text-[10px] font-semibold text-body-muted uppercase tracking-wider select-none">
-                      {group.label}
-                    </div>
-                  ) : null,
-                  ...group.entries.map((item) => (
-                    <DropdownMenuItem
-                      key={item.kind}
-                      label={item.title || item.kind}
-                      onClick={() => handleAddNode(item.kind)}
-                    />
-                  )),
-                ])}
-              </DropdownMenu>
+                {CAT_ICONS[cat]}
+              </button>
             );
           })}
         </div>
@@ -1288,6 +1275,7 @@ export default function PipelineEditor({
         nodeData={dialogNode}
         catalog={catalog}
         dataState={dataState}
+        graphRef={graphRef}
         webhookBaseUrl={
           owner && project && typeof document !== "undefined"
             ? new URL(`/wh/${owner}/${project}`, document.baseURI).href
@@ -1324,26 +1312,52 @@ export default function PipelineEditor({
         onClose={() => setGitDialogOpen(false)}
       />
 
-      <Dialog open={!!continuationRequest} onOpenChange={(v: boolean) => {
+      <Dialog open={!!continuationRequest || nodePickerOpen} onOpenChange={(v: boolean) => {
         if (!v) {
           setContinuationRequest(null);
+          setNodePickerOpen(false);
           setNodePickerQuery("");
+          setNodePickerCategory("all");
         }
       }}>
         <DialogContent className="max-w-3xl border-border bg-[var(--color-surface,#161616)] text-body">
           <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
             <div>
               <DialogHeader>
-                <DialogTitle>Add Next Node</DialogTitle>
+                <DialogTitle>{continuationRequest ? "Add Next Node" : nodePickerCategory === "trigger" ? "Change Trigger" : "Add Node"}</DialogTitle>
               </DialogHeader>
-              <p className="mt-1 text-xs text-body-muted">
-                {continuationRequest
-                  ? `After ${continuationRequest.zfPipelineNodeId || continuationRequest.title || "node"} / ${continuationRequest.outputPin || "out"}`
-                  : "Choose the next node for this output."}
-              </p>
+              {continuationRequest ? (
+                <p className="mt-1 text-xs text-body-muted">
+                  After {continuationRequest.zfPipelineNodeId || continuationRequest.title || "node"} / {continuationRequest.outputPin || "out"}
+                </p>
+              ) : null}
             </div>
           </div>
-          <div className="px-6 py-3">
+          <div className="px-6 pt-3 pb-1 flex flex-col gap-2">
+            {nodePickerCategory !== "trigger" && (
+            <div className="flex items-center gap-1 flex-wrap">
+              <button
+                type="button"
+                className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === "all" ? "bg-accent/20 text-accent border border-accent/40" : "bg-surface-2 text-body-muted border border-border-soft hover:bg-surface-3 hover:text-body"}`}
+                onClick={() => setNodePickerCategory("all")}
+              >All</button>
+              {Object.entries(catalogGroups).map(([cat, groups]) => {
+                const count = groups.flatMap((g) => g.entries).filter((e) => !isTriggerNodeKind(e.kind)).length;
+                if (!count) return null;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors ${nodePickerCategory === cat ? "bg-accent/20 text-accent border border-accent/40" : "bg-surface-2 text-body-muted border border-border-soft hover:bg-surface-3 hover:text-body"}`}
+                    onClick={() => setNodePickerCategory(cat)}
+                  >
+                    <span className="w-3.5 h-3.5 flex items-center justify-center">{CAT_ICONS[cat]}</span>
+                    <span>{cat.charAt(0).toUpperCase() + cat.slice(1)}</span>
+                  </button>
+                );
+              })}
+            </div>
+            )}
             <input
               className="zf-input"
               value={nodePickerQuery}
@@ -1358,7 +1372,7 @@ export default function PipelineEditor({
                 key={entry.kind}
                 type="button"
                 className="pipeline-editor-continuation-item"
-                onClick={() => handleContinuationAdd(entry.kind)}
+                onClick={() => handleNodePickerSelect(entry.kind)}
               >
                 <span className="text-sm font-semibold text-body">{entry.title || entry.kind}</span>
                 <span className="pipeline-editor-continuation-kind">{entry.kind}</span>

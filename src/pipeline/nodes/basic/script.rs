@@ -78,27 +78,42 @@ pub fn definition() -> NodeDefinition {
                     SidebarSection {
                         title: "Input".to_string(),
                         items: vec![
-                            SidebarItem { label: "input".to_string(), type_hint: Some("any".to_string()), description: Some("Upstream payload passed into the script.".to_string()) },
+                            SidebarItem { label: "input".to_string(), type_hint: Some("any".to_string()), description: Some("Upstream payload from the previous node.".to_string()) },
+                        ],
+                    },
+                    SidebarSection {
+                        title: "Context".to_string(),
+                        items: vec![
+                            SidebarItem { label: "ctx.pipeline".to_string(), type_hint: Some("string".to_string()), description: Some("Current pipeline id.".to_string()) },
+                            SidebarItem { label: "ctx.request_id".to_string(), type_hint: Some("string".to_string()), description: Some("Unique execution request id.".to_string()) },
+                            SidebarItem { label: "ctx.nodes".to_string(), type_hint: Some("object".to_string()), description: Some("Map of all previous node outputs. Access by node id: ctx.nodes['a'].".to_string()) },
+                            SidebarItem { label: "ctx.placeholder".to_string(), type_hint: Some("object".to_string()), description: Some("Resolved placeholder values (credentials, config).".to_string()) },
+                        ],
+                    },
+                    SidebarSection {
+                        title: "Trigger".to_string(),
+                        items: vec![
+                            SidebarItem { label: "ctx.trigger".to_string(), type_hint: Some("object|null".to_string()), description: Some("Full trigger event snapshot from the entry node.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.auth".to_string(), type_hint: Some("object|null".to_string()), description: Some("Verified JWT claims — immutable across the pipeline.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.params".to_string(), type_hint: Some("object".to_string()), description: Some("URL path params (:id etc) from the request.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.query".to_string(), type_hint: Some("object".to_string()), description: Some("Query string params from the request.".to_string()) },
+                            SidebarItem { label: "ctx.trigger.headers".to_string(), type_hint: Some("object".to_string()), description: Some("Safe subset of request headers.".to_string()) },
                         ],
                     },
                     SidebarSection {
                         title: "Return".to_string(),
                         items: vec![
-                            SidebarItem { label: "payload".to_string(), type_hint: Some("object".to_string()), description: Some("Value returned becomes the downstream payload.".to_string()) },
+                            SidebarItem { label: "return value".to_string(), type_hint: Some("any".to_string()), description: Some("Returned value becomes the downstream payload.".to_string()) },
+                            SidebarItem { label: "__signal".to_string(), type_hint: Some("string|object|array".to_string()), description: Some("Optional key in return value for real-time signals. Stripped before downstream.".to_string()) },
                         ],
                     },
                     SidebarSection {
                         title: "Built-ins".to_string(),
                         items: vec![
                             SidebarItem { label: "console.log(...)".to_string(), type_hint: Some("void".to_string()), description: Some("Log to pipeline trace output.".to_string()) },
+                            SidebarItem { label: "n.time.now()".to_string(), type_hint: Some("number".to_string()), description: Some("Current Unix timestamp in milliseconds.".to_string()) },
                             SidebarItem { label: "n.pg.query({...})".to_string(), type_hint: Some("Promise<rows>".to_string()), description: Some("Execute a Postgres query inline.".to_string()) },
                             SidebarItem { label: "n.http.request({...})".to_string(), type_hint: Some("Promise<response>".to_string()), description: Some("Make an HTTP request inline.".to_string()) },
-                            SidebarItem { label: "ctx.pipeline".to_string(), type_hint: Some("string".to_string()), description: Some("Current pipeline id.".to_string()) },
-                            SidebarItem { label: "ctx.request_id".to_string(), type_hint: Some("string".to_string()), description: Some("Unique execution request id.".to_string()) },
-                            SidebarItem { label: "ctx.trigger.auth".to_string(), type_hint: Some("object|null".to_string()), description: Some("Verified JWT claims from the original request — immutable even after pg.query replaces the payload.".to_string()) },
-                            SidebarItem { label: "ctx.trigger.params".to_string(), type_hint: Some("object".to_string()), description: Some("URL path params (:id etc) from the original request.".to_string()) },
-                            SidebarItem { label: "ctx.trigger.query".to_string(), type_hint: Some("object".to_string()), description: Some("Query string params from the original request.".to_string()) },
-                            SidebarItem { label: "ctx.trigger.headers".to_string(), type_hint: Some("object".to_string()), description: Some("Safe subset of request headers (content-type, user-agent, etc).".to_string()) },
                         ],
                     },
                 ],

@@ -38,6 +38,8 @@ pub struct Config {
     pub output_dir: String,
     #[serde(default = "default_format")]
     pub format: String,
+    #[serde(default)]
+    pub delete_source: bool,
 }
 
 impl Default for Config {
@@ -46,6 +48,7 @@ impl Default for Config {
             source_key: default_source_key(),
             output_dir: String::new(),
             format: default_format(),
+            delete_source: false,
         }
     }
 }
@@ -54,6 +57,7 @@ impl Default for Config {
 pub struct DecompressOutput {
     pub source_path: String,
     pub output_dir: String,
+    pub root: String,
     pub format: String,
     pub entries: Vec<String>,
     pub extracted_count: usize,
@@ -115,6 +119,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--delete-source".to_string(),
+                config_key: "delete_source".to_string(),
+                description: "Delete the source archive after successful extraction".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: vec![
             NodeFieldDef {
@@ -149,12 +160,23 @@ pub fn definition() -> NodeDefinition {
                 }],
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "delete_source".to_string(),
+                label: "Delete Source".to_string(),
+                field_type: NodeFieldType::Checkbox,
+                help: Some(
+                    "Delete the source archive after successful extraction.".to_string(),
+                ),
+                default_value: Some(json!(false)),
+                ..Default::default()
+            },
         ],
         layout: vec![LayoutItem::Col {
             col: vec![
                 LayoutItem::Field("source_key".to_string()),
                 LayoutItem::Field("output_dir".to_string()),
                 LayoutItem::Field("format".to_string()),
+                LayoutItem::Field("delete_source".to_string()),
             ],
         }],
         ai_tool: Default::default(),
@@ -257,23 +279,37 @@ impl NodeHandler for Node {
             )
         })??;
 
+        let full_entries: Vec<String> = entries
+            .into_iter()
+            .map(|entry| prefixed_output_path(&output_rel, &entry))
+            .collect();
+
+        // Root = the first top-level directory or file in the archive.
+        let root = full_entries
+            .first()
+            .cloned()
+            .unwrap_or_else(|| output_rel.clone());
+
+        // Delete source archive after successful extraction.
+        if self.config.delete_source {
+            let _ = std::fs::remove_file(&source_abs);
+        }
+
         let output = DecompressOutput {
             source_path: source_rel.clone(),
             output_dir: output_rel.clone(),
+            root: root.clone(),
             format: "tar.gz".to_string(),
-            extracted_count: entries.len(),
-            entries: entries
-                .into_iter()
-                .map(|entry| prefixed_output_path(&output_rel, &entry))
-                .collect(),
+            extracted_count: full_entries.len(),
+            entries: full_entries,
         };
 
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({ "decompressed": output }),
             trace: vec![format!(
-                "node_kind={NODE_KIND} src={} out={} entries={}",
-                source_rel, output_rel, output.extracted_count
+                "node_kind={NODE_KIND} src={} out={} root={} entries={}",
+                source_rel, output_rel, root, output.extracted_count
             )],
         })
     }

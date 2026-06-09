@@ -286,7 +286,7 @@ pub fn definition() -> NodeDefinition {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     #[default]
@@ -294,12 +294,32 @@ pub enum AgentMode {
     Strategic,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+impl<'de> serde::Deserialize<'de> for AgentMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.to_ascii_lowercase().as_str() {
+            "strategic" => Ok(Self::Strategic),
+            _ => Ok(Self::Direct),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
     #[default]
     Full,
     FinalOnly,
+}
+
+impl<'de> serde::Deserialize<'de> for OutputMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.to_ascii_lowercase().as_str() {
+            "final_only" | "finalonly" => Ok(Self::FinalOnly),
+            _ => Ok(Self::Full),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -384,10 +404,13 @@ impl Node {
     }
 
     /// Build the merged ToolDef list from shell tools + registered pipeline node tools
-    /// + active function pipelines, filtered by config.tools (empty = all).
+    /// + active function pipelines, filtered by config.tools (empty = none).
     fn build_tool_defs(&self, owner: &str, project: &str) -> Vec<ToolDef> {
         let filter = &self.config.tools;
-        let enabled = |name: &str| filter.is_empty() || filter.iter().any(|t| t == name);
+        if filter.is_empty() {
+            return Vec::new();
+        }
+        let enabled = |name: &str| filter.iter().any(|t| t == name);
 
         let registry = default_registry();
 

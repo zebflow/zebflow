@@ -1,6 +1,6 @@
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTable, StudioTd, StudioThead, StudioTh } from "@/components/ui/studio-data-table";
-import { useEffect, useState, cx } from "zeb";
+import { useEffect, useState, useRef, cx } from "zeb";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import { Dialog } from "@/components/ui/dialog";
 import DialogContent from "@/components/ui/dialog-content";
@@ -13,6 +13,7 @@ import Input from "@/components/ui/input";
 import Textarea from "@/components/ui/textarea";
 import { Select, SelectOption } from "@/components/ui/select";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
+import DeckMap from "zeb/deckgl";
 
 export const page = {
   head: {
@@ -116,15 +117,221 @@ function normalizeTableNodes(nodes) {
     .sort((a, b) => a.key.localeCompare(b.key));
 }
 
+function isGeoJsonPoint(val) {
+  return val && typeof val === "object" && val.type === "Point" && Array.isArray(val.coordinates) && val.coordinates.length >= 2;
+}
+
+function formatGeoValue(val) {
+  if (isGeoJsonPoint(val)) {
+    const [lon, lat] = val.coordinates;
+    return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  }
+  if (val && typeof val === "object" && val.type && val.coordinates) {
+    return val.type;
+  }
+  return null;
+}
+
 function stringifyCell(cell) {
   if (cell === null || typeof cell === "undefined") return "";
   if (typeof cell === "string") return cell;
   if (typeof cell === "number" || typeof cell === "boolean") return String(cell);
+  const geo = formatGeoValue(cell);
+  if (geo) return geo;
   try {
     return JSON.stringify(cell);
   } catch (_) {
     return String(cell);
   }
+}
+
+function defaultColumnWidth(colName) {
+  const name = String(colName || "");
+  if (name === "_collection") return 120;
+  if (name === "_id") return 160;
+  if (name === "_key") return 140;
+  if (name === "_created_unix" || name === "_updated_unix") return 170;
+  if (name === "position" || name === "location" || name === "coordinates" || name === "geom" || name === "geometry") return 170;
+  if (name.startsWith("_")) return 150;
+  if (name.length <= 4) return 100;
+  if (name.length <= 8) return 140;
+  return Math.min(240, 80 + name.length * 10);
+}
+
+function autoSizeColumns(columns, rows) {
+  const widths = {};
+  columns.forEach((col, colIdx) => {
+    // Measure header length
+    let maxLen = col.length;
+    // Sample first 30 rows for content width
+    const sampleCount = Math.min(rows.length, 30);
+    for (let i = 0; i < sampleCount; i++) {
+      const cell = Array.isArray(rows[i]) ? rows[i][colIdx] : undefined;
+      const text = stringifyCell(cell);
+      if (text.length > maxLen) maxLen = text.length;
+    }
+    // Estimate width: ~8px per char + padding, clamped
+    const estimated = Math.max(70, Math.min(360, maxLen * 8.2 + 28));
+    // Use the larger of default or estimated
+    widths[col] = Math.max(defaultColumnWidth(col), estimated);
+  });
+  return widths;
+}
+
+function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject }) {
+  const [colWidths, setColWidths] = useState({});
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const dragRef = useRef(null);
+
+  // Auto-size widths when columns change
+  useEffect(() => {
+    setColWidths(autoSizeColumns(columns, rows));
+  }, [columns.join(","), rows.length]);
+
+  // Reset sort when columns change
+  useEffect(() => { setSortCol(null); }, [columns.join(",")]);
+
+  function onResizeStart(e, colIndex) {
+    e.preventDefault();
+    e.stopPropagation();
+    const col = columns[colIndex];
+    const startX = e.clientX;
+    const startW = colWidths[col] || defaultColumnWidth(col);
+
+    function onMove(ev) {
+      const delta = ev.clientX - startX;
+      const nextW = Math.max(48, startW + delta);
+      setColWidths((prev) => ({ ...prev, [col]: nextW }));
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      dragRef.current = null;
+    }
+    dragRef.current = col;
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function onHeaderClick(colIndex) {
+    if (dragRef.current) return;
+    const col = columns[colIndex];
+    if (sortCol === col) {
+      setSortDir((prev) => prev === "asc" ? "desc" : "asc");
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
+  }
+
+  // Sort rows
+  const sortedRows = (() => {
+    if (sortCol === null) return rows;
+    const colIdx = columns.indexOf(sortCol);
+    if (colIdx < 0) return rows;
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const av = Array.isArray(a) ? a[colIdx] : undefined;
+      const bv = Array.isArray(b) ? b[colIdx] : undefined;
+      const as = stringifyCell(av);
+      const bs = stringifyCell(bv);
+      // Try numeric comparison first
+      const an = Number(as);
+      const bn = Number(bs);
+      if (!isNaN(an) && !isNaN(bn)) {
+        return sortDir === "asc" ? an - bn : bn - an;
+      }
+      const cmp = as.localeCompare(bs);
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  })();
+
+  if (!columns.length) return null;
+
+  return (
+    <table className="w-full border-collapse project-table" style={{ width: "max-content", minWidth: "100%" }}>
+      <thead className="bg-surface-2">
+        <tr>
+          {columns.map((col, index) => {
+            const isSorted = sortCol === col;
+            return (
+              <th
+                key={`${col}-${index}`}
+                className="relative px-[0.65rem] py-[0.4rem] border-b border-border-soft text-left text-[0.68rem] font-mono uppercase tracking-[0.12em] text-body-soft select-none cursor-pointer hover:text-body"
+                style={{ width: colWidths[col] || defaultColumnWidth(col), minWidth: 48, maxWidth: 600 }}
+                onClick={() => onHeaderClick(index)}
+              >
+                <span className="flex items-center gap-1 overflow-hidden whitespace-nowrap">
+                  <span className="overflow-hidden text-ellipsis">{col}</span>
+                  {isSorted && (
+                    <svg viewBox="0 0 10 10" fill="currentColor" className="w-2.5 h-2.5 shrink-0 opacity-70">
+                      {sortDir === "asc"
+                        ? <path d="M5 2L9 8H1Z" />
+                        : <path d="M5 8L1 2H9Z" />
+                      }
+                    </svg>
+                  )}
+                </span>
+                <div
+                  className="absolute top-0 right-0 w-[5px] h-full cursor-col-resize group"
+                  onMouseDown={(ev) => onResizeStart(ev, index)}
+                >
+                  <div className="absolute top-1 bottom-1 right-[2px] w-[1px] bg-border-soft opacity-0 hover:opacity-100 transition-opacity" />
+                </div>
+              </th>
+            );
+          })}
+        </tr>
+      </thead>
+      <tbody>
+        {sortedRows.map((row, rowIndex) => {
+          const record = mapRowToObject(columns, row);
+          const rowKey = String(record?._key || "");
+          const isSelected = selectedRowKey && rowKey === selectedRowKey;
+          return (
+            <tr key={`row-${rowIndex}`} className={isSelected ? "is-row-selected" : ""}>
+              {(Array.isArray(row) ? row : []).map((cell, cellIndex) => {
+                const colName = columns[cellIndex] || `column_${cellIndex + 1}`;
+                return (
+                  <td
+                    key={`cell-${rowIndex}-${cellIndex}`}
+                    className="px-[0.65rem] py-[0.35rem] border-b border-border-soft text-left text-[0.78rem] text-body cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis"
+                    style={{ maxWidth: colWidths[colName] || defaultColumnWidth(colName) }}
+                    title={stringifyCell(cell)}
+                    onClick={() => {
+                      onRowSelect(rowKey, record);
+                      onCellInspect(colName, rowIndex, cell);
+                    }}
+                  >
+                    {isGeoJsonPoint(cell) ? (
+                      <span className="inline-flex items-center gap-1">
+                        <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0 opacity-50">
+                          <path d="M6 1C4.067 1 2.5 2.567 2.5 4.5C2.5 7.25 6 11 6 11s3.5-3.75 3.5-6.5C9.5 2.567 7.933 1 6 1Zm0 4.75a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5Z" fill="currentColor"/>
+                        </svg>
+                        <span>{formatGeoValue(cell)}</span>
+                      </span>
+                    ) : stringifyCell(cell)}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td
+            colSpan={columns.length}
+            className="px-[0.65rem] py-[0.3rem] text-[0.68rem] text-body-muted border-t border-border-soft bg-surface-2/50"
+          >
+            {sortedRows.length} rows{sortCol ? ` · sorted by ${sortCol} ${sortDir}` : ""}
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+  );
 }
 
 function prettyValue(raw) {
@@ -136,6 +343,130 @@ function prettyValue(raw) {
   } catch (_) {
     return text;
   }
+}
+
+function isGeoJsonGeometry(val) {
+  return val && typeof val === "object" && val.type && val.coordinates;
+}
+
+function flattenCoordinates(geometry) {
+  const coords = [];
+  function walk(arr) {
+    if (typeof arr[0] === "number") { coords.push(arr); return; }
+    for (const item of arr) walk(item);
+  }
+  if (geometry.coordinates) walk(geometry.coordinates);
+  return coords;
+}
+
+function geoViewState(geometry) {
+  if (!geometry || !geometry.coordinates) return { longitude: 0, latitude: 0, zoom: 2 };
+  if (geometry.type === "Point") {
+    return { longitude: geometry.coordinates[0], latitude: geometry.coordinates[1], zoom: 13 };
+  }
+  const coords = flattenCoordinates(geometry);
+  if (!coords.length) return { longitude: 0, latitude: 0, zoom: 2 };
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const [lon, lat] of coords) {
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  const span = Math.max(maxLon - minLon, maxLat - minLat);
+  const zoom = span > 10 ? 3 : span > 1 ? 7 : span > 0.1 ? 10 : 13;
+  return { longitude: (minLon + maxLon) / 2, latitude: (minLat + maxLat) / 2, zoom };
+}
+
+function geoLabel(geometry) {
+  if (!geometry) return "";
+  if (geometry.type === "Point") {
+    const [lon, lat] = geometry.coordinates;
+    return `Point · ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+  }
+  if (geometry.type === "LineString") return `LineString · ${geometry.coordinates.length} vertices`;
+  if (geometry.type === "Polygon") return `Polygon · ${geometry.coordinates[0]?.length || 0} vertices`;
+  if (geometry.type === "MultiPoint") return `MultiPoint · ${geometry.coordinates.length} points`;
+  if (geometry.type === "MultiLineString") return `MultiLineString · ${geometry.coordinates.length} lines`;
+  if (geometry.type === "MultiPolygon") return `MultiPolygon · ${geometry.coordinates.length} polygons`;
+  return geometry.type;
+}
+
+function buildGeoOverlayLayer(geometry) {
+  const coords = geometry.coordinates;
+  if (geometry.type === "Point") {
+    return {
+      type: "ScatterplotLayer",
+      id: "geo-point",
+      data: [{ position: coords }],
+      getPosition: "position",
+      getFillColor: [255, 106, 0, 180],
+      getLineColor: [255, 106, 0, 255],
+      getRadius: 200,
+      radiusMinPixels: 8,
+      stroked: true,
+      filled: true,
+      lineWidthMinPixels: 2,
+    };
+  }
+  if (geometry.type === "LineString") {
+    return {
+      type: "PathLayer",
+      id: "geo-line",
+      data: [{ path: coords }],
+      getPath: "path",
+      getColor: [255, 106, 0, 240],
+      getWidth: 3,
+      widthMinPixels: 3,
+    };
+  }
+  if (geometry.type === "Polygon" || geometry.type === "MultiPolygon") {
+    return {
+      type: "PolygonLayer",
+      id: "geo-poly",
+      data: [{ polygon: coords }],
+      getPolygon: "polygon",
+      getFillColor: [255, 106, 0, 100],
+      getLineColor: [255, 106, 0, 240],
+      getLineWidth: 1,
+      lineWidthMinPixels: 2,
+      filled: true,
+      stroked: true,
+    };
+  }
+  return null;
+}
+
+function GeoPreviewMap({ geometry }) {
+  if (!geometry || !geometry.coordinates) return null;
+  const viewState = geoViewState(geometry);
+  const overlay = buildGeoOverlayLayer(geometry);
+  const layers = [
+    {
+      type: "TileLayer",
+      id: "osm",
+      data: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      minZoom: 0,
+      maxZoom: 19,
+      tileSize: 256,
+      renderSubLayers: "bitmap",
+    },
+  ];
+  if (overlay) layers.push(overlay);
+  return (
+    <div className="space-y-1">
+      <div className="overflow-hidden rounded-md border border-ui-border/70">
+        <DeckMap
+          id="geo-cell-preview"
+          height="180px"
+          initialViewState={viewState}
+          controller={true}
+          layers={layers}
+        />
+      </div>
+      <p className="text-[0.68rem] text-ui-text-soft">{geoLabel(geometry)}</p>
+    </div>
+  );
 }
 
 function sqlStringLiteral(value) {
@@ -520,6 +851,7 @@ export default function Page(input) {
   const [schemaError, setSchemaError] = useState("");
   const [valueMeta, setValueMeta] = useState("Click a cell to inspect value");
   const [valueBody, setValueBody] = useState("");
+  const [inspectedCellRaw, setInspectedCellRaw] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [createStatus, setCreateStatus] = useState("Define the table and save it into the project-local sekejap store.");
@@ -659,6 +991,7 @@ export default function Page(input) {
   function onCellInspect(columnName, rowIndex, cellValue) {
     setValueMeta(`${columnName} · row ${rowIndex + 1}`);
     setValueBody(prettyValue(stringifyCell(cellValue)));
+    setInspectedCellRaw(cellValue);
   }
 
   async function runDbQuery(sql, { readOnly = true, tableName = "", limit = 500 } = {}) {
@@ -1026,10 +1359,11 @@ export default function Page(input) {
                                         setSelectedTable(item.key);
                                         setValueMeta("Click a cell to inspect value");
                                         setValueBody("");
+                                        setInspectedCellRaw(null);
                                       }}
                                     >
                                       <span className="db-suite-object-row">
-                                        <i className="zf-devicon zf-icon-table" aria-hidden="true"></i>
+                                        <i className="zf-devicon zf-icon-sjtable" aria-hidden="true"></i>
                                         <span>{item.table}</span>
                                       </span>
                                       <span>{item.rowCount || ""}</span>
@@ -1069,37 +1403,17 @@ export default function Page(input) {
                                   Select a table to inspect its data and structure.
                                 </div>
                               ) : previewRows.length ? (
-                                <StudioTable variant="dbGrid">
-                                  <StudioThead>
-                                    <tr>
-                                      {previewColumns.map((col, index) => (
-                                        <StudioTh key={`${col}-${index}`}>{col}</StudioTh>
-                                      ))}
-                                    </tr>
-                                  </StudioThead>
-                                  <tbody>
-                                    {previewRows.map((row, rowIndex) => (
-                                      <tr key={`row-${rowIndex}`}>
-                                        {(Array.isArray(row) ? row : []).map((cell, cellIndex) => {
-                                          const colName = previewColumns[cellIndex] || `column_${cellIndex + 1}`;
-                                          const rowRecord = mapRowToObject(previewColumns, row);
-                                          return (
-                                            <StudioTd
-                                              key={`cell-${rowIndex}-${cellIndex}`}
-                                              onClick={() => {
-                                                setSelectedPreviewRowKey(String(rowRecord?._key || ""));
-                                                setSelectedPreviewRowData(rowRecord);
-                                                onCellInspect(colName, rowIndex, cell);
-                                              }}
-                                            >
-                                              {stringifyCell(cell)}
-                                            </StudioTd>
-                                          );
-                                        })}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </StudioTable>
+                                <ResizableDataGrid
+                                  columns={previewColumns}
+                                  rows={previewRows}
+                                  selectedRowKey={selectedPreviewRowKey}
+                                  onRowSelect={(key, record) => {
+                                    setSelectedPreviewRowKey(key);
+                                    setSelectedPreviewRowData(record);
+                                  }}
+                                  onCellInspect={onCellInspect}
+                                  mapRowToObject={mapRowToObject}
+                                />
                               ) : (
                                 <div className="flex min-h-full flex-col">
                                   <div className="border-b border-ui-border/70 px-1 pb-4">
@@ -1159,7 +1473,7 @@ export default function Page(input) {
                             {selectedPreviewRowData ? selectedNodeSlug || valueMeta : hasInspectedValue ? valueMeta : activeTable ? `${activeTable.schema}.${activeTable.table}` : "Select a table"}
                           </div>
                           {selectedPreviewRowData ? (
-                            <div className="flex min-h-0 flex-col gap-4 overflow-auto px-3 py-3 text-sm text-ui-text">
+                            <div className="flex min-h-0 flex-col gap-4 overflow-y-auto overflow-x-hidden px-3 py-3 text-sm text-ui-text" style={{ wordBreak: "break-word" }}>
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <p className="truncate text-sm font-medium text-ui-text">{selectedNodeLabel || selectedNodeSlug}</p>
@@ -1174,7 +1488,10 @@ export default function Page(input) {
                                 <div className="space-y-2">
                                   <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Selected Value</p>
                                   <p className="text-xs text-ui-text-soft">{valueMeta}</p>
-                                  <pre className="max-h-32 overflow-auto rounded-md border border-ui-border/70 bg-ui-bg-muted/20 p-2 text-xs text-ui-text">
+                                  {isGeoJsonGeometry(inspectedCellRaw) ? (
+                                    <GeoPreviewMap geometry={inspectedCellRaw} />
+                                  ) : null}
+                                  <pre className="max-h-32 overflow-y-auto overflow-x-hidden rounded-md border border-ui-border/70 bg-ui-bg-muted/20 p-2 text-xs text-ui-text" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                                     {valueBody}
                                   </pre>
                                 </div>
@@ -1271,7 +1588,12 @@ export default function Page(input) {
                               {relationsError ? <p className="text-xs text-danger">Failed to load relations: {relationsError}</p> : null}
                             </div>
                           ) : hasInspectedValue ? (
-                            <pre className="db-suite-value-body">{valueBody}</pre>
+                            <div className="flex min-h-0 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3">
+                              {isGeoJsonGeometry(inspectedCellRaw) ? (
+                                <GeoPreviewMap geometry={inspectedCellRaw} />
+                              ) : null}
+                              <pre className="db-suite-value-body" style={{ margin: 0 }}>{valueBody}</pre>
+                            </div>
                           ) : (
                             <pre className="db-suite-value-body">Choose a table from the left to inspect its data and structure.</pre>
                           )}

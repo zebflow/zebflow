@@ -1,6 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M4 19l4-4-4-4"/>
-  <path d="M20 5l-4 4 4 4"/>
-  <line x1="9" y1="12" x2="15" y2="12"/>
-  <polyline points="13 9 16 12 13 15"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="base-object" transform="translate(2.8679 -6.6038) scale(1.660377)">
+    <rect x="9" y="16" width="46" height="32" rx="8" fill="none" stroke="#30384a" stroke-width="7"/>
+    <path d="M 19 32 H 45" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 18 48 L 13 57 M 46 48 L 51 57" fill="none" stroke="#30384a" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <g id="operation-badge" transform="translate(78.9231 77.3845) scale(0.769234)">
+    <path d="M 9 32 H 49 M 37 19 L 51 32 L 37 45" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
 </svg>

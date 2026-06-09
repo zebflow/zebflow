@@ -193,7 +193,8 @@
   background: var(--color-surface);
   overflow: auto;
   min-height: 0;
-  padding: 0.75rem 0.875rem;
+  flex: 1;
+  padding: 0 0.875rem 0.75rem;
   box-sizing: border-box;
 }
 
@@ -202,6 +203,7 @@
   grid-template-columns: minmax(0, 1fr) 23rem;
   min-height: 0;
   height: 100%;
+  overflow: hidden;
 }
 
 .db-suite-value-panel {
@@ -210,6 +212,7 @@
   min-height: 0;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .db-suite-value-head {
@@ -224,12 +227,15 @@
 
 .db-suite-value-meta {
   min-height: 1.7rem;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   padding: 0 0.75rem;
   font-size: 0.72rem;
   color: var(--color-body-soft);
   border-bottom: 1px solid var(--color-border-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .db-suite-value-body {
@@ -244,7 +250,8 @@
 }
 
 .db-suite-grid-wrap .project-table {
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
 }
 
 .db-suite-grid-wrap .project-table thead th {
@@ -256,9 +263,11 @@
 
 .db-suite-grid-wrap .project-table th,
 .db-suite-grid-wrap .project-table td {
-  padding: 2px 8px;
+  padding: 0.25rem 0.65rem;
   line-height: 1.35;
   white-space: nowrap;
+  min-width: 5rem;
+  max-width: 28rem;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -267,8 +276,20 @@
   cursor: pointer;
 }
 
-.db-suite-grid-wrap .project-table td.is-selected {
+.db-suite-grid-wrap .project-table tr.is-row-selected td {
+  background: color-mix(in srgb, var(--color-accent-alt) 12%, transparent);
+}
+
+.db-suite-grid-wrap .project-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--color-surface-2) 80%, transparent);
+}
+
+.db-suite-grid-wrap .project-table tr.is-row-selected:hover td {
   background: color-mix(in srgb, var(--color-accent-alt) 18%, transparent);
+}
+
+.db-suite-grid-wrap .project-table td.is-selected {
+  background: color-mix(in srgb, var(--color-accent-alt) 22%, transparent);
   outline: 1px solid color-mix(in srgb, var(--color-accent-alt) 55%, transparent);
 }
 

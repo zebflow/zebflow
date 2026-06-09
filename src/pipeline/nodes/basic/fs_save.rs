@@ -158,7 +158,13 @@ fn is_ogg_theora(bytes: &[u8]) -> bool {
 fn browser_mime_matches_detected(browser_mime: &str, detected_mime: &str) -> bool {
     let browser = normalized_mime(browser_mime);
     let detected = normalized_mime(detected_mime);
-    if browser.is_empty() || browser == "application/octet-stream" || browser == detected {
+    // Accept generic/unknown MIME types — the actual content bytes are the authority.
+    // "binary/octet-stream" is non-standard but widely used (e.g. AWS S3).
+    if browser.is_empty()
+        || browser == "application/octet-stream"
+        || browser == "binary/octet-stream"
+        || browser == detected
+    {
         return true;
     }
     // ZIP-based formats: APK, JAR, DOCX, etc. have ZIP magic bytes so infer

@@ -1,7 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M4 19l4-4-4-4"/>
-  <path d="M20 5l-4 4 4 4"/>
-  <line x1="9" y1="12" x2="15" y2="12"/>
-  <circle cx="4" cy="19" r="1.5" fill="currentColor"/>
-  <circle cx="20" cy="5" r="1.5" fill="currentColor"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="base-object" transform="translate(2.8679 -6.6038) scale(1.660377)">
+    <rect x="9" y="16" width="46" height="32" rx="8" fill="none" stroke="#30384a" stroke-width="7"/>
+    <path d="M 19 32 H 45" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 18 48 L 13 57 M 46 48 L 51 57" fill="none" stroke="#30384a" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <g id="operation-badge" transform="translate(76.4000 76.4000) scale(0.800000)">
+    <circle cx="32" cy="32" r="25" fill="#e2a35b"/>
+    <path d="M 27 20 L 46 32 L 27 44 Z" fill="#ffffff" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+  </g>
 </svg>
