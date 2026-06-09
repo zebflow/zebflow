@@ -13,8 +13,8 @@ use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateProjectRequest, CreateUserRequest, PlatformConfig, PlatformOffice, PlatformOfficeNode,
-    now_ts,
+    CreateProjectRequest, CreateUserRequest, PipelineInvocationEntry, PlatformConfig,
+    PlatformOffice, PlatformOfficeNode, now_ts,
 };
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
@@ -342,9 +342,86 @@ impl PlatformService {
         .with_state_bus(self.state_bus.clone())
         .with_data_root(self.config.data_root.clone());
 
-        let output = engine.execute_async(&compiled.graph, &ctx).await?;
+        let file_rel_path = compiled.file_rel_path.clone();
 
-        Ok(output.value)
+        // Retention settings for invocation log.
+        let project_cfg = self.zebflow_cfg.read_or_default(owner, project);
+        let max_invocations = project_cfg
+            .configs
+            .pipelines
+            .logging
+            .effective_max_invocations();
+        let max_age_secs: Option<i64> = compiled
+            .graph
+            .metadata
+            .as_ref()
+            .and_then(|m| m.settings.invocation_retention.as_ref())
+            .and_then(|r| r.max_age_secs)
+            .map(|v| v.max(1) as i64);
+        let effective_max = compiled
+            .graph
+            .metadata
+            .as_ref()
+            .and_then(|m| m.settings.invocation_retention.as_ref())
+            .and_then(|r| r.max_invocations)
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(max_invocations);
+
+        let exec_start = std::time::Instant::now();
+        let at = crate::platform::model::now_ts();
+
+        match engine.execute_async(&compiled.graph, &ctx).await {
+            Ok(output) => {
+                let duration_ms = exec_start.elapsed().as_millis() as u64;
+                self.pipeline_hits
+                    .record_success(owner, project, &file_rel_path);
+                let _ = self.data.log_pipeline_invocation(
+                    owner,
+                    project,
+                    &file_rel_path,
+                    &PipelineInvocationEntry {
+                        run_id: ctx.request_id.clone(),
+                        at,
+                        duration_ms,
+                        status: "ok".to_string(),
+                        trigger: "function.call".to_string(),
+                        error: None,
+                        trace: output.node_trace,
+                    },
+                    effective_max,
+                    max_age_secs,
+                );
+                Ok(output.value)
+            }
+            Err(e) => {
+                let duration_ms = exec_start.elapsed().as_millis() as u64;
+                self.pipeline_hits.record_failure(
+                    owner,
+                    project,
+                    &file_rel_path,
+                    "function.call",
+                    &e.code,
+                    &e.message,
+                );
+                let _ = self.data.log_pipeline_invocation(
+                    owner,
+                    project,
+                    &file_rel_path,
+                    &PipelineInvocationEntry {
+                        run_id: ctx.request_id.clone(),
+                        at,
+                        duration_ms,
+                        status: "error".to_string(),
+                        trigger: "function.call".to_string(),
+                        error: Some(e.message.clone()),
+                        trace: e.node_trace.clone(),
+                    },
+                    effective_max,
+                    max_age_secs,
+                );
+                Err(e)
+            }
+        }
     }
 
     /// Creates default superadmin + default project if missing.

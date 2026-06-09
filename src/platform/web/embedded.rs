@@ -26,16 +26,32 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.ai.agent.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.ai.tts.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.ai.tts.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.auth.token.create.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.auth.token.create.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.browser.run.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.browser.run.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.crypto.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.crypto.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.fs.compress.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.compress.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.fs.copy.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.fs.copy.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.fs.decompress.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.decompress.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.fs.delete.svg",
@@ -62,6 +78,10 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
         bytes: include_bytes!("assets/node-icons/zebflow/n.fs.move.svg"),
     },
     EmbeddedAsset {
+        path: "zebflow/n.fs.pdf.convert.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.fs.pdf.convert.svg"),
+    },
+    EmbeddedAsset {
         path: "zebflow/n.fs.put.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.fs.put.svg"),
     },
@@ -76,6 +96,14 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zebflow/n.function.call.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.function.call.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.geo.convert.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.geo.convert.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.geo.inspect.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.geo.inspect.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.http.request.svg",
@@ -108,6 +136,30 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zebflow/n.kv.set.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.kv.set.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.del.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.del.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.exists.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.exists.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.expire.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.expire.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.get.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.get.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.incr.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.incr.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.kv.publish.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.kv.publish.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.pg.query.svg",
@@ -144,6 +196,18 @@ pub const PLATFORM_NODE_ICON_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset {
         path: "zebflow/n.trigger.manual.svg",
         bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.manual.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.mapserver.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.mapserver.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.mcp.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.mcp.svg"),
+    },
+    EmbeddedAsset {
+        path: "zebflow/n.trigger.memsubscribe.svg",
+        bytes: include_bytes!("assets/node-icons/zebflow/n.trigger.memsubscribe.svg"),
     },
     EmbeddedAsset {
         path: "zebflow/n.ms.publish.svg",
@@ -240,6 +304,11 @@ pub const PLATFORM_COMPOSITE_NODE_ASSETS: &[EmbeddedAsset] = &[
     EmbeddedAsset { path: "telegram/functions/register-webhook.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/register-webhook.zf.json") },
     EmbeddedAsset { path: "telegram/functions/delete-webhook.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/delete-webhook.zf.json") },
     EmbeddedAsset { path: "telegram/functions/transform-update.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/transform-update.zf.json") },
+    // ── OpenAI Embedding ────────────────────────────────────────────────
+    EmbeddedAsset { path: "openai-embedding/definition.json", bytes: include_bytes!("../../../composites/openai-embedding/definition.json") },
+    EmbeddedAsset { path: "openai-embedding/icon.svg", bytes: include_bytes!("../../../composites/openai-embedding/icon.svg") },
+    EmbeddedAsset { path: "openai-embedding/icons/embedding.svg", bytes: include_bytes!("../../../composites/openai-embedding/icons/embedding.svg") },
+    EmbeddedAsset { path: "openai-embedding/functions/embed.zf.json", bytes: include_bytes!("../../../composites/openai-embedding/functions/embed.zf.json") },
 ];
 
 pub fn platform_composite_node_asset(path: &str) -> Option<&'static [u8]> {

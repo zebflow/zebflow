@@ -60,6 +60,8 @@ const NODE_KIND_COLORS: Record<string, string> = {
   "n.kv.incr": "#b45309",
   "n.kv.publish": "#b45309",
   "n.trigger.kv.subscribe": "#b45309",
+  "n.geo.inspect": "#0f766e",
+  "n.geo.convert": "#0f766e",
 };
 
 export function nodeColor(kind: string): string {
@@ -95,8 +97,8 @@ export function categoryForNodeKind(kind: string): string {
   if (canonical.startsWith("n.fs.")) return "files";
   if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
   if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";
-  if (canonical.startsWith("n.kv.") || canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
-  if (canonical.startsWith("n.c.")) return "composite";
+  if (canonical.startsWith("n.geo.") || canonical.startsWith("n.kv.") || canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
+  if (canonical.startsWith("n.c.")) return categoryForNodeKind("n." + canonical.slice(4));
   if (canonical.startsWith("n.wasm.")) return "wasm";
   if (canonical === "n.script") return "logic";
   return "other";

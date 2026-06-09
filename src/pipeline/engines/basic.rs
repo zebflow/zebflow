@@ -32,7 +32,8 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
-    fs_pdf_convert, fs_save, fs_thumbnail, function_call, http_request, logic, mapserver_crud,
+    fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect,
+    http_request, logic, mapserver_crud,
     kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, pg_query, script,
     sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
     trigger::{
@@ -569,7 +570,9 @@ impl BasicPipelineEngine {
             }
             agent::NODE_KIND => {
                 let config: agent::Config =
-                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_AGENT_CONFIG", err.to_string())
+                    })?;
                 Ok(NodeDispatch::Agent(agent::Node::new(
                     config,
                     self.credentials.clone(),
@@ -804,6 +807,34 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::FileDecompress(fs_decompress::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
+            }
+            geo_inspect::NODE_KIND => {
+                let config: geo_inspect::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_GEO_INSPECT",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::GeoInspect(geo_inspect::Node::new(
+                    config,
+                    platform.clone(),
+                )?))
+            }
+            geo_convert::NODE_KIND => {
+                let config: geo_convert::Config =
+                    serde_json::from_value(node.config.clone()).unwrap_or_default();
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_GEO_CONVERT",
+                        "platform service not available in this engine context",
+                    ));
+                };
+                Ok(NodeDispatch::GeoConvert(geo_convert::Node::new(
                     config,
                     platform.clone(),
                 )?))
@@ -1935,6 +1966,12 @@ impl PipelineEngine for BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::FileDecompress(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::GeoInspect(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::GeoConvert(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::FilePdfConvert(node) => {
@@ -3104,6 +3141,8 @@ enum NodeDispatch {
     TableQuery(table_query::Node),
     FileCompress(fs_compress::Node),
     FileDecompress(fs_decompress::Node),
+    GeoInspect(geo_inspect::Node),
+    GeoConvert(geo_convert::Node),
     FilePdfConvert(fs_pdf_convert::Node),
     ImgThumbnail(fs_thumbnail::Node),
     KvSet(kv_set::Node),
@@ -3327,9 +3366,24 @@ async fn execute_composite_node(
         };
 
         // Build $placeholder map from credential declarations in the manifest.
-        let placeholder_map = build_composite_placeholder_map(
+        let mut placeholder_map = build_composite_placeholder_map(
             kind, config, &owner, &project, platform,
         );
+
+        // Inject non-credential config fields as CONFIG_<KEY> placeholders so
+        // inner pipelines can access node config (e.g. model override).
+        if let Some(obj) = config.as_object() {
+            for (key, val) in obj {
+                // Skip credential ID fields — those are already resolved.
+                if key.ends_with("_credential_id") || key == "credential_id" {
+                    continue;
+                }
+                let placeholder_key = format!("CONFIG_{}", key.to_uppercase());
+                if !placeholder_map.contains_key(&placeholder_key) {
+                    placeholder_map.insert(placeholder_key, val.clone());
+                }
+            }
+        }
 
         // Build execution context — same pattern as execute_function_pipeline.
         let ctx = PipelineContext {

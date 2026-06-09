@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
-  <g id="base-object" transform="translate(7.4483 5.4483) scale(1.517241)">
-    <rect x="11" y="13" width="42" height="38" rx="6" fill="none" stroke="#30384a" stroke-width="7"/>
-    <path d="M 22 6 V 13 M 32 6 V 13 M 42 6 V 13 M 22 51 V 58 M 32 51 V 58 M 42 51 V 58" fill="none" stroke="#30384a" stroke-width="6" stroke-linecap="round"/>
-    <path d="M 24 32 H 40" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
+  <g id="base-object" transform="translate(5.7143 3.7143) scale(1.571429)">
+    <rect x="10" y="13" width="44" height="38" rx="6" fill="none" stroke="#30384a" stroke-width="7"/>
+    <path d="M 21 7 V 13 M 32 7 V 13 M 43 7 V 13 M 21 51 V 57 M 32 51 V 57 M 43 51 V 57" fill="none" stroke="#30384a" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="24" cy="32" r="5" fill="#e2a35b"/>
+    <path d="M 31 32 H 42 M 39 32 V 39" fill="none" stroke="#e2a35b" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
-  <g id="operation-badge" transform="translate(78.7273 79.0909) scale(0.727273)">
-    <path d="M 32 9 V 48 M 20 36 L 32 48 L 44 36" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-    <path d="M 17 55 H 47" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
+  <g id="operation-badge" transform="translate(78.7273 78.3636) scale(0.727273)">
+    <path d="M 32 55 V 16 M 20 28 L 32 16 L 44 28" fill="none" stroke="#e2a35b" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M 17 9 H 47" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linecap="round"/>
   </g>
 </svg>

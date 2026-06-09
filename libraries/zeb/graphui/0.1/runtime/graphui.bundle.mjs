@@ -515,7 +515,10 @@ export class GraphStore {
   }
 
   connect(fromNodeId, fromSlot, toNodeId, toSlot, options = {}) {
-    this.links = this.links.filter((l) => !(l.toNode === toNodeId && l.toSlot === toSlot));
+    // Remove only exact duplicate edges (same source AND same target), allow fan-in.
+    this.links = this.links.filter(
+      (l) => !(l.fromNode === fromNodeId && l.fromSlot === fromSlot && l.toNode === toNodeId && l.toSlot === toSlot)
+    );
     const cfg = { ...DEFAULT_LINK_OPTIONS, ...options };
     const id = `zgu_link_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     this.links.push({

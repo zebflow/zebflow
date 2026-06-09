@@ -1,0 +1,62 @@
+{
+  "format": "zebflow-package-v2",
+  "package": "openai-embedding",
+  "version": "1.0.0",
+  "title": "OpenAI Embedding",
+  "description": "Generate text embeddings using any OpenAI-compatible API (/v1/embeddings).",
+  "icon": "icon.svg",
+
+  "credentials": [
+    {
+      "kind": "openai",
+      "title": "OpenAI / LLM",
+      "description": "OpenAI-compatible provider credential.",
+      "fields": [],
+      "placeholders": {
+        "API_KEY": "api_key",
+        "BASE_URL": "base_url",
+        "MODEL": "model"
+      },
+      "config_key": "credential_id"
+    }
+  ],
+
+  "functions": {
+    "embed": "functions/embed.zf.json"
+  },
+
+  "nodes": [
+    {
+      "kind": "n.c.ai.embedding",
+      "title": "AI Embedding",
+      "description": "Generate text embeddings via OpenAI-compatible /v1/embeddings endpoint.",
+      "icon": "icons/embedding.svg",
+      "ui_category": "logic.ai",
+      "ui_category_label": "AI",
+      "main": "embed",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "credential_id": { "type": "string" },
+            "model": { "type": "string" },
+            "input_expr": { "type": "string" }
+          }
+        },
+        "dsl_flags": [
+          { "flag": "--credential", "config_key": "credential_id", "kind": "scalar", "required": true, "description": "OpenAI-compatible credential." },
+          { "flag": "--model", "config_key": "model", "kind": "scalar", "required": false, "description": "Embedding model override (e.g. text-embedding-3-small)." },
+          { "flag": "--input-expr", "config_key": "input_expr", "kind": "scalar", "required": false, "description": "JS expression to extract text from input. Default: input.text || input.input" }
+        ],
+        "fields": [
+          { "name": "credential_id", "label": "Credential", "type": "select", "data_source": "credentials:openai", "help": "Select your OpenAI / LLM credential." },
+          { "name": "model", "label": "Model", "type": "text", "help": "Embedding model id. Leave empty to use credential default." },
+          { "name": "input_expr", "label": "Input Expression", "type": "textarea", "rows": 3, "help": "JS expression to extract text to embed from the upstream payload. Examples: input.text, input.description, [input.title, input.body]. Default: input.text || input.input" }
+        ],
+        "layout": ["credential_id", "model", "input_expr"]
+      }
+    }
+  ]
+}

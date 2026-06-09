@@ -133,7 +133,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "web.static.generate" | "n.web.static.generate" => Some("n.web.static.generate"),
         "web.docs.generate" | "n.web.docs.generate" => Some("n.web.docs.generate"),
         "http.request" | "n.http.request" => Some("n.http.request"),
-        "zebtune" | "n.zebtune" => Some("n.zebtune"),
+        "zebtune" | "n.zebtune" => Some("n.ai.agent"),
         "logic.if" | "n.logic.if" => Some("n.logic.if"),
         "logic.match" | "n.logic.match" => Some("n.logic.match"),
         "logic.collect" | "n.logic.collect" => Some("n.logic.collect"),
@@ -164,14 +164,16 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "fs.copy" | "n.fs.copy" => Some("n.fs.copy"),
         "fs.move" | "n.fs.move" => Some("n.fs.move"),
         "fs.mkdir" | "n.fs.mkdir" => Some("n.fs.mkdir"),
-        "kv.set" | "n.kv.set" | "mem.set" | "n.mem.set" => Some("n.kv.set"),
-        "kv.get" | "n.kv.get" | "mem.get" | "n.mem.get" => Some("n.kv.get"),
-        "kv.del" | "n.kv.del" | "mem.del" | "n.mem.del" => Some("n.kv.del"),
-        "kv.exists" | "n.kv.exists" | "mem.exists" | "n.mem.exists" => Some("n.kv.exists"),
-        "kv.expire" | "n.kv.expire" | "mem.expire" | "n.mem.expire" => Some("n.kv.expire"),
-        "kv.incr" | "n.kv.incr" | "mem.incr" | "n.mem.incr" => Some("n.kv.incr"),
-        "kv.publish" | "n.kv.publish" | "mem.publish" | "n.mem.publish" => Some("n.kv.publish"),
-        "trigger.kv.subscribe" | "n.trigger.kv.subscribe" | "trigger.memsubscribe" | "n.trigger.memsubscribe" => Some("n.trigger.kv.subscribe"),
+        "kv.set" | "n.kv.set" => Some("n.kv.set"),
+        "kv.get" | "n.kv.get" => Some("n.kv.get"),
+        "kv.del" | "n.kv.del" => Some("n.kv.del"),
+        "kv.exists" | "n.kv.exists" => Some("n.kv.exists"),
+        "kv.expire" | "n.kv.expire" => Some("n.kv.expire"),
+        "kv.incr" | "n.kv.incr" => Some("n.kv.incr"),
+        "kv.publish" | "n.kv.publish" => Some("n.kv.publish"),
+        "trigger.kv.subscribe" | "n.trigger.kv.subscribe" => Some("n.trigger.kv.subscribe"),
+        "geo.inspect" | "n.geo.inspect" => Some("n.geo.inspect"),
+        "geo.convert" | "n.geo.convert" => Some("n.geo.convert"),
         "ms.publish" | "n.ms.publish" => Some("n.ms.publish"),
         "ms.unpublish" | "n.ms.unpublish" => Some("n.ms.unpublish"),
         "ms.get" | "n.ms.get" => Some("n.ms.get"),
@@ -189,8 +191,9 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
             (vec![], vec!["out".to_string()])
         }
         "n.pg.query" | "n.sekejap.query" | "n.sqlite.query" | "n.table.convert"
-        | "n.table.query" | "n.script" | "n.http.request" | "n.zebtune" | "n.logic.collect"
-        | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
+        | "n.table.query" | "n.script" | "n.http.request" | "n.logic.collect" | "n.ai.tts" => {
+            (vec!["in".to_string()], vec!["out".to_string()])
+        }
         "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
         "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.retry" => (

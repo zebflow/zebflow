@@ -4553,13 +4553,14 @@ async fn render_project_pipelines_with_tab(
                     *folder_counts.entry(vpath).or_insert(0) += 1;
                 }
                 // Also count template files so folder badges reflect all items, not just pipelines.
+                // Skip .zf.json files — they are pipeline definitions already counted above.
                 if let Ok(workspace) = state
                     .platform
                     .projects
                     .list_template_workspace(&owner, &project)
                 {
                     for item in &workspace.items {
-                        if item.kind == "file" {
+                        if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
                             let parent = std::path::Path::new(&item.rel_path)
                                 .parent()
                                 .and_then(|p| p.to_str())
@@ -4923,13 +4924,14 @@ async fn render_project_editor(
         *folder_counts.entry(vpath).or_insert(0) += 1;
     }
     // Include template files in counts so badges reflect all items per folder.
+    // Skip .zf.json files — they are pipeline definitions already counted above.
     if let Ok(workspace) = state
         .platform
         .projects
         .list_template_workspace(&owner, &project)
     {
         for item in &workspace.items {
-            if item.kind == "file" {
+            if item.kind == "file" && !item.rel_path.ends_with(".zf.json") {
                 let parent = std::path::Path::new(&item.rel_path)
                     .parent()
                     .and_then(|p| p.to_str())

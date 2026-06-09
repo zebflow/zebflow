@@ -9,6 +9,15 @@
         "n.ai.agent"
       ]
     },
+    "n.ai.tts": {
+      "label": "TTS",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.ai.tts.svg",
+      "source_url": "",
+      "supports": [
+        "n.ai.tts"
+      ]
+    },
     "n.auth.token.create": {
       "label": "JWT",
       "method": "direct-svg",
@@ -16,6 +25,15 @@
       "source_url": "",
       "supports": [
         "n.auth.token.create"
+      ]
+    },
+    "n.browser.run": {
+      "label": "RUN",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.browser.run.svg",
+      "source_url": "",
+      "supports": [
+        "n.browser.run"
       ]
     },
     "n.crypto": {
@@ -27,6 +45,15 @@
         "n.crypto"
       ]
     },
+    "n.fs.compress": {
+      "label": "ZIP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.compress.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.compress"
+      ]
+    },
     "n.fs.copy": {
       "label": "COPY",
       "method": "direct-svg",
@@ -34,6 +61,15 @@
       "source_url": "",
       "supports": [
         "n.fs.copy"
+      ]
+    },
+    "n.fs.decompress": {
+      "label": "UNZIP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.decompress.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.decompress"
       ]
     },
     "n.fs.delete": {
@@ -90,6 +126,15 @@
         "n.fs.move"
       ]
     },
+    "n.fs.pdf.convert": {
+      "label": "PDF",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.fs.pdf.convert.svg",
+      "source_url": "",
+      "supports": [
+        "n.fs.pdf.convert"
+      ]
+    },
     "n.fs.put": {
       "label": "PUT",
       "method": "direct-svg",
@@ -126,6 +171,24 @@
         "n.function.call"
       ]
     },
+    "n.geo.convert": {
+      "label": "GEOC",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.geo.convert.svg",
+      "source_url": "",
+      "supports": [
+        "n.geo.convert"
+      ]
+    },
+    "n.geo.inspect": {
+      "label": "GEOI",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.geo.inspect.svg",
+      "source_url": "",
+      "supports": [
+        "n.geo.inspect"
+      ]
+    },
     "n.http.request": {
       "label": "HTTP",
       "method": "direct-svg",
@@ -133,6 +196,69 @@
       "source_url": "",
       "supports": [
         "n.http.request"
+      ]
+    },
+    "n.kv.del": {
+      "label": "KVDEL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.del.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.del"
+      ]
+    },
+    "n.kv.exists": {
+      "label": "KVEX",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.exists.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.exists"
+      ]
+    },
+    "n.kv.expire": {
+      "label": "KVTTL",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.expire.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.expire"
+      ]
+    },
+    "n.kv.get": {
+      "label": "KVGET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.get.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.get"
+      ]
+    },
+    "n.kv.incr": {
+      "label": "KVINC",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.incr.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.incr"
+      ]
+    },
+    "n.kv.publish": {
+      "label": "KVPUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.publish.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.publish"
+      ]
+    },
+    "n.kv.set": {
+      "label": "KVSET",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.kv.set.svg",
+      "source_url": "",
+      "supports": [
+        "n.kv.set"
       ]
     },
     "n.logic.collect": {
@@ -187,15 +313,6 @@
       "source_url": "",
       "supports": [
         "n.logic.retry"
-      ]
-    },
-    "n.kv.set": {
-      "label": "SET",
-      "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.kv.set.svg",
-      "source_url": "",
-      "supports": [
-        "n.kv.set"
       ]
     },
     "n.ms.get": {
@@ -306,6 +423,15 @@
         "n.trigger.function"
       ]
     },
+    "n.trigger.kv.subscribe": {
+      "label": "KVSUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.kv.subscribe.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.kv.subscribe"
+      ]
+    },
     "n.trigger.manual": {
       "label": "RUN",
       "method": "direct-svg",
@@ -315,13 +441,31 @@
         "n.trigger.manual"
       ]
     },
-    "n.trigger.kv.subscribe": {
-      "label": "SUB",
+    "n.trigger.mapserver": {
+      "label": "MAP",
       "method": "direct-svg",
-      "path": "/assets/node-icons/zebflow/n.trigger.kv.subscribe.svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.mapserver.svg",
       "source_url": "",
       "supports": [
-        "n.trigger.kv.subscribe"
+        "n.trigger.mapserver"
+      ]
+    },
+    "n.trigger.mcp": {
+      "label": "MCP",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.mcp.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.mcp"
+      ]
+    },
+    "n.trigger.memsubscribe": {
+      "label": "SUB",
+      "method": "direct-svg",
+      "path": "/assets/node-icons/zebflow/n.trigger.memsubscribe.svg",
+      "source_url": "",
+      "supports": [
+        "n.trigger.memsubscribe"
       ]
     },
     "n.trigger.schedule": {
@@ -397,7 +541,7 @@
       ]
     },
     "n.ws.client.send": {
-      "label": "SEND",
+      "label": "WSSEND",
       "method": "direct-svg",
       "path": "/assets/node-icons/zebflow/n.ws.client.send.svg",
       "source_url": "",

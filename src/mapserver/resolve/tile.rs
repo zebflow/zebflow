@@ -15,22 +15,9 @@ use super::style::LayerStyle;
 /// Convert z/x/y slippy map tile coordinates to a WGS84 bounding box.
 ///
 /// Returns `[min_lon, min_lat, max_lon, max_lat]` (EPSG:4326).
-/// Standard Web Mercator tile grid math (same as OSM/Mapbox/Leaflet).
+/// Delegates to geonative_tile for the standard Web Mercator tile math.
 pub fn tile_to_bbox(z: u8, x: u32, y: u32) -> [f64; 4] {
-    let n = (1u64 << z) as f64;
-    let min_lon = (x as f64) / n * 360.0 - 180.0;
-    let max_lon = ((x + 1) as f64) / n * 360.0 - 180.0;
-
-    let lat_top = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64) / n))
-        .sinh()
-        .atan()
-        .to_degrees();
-    let lat_bottom = (std::f64::consts::PI * (1.0 - 2.0 * ((y + 1) as f64) / n))
-        .sinh()
-        .atan()
-        .to_degrees();
-
-    [min_lon, lat_bottom, max_lon, lat_top]
+    geonative_tile::TileCoord::new(z, x, y).bbox()
 }
 
 /// Request parameters for tile rendering.

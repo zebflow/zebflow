@@ -55,6 +55,10 @@ pub fn resolve_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
         }
         current = match current {
             Value::Object(map) => map.get(segment)?,
+            Value::Array(arr) => {
+                let idx: usize = segment.parse().ok()?;
+                arr.get(idx)?
+            }
             _ => return None,
         };
     }

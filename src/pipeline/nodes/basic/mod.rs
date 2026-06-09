@@ -9,6 +9,8 @@ pub mod browser_run;
 pub mod crypto;
 pub mod fs_compress;
 pub mod fs_decompress;
+pub mod geo_convert;
+pub mod geo_inspect;
 pub mod fs_object;
 pub mod fs_pdf_convert;
 pub mod fs_save;
@@ -63,6 +65,8 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         mapserver_crud::unpublish_definition(),
         mapserver_crud::get_definition(),
         mapserver_crud::list_definition(),
+        geo_convert::definition(),
+        geo_inspect::definition(),
         fs_pdf_convert::definition(),
         fs_save::definition(),
         function_call::definition(),
@@ -153,11 +157,14 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("n.pg.") {
         return ("data.postgres", "Postgres");
     }
-    if kind.starts_with("n.mem.") {
-        return ("data.memory", "Memory");
+    if kind.starts_with("n.kv.") {
+        return ("data.kv", "KV Store");
     }
     if kind.starts_with("n.table.") {
         return ("data.table", "Table");
+    }
+    if kind.starts_with("n.geo.") {
+        return ("data.geo", "Geo");
     }
     if kind.starts_with("n.ms.") {
         return ("data.mapserver", "MapServer");

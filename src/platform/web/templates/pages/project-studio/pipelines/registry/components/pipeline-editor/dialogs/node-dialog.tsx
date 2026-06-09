@@ -12,6 +12,7 @@ interface NodeDialogProps {
   nodeData: PipelineNodeData | null;   // null = closed
   catalog: Map<string, NodeCatalogEntry>;
   dataState: EditorDataState;
+  graphRef: any;
   webhookBaseUrl: string;
   onApply: (nodeData: PipelineNodeData, slug: string, config: Record<string, unknown>) => void;
   onClose: () => void;
@@ -23,6 +24,7 @@ export default function NodeDialog({
   nodeData,
   catalog,
   dataState,
+  graphRef,
   webhookBaseUrl,
   onApply,
   onClose,
@@ -153,8 +155,9 @@ export default function NodeDialog({
   function handleSubmit(e) {
     e.preventDefault();
     if (!nodeData) return;
+    const allNodes = graphRef?.current?.getApp?.()?.graph?.nodes || [];
     const slug = ensureUniqueSlug(
-      nodeData._raw ? [nodeData._raw].concat([]) : [],
+      allNodes,
       nodeData.graphNodeId,
       String(formState.__node_slug || "")
     );

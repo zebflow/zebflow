@@ -33,167 +33,18 @@ pub fn simplify_features(features: &mut [Value], zoom: Option<u8>) {
     }
 }
 
+/// Simplify a GeoJSON geometry in place using geonative's Douglas-Peucker.
 fn simplify_geometry(geometry: &mut Value, tolerance: f64) {
-    let geom_type = geometry
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-
-    match geom_type.as_str() {
-        "LineString" => {
-            if let Some(coords) = geometry.get("coordinates").and_then(Value::as_array).cloned() {
-                let simplified = douglas_peucker(&coords, tolerance);
-                geometry["coordinates"] = Value::Array(simplified);
-            }
-        }
-        "MultiLineString" => {
-            if let Some(lines) = geometry.get("coordinates").and_then(Value::as_array).cloned() {
-                let simplified: Vec<Value> = lines
-                    .iter()
-                    .map(|line| {
-                        if let Some(coords) = line.as_array() {
-                            Value::Array(douglas_peucker(coords, tolerance))
-                        } else {
-                            line.clone()
-                        }
-                    })
-                    .collect();
-                geometry["coordinates"] = Value::Array(simplified);
-            }
-        }
-        "Polygon" => {
-            if let Some(rings) = geometry.get("coordinates").and_then(Value::as_array).cloned() {
-                let simplified: Vec<Value> = rings
-                    .iter()
-                    .map(|ring| {
-                        if let Some(coords) = ring.as_array() {
-                            Value::Array(douglas_peucker_ring(coords, tolerance))
-                        } else {
-                            ring.clone()
-                        }
-                    })
-                    .collect();
-                geometry["coordinates"] = Value::Array(simplified);
-            }
-        }
-        "MultiPolygon" => {
-            if let Some(polys) = geometry.get("coordinates").and_then(Value::as_array).cloned() {
-                let simplified: Vec<Value> = polys
-                    .iter()
-                    .map(|poly| {
-                        if let Some(rings) = poly.as_array() {
-                            let simplified_rings: Vec<Value> = rings
-                                .iter()
-                                .map(|ring| {
-                                    if let Some(coords) = ring.as_array() {
-                                        Value::Array(douglas_peucker_ring(coords, tolerance))
-                                    } else {
-                                        ring.clone()
-                                    }
-                                })
-                                .collect();
-                            Value::Array(simplified_rings)
-                        } else {
-                            poly.clone()
-                        }
-                    })
-                    .collect();
-                geometry["coordinates"] = Value::Array(simplified);
-            }
-        }
-        // Point, MultiPoint — no simplification needed
-        _ => {}
+    // Parse GeoJSON geometry → IR, simplify, convert back
+    let Ok(ir) = geonative_geojson::geometry::from_json(geometry) else {
+        return;
+    };
+    let simplified = geonative_utils::simplify::simplify_geometry(&ir, tolerance);
+    let result = geonative_geojson::geometry::to_json(&simplified);
+    // Replace geometry fields in place
+    if let Some(coords) = result.get("coordinates") {
+        geometry["coordinates"] = coords.clone();
     }
-}
-
-/// Douglas-Peucker for a ring (closed polygon ring).
-/// Ensures at least 4 points are preserved (minimum valid ring).
-fn douglas_peucker_ring(coords: &[Value], tolerance: f64) -> Vec<Value> {
-    if coords.len() <= 4 {
-        return coords.to_vec();
-    }
-    let mut result = douglas_peucker(coords, tolerance);
-    // Ensure ring closure and minimum 4 points
-    if result.len() < 4 {
-        return coords.to_vec();
-    }
-    // Ensure the ring is closed
-    if let (Some(first), Some(last)) = (result.first().cloned(), result.last().cloned()) {
-        if first != last {
-            result.push(first);
-        }
-    }
-    result
-}
-
-/// Douglas-Peucker line simplification.
-fn douglas_peucker(coords: &[Value], tolerance: f64) -> Vec<Value> {
-    if coords.len() <= 2 {
-        return coords.to_vec();
-    }
-
-    // Find the point farthest from the line between first and last
-    let (first_x, first_y) = coord_xy(&coords[0]);
-    let (last_x, last_y) = coord_xy(coords.last().unwrap());
-
-    let mut max_dist = 0.0f64;
-    let mut max_idx = 0usize;
-
-    for (i, coord) in coords.iter().enumerate().skip(1).take(coords.len() - 2) {
-        let (px, py) = coord_xy(coord);
-        let dist = perpendicular_distance(px, py, first_x, first_y, last_x, last_y);
-        if dist > max_dist {
-            max_dist = dist;
-            max_idx = i;
-        }
-    }
-
-    if max_dist > tolerance {
-        // Recurse on both halves
-        let mut left = douglas_peucker(&coords[..=max_idx], tolerance);
-        let right = douglas_peucker(&coords[max_idx..], tolerance);
-        // Remove duplicate point at the join
-        left.pop();
-        left.extend(right);
-        left
-    } else {
-        // All points within tolerance — keep only endpoints
-        vec![coords[0].clone(), coords.last().unwrap().clone()]
-    }
-}
-
-fn coord_xy(coord: &Value) -> (f64, f64) {
-    let arr = coord.as_array();
-    let x = arr
-        .and_then(|a| a.first())
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let y = arr
-        .and_then(|a| a.get(1))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    (x, y)
-}
-
-fn perpendicular_distance(
-    px: f64,
-    py: f64,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-) -> f64 {
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len_sq = dx * dx + dy * dy;
-    if len_sq < 1e-20 {
-        // Line segment is essentially a point
-        let ddx = px - x1;
-        let ddy = py - y1;
-        return (ddx * ddx + ddy * ddy).sqrt();
-    }
-    ((dy * px - dx * py + x2 * y1 - y2 * x1).abs()) / len_sq.sqrt()
 }
 
 #[cfg(test)]
@@ -297,25 +148,34 @@ mod tests {
     }
 
     #[test]
-    fn douglas_peucker_reduces_collinear_points() {
+    fn simplify_reduces_collinear_linestring() {
         // Points roughly on a line — should simplify to endpoints
-        let coords = vec![
-            json!([0.0, 0.0]),
-            json!([0.5, 0.0001]), // nearly collinear
-            json!([1.0, 0.0]),
-        ];
-        let result = douglas_peucker(&coords, 0.001);
-        assert_eq!(result.len(), 2);
+        let mut features = vec![json!({
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[0.0, 0.0], [0.5, 0.0001], [1.0, 0.0]]
+            }
+        })];
+        simplify_features(&mut features, Some(4)); // tolerance 0.05
+        let coords = features[0]["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!(coords.len(), 2);
     }
 
     #[test]
-    fn douglas_peucker_keeps_significant_deviation() {
-        let coords = vec![
-            json!([0.0, 0.0]),
-            json!([0.5, 1.0]), // significant deviation
-            json!([1.0, 0.0]),
-        ];
-        let result = douglas_peucker(&coords, 0.001);
-        assert_eq!(result.len(), 3);
+    fn simplify_keeps_significant_deviation() {
+        // Point with significant deviation — should be kept
+        let mut features = vec![json!({
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]
+            }
+        })];
+        simplify_features(&mut features, Some(4)); // tolerance 0.05
+        let coords = features[0]["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!(coords.len(), 3);
     }
 }
