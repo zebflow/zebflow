@@ -248,10 +248,7 @@ impl NodeRegistryService {
                 if !path.is_dir() {
                     continue;
                 }
-                let slug = entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string();
+                let slug = entry.file_name().to_string_lossy().to_string();
 
                 // Check for multi-node definition.json first, then v1 node.json.
                 let definition_path = path.join("definition.json");
@@ -442,7 +439,10 @@ impl NodeRegistryService {
         let pkg = self.get_by_kind(owner, project, kind).ok_or_else(|| {
             PlatformError::new(
                 "NODE_COMPOSITE_NOT_FOUND",
-                format!("composite node '{}' not installed in {}/{}", kind, owner, project),
+                format!(
+                    "composite node '{}' not installed in {}/{}",
+                    kind, owner, project
+                ),
             )
         })?;
         self.load_installed_function(&pkg, kind, function_name)
@@ -462,35 +462,47 @@ impl NodeRegistryService {
 
         if let Some(fn_name) = &fn_name {
             // Multi-node: resolve function name → file path → embedded asset.
-            let fn_path = embedded.manifest.functions.get(fn_name.as_str()).ok_or_else(|| {
-                PlatformError::new(
-                    "NODE_COMPOSITE_FUNCTION_NOT_FOUND",
-                    format!("composite '{}': function '{}' not in functions map", kind, fn_name),
-                )
-            })?;
+            let fn_path = embedded
+                .manifest
+                .functions
+                .get(fn_name.as_str())
+                .ok_or_else(|| {
+                    PlatformError::new(
+                        "NODE_COMPOSITE_FUNCTION_NOT_FOUND",
+                        format!(
+                            "composite '{}': function '{}' not in functions map",
+                            kind, fn_name
+                        ),
+                    )
+                })?;
             let asset_path = format!("{}/{}", embedded.package_slug, fn_path);
             let bytes = platform_composite_node_asset(&asset_path).ok_or_else(|| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_READ",
-                    format!("embedded composite '{}': missing asset '{}'", kind, asset_path),
+                    format!(
+                        "embedded composite '{}': missing asset '{}'",
+                        kind, asset_path
+                    ),
                 )
             })?;
             let graph: PipelineGraph = serde_json::from_slice(bytes).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
-                    format!("embedded composite '{}' function '{}': {}", kind, fn_name, e),
+                    format!(
+                        "embedded composite '{}' function '{}': {}",
+                        kind, fn_name, e
+                    ),
                 )
             })?;
             Ok(graph)
         } else if let Some(pipeline_json) = embedded.pipeline_json {
             // V1: single pre-resolved pipeline.
-            let graph: PipelineGraph =
-                serde_json::from_slice(pipeline_json).map_err(|e| {
-                    PlatformError::new(
-                        "NODE_COMPOSITE_PIPELINE_PARSE",
-                        format!("embedded composite '{}': {}", kind, e),
-                    )
-                })?;
+            let graph: PipelineGraph = serde_json::from_slice(pipeline_json).map_err(|e| {
+                PlatformError::new(
+                    "NODE_COMPOSITE_PIPELINE_PARSE",
+                    format!("embedded composite '{}': {}", kind, e),
+                )
+            })?;
             Ok(graph)
         } else if let Some(runtime) = &embedded.manifest.runtime {
             // V1 fallback via runtime.pipeline.
@@ -511,7 +523,10 @@ impl NodeRegistryService {
         } else {
             Err(PlatformError::new(
                 "NODE_COMPOSITE_NO_RUNTIME",
-                format!("composite '{}' has no main function or runtime pipeline", kind),
+                format!(
+                    "composite '{}' has no main function or runtime pipeline",
+                    kind
+                ),
             ))
         }
     }
@@ -529,12 +544,19 @@ impl NodeRegistryService {
 
         let pipeline_path = if let Some(fn_name) = &fn_name {
             // Multi-node: resolve function name → file path.
-            let fn_path = pkg.manifest.functions.get(fn_name.as_str()).ok_or_else(|| {
-                PlatformError::new(
-                    "NODE_COMPOSITE_FUNCTION_NOT_FOUND",
-                    format!("node '{}': function '{}' not in functions map", kind, fn_name),
-                )
-            })?;
+            let fn_path = pkg
+                .manifest
+                .functions
+                .get(fn_name.as_str())
+                .ok_or_else(|| {
+                    PlatformError::new(
+                        "NODE_COMPOSITE_FUNCTION_NOT_FOUND",
+                        format!(
+                            "node '{}': function '{}' not in functions map",
+                            kind, fn_name
+                        ),
+                    )
+                })?;
             std::path::Path::new(&pkg.package_dir).join(fn_path)
         } else if let Some(runtime) = &pkg.manifest.runtime {
             // V1: runtime.pipeline.
@@ -562,12 +584,7 @@ impl NodeRegistryService {
     }
 
     /// Returns the icon SVG bytes for an installed node, if present.
-    pub fn load_icon(
-        &self,
-        owner: &str,
-        project: &str,
-        kind: &str,
-    ) -> Option<Vec<u8>> {
+    pub fn load_icon(&self, owner: &str, project: &str, kind: &str) -> Option<Vec<u8>> {
         let pkg = self.get_by_kind(owner, project, kind)?;
         if !pkg.has_icon {
             return None;
@@ -581,12 +598,7 @@ impl NodeRegistryService {
     ///
     /// Builtin native node icons (from `PLATFORM_NODE_ICON_ASSETS`) are handled
     /// separately in the API layer.
-    pub fn load_icon_any(
-        &self,
-        owner: &str,
-        project: &str,
-        kind: &str,
-    ) -> Option<Vec<u8>> {
+    pub fn load_icon_any(&self, owner: &str, project: &str, kind: &str) -> Option<Vec<u8>> {
         // 1. Installed package (project-level).
         if let Some(bytes) = self.load_icon(owner, project, kind) {
             return Some(bytes);
@@ -659,9 +671,8 @@ impl NodeRegistryService {
         })?;
 
         // Write node.json.
-        let manifest_json = serde_json::to_string_pretty(manifest).map_err(|e| {
-            PlatformError::new("NODE_INSTALL_SERIALIZE", e.to_string())
-        })?;
+        let manifest_json = serde_json::to_string_pretty(manifest)
+            .map_err(|e| PlatformError::new("NODE_INSTALL_SERIALIZE", e.to_string()))?;
         std::fs::write(pkg_dir.join("node.json"), &manifest_json).map_err(|e| {
             PlatformError::new(
                 "NODE_INSTALL_WRITE",
@@ -781,11 +792,7 @@ fn parse_and_validate_manifest(
     let manifest: NodePackageManifest = serde_json::from_str(&raw).map_err(|e| {
         PlatformError::new(
             "NODE_MANIFEST_PARSE",
-            format!(
-                "invalid node.json at {}: {}",
-                manifest_path.display(),
-                e
-            ),
+            format!("invalid node.json at {}: {}", manifest_path.display(), e),
         )
     })?;
     validate_manifest(&manifest, builtin_kinds)?;
@@ -819,10 +826,7 @@ fn validate_manifest(
             if !kind.starts_with("n.c.") {
                 return Err(PlatformError::new(
                     "NODE_NAMESPACE_VIOLATION",
-                    format!(
-                        "composite node kind '{}' must start with 'n.c.'",
-                        kind
-                    ),
+                    format!("composite node kind '{}' must start with 'n.c.'", kind),
                 ));
             }
             // Must have runtime.pipeline (v1) or main_function/trigger (multi-node).
@@ -843,10 +847,7 @@ fn validate_manifest(
             if !kind.starts_with("n.wasm.") {
                 return Err(PlatformError::new(
                     "NODE_NAMESPACE_VIOLATION",
-                    format!(
-                        "WASM node kind '{}' must start with 'n.wasm.'",
-                        kind
-                    ),
+                    format!("WASM node kind '{}' must start with 'n.wasm.'", kind),
                 ));
             }
         }
@@ -856,10 +857,7 @@ fn validate_manifest(
     if builtin_kinds.contains(kind) {
         return Err(PlatformError::new(
             "NODE_KIND_COLLISION",
-            format!(
-                "node kind '{}' collides with a built-in native node",
-                kind
-            ),
+            format!("node kind '{}' collides with a built-in native node", kind),
         ));
     }
 
