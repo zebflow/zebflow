@@ -161,7 +161,10 @@ impl PlatformService {
         ));
         let ws_hub = Arc::new(WsHub::new());
         let mem_hub = Arc::new(MemHub::new());
-        let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub_with_durable((*mem_hub).clone(), config.data_root.clone()));
+        let state_bus: DynStateBus = Arc::new(MemStateBus::from_hub_with_durable(
+            (*mem_hub).clone(),
+            config.data_root.clone(),
+        ));
         let cluster_bootstrap = Arc::new(ClusterBootstrapService::new(config.cluster.clone()));
         let cluster_registry = Arc::new(ClusterRegistryService::new(data.clone()));
         let cluster_placement = Arc::new(ClusterPlacementService::new(data.clone()));
