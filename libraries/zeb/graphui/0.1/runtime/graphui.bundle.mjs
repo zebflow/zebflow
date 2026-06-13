@@ -119,11 +119,17 @@ const BASE_STYLE = `
   touch-action: none;
 }
 .zgu-workspace:active { cursor: grabbing; }
-.zgu-edge-style-control {
+.zgu-canvas-controls {
   position: absolute;
   right: 14px;
   bottom: 14px;
   z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: all;
+}
+.zgu-edge-style-control {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -153,6 +159,32 @@ const BASE_STYLE = `
 .zgu-edge-style-button.is-active {
   color: #06281e;
   background: var(--zgu-wire-active);
+}
+.zgu-auto-tidy-button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px;
+  background: rgba(18,18,18,.88);
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,.34);
+  backdrop-filter: blur(8px);
+}
+.zgu-auto-tidy-button:hover {
+  color: #e2e8f0;
+  background: rgba(148,163,184,.12);
+}
+.zgu-auto-tidy-button svg {
+  width: 16px;
+  height: 16px;
+}
+.zgu-auto-tidy-button[hidden] {
+  display: none;
 }
 .zgu-grid {
   position: absolute;
@@ -460,6 +492,150 @@ function setThemeVars(root, theme) {
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+const AUTO_LAYOUT_BASE_X = 120;
+const AUTO_LAYOUT_BASE_Y = 120;
+const AUTO_LAYOUT_RANK_GAP_X = 360;
+const AUTO_LAYOUT_NODE_GAP_Y = 180;
+
+function autoLayoutAverageOrder(neighbors, order) {
+  const values = (neighbors || [])
+    .map((id) => order.get(id))
+    .filter((value) => Number.isFinite(value));
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function autoLayoutNodeOriginalOrder(nodes) {
+  return new Map(nodes.map((node, index) => [node.id, index]));
+}
+
+function autoLayoutBuildTopology(nodes, links) {
+  const idSet = new Set(nodes.map((node) => node.id));
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  const outgoing = new Map(nodes.map((node) => [node.id, []]));
+  const outSlotOrder = new Map();
+  for (const link of links || []) {
+    if (!idSet.has(link.fromNode) || !idSet.has(link.toNode)) continue;
+    incoming.get(link.toNode).push(link.fromNode);
+    outgoing.get(link.fromNode).push(link.toNode);
+    outSlotOrder.set(`${link.fromNode}:${link.toNode}`, Number(link.fromSlot) || 0);
+  }
+  for (const ids of incoming.values()) ids.sort((a, b) => a - b);
+  for (const ids of outgoing.values()) ids.sort((a, b) => a - b);
+  return { incoming, outgoing, outSlotOrder };
+}
+
+function autoLayoutRankNodes(nodes, incoming, outgoing) {
+  const ranks = new Map();
+  const indegree = new Map(nodes.map((node) => [node.id, incoming.get(node.id)?.length || 0]));
+  const original = autoLayoutNodeOriginalOrder(nodes);
+  const roots = nodes
+    .filter((node) => String(node.zfKind || "").startsWith("n.trigger.") || (incoming.get(node.id)?.length || 0) === 0)
+    .sort((a, b) => (original.get(a.id) || 0) - (original.get(b.id) || 0));
+  const queue = [];
+  for (const node of roots) {
+    if (!ranks.has(node.id)) {
+      ranks.set(node.id, 0);
+      queue.push(node.id);
+    }
+  }
+  while (queue.length) {
+    const id = queue.shift();
+    const rank = ranks.get(id) || 0;
+    for (const child of outgoing.get(id) || []) {
+      ranks.set(child, Math.max(ranks.get(child) || 0, rank + 1));
+      const nextIn = Math.max(0, (indegree.get(child) || 0) - 1);
+      indegree.set(child, nextIn);
+      if (nextIn === 0) queue.push(child);
+    }
+  }
+  for (const node of nodes) {
+    if (ranks.has(node.id)) continue;
+    const parentRanks = (incoming.get(node.id) || [])
+      .map((parent) => ranks.get(parent))
+      .filter((rank) => Number.isFinite(rank));
+    ranks.set(node.id, parentRanks.length ? Math.max(...parentRanks) + 1 : 0);
+  }
+  return ranks;
+}
+
+function autoLayoutOrderLevels(levels, incoming, outgoing, outSlotOrder, original) {
+  const order = new Map();
+  for (const ids of levels.values()) {
+    ids.forEach((id, index) => order.set(id, index));
+  }
+  const rankKeys = Array.from(levels.keys()).sort((a, b) => a - b);
+  for (let pass = 0; pass < 4; pass++) {
+    for (const rank of rankKeys) {
+      const ids = levels.get(rank) || [];
+      ids.sort((a, b) => {
+        const aw = autoLayoutAverageOrder(incoming.get(a), order);
+        const bw = autoLayoutAverageOrder(incoming.get(b), order);
+        const av = aw == null ? original.get(a) || 0 : aw;
+        const bv = bw == null ? original.get(b) || 0 : bw;
+        return av - bv || (original.get(a) || 0) - (original.get(b) || 0);
+      });
+      ids.forEach((id, index) => order.set(id, index));
+    }
+    for (const rank of [...rankKeys].reverse()) {
+      const ids = levels.get(rank) || [];
+      ids.sort((a, b) => {
+        const aw = autoLayoutAverageOrder(outgoing.get(a), order);
+        const bw = autoLayoutAverageOrder(outgoing.get(b), order);
+        const av = aw == null ? original.get(a) || 0 : aw;
+        const bv = bw == null ? original.get(b) || 0 : bw;
+        const slotsA = (outgoing.get(a) || []).map((to) => outSlotOrder.get(`${a}:${to}`) ?? 0);
+        const slotsB = (outgoing.get(b) || []).map((to) => outSlotOrder.get(`${b}:${to}`) ?? 0);
+        const slotA = slotsA.length ? Math.min(...slotsA) : 0;
+        const slotB = slotsB.length ? Math.min(...slotsB) : 0;
+        return av - bv || slotA - slotB || (original.get(a) || 0) - (original.get(b) || 0);
+      });
+      ids.forEach((id, index) => order.set(id, index));
+    }
+  }
+}
+
+export function autoTidyGraphLayout(app, options = {}) {
+  const nodes = Array.isArray(app?.graph?.nodes) ? app.graph.nodes : [];
+  const links = Array.isArray(app?.graph?.links) ? app.graph.links : [];
+  if (!nodes.length) return [];
+  const baseX = Number(options.baseX ?? AUTO_LAYOUT_BASE_X);
+  const baseY = Number(options.baseY ?? AUTO_LAYOUT_BASE_Y);
+  const rankGapX = Number(options.rankGapX ?? AUTO_LAYOUT_RANK_GAP_X);
+  const nodeGapY = Number(options.nodeGapY ?? AUTO_LAYOUT_NODE_GAP_Y);
+  const { incoming, outgoing, outSlotOrder } = autoLayoutBuildTopology(nodes, links);
+  const ranks = autoLayoutRankNodes(nodes, incoming, outgoing);
+  const original = autoLayoutNodeOriginalOrder(nodes);
+  const levels = new Map();
+  for (const node of nodes) {
+    const rank = ranks.get(node.id) || 0;
+    if (!levels.has(rank)) levels.set(rank, []);
+    levels.get(rank).push(node.id);
+  }
+  autoLayoutOrderLevels(levels, incoming, outgoing, outSlotOrder, original);
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const placements = [];
+  for (const rank of Array.from(levels.keys()).sort((a, b) => a - b)) {
+    const ids = levels.get(rank) || [];
+    ids.forEach((id, row) => {
+      const node = byId.get(id);
+      if (!node) return;
+      node.x = baseX + rank * rankGapX;
+      node.y = baseY + row * nodeGapY;
+      if (app.ui?.snapToGrid) {
+        app.ui.snapNodePosition(node);
+      } else if (node.el) {
+        node.el.style.transform = `translate(${node.x}px, ${node.y}px)`;
+      }
+      placements.push({ id, x: node.x, y: node.y, rank, row });
+    });
+  }
+  app.ui?.clearSelection?.();
+  app.ui?.updateWires?.();
+  return placements;
 }
 
 function triggerShapePath(width, height) {
@@ -887,14 +1063,47 @@ export class GraphCanvasUI {
     this.transformEl.appendChild(this.svgEl);
     this.transformEl.appendChild(this.nodesEl);
     this.workspaceEl.appendChild(this.transformEl);
-    this.mountEdgeStyleControl();
+    this.mountCanvasControls();
 
     this.root.appendChild(this.headerEl);
     this.root.appendChild(this.toolboxEl);
     this.root.appendChild(this.workspaceEl);
   }
 
-  mountEdgeStyleControl() {
+  mountCanvasControls() {
+    this.canvasControlsEl = document.createElement("div");
+    this.canvasControlsEl.className = "zgu-canvas-controls";
+    this.canvasControlsEl.setAttribute("data-zgu-nodrag", "true");
+    this.canvasControlsEl.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+    });
+
+    this.autoTidyButtonEl = document.createElement("button");
+    this.autoTidyButtonEl.type = "button";
+    this.autoTidyButtonEl.className = "zgu-auto-tidy-button";
+    this.autoTidyButtonEl.title = "Auto tidy graph";
+    this.autoTidyButtonEl.setAttribute("aria-label", "Auto tidy graph");
+    this.autoTidyButtonEl.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 6h4" />
+        <path d="M4 12h4" />
+        <path d="M4 18h4" />
+        <path d="M16 6h4" />
+        <path d="M16 12h4" />
+        <path d="M16 18h4" />
+        <path d="M8 6h8" />
+        <path d="M8 12h8" />
+        <path d="M8 18h8" />
+      </svg>
+    `;
+    this.autoTidyButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.readOnly || typeof this.options.onAutoTidy !== "function") return;
+      this.options.onAutoTidy();
+    });
+    this.canvasControlsEl.appendChild(this.autoTidyButtonEl);
+
     const styles = [
       ["bezier", "Curve"],
       ["straight", "Line"],
@@ -905,9 +1114,6 @@ export class GraphCanvasUI {
     this.edgeStyleControlEl.className = "zgu-edge-style-control";
     this.edgeStyleControlEl.setAttribute("data-zgu-nodrag", "true");
     this.edgeStyleControlEl.setAttribute("aria-label", "Edge style");
-    this.edgeStyleControlEl.addEventListener("pointerdown", (event) => {
-      event.stopPropagation();
-    });
     styles.forEach(([style, label]) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -922,8 +1128,16 @@ export class GraphCanvasUI {
       });
       this.edgeStyleControlEl.appendChild(button);
     });
-    this.workspaceEl.appendChild(this.edgeStyleControlEl);
+    this.canvasControlsEl.appendChild(this.edgeStyleControlEl);
+    this.workspaceEl.appendChild(this.canvasControlsEl);
+    this.updateCanvasControls();
     this.updateEdgeStyleButtons();
+  }
+
+  updateCanvasControls() {
+    if (this.autoTidyButtonEl) {
+      this.autoTidyButtonEl.hidden = this.readOnly || typeof this.options.onAutoTidy !== "function";
+    }
   }
 
   setEdgeStyle(style) {
@@ -2124,6 +2338,10 @@ export function createGraphUI(root, options = {}) {
       ui.clearSVG();
     },
 
+    autoTidy(options = {}) {
+      return autoTidyGraphLayout(app, options);
+    },
+
     snapshot() {
       return {
         nodes: graph.nodes.map((node) => ({
@@ -2156,6 +2374,8 @@ export function createGraphUI(root, options = {}) {
       root.innerHTML = "";
     },
   };
+  ui.options.onAutoTidy = () => app.autoTidy();
+  ui.updateCanvasControls?.();
 
   function renderSceneButtons() {
     if (options.showHeader === false) {
@@ -2518,6 +2738,13 @@ export const PipelineGraph = (() => {
         collectPipeline: function () {
           return _pgCollect(appRef.current);
         },
+        autoTidy: function (options) {
+          const app = appRef.current;
+          if (!app || typeof app.autoTidy !== "function") return [];
+          const placements = app.autoTidy(options || {});
+          _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
+          return placements;
+        },
         getApp: function () {
           return appRef.current;
         },
@@ -2564,6 +2791,7 @@ export const PipelineGraph = (() => {
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
       app.ui.readOnly = props.readOnly || false;
+      app.ui.updateCanvasControls?.();
       _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
       setTimeout(function () {
         _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);

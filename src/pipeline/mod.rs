@@ -11,6 +11,7 @@
 pub mod engines;
 pub mod expr;
 pub mod interface;
+pub mod layout;
 pub mod model;
 pub mod nodes;
 pub mod registry;
@@ -18,6 +19,7 @@ pub mod security;
 
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine, build_composite_placeholder_map};
 pub use interface::PipelineEngine;
+pub use layout::auto_tidy_pipeline_graph;
 pub use model::{
     ExecuteOptions, ExecutionBus, NodeAiToolDefinition, NodeContractDocument, NodeContractItem,
     NodeDefinition, NodeFieldDataSource, NodeFieldDef, NodeFieldType, NodeScriptBridge,

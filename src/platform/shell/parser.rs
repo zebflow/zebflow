@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
+use crate::pipeline::auto_tidy_pipeline_graph;
 use crate::pipeline::model::{DslFlag, DslFlagKind, PipelineEdge, PipelineGraph, PipelineNode};
 use crate::pipeline::nodes::builtin_node_definitions;
 
@@ -742,7 +743,7 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         .map(|n| n.id.clone())
         .collect();
 
-    Ok(PipelineGraph {
+    let mut graph = PipelineGraph {
         kind: "zebflow.pipeline".to_string(),
         version: "0.1".to_string(),
         id: id.to_string(),
@@ -751,7 +752,9 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         entry_nodes,
         nodes,
         edges,
-    })
+    };
+    auto_tidy_pipeline_graph(&mut graph);
+    Ok(graph)
 }
 
 #[cfg(test)]
@@ -1474,7 +1477,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         .map(|n| vec![n.id.clone()])
         .unwrap_or_default();
 
-    Ok(PipelineGraph {
+    let mut graph = PipelineGraph {
         kind: "zebflow.pipeline".to_string(),
         version: "0.1".to_string(),
         id: id.to_string(),
@@ -1483,5 +1486,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         entry_nodes,
         nodes,
         edges,
-    })
+    };
+    auto_tidy_pipeline_graph(&mut graph);
+    Ok(graph)
 }
