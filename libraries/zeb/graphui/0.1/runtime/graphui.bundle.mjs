@@ -160,6 +160,45 @@ const BASE_STYLE = `
   color: #06281e;
   background: var(--zgu-wire-active);
 }
+.zgu-selection-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(148,163,184,.28);
+  border-radius: 8px;
+  background: rgba(18,18,18,.88);
+  box-shadow: 0 8px 24px rgba(0,0,0,.34);
+  backdrop-filter: blur(8px);
+}
+.zgu-selection-button {
+  height: 24px;
+  min-width: 28px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+.zgu-selection-button:hover {
+  color: #e2e8f0;
+  background: rgba(148,163,184,.12);
+}
+.zgu-selection-button.is-active {
+  color: #06281e;
+  background: var(--zgu-wire-active);
+}
+.zgu-selection-button svg {
+  width: 15px;
+  height: 15px;
+}
+.zgu-selection-control[hidden] {
+  display: none;
+}
 .zgu-auto-tidy-button {
   width: 32px;
   height: 32px;
@@ -970,6 +1009,7 @@ export class GraphCanvasUI {
       ? Number(options.gridSize)
       : 30;
     this.edgeStyle = this.resolveInitialEdgeStyle(options.edgeStyle);
+    this.selectionMode = this.resolveInitialSelectionMode(options.selectionMode);
 
     this.transform = { x: 0, y: 0, k: 1 };
 
@@ -1006,6 +1046,11 @@ export class GraphCanvasUI {
       if (valid.has(stored)) return stored;
     } catch (_err) {}
     return "bezier";
+  }
+
+  resolveInitialSelectionMode(rawMode) {
+    const mode = String(rawMode || "").trim();
+    return mode === "box" ? "box" : "normal";
   }
 
   mountDom() {
@@ -1078,6 +1123,62 @@ export class GraphCanvasUI {
       event.stopPropagation();
     });
 
+    this.selectionControlEl = document.createElement("div");
+    this.selectionControlEl.className = "zgu-selection-control";
+    this.selectionControlEl.setAttribute("data-zgu-nodrag", "true");
+    this.selectionControlEl.setAttribute("aria-label", "Selection mode");
+
+    const selectionButtons = [
+      [
+        "normal",
+        "Normal selection",
+        `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 3l10 10-4 1-2 5-4-16Z" />
+        </svg>`,
+      ],
+      [
+        "box",
+        "Box selection",
+        `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="5" width="14" height="14" rx="1.5" stroke-dasharray="3 3" />
+          <path d="M9 9h6v6H9z" />
+        </svg>`,
+      ],
+      [
+        "all",
+        "Select all",
+        `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="4" width="6" height="6" rx="1" />
+          <rect x="14" y="4" width="6" height="6" rx="1" />
+          <rect x="4" y="14" width="6" height="6" rx="1" />
+          <rect x="14" y="14" width="6" height="6" rx="1" />
+        </svg>`,
+      ],
+    ];
+    selectionButtons.forEach(([mode, title, icon]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "zgu-selection-button";
+      button.dataset.selectionMode = mode;
+      button.title = title;
+      button.setAttribute("aria-label", title);
+      button.innerHTML = icon;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.readOnly) return;
+        if (mode === "all") {
+          if (typeof this.options.onSelectAll === "function") {
+            this.options.onSelectAll();
+          }
+          return;
+        }
+        this.setSelectionMode(mode);
+      });
+      this.selectionControlEl.appendChild(button);
+    });
+    this.canvasControlsEl.appendChild(this.selectionControlEl);
+
     this.autoTidyButtonEl = document.createElement("button");
     this.autoTidyButtonEl.type = "button";
     this.autoTidyButtonEl.className = "zgu-auto-tidy-button";
@@ -1132,12 +1233,39 @@ export class GraphCanvasUI {
     this.workspaceEl.appendChild(this.canvasControlsEl);
     this.updateCanvasControls();
     this.updateEdgeStyleButtons();
+    this.updateSelectionButtons();
   }
 
   updateCanvasControls() {
     if (this.autoTidyButtonEl) {
       this.autoTidyButtonEl.hidden = this.readOnly || typeof this.options.onAutoTidy !== "function";
     }
+    if (this.selectionControlEl) {
+      const hasSelectionActions =
+        typeof this.options.onSelectionModeChange === "function" ||
+        typeof this.options.onSelectAll === "function";
+      this.selectionControlEl.hidden = this.readOnly || !hasSelectionActions;
+    }
+  }
+
+  setSelectionMode(mode, options = {}) {
+    const nextMode = mode === "box" ? "box" : "normal";
+    if (this.selectionMode === nextMode) {
+      this.updateSelectionButtons();
+      return;
+    }
+    this.selectionMode = nextMode;
+    this.updateSelectionButtons();
+    if (options.emit !== false && typeof this.options.onSelectionModeChange === "function") {
+      this.options.onSelectionModeChange(nextMode);
+    }
+  }
+
+  updateSelectionButtons() {
+    this.selectionControlEl?.querySelectorAll(".zgu-selection-button").forEach((button) => {
+      const mode = button.dataset.selectionMode;
+      button.classList.toggle("is-active", mode === this.selectionMode && mode !== "all");
+    });
   }
 
   setEdgeStyle(style) {
@@ -2760,6 +2888,9 @@ export const PipelineGraph = (() => {
         snapToGrid: props.snapToGrid !== false,
         gridSize: props.gridSize || 30,
         onOutputAdd: props.onOutputAdd || null,
+        selectionMode: props.selectionMode || "normal",
+        onSelectionModeChange: props.onSelectionModeChange || null,
+        onSelectAll: props.onSelectAll || null,
       });
       app._pgId = props.id || "pipeline";
       app._pgOnNodeEdit = props.onNodeEdit || null;
@@ -2790,7 +2921,10 @@ export const PipelineGraph = (() => {
       if (!app) return;
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
+      app.ui.options.onSelectionModeChange = props.onSelectionModeChange || null;
+      app.ui.options.onSelectAll = props.onSelectAll || null;
       app.ui.readOnly = props.readOnly || false;
+      app.ui.setSelectionMode?.(props.selectionMode || "normal", { emit: false });
       app.ui.updateCanvasControls?.();
       _pgLoadScene(app, props.pipeline, props.kindColors, props.kindIcons, props.kindTitles);
       setTimeout(function () {
@@ -2804,6 +2938,10 @@ export const PipelineGraph = (() => {
       if (!app) return;
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
+      app.ui.options.onSelectionModeChange = props.onSelectionModeChange || null;
+      app.ui.options.onSelectAll = props.onSelectAll || null;
+      app.ui.setSelectionMode?.(props.selectionMode || "normal", { emit: false });
+      app.ui.updateCanvasControls?.();
       _pgAttachChrome(app, props.onNodeEdit, props.onOutputAdd);
     });
 

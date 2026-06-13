@@ -299,6 +299,7 @@ export default function PipelineEditor({
 
   // ── Multi-select & clipboard state ─────────────────────────────────────────
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
+  const [selectionMode, setSelectionMode] = useState<"normal" | "box">("normal");
   const [clipboardData, setClipboardData] = useState<string | null>(null);
   const [selectionToast, setSelectionToast] = useState("");
   const [marquee, setMarquee] = useState<{x1: number, y1: number, x2: number, y2: number} | null>(null);
@@ -986,6 +987,7 @@ export default function PipelineEditor({
       if (currentLocked) return;
       const app = graphRef.current?.getApp?.();
       if (!app?.graph?.nodes) return;
+      if (selectionMode === "box") return;
       const target = e.target as HTMLElement;
       const clickedNode = app.graph.nodes.find((n: any) => n?.el?.contains?.(target));
       if (clickedNode && (e.ctrlKey || e.metaKey)) {
@@ -1003,7 +1005,16 @@ export default function PipelineEditor({
     }
     el.addEventListener("click", onClick);
     return () => el.removeEventListener("click", onClick);
-  }, [currentLocked]);
+  }, [currentLocked, selectionMode]);
+
+  function handleSelectAllNodes() {
+    if (currentLocked) return;
+    const app = graphRef.current?.getApp?.();
+    if (!app?.graph?.nodes) return;
+    const allIds = new Set<number>(app.graph.nodes.map((n: any) => n.id));
+    setMultiSelected(allIds);
+    showToast(`${allIds.size} node(s) selected`);
+  }
 
   function handleCopySelected() {
     const app = graphRef.current?.getApp?.();
@@ -1121,11 +1132,7 @@ export default function PipelineEditor({
       const key = e.key.toLowerCase();
       if (mod && key === "a" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        const app = graphRef.current?.getApp?.();
-        if (!app?.graph?.nodes) return;
-        const allIds = new Set<number>(app.graph.nodes.map((n: any) => n.id));
-        setMultiSelected(allIds);
-        showToast(`${allIds.size} node(s) selected`);
+        handleSelectAllNodes();
         return;
       }
       if (mod && key === "c" && !e.shiftKey && !e.altKey && multiSelected.size > 0) {
@@ -1153,29 +1160,37 @@ export default function PipelineEditor({
     return () => window.removeEventListener("keydown", handleMultiSelectKeys);
   }, [currentLocked, multiSelected, clipboardData]);
 
-  function handleMarqueeDown(e: React.MouseEvent) {
-    if (!e.shiftKey || currentLocked) return;
+  function handleMarqueeDown(e: React.PointerEvent) {
+    const boxMode = selectionMode === "box";
+    if ((!boxMode && !e.shiftKey) || currentLocked) return;
     const app = graphRef.current?.getApp?.();
     const target = e.target as HTMLElement;
-    if (app?.graph?.nodes?.some((n: any) => n?.el?.contains?.(target))) return;
+    if (target?.closest?.("[data-zgu-nodrag='true']")) return;
+    if (!boxMode && app?.graph?.nodes?.some((n: any) => n?.el?.contains?.(target))) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
+    e.preventDefault();
+    e.stopPropagation();
     marqueeStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     setMarquee({ x1: marqueeStartRef.current.x, y1: marqueeStartRef.current.y, x2: marqueeStartRef.current.x, y2: marqueeStartRef.current.y });
   }
 
-  function handleMarqueeMove(e: React.MouseEvent) {
+  function handleMarqueeMove(e: React.PointerEvent) {
     if (!marqueeStartRef.current) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
+    e.preventDefault();
+    e.stopPropagation();
     setMarquee({
       x1: marqueeStartRef.current.x, y1: marqueeStartRef.current.y,
       x2: e.clientX - rect.left, y2: e.clientY - rect.top,
     });
   }
 
-  function handleMarqueeUp() {
+  function handleMarqueeUp(e?: React.PointerEvent) {
     if (!marqueeStartRef.current || !marquee) { marqueeStartRef.current = null; setMarquee(null); return; }
+    e?.preventDefault();
+    e?.stopPropagation();
     const left = Math.min(marquee.x1, marquee.x2);
     const top = Math.min(marquee.y1, marquee.y2);
     const right = Math.max(marquee.x1, marquee.x2);
@@ -1341,9 +1356,9 @@ export default function PipelineEditor({
       <div
         ref={canvasRef}
         className="flex-1 min-h-0 border-b border-border-soft relative"
-        onMouseDown={handleMarqueeDown}
-        onMouseMove={handleMarqueeMove}
-        onMouseUp={handleMarqueeUp}
+        onPointerDownCapture={handleMarqueeDown}
+        onPointerMoveCapture={handleMarqueeMove}
+        onPointerUpCapture={handleMarqueeUp}
       >
         {/* Category buttons — open node picker dialog filtered by category */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
@@ -1383,6 +1398,12 @@ export default function PipelineEditor({
             className="w-full h-full"
             onNodeEdit={currentLocked ? undefined : handleNodeEdit}
             onOutputAdd={currentLocked ? undefined : handleOutputAdd}
+            selectionMode={selectionMode}
+            onSelectionModeChange={(mode: "normal" | "box") => {
+              setSelectionMode(mode);
+              if (mode === "normal") setMarquee(null);
+            }}
+            onSelectAll={handleSelectAllNodes}
             onReady={() => {
               // No-op; edit buttons handled by PipelineGraph's MutationObserver
             }}
