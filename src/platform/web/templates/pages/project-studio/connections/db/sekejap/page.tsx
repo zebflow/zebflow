@@ -61,6 +61,7 @@ const DEFAULT_ATTRIBUTE = {
   name: "",
   kind: "string",
   index_types: [],
+  default_value: "",
 };
 
 function requestJson(url, options = {}) {
@@ -145,6 +146,13 @@ function stringifyCell(cell) {
   }
 }
 
+function rawCellValue(cell) {
+  if (cell === null || typeof cell === "undefined") return "";
+  if (typeof cell === "string") return cell;
+  if (typeof cell === "number" || typeof cell === "boolean") return String(cell);
+  try { return JSON.stringify(cell); } catch (_) { return String(cell); }
+}
+
 function defaultColumnWidth(colName) {
   const name = String(colName || "");
   if (name === "_collection") return 120;
@@ -178,11 +186,12 @@ function autoSizeColumns(columns, rows) {
   return widths;
 }
 
-function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject }) {
+function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject, editingCell, pendingEdits, onEditingCellChange, onCellEdit, vectorFields }) {
   const [colWidths, setColWidths] = useState({});
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
   const dragRef = useRef(null);
+  const editInputRef = useRef(null);
 
   // Auto-size widths when columns change
   useEffect(() => {
@@ -191,6 +200,13 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
 
   // Reset sort when columns change
   useEffect(() => { setSortCol(null); }, [columns.join(",")]);
+
+  useEffect(() => {
+    if (editingCell && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingCell?.rowIndex, editingCell?.colIndex]);
 
   function onResizeStart(e, colIndex) {
     e.preventDefault();
@@ -290,29 +306,87 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
           const record = mapRowToObject(columns, row);
           const rowKey = String(record?._key || "");
           const isSelected = selectedRowKey && rowKey === selectedRowKey;
+          const rowPending = pendingEdits?.[rowKey] || {};
           return (
             <tr key={`row-${rowIndex}`} className={isSelected ? "is-row-selected" : ""}>
               {(Array.isArray(row) ? row : []).map((cell, cellIndex) => {
                 const colName = columns[cellIndex] || `column_${cellIndex + 1}`;
+                const isSystemCol = colName.startsWith("_");
+                const isEditing = editingCell && editingCell.rowIndex === rowIndex && editingCell.colIndex === cellIndex;
+                const hasPending = colName in rowPending;
+                const displayValue = hasPending ? rowPending[colName] : cell;
                 return (
                   <td
                     key={`cell-${rowIndex}-${cellIndex}`}
-                    className="px-[0.65rem] py-[0.35rem] border-b border-border-soft text-left text-[0.78rem] text-body cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis"
+                    className={`px-[0.65rem] border-b border-border-soft text-left text-[0.78rem] text-body cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis ${isEditing ? "p-0" : "py-[0.35rem]"} ${hasPending ? "bg-amber-500/10" : ""}`}
                     style={{ maxWidth: colWidths[colName] || defaultColumnWidth(colName) }}
-                    title={stringifyCell(cell)}
+                    title={isEditing ? undefined : stringifyCell(displayValue)}
                     onClick={() => {
                       onRowSelect(rowKey, record);
                       onCellInspect(colName, rowIndex, cell);
                     }}
+                    onDoubleClick={() => {
+                      const isVectorCol = Array.isArray(vectorFields) && vectorFields.includes(colName);
+                      if (!isSystemCol && !isVectorCol && rowKey && onEditingCellChange) {
+                        onEditingCellChange({ rowIndex, colIndex: cellIndex, rowKey, colName });
+                      }
+                    }}
                   >
-                    {isGeoJsonPoint(cell) ? (
+                    {isEditing ? (
+                      <input
+                        ref={editInputRef}
+                        type="text"
+                        className="w-full border-0 bg-ui-bg px-[0.65rem] py-[0.35rem] text-[0.78rem] text-body outline-none ring-1 ring-inset ring-blue-500"
+                        defaultValue={rawCellValue(displayValue)}
+                        onBlur={(e) => {
+                          const val = e.target.value;
+                          if (val !== rawCellValue(cell)) {
+                            onCellEdit(rowKey, colName, val);
+                          }
+                          onEditingCellChange(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.target.blur();
+                          if (e.key === "Escape") {
+                            e.target.value = rawCellValue(cell);
+                            onEditingCellChange(null);
+                          }
+                          if (e.key === "Tab") {
+                            e.preventDefault();
+                            const val = e.target.value;
+                            if (val !== rawCellValue(cell)) {
+                              onCellEdit(rowKey, colName, val);
+                            }
+                            let nextCol = cellIndex + (e.shiftKey ? -1 : 1);
+                            while (nextCol >= 0 && nextCol < columns.length && columns[nextCol]?.startsWith("_")) {
+                              nextCol += e.shiftKey ? -1 : 1;
+                            }
+                            if (nextCol >= 0 && nextCol < columns.length) {
+                              onEditingCellChange({ rowIndex, colIndex: nextCol, rowKey, colName: columns[nextCol] });
+                            } else {
+                              onEditingCellChange(null);
+                            }
+                          }
+                        }}
+                      />
+                    ) : isGeoJsonPoint(displayValue) ? (
                       <span className="inline-flex items-center gap-1">
                         <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0 opacity-50">
                           <path d="M6 1C4.067 1 2.5 2.567 2.5 4.5C2.5 7.25 6 11 6 11s3.5-3.75 3.5-6.5C9.5 2.567 7.933 1 6 1Zm0 4.75a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5Z" fill="currentColor"/>
                         </svg>
-                        <span>{formatGeoValue(cell)}</span>
+                        <span>{formatGeoValue(displayValue)}</span>
                       </span>
-                    ) : stringifyCell(cell)}
+                    ) : (displayValue == null || displayValue === "") && Array.isArray(vectorFields) && vectorFields.includes(colName) ? (
+                      <span className="inline-flex items-center gap-1 text-violet-400/70">
+                        <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
+                          <circle cx="3" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
+                          <circle cx="6" cy="3" r="1.5" fill="currentColor" opacity="0.8"/>
+                          <circle cx="9" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
+                          <circle cx="6" cy="9" r="1.5" fill="currentColor" opacity="0.4"/>
+                        </svg>
+                        <span className="text-[11px]">vector</span>
+                      </span>
+                    ) : stringifyCell(displayValue)}
                   </td>
                 );
               })}
@@ -535,7 +609,7 @@ function AttributeEditorRow({ item, onChange, onRemove }) {
   const options = INDEX_OPTIONS_BY_KIND[item?.kind] || [];
 
   return (
-    <div className="grid gap-2 rounded-lg border border-ui-border/80 bg-ui-bg-muted/40 p-3 md:grid-cols-[minmax(0,1.4fr)_150px_minmax(0,1fr)_auto]">
+    <div className="grid gap-2 rounded-lg border border-ui-border/80 bg-ui-bg-muted/40 p-3 md:grid-cols-[minmax(0,1.4fr)_150px_minmax(0,0.8fr)_minmax(0,1fr)_auto]">
       <Input
         value={item?.name || ""}
         onInput={(event) => onChange({ ...item, name: event?.target?.value || "" })}
@@ -546,6 +620,11 @@ function AttributeEditorRow({ item, onChange, onRemove }) {
           <SelectOption key={kind} value={kind} label={kind} />
         ))}
       </Select>
+      <Input
+        value={item?.default_value || ""}
+        onInput={(event) => onChange({ ...item, default_value: event?.target?.value || "" })}
+        placeholder="e.g. UUIDV4()"
+      />
       <div className="flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-dashed border-ui-border px-3 py-2">
         {options.length ? (
           options.map((option) => {
@@ -872,9 +951,23 @@ export default function Page(input) {
   const [relationType, setRelationType] = useState("");
   const [relatedNodeSlug, setRelatedNodeSlug] = useState("");
   const [pendingRelationDelete, setPendingRelationDelete] = useState(null);
+  const [contentTab, setContentTab] = useState("data");
+  const [propsTitle, setPropsTitle] = useState("");
+  const [propsAttributes, setPropsAttributes] = useState([]);
+  const [propsBusy, setPropsBusy] = useState(false);
+  const [propsStatus, setPropsStatus] = useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const grouped = groupTablesBySchema(tables);
   const schemaNames = (schemas.length ? schemas : Array.from(grouped.keys())).sort((a, b) => a.localeCompare(b));
   const activeTable = selectedTableDefinition(tables, selectedTable);
+  const declaredCols = (activeTable?.attributes || []).map((a) => String(a.name || "")).filter(Boolean);
+  const extraCols = declaredCols.filter((name) => !previewColumns.includes(name));
+  const mergedColumns = [...previewColumns, ...extraCols];
+  const mergedRows = extraCols.length
+    ? previewRows.map((row) => [...(Array.isArray(row) ? row : []), ...extraCols.map(() => null)])
+    : previewRows;
 
   async function loadTreeData(preferredTable = "") {
     const [schemasPayload, tablesPayload] = await Promise.all([
@@ -908,24 +1001,28 @@ export default function Page(input) {
     };
   }, [dbApi.schemas, dbApi.tables, reloadToken]);
 
+  async function loadPreviewData(table) {
+    if (!dbApi.preview || !table) return { columns: [], rows: [] };
+    const url = `${dbApi.preview}?table=${encodeURIComponent(table)}&limit=120`;
+    const payload = await requestJson(url);
+    const result = payload?.result || {};
+    const columns = Array.isArray(result?.columns) ? result.columns.map((item) => String(item?.name || "")) : [];
+    const rows = Array.isArray(result?.rows) ? result.rows : [];
+    setPreviewColumns(columns);
+    setPreviewRows(rows);
+    setPreviewError("");
+    return { columns, rows };
+  }
+
   useEffect(() => {
     if (!dbApi.preview || !selectedTable) return;
     let active = true;
-    const url = `${dbApi.preview}?table=${encodeURIComponent(selectedTable)}&limit=120`;
-    requestJson(url)
-      .then((payload) => {
-        if (!active) return;
-        const result = payload?.result || {};
-        setPreviewColumns(Array.isArray(result?.columns) ? result.columns.map((item) => String(item?.name || "")) : []);
-        setPreviewRows(Array.isArray(result?.rows) ? result.rows : []);
-        setPreviewError("");
-      })
-      .catch((error) => {
-        if (!active) return;
-        setPreviewColumns([]);
-        setPreviewRows([]);
-        setPreviewError(String(error?.message || error));
-      });
+    loadPreviewData(selectedTable).catch((error) => {
+      if (!active) return;
+      setPreviewColumns([]);
+      setPreviewRows([]);
+      setPreviewError(String(error?.message || error));
+    });
 
     if (typeof window !== "undefined") {
       const next = new URL(window.location.href);
@@ -939,13 +1036,13 @@ export default function Page(input) {
   }, [dbApi.preview, selectedTable]);
 
   useEffect(() => {
-    if (!activeTable || !previewRows.length) {
+    if (!activeTable || !mergedRows.length) {
       setSelectedPreviewRowKey("");
       setSelectedPreviewRowData(null);
       return;
     }
 
-    const records = previewRows.map((row) => mapRowToObject(previewColumns, row));
+    const records = mergedRows.map((row) => mapRowToObject(mergedColumns, row));
     const existing = records.find((record) => String(record?._key || "") === selectedPreviewRowKey);
     const chosen = existing || records[0] || null;
     if (!chosen) {
@@ -1147,6 +1244,7 @@ export default function Page(input) {
         name: String(item?.name || "").trim(),
         kind: String(item?.kind || "string"),
         index_types: Array.isArray(item?.index_types) ? item.index_types : [],
+        default_value: String(item?.default_value || "").trim() || null,
       }))
       .filter((item) => item.name);
 
@@ -1169,8 +1267,7 @@ export default function Page(input) {
       const createdTable = String(payload?.table?.table || table).trim();
       setCreateStatus(`Created · ${createdTable}`);
       setCreateOpen(false);
-      setReloadToken((value) => value + 1);
-      setSelectedTable(createdTable);
+      await loadTreeData(createdTable);
       setQueryStatus(`Created table '${createdTable}'.`);
     } catch (error) {
       setCreateStatus(`Error · ${String(error?.message || error)}`);
@@ -1239,6 +1336,202 @@ export default function Page(input) {
       setRelationsError(String(error?.message || error));
     }
   }
+
+  // Sync properties form when active table changes
+  useEffect(() => {
+    if (!activeTable) return;
+    setPropsTitle(activeTable.title || activeTable.table || "");
+    setPropsAttributes(
+      (activeTable.attributes || []).map((a) => ({
+        name: a.name || "",
+        kind: a.kind || "string",
+        index_types: Array.isArray(a.index_types) ? [...a.index_types] : [],
+        default_value: a.default_value || "",
+      }))
+    );
+    setPropsStatus("");
+    setContentTab("data");
+  }, [activeTable?.table, activeTable?.updatedAt]);
+
+  async function handleUpdateTable(event) {
+    event?.preventDefault?.();
+    if (!activeTable) return;
+    const attrs = (propsAttributes || [])
+      .map((item) => ({
+        name: String(item?.name || "").trim(),
+        kind: String(item?.kind || "string"),
+        index_types: Array.isArray(item?.index_types) ? item.index_types : [],
+        default_value: String(item?.default_value || "").trim() || null,
+      }))
+      .filter((item) => item.name);
+
+    setPropsBusy(true);
+    setPropsStatus("Saving…");
+    try {
+      await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          title: String(propsTitle || "").trim() || null,
+          attributes: attrs,
+        }),
+      });
+      setPropsStatus("Saved");
+      setReloadToken((v) => v + 1);
+    } catch (error) {
+      setPropsStatus(`Error · ${String(error?.message || error)}`);
+    } finally {
+      setPropsBusy(false);
+    }
+  }
+
+  async function handleDeleteTable() {
+    if (!activeTable) return;
+    setDeleteBusy(true);
+    try {
+      await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
+        method: "DELETE",
+      });
+      setDeleteConfirmOpen(false);
+      setDeleteConfirmInput("");
+      setSelectedTable("");
+      setReloadToken((v) => v + 1);
+    } catch (error) {
+      setPropsStatus(`Delete failed · ${String(error?.message || error)}`);
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  const [totalRowCount, setTotalRowCount] = useState(null);
+  const [countBusy, setCountBusy] = useState(false);
+  const [pendingEdits, setPendingEdits] = useState({});
+  const [editingCell, setEditingCell] = useState(null);
+  const hasPendingEdits = Object.keys(pendingEdits).length > 0;
+
+  async function handleRefreshData() {
+    if (activeTable) {
+      await loadPreviewData(activeTable.table);
+      await loadTreeData(activeTable.table);
+    } else {
+      setReloadToken((v) => v + 1);
+    }
+  }
+
+  function handleCellEdit(rowKey, colName, newValue) {
+    setPendingEdits((prev) => {
+      const rowEdits = { ...(prev[rowKey] || {}), [colName]: newValue };
+      return { ...prev, [rowKey]: rowEdits };
+    });
+  }
+
+  async function handleSaveEdits() {
+    if (!activeTable || !dbApi.query || !hasPendingEdits) return;
+    try {
+      for (const [rowKey, edits] of Object.entries(pendingEdits)) {
+        const setClauses = Object.entries(edits)
+          .map(([col, val]) => {
+            if (val === null || val === "") return `${col} = NULL`;
+            const trimmed = typeof val === "string" ? val.trim() : String(val);
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+              try {
+                const parsed = JSON.parse(trimmed);
+                if (parsed && typeof parsed === "object" && parsed.type && (parsed.coordinates || parsed.geometries)) {
+                  return `${col} = ST_GeomFromGeoJSON('${sqlStringLiteral(trimmed)}')`;
+                }
+              } catch (_) {}
+            }
+            const num = Number(val);
+            if (!isNaN(num) && trimmed !== "") return `${col} = ${num}`;
+            return `${col} = '${sqlStringLiteral(val)}'`;
+          })
+          .join(", ");
+        await runDbQuery(
+          `UPDATE ${activeTable.table} SET ${setClauses} WHERE _key = '${sqlStringLiteral(rowKey)}'`,
+          { readOnly: false, tableName: activeTable.table, limit: 0 },
+        );
+      }
+      setPendingEdits({});
+      setEditingCell(null);
+      await loadPreviewData(activeTable.table);
+    } catch (error) {
+      setQueryStatus(`Save failed · ${String(error?.message || error)}`);
+    }
+  }
+
+  function handleCancelEdits() {
+    setPendingEdits({});
+    setEditingCell(null);
+  }
+
+  async function handleAddRow() {
+    if (!activeTable || !dbApi.query) return;
+    try {
+      const uid = crypto.randomUUID();
+      await runDbQuery(`INSERT INTO ${activeTable.table} (_key) VALUES ('${uid}')`, { readOnly: false, tableName: activeTable.table, limit: 0 });
+      const { rows } = await loadPreviewData(activeTable.table);
+      await loadTreeData(activeTable.table);
+      if (rows.length) {
+        const cols = mergedColumns.length ? mergedColumns : (activeTable.attributes || []).map((a) => a.name);
+        const keyIdx = cols.indexOf("_key");
+        const match = keyIdx >= 0 ? rows.find((r) => Array.isArray(r) && String(r[keyIdx]) === uid) : rows[rows.length - 1];
+        const found = match || rows[rows.length - 1];
+        const record = mapRowToObject(cols, Array.isArray(found) ? found : []);
+        setSelectedPreviewRowKey(uid);
+        setSelectedPreviewRowData(record);
+      }
+    } catch (error) {
+      setQueryStatus(`Insert failed · ${String(error?.message || error)}`);
+    }
+  }
+
+  async function handleDeleteSelectedRow() {
+    if (!activeTable || !selectedPreviewRowData) return;
+    const key = String(selectedPreviewRowData?._key || "").trim();
+    if (!key) {
+      setQueryStatus("Cannot delete · row has no _key");
+      return;
+    }
+    try {
+      await runDbQuery(`DELETE FROM ${activeTable.table} WHERE _key = '${sqlStringLiteral(key)}'`, { readOnly: false, tableName: activeTable.table, limit: 0 });
+      setSelectedPreviewRowKey("");
+      setSelectedPreviewRowData(null);
+      await loadPreviewData(activeTable.table);
+      await loadTreeData(activeTable.table);
+    } catch (error) {
+      setQueryStatus(`Delete failed · ${String(error?.message || error)}`);
+    }
+  }
+
+  async function handleCountRows() {
+    if (!activeTable || !dbApi.query) return;
+    setCountBusy(true);
+    try {
+      const res = await runDbQuery(`SELECT COUNT(*) AS cnt FROM ${activeTable.table}`, { readOnly: true, tableName: activeTable.table, limit: 1 });
+      const cnt = Number(res.objects?.[0]?.cnt ?? res.rows?.[0]?.[0] ?? 0);
+      setTotalRowCount(cnt);
+    } catch {
+      setTotalRowCount(null);
+    } finally {
+      setCountBusy(false);
+    }
+  }
+
+  function handleExportCsv() {
+    if (!mergedColumns.length || !mergedRows.length) return;
+    const escCsv = (v) => {
+      const s = String(v ?? "");
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = mergedColumns.map(escCsv).join(",");
+    const body = mergedRows.map((row) => (Array.isArray(row) ? row : []).map((cell) => escCsv(typeof cell === "object" ? JSON.stringify(cell) : cell)).join(",")).join("\n");
+    const blob = new Blob([header + "\n" + body], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), { href: url, download: `${activeTable?.table || "export"}.csv` });
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  useEffect(() => { setTotalRowCount(null); }, [selectedTable]);
 
   const activeTableName = activeTable?.table || selectedTable.split(".").pop() || "";
   const indexCount = activeTable
@@ -1397,15 +1690,164 @@ export default function Page(input) {
                               ) : null}
                             </div>
 
+                            {activeTable ? (
+                              <div className="flex items-center gap-1 border-b border-ui-border/70 px-3">
+                                <button
+                                  type="button"
+                                  className={cx(
+                                    "px-3 py-1.5 text-xs font-medium transition-colors",
+                                    contentTab === "data"
+                                      ? "border-b-2 border-ui-text text-ui-text"
+                                      : "text-ui-text-soft hover:text-ui-text"
+                                  )}
+                                  onClick={() => setContentTab("data")}
+                                >
+                                  Data
+                                </button>
+                                <button
+                                  type="button"
+                                  className={cx(
+                                    "px-3 py-1.5 text-xs font-medium transition-colors",
+                                    contentTab === "properties"
+                                      ? "border-b-2 border-ui-text text-ui-text"
+                                      : "text-ui-text-soft hover:text-ui-text"
+                                  )}
+                                  onClick={() => setContentTab("properties")}
+                                >
+                                  Properties
+                                </button>
+                              </div>
+                            ) : null}
+
+                            {contentTab === "properties" && activeTable ? (
+                              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+                                <form onSubmit={handleUpdateTable} className="flex flex-col gap-5">
+                                  <Field>
+                                    <label className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Title</label>
+                                    <Input
+                                      value={propsTitle}
+                                      onInput={(e) => setPropsTitle(e.currentTarget.value)}
+                                      placeholder={activeTable.table}
+                                    />
+                                  </Field>
+
+                                  <div className="flex flex-col gap-3">
+                                    <div className="flex items-center justify-between">
+                                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Attributes</p>
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() =>
+                                          setPropsAttributes((prev) => [
+                                            ...prev,
+                                            { ...DEFAULT_ATTRIBUTE },
+                                          ])
+                                        }
+                                      >
+                                        Add Attribute
+                                      </Button>
+                                    </div>
+                                    {propsAttributes.length === 0 ? (
+                                      <p className="text-xs text-ui-text-soft">No attributes defined yet.</p>
+                                    ) : (
+                                      propsAttributes.map((attr, idx) => (
+                                        <AttributeEditorRow
+                                          key={idx}
+                                          item={attr}
+                                          onChange={(next) =>
+                                            setPropsAttributes((prev) =>
+                                              prev.map((a, i) => (i === idx ? next : a))
+                                            )
+                                          }
+                                          onRemove={() =>
+                                            setPropsAttributes((prev) =>
+                                              prev.filter((_, i) => i !== idx)
+                                            )
+                                          }
+                                        />
+                                      ))
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-3">
+                                    <Button type="submit" size="sm" disabled={propsBusy}>
+                                      {propsBusy ? "Saving…" : "Save Changes"}
+                                    </Button>
+                                    {propsStatus ? (
+                                      <span className="text-xs text-ui-text-soft">{propsStatus}</span>
+                                    ) : null}
+                                  </div>
+                                </form>
+
+                                <div className="mt-8 rounded-lg border border-red-300/60 bg-red-50/30 p-4 dark:border-red-800/50 dark:bg-red-950/20">
+                                  <p className="text-sm font-medium text-red-700 dark:text-red-400">Danger Zone</p>
+                                  <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/70">
+                                    Permanently delete this table and all its data. This action cannot be undone.
+                                  </p>
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="mt-3 border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+                                    onClick={() => {
+                                      setDeleteConfirmInput("");
+                                      setDeleteConfirmOpen(true);
+                                    }}
+                                  >
+                                    Delete Table
+                                  </Button>
+                                </div>
+
+                                {deleteConfirmOpen ? (
+                                  <Dialog open onOpenChange={(v) => { if (!v) setDeleteConfirmOpen(false); }}>
+                                    <DialogContent onKeyDown={(e) => e.stopPropagation()}>
+                                      <DialogHeader>
+                                        <DialogTitle>Delete Table</DialogTitle>
+                                      </DialogHeader>
+                                      <div className="flex flex-col gap-3 py-2">
+                                        <p className="text-sm text-ui-text-soft">
+                                          This will permanently delete <strong>{activeTable.table}</strong> and all its rows. Type the table name to confirm.
+                                        </p>
+                                        <Input
+                                          value={deleteConfirmInput}
+                                          onInput={(e) => setDeleteConfirmInput(e.currentTarget.value)}
+                                          placeholder={activeTable.table}
+                                        />
+                                      </div>
+                                      <DialogFooter>
+                                        <Button
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => setDeleteConfirmOpen(false)}
+                                        >
+                                          Cancel
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          disabled={deleteConfirmInput !== activeTable.table || deleteBusy}
+                                          className="bg-red-600 text-white hover:bg-red-700 disabled:opacity-40"
+                                          onClick={handleDeleteTable}
+                                        >
+                                          {deleteBusy ? "Deleting…" : "Delete"}
+                                        </Button>
+                                      </DialogFooter>
+                                    </DialogContent>
+                                  </Dialog>
+                                ) : null}
+                              </div>
+                            ) : (
                             <div className="db-suite-grid-wrap">
                               {!activeTable ? (
                                 <div className="flex h-full min-h-[14rem] items-center justify-center text-sm text-ui-text-soft">
                                   Select a table to inspect its data and structure.
                                 </div>
-                              ) : previewRows.length ? (
+                              ) : mergedRows.length ? (
                                 <ResizableDataGrid
-                                  columns={previewColumns}
-                                  rows={previewRows}
+                                  columns={mergedColumns}
+                                  rows={mergedRows}
                                   selectedRowKey={selectedPreviewRowKey}
                                   onRowSelect={(key, record) => {
                                     setSelectedPreviewRowKey(key);
@@ -1413,6 +1855,11 @@ export default function Page(input) {
                                   }}
                                   onCellInspect={onCellInspect}
                                   mapRowToObject={mapRowToObject}
+                                  editingCell={editingCell}
+                                  pendingEdits={pendingEdits}
+                                  onEditingCellChange={setEditingCell}
+                                  onCellEdit={handleCellEdit}
+                                  vectorFields={activeTable?.vectorFields}
                                 />
                               ) : (
                                 <div className="flex min-h-full flex-col">
@@ -1439,10 +1886,43 @@ export default function Page(input) {
                                   </div>
                                 </div>
                               )}
+                              {activeTable ? (
+                                <div className="flex shrink-0 items-center gap-1 border-t border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1">
+                                  <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft"}`} disabled={!hasPendingEdits} onClick={handleSaveEdits}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="M13 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7.586a1 1 0 0 1 .707.293l2.414 2.414a1 1 0 0 1 .293.707V13a1 1 0 0 1-1 1Z"/><path d="M5 14V9h6v5M5 2v3h4"/></svg>
+                                    Save
+                                  </button>
+                                  <button type="button" title="Cancel changes" className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!hasPendingEdits} onClick={handleCancelEdits}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+                                    Cancel
+                                  </button>
+                                  <span className="mx-0.5 h-3 w-px bg-ui-border/60" />
+                                  <button type="button" title="Add row" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text" onClick={handleAddRow}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 3v10M3 8h10"/></svg>
+                                  </button>
+                                  <button type="button" title="Delete selected row" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-red-500 disabled:opacity-30" disabled={!selectedPreviewRowData} onClick={handleDeleteSelectedRow}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M3 8h10"/></svg>
+                                  </button>
+                                  <span className="mx-0.5 h-3 w-px bg-ui-border/60" />
+                                  <button type="button" title="Export CSV" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!mergedRows.length} onClick={handleExportCsv}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 2v8M4 7l4 4 4-4M2 13h12"/></svg>
+                                  </button>
+                                  <button type="button" title="Calculate total row count" className={cx("rounded p-1 hover:bg-ui-bg-muted", countBusy ? "animate-pulse text-ui-text" : "text-ui-text-soft hover:text-ui-text")} onClick={handleCountRows}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13 3H3v10h10V3ZM6 6h4M6 8h4M6 10h2"/></svg>
+                                  </button>
+                                  <button type="button" title="Refresh" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text" onClick={handleRefreshData}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13.5 8A5.5 5.5 0 1 1 8 2.5M13.5 2.5v3h-3"/></svg>
+                                  </button>
+                                  <span className="ml-auto text-[10px] tabular-nums text-ui-text-soft">
+                                    {totalRowCount !== null ? `${totalRowCount} rows` : `${mergedRows.length} loaded`}
+                                  </span>
+                                </div>
+                              ) : null}
                             </div>
+                            )}
                           </div>
 
-                          {activeTable && previewRows.length ? (
+                          {contentTab === "data" && activeTable && mergedRows.length ? (
                             <div className="border-t border-ui-border/70 bg-ui-bg-muted/15 px-3 py-3">
                               <div className="mb-3 flex items-center justify-between gap-3">
                                 <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">
@@ -1497,6 +1977,7 @@ export default function Page(input) {
                                 </div>
                               ) : null}
 
+                              {activeTable ? (
                               <div className="grid grid-cols-2 gap-2 text-xs uppercase tracking-[0.12em] text-ui-text-soft">
                                 <span>Rows</span>
                                 <span className="text-right">{activeTable.rowCount || 0}</span>
@@ -1507,16 +1988,17 @@ export default function Page(input) {
                                 <span>Slug</span>
                                 <span className="truncate text-right normal-case tracking-normal text-ui-text">{activeTable.table}</span>
                               </div>
+                              ) : null}
 
                               <div className="space-y-2">
                                 <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Fields</p>
-                                {schemaRows.length || activeTable.attributes.length ? (
+                                {schemaRows.length || activeTable?.attributes.length ? (
                                   <div className="flex flex-wrap gap-2">
                                     {(schemaRows.length
                                       ? schemaRows.map((row, index) => ({
                                           name: String(Array.isArray(row) ? row[0] ?? `field_${index + 1}` : `field_${index + 1}`),
                                         }))
-                                      : activeTable.attributes.map((attr) => ({ name: String(attr?.name || "") }))
+                                      : (activeTable?.attributes || []).map((attr) => ({ name: String(attr?.name || "") }))
                                     )
                                       .filter((item) => item.name && !item.name.startsWith("_"))
                                       .map((item) => (

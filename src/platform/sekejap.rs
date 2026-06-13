@@ -8,8 +8,8 @@ use serde_json::{Map, Value, json};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn,
-    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition, now_ts,
-    slug_segment,
+    ProjectDbConnectionQueryResult, QueryProjectDbConnectionRequest, SimpleTableDefinition,
+    UpdateSimpleTableRequest, now_ts, slug_segment,
 };
 
 // ── CoreDB connection pool ───────────────────────────────────────────────────
@@ -25,7 +25,11 @@ fn pool() -> &'static Mutex<DbPool> {
     POOL.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn get_db(data_root: &Path, owner: &str, project: &str) -> Result<Arc<RwLock<sekejap::CoreDB>>, PlatformError> {
+fn get_db(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<Arc<RwLock<sekejap::CoreDB>>, PlatformError> {
     let dir = ensure_project_dir(data_root, owner, project)?;
     let mut map = pool().lock().unwrap();
     if let Some(db) = map.get(&dir) {
@@ -69,7 +73,6 @@ fn ensure_project_dir(
     Ok(dir)
 }
 
-
 fn load_catalog(
     data_root: &Path,
     owner: &str,
@@ -110,7 +113,7 @@ fn save_catalog(
 
 fn map_declared_kind(kind: &str) -> &'static str {
     match kind {
-        "number" => "real",
+        "number" | "real" | "integer" => "number",
         "text" => "text",
         "boolean" => "boolean",
         "json" => "json",
@@ -122,7 +125,7 @@ fn map_declared_kind(kind: &str) -> &'static str {
 
 fn map_field_type(kind: &str) -> &'static str {
     match kind {
-        "number" => "REAL",
+        "number" | "real" => "REAL",
         "text" => "TEXT",
         "boolean" => "JSON",
         "json" => "JSON",
@@ -165,10 +168,14 @@ fn normalize_definition(
 
     let mut attrs = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut has_user_key = false;
     for attr in &req.attributes {
         let name = slug_segment(&attr.name);
-        if name.is_empty() || name == "_key" || !seen.insert(name.clone()) {
+        if name.is_empty() || !seen.insert(name.clone()) {
             continue;
+        }
+        if name == "_key" {
+            has_user_key = true;
         }
         let kind = map_declared_kind(&slug_segment(&attr.kind)).to_string();
         let mut index_types = Vec::new();
@@ -179,11 +186,29 @@ fn normalize_definition(
             }
             index_types.push(key);
         }
+        let default_value = attr
+            .default_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
         attrs.push(CollectionAttribute {
             name,
             kind,
             index_types,
+            default_value,
         });
+    }
+    if !has_user_key {
+        attrs.insert(
+            0,
+            CollectionAttribute {
+                name: "_key".to_string(),
+                kind: "string".to_string(),
+                index_types: Vec::new(),
+                default_value: Some("UUIDV4()".to_string()),
+            },
+        );
     }
 
     let hash_indexed_fields = collect_index_fields(&attrs, &req.hash_indexed_fields, "hash");
@@ -216,9 +241,17 @@ fn normalize_definition(
 }
 
 fn build_create_table_sql(def: &SimpleTableDefinition) -> String {
-    let mut columns = vec!["_key TEXT PRIMARY KEY".to_string()];
+    let mut columns = Vec::new();
     for attr in &def.attributes {
-        columns.push(format!("{} {}", attr.name, map_field_type(&attr.kind)));
+        let mut col = if attr.name == "_key" {
+            format!("_key {} PRIMARY KEY", map_field_type(&attr.kind))
+        } else {
+            format!("{} {}", attr.name, map_field_type(&attr.kind))
+        };
+        if let Some(ref dv) = attr.default_value {
+            col.push_str(&format!(" DEFAULT {dv}"));
+        }
+        columns.push(col);
     }
     format!("CREATE TABLE {} ({})", def.collection, columns.join(", "))
 }
@@ -234,6 +267,127 @@ fn row_count_for_collection(db: &sekejap::CoreDB, collection: &str) -> usize {
     db.collection(collection).count()
 }
 
+fn field_type_to_kind(ty: &sekejap::sql::FieldType) -> &'static str {
+    match ty {
+        sekejap::sql::FieldType::Text => "string",
+        sekejap::sql::FieldType::Integer => "number",
+        sekejap::sql::FieldType::Real => "number",
+        sekejap::sql::FieldType::Timestamptz => "number",
+        sekejap::sql::FieldType::Geo => "geo",
+        sekejap::sql::FieldType::Vector => "vector",
+        sekejap::sql::FieldType::Json => "json",
+    }
+}
+
+fn infer_kind_from_value(val: &Value) -> &'static str {
+    match val {
+        Value::String(_) => "string",
+        Value::Number(_) => "number",
+        Value::Bool(_) => "boolean",
+        Value::Object(obj) => {
+            if obj.contains_key("type") && obj.contains_key("coordinates") {
+                "geo"
+            } else {
+                "json"
+            }
+        }
+        Value::Array(_) => "json",
+        Value::Null => "string",
+    }
+}
+
+fn backfill_from_sample(db: &sekejap::CoreDB, collection: &str) -> Vec<CollectionAttribute> {
+    let hits: Vec<sekejap::Hit> = db.collection(collection).take(1).collect();
+    let payload = match hits.first().and_then(|h| h.payload.as_ref()) {
+        Some(Value::Object(map)) => map,
+        _ => return Vec::new(),
+    };
+    payload
+        .keys()
+        .filter(|k| !k.starts_with('_'))
+        .map(|k| CollectionAttribute {
+            name: k.clone(),
+            kind: infer_kind_from_value(&payload[k]).to_string(),
+            index_types: Vec::new(),
+            default_value: None,
+        })
+        .collect()
+}
+
+fn backfill_from_schema(
+    db: &sekejap::CoreDB,
+    collection: &str,
+) -> (
+    Vec<CollectionAttribute>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+    Vec<String>,
+) {
+    let schema = match db.table_schema(collection) {
+        Some(s) => s,
+        None => {
+            let attrs = backfill_from_sample(db, collection);
+            return (
+                attrs,
+                vec!["_key".to_string()],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    };
+
+    let attrs: Vec<CollectionAttribute> = schema
+        .fields
+        .iter()
+        .filter(|f| !f.name.starts_with('_'))
+        .map(|f| {
+            let kind = field_type_to_kind(&f.ty).to_string();
+            let mut index_types = Vec::new();
+            if schema.indexes.hash.contains(&f.name) {
+                index_types.push("hash".to_string());
+            }
+            if schema.indexes.range.contains(&f.name) {
+                index_types.push("range".to_string());
+            }
+            if schema.indexes.fulltext.contains(&f.name) || schema.indexes.bm25.contains(&f.name) {
+                index_types.push("fulltext".to_string());
+            }
+            if schema.indexes.vector.contains(&f.name) {
+                index_types.push("vector".to_string());
+            }
+            if schema.indexes.spatial.contains(&f.name) {
+                index_types.push("spatial".to_string());
+            }
+            CollectionAttribute {
+                name: f.name.clone(),
+                kind,
+                index_types,
+                default_value: None,
+            }
+        })
+        .collect();
+
+    let hash = schema.indexes.hash.clone();
+    let range = schema.indexes.range.clone();
+    let fulltext = {
+        let mut v = schema.indexes.fulltext.clone();
+        for f in &schema.indexes.bm25 {
+            if !v.contains(f) {
+                v.push(f.clone());
+            }
+        }
+        v
+    };
+    let vector = schema.indexes.vector.clone();
+    let spatial = schema.indexes.spatial.clone();
+
+    (attrs, hash, range, fulltext, vector, spatial)
+}
+
 fn merge_catalog_with_live(
     db: &sekejap::CoreDB,
     mut defs: Vec<SimpleTableDefinition>,
@@ -241,6 +395,19 @@ fn merge_catalog_with_live(
     let mut by_table = BTreeMap::new();
     for mut def in defs.drain(..) {
         def.row_count = row_count_for_collection(db, &def.collection);
+        if def.attributes.is_empty() {
+            let (attrs, hash, range, fulltext, vector, spatial) =
+                backfill_from_schema(db, &def.collection);
+            def.attributes = attrs;
+            def.hash_indexed_fields = hash;
+            def.range_indexed_fields = range;
+            def.fulltext_fields = fulltext;
+            def.vector_fields = vector;
+            def.spatial_fields = spatial;
+        }
+        for attr in &mut def.attributes {
+            attr.kind = map_declared_kind(&attr.kind).to_string();
+        }
         by_table.insert(def.table.clone(), def);
     }
 
@@ -250,18 +417,19 @@ fn merge_catalog_with_live(
             continue;
         }
         let collection_name = collection.clone();
+        let (attrs, hash, range, fulltext, vector, spatial) = backfill_from_schema(db, &collection);
         by_table.insert(
             table.clone(),
             SimpleTableDefinition {
                 table: table.clone(),
                 title: table.clone(),
                 collection,
-                attributes: Vec::new(),
-                hash_indexed_fields: vec!["_key".to_string()],
-                range_indexed_fields: Vec::new(),
-                fulltext_fields: Vec::new(),
-                vector_fields: Vec::new(),
-                spatial_fields: Vec::new(),
+                attributes: attrs,
+                hash_indexed_fields: hash,
+                range_indexed_fields: range,
+                fulltext_fields: fulltext,
+                vector_fields: vector,
+                spatial_fields: spatial,
                 row_count: row_count_for_collection(db, &collection_name),
                 created_at: 0,
                 updated_at: 0,
@@ -335,6 +503,202 @@ pub fn create_table(
     let mut created = def;
     created.row_count = row_count_for_collection(&db, &created.collection);
     Ok(created)
+}
+
+pub fn delete_table(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    table: &str,
+) -> Result<(), PlatformError> {
+    let table_slug = slug_segment(table);
+    if table_slug.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_INVALID",
+            "table slug must not be empty",
+        ));
+    }
+
+    let mut defs = load_catalog(data_root, owner, project)?;
+    let pos = defs.iter().position(|d| d.table == table_slug);
+    let def = match pos {
+        Some(i) => defs.remove(i),
+        None => {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
+                format!("table '{}' not found", table_slug),
+            ));
+        }
+    };
+
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    let _ = db.execute(&format!("DROP TABLE {}", def.collection));
+
+    save_catalog(data_root, owner, project, &defs)?;
+    Ok(())
+}
+
+pub fn update_table(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    table: &str,
+    req: &UpdateSimpleTableRequest,
+) -> Result<SimpleTableDefinition, PlatformError> {
+    let table_slug = slug_segment(table);
+    if table_slug.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_INVALID",
+            "table slug must not be empty",
+        ));
+    }
+
+    let mut defs = load_catalog(data_root, owner, project)?;
+    let pos = defs.iter().position(|d| d.table == table_slug);
+    let idx = match pos {
+        Some(i) => i,
+        None => {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_TABLE_NOT_FOUND",
+                format!("table '{}' not found", table_slug),
+            ));
+        }
+    };
+
+    let existing = &defs[idx];
+
+    let mut attrs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for attr in &req.attributes {
+        let name = slug_segment(&attr.name);
+        if name.is_empty() || !seen.insert(name.clone()) {
+            continue;
+        }
+        let kind = map_declared_kind(&slug_segment(&attr.kind)).to_string();
+        let mut index_types = Vec::new();
+        for item in &attr.index_types {
+            let key = slug_segment(item);
+            if key.is_empty() || index_types.iter().any(|existing| existing == &key) {
+                continue;
+            }
+            index_types.push(key);
+        }
+        let default_value = attr
+            .default_value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string);
+        attrs.push(CollectionAttribute {
+            name,
+            kind,
+            index_types,
+            default_value,
+        });
+    }
+
+    let hash_indexed_fields = collect_index_fields(&attrs, &req.hash_indexed_fields, "hash");
+    let range_indexed_fields = collect_index_fields(&attrs, &req.range_indexed_fields, "range");
+    let fulltext_fields = collect_index_fields(&attrs, &[], "fulltext");
+    let vector_fields = collect_index_fields(&attrs, &[], "vector");
+    let spatial_fields = collect_index_fields(&attrs, &[], "spatial");
+
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&existing.title)
+        .to_string();
+
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+
+    // Add new columns that don't exist yet.
+    let old_names: BTreeSet<String> = existing.attributes.iter().map(|a| a.name.clone()).collect();
+    for attr in &attrs {
+        if !old_names.contains(&attr.name) {
+            let sql = format!(
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                existing.collection,
+                attr.name,
+                map_field_type(&attr.kind)
+            );
+            let _ = db.execute(&sql);
+        }
+    }
+
+    // Rebuild indexes: drop all then recreate.
+    for field in &existing.hash_indexed_fields {
+        let _ = db.execute(&format!(
+            "DROP INDEX ON {} USING hash ({})",
+            existing.collection, field
+        ));
+    }
+    for field in &existing.range_indexed_fields {
+        let _ = db.execute(&format!(
+            "DROP INDEX ON {} USING btree ({})",
+            existing.collection, field
+        ));
+    }
+    for field in &existing.fulltext_fields {
+        let _ = db.execute(&format!(
+            "DROP INDEX ON {} USING gist ({})",
+            existing.collection, field
+        ));
+    }
+    for field in &existing.vector_fields {
+        let _ = db.execute(&format!(
+            "DROP INDEX ON {} USING hnsw ({})",
+            existing.collection, field
+        ));
+    }
+    for field in &existing.spatial_fields {
+        let _ = db.execute(&format!(
+            "DROP INDEX ON {} USING spatial ({})",
+            existing.collection, field
+        ));
+    }
+
+    for field in &hash_indexed_fields {
+        if field == "_key" {
+            continue;
+        }
+        let _ = db.execute(&build_index_sql(&existing.collection, "hash", field));
+    }
+    for field in &range_indexed_fields {
+        let _ = db.execute(&build_index_sql(&existing.collection, "btree", field));
+    }
+    for field in &fulltext_fields {
+        let _ = db.execute(&build_index_sql(&existing.collection, "gist", field));
+    }
+    for field in &vector_fields {
+        let _ = db.execute(&build_index_sql(&existing.collection, "hnsw", field));
+    }
+    for field in &spatial_fields {
+        let _ = db.execute(&build_index_sql(&existing.collection, "spatial", field));
+    }
+
+    let updated = SimpleTableDefinition {
+        table: existing.table.clone(),
+        title,
+        collection: existing.collection.clone(),
+        attributes: attrs,
+        hash_indexed_fields,
+        range_indexed_fields,
+        fulltext_fields,
+        vector_fields,
+        spatial_fields,
+        row_count: row_count_for_collection(&db, &existing.collection),
+        created_at: existing.created_at,
+        updated_at: now_ts(),
+    };
+
+    defs[idx] = updated.clone();
+    save_catalog(data_root, owner, project, &defs)?;
+
+    Ok(updated)
 }
 
 fn table_to_node(def: &SimpleTableDefinition) -> DbObjectNode {
@@ -486,7 +850,11 @@ fn statement_is_explain_analyze(sql: &str) -> bool {
 
 /// Strip the `EXPLAIN [ANALYZE]` prefix and return the inner SQL.
 fn strip_explain_prefix(sql: &str) -> &str {
-    let rest = sql.trim_start().strip_prefix("EXPLAIN").unwrap_or(sql).trim_start();
+    let rest = sql
+        .trim_start()
+        .strip_prefix("EXPLAIN")
+        .unwrap_or(sql)
+        .trim_start();
     // Also strip ANALYZE if present
     rest.strip_prefix("ANALYZE")
         .or_else(|| rest.strip_prefix("analyze"))
@@ -745,6 +1113,7 @@ mod tests {
                 name: "title".to_string(),
                 kind: "string".to_string(),
                 index_types: vec!["hash".to_string()],
+                default_value: None,
             }],
             hash_indexed_fields: Vec::new(),
             range_indexed_fields: Vec::new(),
@@ -773,6 +1142,7 @@ mod tests {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
+                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -820,6 +1190,7 @@ mod tests {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
+                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -850,11 +1221,13 @@ mod tests {
                         name: "title".to_string(),
                         kind: "string".to_string(),
                         index_types: Vec::new(),
+                        default_value: None,
                     },
                     CollectionAttribute {
                         name: "views".to_string(),
                         kind: "number".to_string(),
                         index_types: Vec::new(),
+                        default_value: None,
                     },
                 ],
                 hash_indexed_fields: Vec::new(),
@@ -888,6 +1261,7 @@ mod tests {
                     name: "name".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
+                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
@@ -935,6 +1309,7 @@ mod tests {
                     name: "title".to_string(),
                     kind: "string".to_string(),
                     index_types: Vec::new(),
+                    default_value: None,
                 }],
                 hash_indexed_fields: Vec::new(),
                 range_indexed_fields: Vec::new(),
