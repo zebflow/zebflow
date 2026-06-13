@@ -1,6 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#229ED9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-  <polyline points="14 2 14 8 20 8"/>
-  <line x1="16" y1="13" x2="8" y2="13"/>
-  <line x1="16" y1="17" x2="8" y2="17"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ns1="http://www.inkscape.org/namespaces/inkscape" xmlns:ns2="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:ns4="http://creativecommons.org/ns#" xmlns:ns6="http://www.w3.org/1999/xlink">
+  <g id="telegram" transform="translate(4.1419 2.1426) scale(1.571445)">
+    <path d="M 8 29 L 58 10 L 44 56 L 31 37 Z" fill="none" stroke="#30384a" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M 58 10 L 31 37" fill="none" stroke="#e2a35b" stroke-width="6" stroke-linecap="round"/>
+  </g>
+  <g id="document" transform="translate(77.3846 77.3846) scale(0.769231)">
+    <path d="M 17 10 H 47 V 54 H 17 Z" fill="none" stroke="#e2a35b" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M 25 24 H 39 M 25 35 H 39 M 25 46 H 34" fill="none" stroke="#e2a35b" stroke-width="6" stroke-linecap="round"/>
+  </g>
 </svg>
