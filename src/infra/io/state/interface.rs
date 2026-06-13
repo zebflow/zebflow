@@ -239,9 +239,17 @@ pub trait StateBus: Send + Sync {
     // ── Durable KV operations (SQLite-backed, survive restart) ─────────────
 
     /// Read one namespaced key from durable storage.
-    fn durable_get(&self, owner: &str, project: &str, key: &str) -> Result<Option<Value>, StateBusError> {
+    fn durable_get(
+        &self,
+        owner: &str,
+        project: &str,
+        key: &str,
+    ) -> Result<Option<Value>, StateBusError> {
         let _ = (owner, project, key);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 
     /// Set one namespaced key in durable storage with an optional TTL in seconds.
@@ -254,13 +262,19 @@ pub trait StateBus: Send + Sync {
         ttl_secs: Option<u64>,
     ) -> Result<(), StateBusError> {
         let _ = (owner, project, key, value, ttl_secs);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 
     /// Check whether one namespaced key exists in durable storage.
     fn durable_exists(&self, owner: &str, project: &str, key: &str) -> Result<bool, StateBusError> {
         let _ = (owner, project, key);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 
     /// Update the TTL of an existing key in durable storage.
@@ -272,7 +286,10 @@ pub trait StateBus: Send + Sync {
         ttl_secs: Option<u64>,
     ) -> Result<bool, StateBusError> {
         let _ = (owner, project, key, ttl_secs);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 
     /// Atomically increment one integer key in durable storage.
@@ -284,13 +301,19 @@ pub trait StateBus: Send + Sync {
         amount: i64,
     ) -> Result<i64, StateBusError> {
         let _ = (owner, project, key, amount);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 
     /// Delete one namespaced key from durable storage.
     fn durable_del(&self, owner: &str, project: &str, key: &str) -> Result<bool, StateBusError> {
         let _ = (owner, project, key);
-        Err(StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage not available"))
+        Err(StateBusError::new(
+            "STATE_BUS_NO_DURABLE",
+            "durable storage not available",
+        ))
     }
 }
 

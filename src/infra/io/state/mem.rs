@@ -90,12 +90,18 @@ impl MemStateBus {
             return Ok(db);
         }
         let path = self.durable_path.as_ref().ok_or_else(|| {
-            StateBusError::new("STATE_BUS_NO_DURABLE", "durable storage path not configured")
+            StateBusError::new(
+                "STATE_BUS_NO_DURABLE",
+                "durable storage path not configured",
+            )
         })?;
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                StateBusError::new("STATE_BUS_DURABLE_INIT", format!("failed to create dir: {e}"))
+                StateBusError::new(
+                    "STATE_BUS_DURABLE_INIT",
+                    format!("failed to create dir: {e}"),
+                )
             })?;
         }
         let conn = Connection::open(path).map_err(|e| {
@@ -109,9 +115,13 @@ impl MemStateBus {
                  value TEXT NOT NULL,
                  expires_at INTEGER,
                  PRIMARY KEY (namespace, key)
-             );"
-        ).map_err(|e| {
-            StateBusError::new("STATE_BUS_DURABLE_INIT", format!("failed to init schema: {e}"))
+             );",
+        )
+        .map_err(|e| {
+            StateBusError::new(
+                "STATE_BUS_DURABLE_INIT",
+                format!("failed to init schema: {e}"),
+            )
         })?;
         let arc = Arc::new(Mutex::new(conn));
         // If another thread raced us, get() will return their value; ours is dropped.
@@ -237,11 +247,18 @@ impl StateBus for MemStateBus {
 
     // ── Durable KV (SQLite-backed) ─────────────────────────────────────────
 
-    fn durable_get(&self, owner: &str, project: &str, key: &str) -> Result<Option<Value>, StateBusError> {
+    fn durable_get(
+        &self,
+        owner: &str,
+        project: &str,
+        key: &str,
+    ) -> Result<Option<Value>, StateBusError> {
         self.validate_namespace(owner, project)?;
         self.validate_key(key)?;
         let db = self.db()?;
-        let conn = db.lock().map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let conn = db
+            .lock()
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
         let now = Self::now_unix();
         let result: Result<String, _> = conn.query_row(
@@ -270,7 +287,9 @@ impl StateBus for MemStateBus {
         self.validate_namespace(owner, project)?;
         self.validate_key(key)?;
         let db = self.db()?;
-        let conn = db.lock().map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let conn = db
+            .lock()
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
         let json_str = serde_json::to_string(&value).unwrap_or_else(|_| "null".to_string());
         let expires_at: Option<i64> = ttl_secs
@@ -279,7 +298,8 @@ impl StateBus for MemStateBus {
         conn.execute(
             "INSERT OR REPLACE INTO kv (namespace, key, value, expires_at) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![ns, key, json_str, expires_at],
-        ).map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        )
+        .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         Ok(())
     }
 
@@ -297,12 +317,12 @@ impl StateBus for MemStateBus {
         self.validate_namespace(owner, project)?;
         self.validate_key(key)?;
         let db = self.db()?;
-        let conn = db.lock().map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let conn = db
+            .lock()
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
         let now = Self::now_unix();
-        let new_expires: Option<i64> = ttl_secs
-            .filter(|&t| t > 0)
-            .map(|t| now + t as i64);
+        let new_expires: Option<i64> = ttl_secs.filter(|&t| t > 0).map(|t| now + t as i64);
         let affected = conn.execute(
             "UPDATE kv SET expires_at = ?1 WHERE namespace = ?2 AND key = ?3 AND (expires_at IS NULL OR expires_at > ?4)",
             rusqlite::params![new_expires, ns, key, now],
@@ -320,7 +340,9 @@ impl StateBus for MemStateBus {
         self.validate_namespace(owner, project)?;
         self.validate_key(key)?;
         let db = self.db()?;
-        let conn = db.lock().map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let conn = db
+            .lock()
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
         let now = Self::now_unix();
         // Read current value
@@ -345,12 +367,16 @@ impl StateBus for MemStateBus {
         self.validate_namespace(owner, project)?;
         self.validate_key(key)?;
         let db = self.db()?;
-        let conn = db.lock().map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let conn = db
+            .lock()
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         let ns = Self::namespace(owner, project);
-        let affected = conn.execute(
-            "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",
-            rusqlite::params![ns, key],
-        ).map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
+        let affected = conn
+            .execute(
+                "DELETE FROM kv WHERE namespace = ?1 AND key = ?2",
+                rusqlite::params![ns, key],
+            )
+            .map_err(|e| StateBusError::new("STATE_BUS_DURABLE", e.to_string()))?;
         Ok(affected > 0)
     }
 }
@@ -446,24 +472,48 @@ mod tests {
         let bus = MemStateBus::new_with_durable(dir.path().to_path_buf());
 
         // Set and get
-        bus.durable_set("superadmin", "default", "persist-key", json!({"hello": "world"}), None)
-            .expect("durable set");
-        let val = bus.durable_get("superadmin", "default", "persist-key").expect("durable get");
+        bus.durable_set(
+            "superadmin",
+            "default",
+            "persist-key",
+            json!({"hello": "world"}),
+            None,
+        )
+        .expect("durable set");
+        let val = bus
+            .durable_get("superadmin", "default", "persist-key")
+            .expect("durable get");
         assert_eq!(val, Some(json!({"hello": "world"})));
 
         // Exists
-        assert!(bus.durable_exists("superadmin", "default", "persist-key").expect("durable exists"));
+        assert!(
+            bus.durable_exists("superadmin", "default", "persist-key")
+                .expect("durable exists")
+        );
 
         // Incr
-        bus.durable_set("superadmin", "default", "counter", json!(10), None).expect("set counter");
-        let new_val = bus.durable_incr("superadmin", "default", "counter", 5).expect("durable incr");
+        bus.durable_set("superadmin", "default", "counter", json!(10), None)
+            .expect("set counter");
+        let new_val = bus
+            .durable_incr("superadmin", "default", "counter", 5)
+            .expect("durable incr");
         assert_eq!(new_val, 15);
 
         // Del
-        assert!(bus.durable_del("superadmin", "default", "persist-key").expect("durable del"));
-        assert!(!bus.durable_exists("superadmin", "default", "persist-key").expect("after del"));
+        assert!(
+            bus.durable_del("superadmin", "default", "persist-key")
+                .expect("durable del")
+        );
+        assert!(
+            !bus.durable_exists("superadmin", "default", "persist-key")
+                .expect("after del")
+        );
 
         // Project scoped
-        assert!(bus.durable_get("superadmin", "other", "counter").expect("other project").is_none());
+        assert!(
+            bus.durable_get("superadmin", "other", "counter")
+                .expect("other project")
+                .is_none()
+        );
     }
 }
