@@ -209,11 +209,17 @@ pub fn run_interactive_with_llm(
 
             'turn: for _ in 0..max_steps {
                 match rt.block_on(llm.call_with_tools(messages.clone(), &tool_defs)) {
-                    Ok((crate::automaton::infra::llm_interface::CallResult::Text(text), _usage)) => {
+                    Ok((
+                        crate::automaton::infra::llm_interface::CallResult::Text(text),
+                        _usage,
+                    )) => {
                         final_text = strip_thinking(&text);
                         break 'turn;
                     }
-                    Ok((crate::automaton::infra::llm_interface::CallResult::ToolCalls(calls), _usage)) => {
+                    Ok((
+                        crate::automaton::infra::llm_interface::CallResult::ToolCalls(calls),
+                        _usage,
+                    )) => {
                         let tool_calls_json: Vec<serde_json::Value> = calls
                             .iter()
                             .map(|tc| {

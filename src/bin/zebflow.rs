@@ -226,7 +226,7 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    println!("Zebflow listening on http://{}", addr);
+    println!("Zebflow v{APP_VERSION} listening on http://{addr}");
     println!("Mode: {}", display_mode(role));
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
 

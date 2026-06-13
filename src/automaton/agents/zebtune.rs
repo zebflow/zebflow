@@ -340,7 +340,8 @@ impl ZebtuneAgent {
                                     &format_elapsed(start),
                                 );
                                 let (pass, reason) = vf(&trimmed, goal);
-                                trace.push(format!("verify:{}", if pass { "pass" } else { "fail" }));
+                                trace
+                                    .push(format!("verify:{}", if pass { "pass" } else { "fail" }));
                                 if !pass {
                                     reasons.push(if reason.trim().is_empty() {
                                         "verifier rejected the answer".to_string()

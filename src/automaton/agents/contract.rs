@@ -128,7 +128,10 @@ fn check_node(value: &Value, schema: &Value, path: &str, reasons: &mut Vec<Strin
     // enum
     if let Some(en) = schema.get("enum").and_then(|v| v.as_array()) {
         if !en.iter().any(|e| e == value) {
-            reasons.push(format!("{}: value is not one of the allowed enum values", path));
+            reasons.push(format!(
+                "{}: value is not one of the allowed enum values",
+                path
+            ));
         }
     }
 
