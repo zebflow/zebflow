@@ -295,6 +295,7 @@ export default function WebRenderDialog({
       ref={dialogRef}
       className="pipeline-editor-dialog is-fullscreen"
       onClose={onClose}
+      onKeyDown={(e) => e.stopPropagation()}
     >
       <form className="pipeline-editor-dialog-form" onSubmit={handleSubmit}>
         <h3 className="pipeline-editor-dialog-title">Edit Node | n.web.render</h3>

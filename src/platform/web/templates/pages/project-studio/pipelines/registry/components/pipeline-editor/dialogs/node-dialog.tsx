@@ -204,6 +204,7 @@ export default function NodeDialog({
       ref={dialogRef}
       className="pipeline-editor-dialog"
       onClose={onClose}
+      onKeyDown={(e) => e.stopPropagation()}
     >
       <form className="pipeline-editor-dialog-form" onSubmit={handleSubmit}>
         <h3 className="pipeline-editor-dialog-title">{title}</h3>
