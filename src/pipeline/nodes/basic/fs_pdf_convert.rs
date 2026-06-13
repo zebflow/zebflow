@@ -204,6 +204,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Emit Text".to_string(),
                 field_type: NodeFieldType::Checkbox,
                 default_value: Some(json!(true)),
+                help: Some("Extract full document text into the conversion output.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -211,6 +212,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Extract Embedded Images".to_string(),
                 field_type: NodeFieldType::Checkbox,
                 default_value: Some(json!(true)),
+                help: Some("Extract embedded PDF images into output files when possible.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -218,6 +220,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Render Page PNG".to_string(),
                 field_type: NodeFieldType::Checkbox,
                 default_value: Some(json!(true)),
+                help: Some("Render each page as a raster PNG preview.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -225,6 +228,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Raster DPI".to_string(),
                 field_type: NodeFieldType::Text,
                 default_value: Some(json!("144")),
+                help: Some("DPI used when rendering page PNG previews.".to_string()),
                 ..Default::default()
             },
         ],

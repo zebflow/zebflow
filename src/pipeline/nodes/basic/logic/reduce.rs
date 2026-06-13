@@ -65,6 +65,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Init Expression".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(3),
+                    help: Some("Expression that creates the initial accumulator before processing inputs.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
@@ -72,6 +73,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Step Expression".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(5),
+                    help: Some("Expression that returns the next accumulator from $acc and the current $input.".to_string()),
                     ..Default::default()
                 },
             ]

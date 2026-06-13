@@ -40,6 +40,32 @@ pub fn top_level_sections() -> Vec<(String, String, String)> {
     out
 }
 
+fn official_node_definitions_for_help() -> Vec<crate::pipeline::NodeDefinition> {
+    let mut defs = crate::pipeline::nodes::builtin_node_definitions();
+    defs.extend(
+        crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions(),
+    );
+    defs.sort_by(|a, b| a.kind.cmp(&b.kind));
+    defs
+}
+
+fn official_nodes_markdown_reference_for_help() -> String {
+    let mut s = String::from(
+        "## Node kinds (live — native + embedded official composites)\n\n\
+         This block matches the pipeline editor / project node API for platform-bundled nodes: titles, descriptions, pins, DSL flags, and input/output schemas.\n\n\
+         - **Full catalog:** `help_nodes` with no `kind` (same as this section).\n\
+         - **One kind:** `help_nodes` with `kind=\"n.script\"` (or `script`, `trigger.webhook`, composite kinds, etc.).\n\n\
+         ---\n\n",
+    );
+    for def in official_node_definitions_for_help() {
+        s.push_str(&crate::pipeline::nodes::format_node_definition_markdown(
+            &def,
+        ));
+        s.push_str("---\n\n");
+    }
+    s
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Primary help lookup. Returns the rendered content for `path`.
@@ -60,13 +86,18 @@ pub fn get_help(path: &str) -> Result<String, String> {
 
     // Dynamic: full node catalog
     if path == "pipeline/nodes" {
-        return Ok(crate::pipeline::nodes::builtin_nodes_markdown_reference());
+        return Ok(official_nodes_markdown_reference_for_help());
     }
 
     // Dynamic: single node
     if let Some(kind) = path.strip_prefix("pipeline/nodes/") {
-        return match crate::pipeline::nodes::node_markdown_by_kind_query(kind) {
-            Some(content) => Ok(content),
+        return match official_node_definitions_for_help()
+            .into_iter()
+            .find(|def| crate::pipeline::nodes::kind_query_matches_def(def, kind))
+        {
+            Some(def) => Ok(crate::pipeline::nodes::format_node_definition_markdown(
+                &def,
+            )),
             None => Err(format!(
                 "Node '{}' not found. Call help(\"pipeline/nodes\") for the full catalog.",
                 kind
@@ -219,8 +250,8 @@ pub fn all_searchable_content() -> Vec<(String, String, String)> {
         })
         .collect();
 
-    // One entry per built-in node — kind, title, description, and all DSL flag text
-    for def in crate::pipeline::nodes::builtin_node_definitions() {
+    // One entry per official node — kind, title, description, and all DSL flag text
+    for def in official_node_definitions_for_help() {
         let path = format!("pipeline/nodes/{}", def.kind);
         let title = format!("{} — {}", def.kind, def.title);
         let mut content = format!(

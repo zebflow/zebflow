@@ -94,13 +94,18 @@ impl PlatformOps {
     }
 }
 
+fn official_node_count() -> usize {
+    crate::pipeline::nodes::builtin_node_definitions().len()
+        + crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions().len()
+}
+
 // ── Orientation ───────────────────────────────────────────────────────────────
 
 impl PlatformOps {
     pub fn help_dialog_sections(&self) -> Vec<ProjectHelpSection> {
         let owner = &self.owner;
         let project = &self.project;
-        let node_count = crate::pipeline::nodes::builtin_node_definitions().len();
+        let node_count = official_node_count();
         let example_count = crate::platform::help::HELP
             .iter()
             .filter(|n| n.path.starts_with("pipeline/examples/"))
@@ -111,7 +116,7 @@ impl PlatformOps {
              Zebflow turns pipeline triggers into APIs, pages, and automations.\n\n\
              - Project: `{owner}/{project}`\n\
              - Webhook base: `/wh/{owner}/{project}{{path}}`\n\
-             - Built-in nodes: `{node_count}`\n\
+             - Official nodes: `{node_count}`\n\
              - Pipeline examples: `{example_count}`\n\n\
              ## Core References\n\n\
              - Node catalog: `help(\"pipeline/nodes\")`\n\
@@ -484,14 +489,14 @@ impl PlatformOps {
             }
         }
 
-        let node_count = crate::pipeline::nodes::builtin_node_definitions().len();
+        let node_count = official_node_count();
         let example_count = crate::platform::help::HELP
             .iter()
             .filter(|n| n.path.starts_with("pipeline/examples/"))
             .count();
         out.push_str(&format!(
             "\n---\n\n## MCP Tool Map\n\
-             Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} built-in nodes)\n\
+             Pipeline DSL: `help topic=\"pipeline/dsl\"`; node catalog: `help topic=\"pipeline/nodes\"` ({node_count} official nodes)\n\
              Web templates: `help topic=\"web\"`; examples: `help topic=\"pipeline/examples\"` ({example_count} recipes)\n\
              Search docs: `help_search query=\"...\"`\n\
              Read/write project docs: `docs_project_list`, `docs_project_read`, `docs_project_write`\n\

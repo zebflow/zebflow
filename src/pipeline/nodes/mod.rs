@@ -372,14 +372,151 @@ mod interface;
 
 pub use interface::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 
-use crate::pipeline::model::{DslFlagKind, NodeDefinition};
+use std::collections::HashSet;
+
+use crate::pipeline::model::{DslFlagKind, LayoutItem, NodeDefinition, NodeFieldType};
 
 /// Returns all built-in node definitions.
 pub fn builtin_node_definitions() -> Vec<crate::pipeline::NodeDefinition> {
     basic::builtin_node_definitions()
 }
 
-fn format_node_definition_markdown(def: &NodeDefinition) -> String {
+fn validate_layout_item(
+    item: &LayoutItem,
+    field_names: &HashSet<String>,
+    errors: &mut Vec<String>,
+) {
+    match item {
+        LayoutItem::Field(name) => {
+            if !field_names.contains(name) {
+                errors.push(format!("layout references unknown field '{}'", name));
+            }
+        }
+        LayoutItem::Row { row } => {
+            if row.is_empty() {
+                errors.push("layout row must not be empty".to_string());
+            }
+            for child in row {
+                validate_layout_item(child, field_names, errors);
+            }
+        }
+        LayoutItem::Col { col } => {
+            if col.is_empty() {
+                errors.push("layout col must not be empty".to_string());
+            }
+            for child in col {
+                validate_layout_item(child, field_names, errors);
+            }
+        }
+    }
+}
+
+/// Validates that a node definition is complete enough to serve as API and docs source.
+pub fn validate_node_definition_contract(def: &NodeDefinition) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    let kind = def.kind.trim();
+    if kind.is_empty() {
+        errors.push("kind must not be empty".to_string());
+    } else if !kind.starts_with("n.") {
+        errors.push(format!("kind '{}' must start with 'n.'", kind));
+    }
+    if def.title.trim().is_empty() {
+        errors.push("title must not be empty".to_string());
+    }
+    if def.description.trim().is_empty() {
+        errors.push("description must not be empty".to_string());
+    }
+
+    for (pin_role, pins) in [
+        ("input", def.input_pins.as_slice()),
+        ("output", def.output_pins.as_slice()),
+    ] {
+        for pin in pins {
+            let trimmed = pin.trim();
+            if trimmed.is_empty() {
+                errors.push(format!("{} pin must not be empty", pin_role));
+            } else if trimmed != pin || trimmed.contains(char::is_whitespace) {
+                errors.push(format!(
+                    "{} pin '{}' must be a compact token",
+                    pin_role, pin
+                ));
+            }
+        }
+    }
+
+    let mut flag_keys = HashSet::new();
+    for flag in &def.dsl_flags {
+        if !flag.flag.starts_with("--") || flag.flag.trim() != flag.flag {
+            errors.push(format!(
+                "DSL flag '{}' must start with -- and have no surrounding space",
+                flag.flag
+            ));
+        }
+        if flag.config_key.trim().is_empty() {
+            errors.push(format!(
+                "DSL flag '{}' config_key must not be empty",
+                flag.flag
+            ));
+        } else {
+            flag_keys.insert(flag.config_key.clone());
+        }
+        if flag.description.trim().is_empty() {
+            errors.push(format!(
+                "DSL flag '{}' description must not be empty",
+                flag.flag
+            ));
+        }
+    }
+
+    let mut field_names = HashSet::new();
+    for field in &def.fields {
+        if field.name.trim().is_empty() {
+            errors.push("field name must not be empty".to_string());
+            continue;
+        }
+        if !field_names.insert(field.name.clone()) {
+            errors.push(format!("field '{}' is declared more than once", field.name));
+        }
+        if field.label.trim().is_empty() {
+            errors.push(format!("field '{}' label must not be empty", field.name));
+        }
+        if !matches!(field.field_type, NodeFieldType::Section)
+            && field.help.as_deref().unwrap_or("").trim().is_empty()
+        {
+            errors.push(format!("field '{}' help must not be empty", field.name));
+        }
+    }
+
+    for item in &def.layout {
+        validate_layout_item(item, &field_names, &mut errors);
+    }
+
+    if let Some(properties) = def
+        .config_schema
+        .get("properties")
+        .and_then(|value| value.as_object())
+    {
+        for key in properties.keys() {
+            if key == "title" || key == "timeout_secs" {
+                continue;
+            }
+            if !field_names.contains(key) && !flag_keys.contains(key) {
+                errors.push(format!(
+                    "config property '{}' must be documented by a field or DSL flag",
+                    key
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
     let mut s = String::new();
     s.push_str(&format!("### `{}` — {}\n\n", def.kind, def.title));
     s.push_str(def.description.trim());
@@ -438,7 +575,7 @@ fn format_node_definition_markdown(def: &NodeDefinition) -> String {
     s
 }
 
-fn kind_query_matches_def(def: &NodeDefinition, query: &str) -> bool {
+pub fn kind_query_matches_def(def: &NodeDefinition, query: &str) -> bool {
     let q = query.trim();
     if q.is_empty() {
         return false;
@@ -479,4 +616,37 @@ pub fn builtin_nodes_markdown_reference() -> String {
         s.push_str("---\n\n");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn native_node_definitions_have_complete_contracts() {
+        let mut failures = Vec::new();
+        for def in super::builtin_node_definitions() {
+            if let Err(errors) = super::validate_node_definition_contract(&def) {
+                failures.push(format!("{}: {}", def.kind, errors.join("; ")));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "incomplete node definitions:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn embedded_official_node_definitions_have_complete_contracts() {
+        let mut failures = Vec::new();
+        for def in crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions() {
+            if let Err(errors) = super::validate_node_definition_contract(&def) {
+                failures.push(format!("{}: {}", def.kind, errors.join("; ")));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "incomplete embedded official node definitions:\n{}",
+            failures.join("\n")
+        );
+    }
 }

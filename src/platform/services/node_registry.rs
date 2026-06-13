@@ -113,6 +113,10 @@ impl NodeRegistryService {
     /// - Multi-node: `{slug}/definition.json` + `{slug}/functions/*.zf.json` (N nodes)
     fn load_embedded_composites() -> HashMap<String, EmbeddedCompositeNode> {
         let mut result = HashMap::new();
+        let builtin_kinds: HashSet<String> = crate::pipeline::nodes::builtin_node_definitions()
+            .iter()
+            .map(|d| d.kind.clone())
+            .collect();
 
         // 1. Scan for multi-node packages: `{slug}/definition.json`.
         let multi_defs: Vec<(&str, &'static [u8])> = PLATFORM_COMPOSITE_NODE_ASSETS
@@ -132,6 +136,13 @@ impl NodeRegistryService {
                     let manifests = explode_multi_node_package(&pkg_def, slug);
                     for manifest in manifests {
                         let kind = manifest.definition.kind.clone();
+                        if let Err(e) = validate_manifest(&manifest, &builtin_kinds) {
+                            eprintln!(
+                                "node_registry: embedded composite '{}': invalid definition for '{}': {}",
+                                slug, kind, e.message
+                            );
+                            continue;
+                        }
                         // Resolve per-node icon from embedded assets.
                         let icon_svg = {
                             // Try per-node icon first (from the node entry's icon field).
@@ -184,6 +195,14 @@ impl NodeRegistryService {
             }
             match serde_json::from_slice::<NodePackageManifest>(manifest_bytes) {
                 Ok(manifest) => {
+                    let kind = manifest.definition.kind.clone();
+                    if let Err(e) = validate_manifest(&manifest, &builtin_kinds) {
+                        eprintln!(
+                            "node_registry: embedded composite '{}': invalid definition for '{}': {}",
+                            slug, kind, e.message
+                        );
+                        continue;
+                    }
                     let pipeline_path = format!("{}/pipeline.zf.json", slug);
                     let pipeline_json = match platform_composite_node_asset(&pipeline_path) {
                         Some(b) => b,
@@ -197,7 +216,6 @@ impl NodeRegistryService {
                     };
                     let icon_path = format!("{}/icon.svg", slug);
                     let icon_svg = platform_composite_node_asset(&icon_path);
-                    let kind = manifest.definition.kind.clone();
                     result.insert(
                         kind,
                         EmbeddedCompositeNode {
@@ -217,6 +235,29 @@ impl NodeRegistryService {
             }
         }
         result
+    }
+
+    /// Returns definitions for official composite nodes embedded in the binary.
+    ///
+    /// This is used by public docs/help surfaces that do not have a project context
+    /// but still need to advertise platform-bundled composites.
+    pub fn embedded_official_definitions() -> Vec<NodeDefinition> {
+        let mut defs = Self::load_embedded_composites()
+            .into_values()
+            .map(|embedded| embedded.manifest.definition)
+            .collect::<Vec<_>>();
+        defs.sort_by(|a, b| a.kind.cmp(&b.kind));
+        defs
+    }
+
+    /// Returns manifests for official composite nodes embedded in the binary.
+    pub fn embedded_official_manifests() -> Vec<NodePackageManifest> {
+        let mut manifests = Self::load_embedded_composites()
+            .into_values()
+            .map(|embedded| embedded.manifest)
+            .collect::<Vec<_>>();
+        manifests.sort_by(|a, b| a.definition.kind.cmp(&b.definition.kind));
+        manifests
     }
 
     /// Scans `repo/nodes/` for a project and rebuilds its registry entries.
@@ -819,6 +860,18 @@ fn validate_manifest(
             format!("node '{}' definition title must not be empty", kind),
         ));
     }
+    if let Err(errors) =
+        crate::pipeline::nodes::validate_node_definition_contract(&manifest.definition)
+    {
+        return Err(PlatformError::new(
+            "NODE_DEFINITION_INCOMPLETE",
+            format!(
+                "node '{}' definition incomplete: {}",
+                kind,
+                errors.join("; ")
+            ),
+        ));
+    }
 
     // Namespace rules.
     match manifest.source {
@@ -861,5 +914,100 @@ fn validate_manifest(
         ));
     }
 
+    let config_properties = manifest
+        .definition
+        .config_schema
+        .get("properties")
+        .and_then(|value| value.as_object());
+    for credential in &manifest.credentials {
+        if credential.kind.trim().is_empty() {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!("node '{}' credential kind must not be empty", kind),
+            ));
+        }
+        if credential.title.trim().is_empty() {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' title must not be empty",
+                    kind, credential.kind
+                ),
+            ));
+        }
+        if credential.description.trim().is_empty() {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' description must not be empty",
+                    kind, credential.kind
+                ),
+            ));
+        }
+        if credential.config_key.trim().is_empty() {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' config_key must not be empty",
+                    kind, credential.kind
+                ),
+            ));
+        }
+        if !config_properties.is_some_and(|props| props.contains_key(&credential.config_key)) {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' config_key '{}' must be declared in config_schema.properties",
+                    kind, credential.kind, credential.config_key
+                ),
+            ));
+        }
+        if !manifest
+            .definition
+            .fields
+            .iter()
+            .any(|field| field.name == credential.config_key)
+        {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' config_key '{}' must be documented in fields",
+                    kind, credential.kind, credential.config_key
+                ),
+            ));
+        }
+        if !manifest
+            .definition
+            .dsl_flags
+            .iter()
+            .any(|flag| flag.config_key == credential.config_key)
+        {
+            return Err(PlatformError::new(
+                "NODE_CREDENTIAL_INCOMPLETE",
+                format!(
+                    "node '{}' credential '{}' config_key '{}' must be documented in dsl_flags",
+                    kind, credential.kind, credential.config_key
+                ),
+            ));
+        }
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    #[test]
+    fn embedded_official_manifests_have_complete_node_contracts() {
+        let builtin_kinds: HashSet<String> = crate::pipeline::nodes::builtin_node_definitions()
+            .iter()
+            .map(|def| def.kind.clone())
+            .collect();
+        for manifest in super::NodeRegistryService::embedded_official_manifests() {
+            super::validate_manifest(&manifest, &builtin_kinds)
+                .unwrap_or_else(|err| panic!("{}: {}", manifest.definition.kind, err.message));
+        }
+    }
 }

@@ -170,6 +170,10 @@ pub fn get_definition() -> NodeDefinition {
                         label: "Base64".to_string(),
                     },
                 ],
+                help: Some(
+                    "Decode object bytes as UTF-8 text or return base64 for binary-safe payloads."
+                        .to_string(),
+                ),
                 ..Default::default()
             },
         ],

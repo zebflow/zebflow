@@ -293,6 +293,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Site Title".to_string(),
                 field_type: NodeFieldType::Text,
                 placeholder: Some("Sekejap Docs".to_string()),
+                help: Some("Display title used in generated documentation pages and metadata.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -317,6 +318,7 @@ pub fn definition() -> NodeDefinition {
                 field_type: NodeFieldType::Text,
                 placeholder: Some("_meta.yaml".to_string()),
                 default_value: Some(json!("_meta.yaml")),
+                help: Some("Folder metadata file name read from docs directories. Defaults to _meta.yaml.".to_string()),
                 ..Default::default()
             },
         ],

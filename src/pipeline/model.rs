@@ -957,10 +957,40 @@ pub struct NodeContractItem {
     /// Node tier: `"official"` (native or platform-bundled) or `"community"` (installed per-project).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tier: String,
+    /// Credential requirements declared by the node package.
+    ///
+    /// Native nodes usually express credentials through `fields` and `dsl_flags`.
+    /// Composite/WASM packages additionally declare credential kinds and placeholder
+    /// mappings in their package manifest; surfacing that here lets agents and UIs
+    /// see which project credential kind a composite node needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_requirements: Vec<NodeCredentialRequirement>,
 }
 
 fn default_node_source() -> String {
     "native".to_string()
+}
+
+/// Credential requirement metadata attached to a node contract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct NodeCredentialRequirement {
+    /// Required project credential kind, e.g. `"openai"` or `"telegram_bot"`.
+    pub kind: String,
+    /// Human-readable credential type title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Short credential description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Node config key that stores the selected credential id, usually `"credential_id"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_key: String,
+    /// Whether this credential is required for normal node execution.
+    #[serde(default)]
+    pub required: bool,
+    /// Placeholder names populated from the credential into composite inner pipelines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placeholder_names: Vec<String>,
 }
 
 /// Root response envelope for `GET /docs/node`.
@@ -1048,6 +1078,7 @@ impl From<NodeDefinition> for NodeContractItem {
             icon_hash: String::new(),
             source,
             tier: String::new(),
+            credential_requirements: Vec::new(),
         }
     }
 }

@@ -44,6 +44,7 @@ use crate::language::{DenoSandboxEngine, LanguageEngine, NoopLanguageEngine};
 use crate::pipeline::model::{ExecuteOptions, ExecutionBus};
 use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, PipelineGraph};
 use crate::platform::error::PlatformError;
+use crate::platform::model::NodePackageManifest;
 use crate::platform::model::{
     ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateMarketplaceTokenRequest,
     CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
@@ -62,6 +63,7 @@ use crate::platform::model::{
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
 use crate::platform::services::marketplace::RemoteMarketplacePublishRequest;
+use crate::platform::services::node_registry::NodeRegistryService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
     RenderScriptCache, ScriptCacheConfig, TemplateOptions, TemplateSource,
@@ -6524,6 +6526,7 @@ fn node_group_prefix(kind: &str) -> &'static str {
 
 fn settings_nodes() -> (usize, Vec<Value>) {
     let mut defs = crate::pipeline::nodes::builtin_node_definitions();
+    defs.extend(NodeRegistryService::embedded_official_definitions());
     defs.sort_by(|a, b| {
         node_group_rank(&a.kind)
             .cmp(&node_group_rank(&b.kind))
@@ -8336,16 +8339,78 @@ fn probe_binary_version(path: &std::path::Path, flag: &str) -> Option<String> {
         })
 }
 
-/// Public, machine-readable node contract extracted from built-in node registry.
+fn node_credential_requirements_from_manifest(
+    item: &crate::pipeline::NodeContractItem,
+    manifest: &NodePackageManifest,
+) -> Vec<crate::pipeline::NodeCredentialRequirement> {
+    let required_keys = item
+        .config_schema
+        .get("required")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+
+    manifest
+        .credentials
+        .iter()
+        .filter(|credential| !credential.kind.trim().is_empty())
+        .map(|credential| {
+            let config_key = credential.config_key.clone();
+            let mut placeholder_names = credential.placeholders.keys().cloned().collect::<Vec<_>>();
+            placeholder_names.sort();
+            let required = !config_key.is_empty()
+                && (required_keys.contains(&config_key)
+                    || item
+                        .dsl_flags
+                        .iter()
+                        .any(|flag| flag.config_key == config_key && flag.required));
+            crate::pipeline::NodeCredentialRequirement {
+                kind: credential.kind.clone(),
+                title: credential.title.clone(),
+                description: credential.description.clone(),
+                config_key,
+                required,
+                placeholder_names,
+            }
+        })
+        .collect()
+}
+
+fn apply_manifest_metadata_to_node_contract(
+    item: &mut crate::pipeline::NodeContractItem,
+    manifest: Option<&NodePackageManifest>,
+) {
+    if let Some(manifest) = manifest {
+        item.credential_requirements = node_credential_requirements_from_manifest(item, manifest);
+    }
+}
+
+/// Public, machine-readable node contract extracted from native + official composite registry.
 async fn docs_node_contract() -> Response {
-    let items = crate::pipeline::nodes::builtin_node_definitions()
+    let mut items = crate::pipeline::nodes::builtin_node_definitions()
         .into_iter()
-        .map(crate::pipeline::NodeContractItem::from)
+        .map(|def| {
+            let mut item = crate::pipeline::NodeContractItem::from(def);
+            item.tier = "official".to_string();
+            item
+        })
         .collect::<Vec<_>>();
+    for manifest in NodeRegistryService::embedded_official_manifests() {
+        let mut item = crate::pipeline::NodeContractItem::from(manifest.definition.clone());
+        item.tier = "official".to_string();
+        apply_manifest_metadata_to_node_contract(&mut item, Some(&manifest));
+        items.push(item);
+    }
+    items.sort_by(|a, b| a.kind.cmp(&b.kind));
     Json(crate::pipeline::NodeContractDocument {
         ok: true,
         schema_version: "0.1",
-        source: "pipeline::nodes::builtin_node_definitions",
+        source: "pipeline::nodes + embedded_official_composites",
         items,
     })
     .into_response()
@@ -8393,6 +8458,11 @@ async fn api_list_node_definitions(
             } else {
                 "community".to_string()
             };
+            let manifest = state
+                .platform
+                .node_registry
+                .get_manifest(&owner, &project, &kind);
+            apply_manifest_metadata_to_node_contract(&mut item, manifest.as_ref());
 
             // Resolve icon URL + content hash for cache-busting.
             let icon_bytes: Option<Vec<u8>> = state
@@ -8451,6 +8521,11 @@ async fn api_get_node_definition(
             } else {
                 "community".to_string()
             };
+            let manifest = state
+                .platform
+                .node_registry
+                .get_manifest(&owner, &project, &kind);
+            apply_manifest_metadata_to_node_contract(&mut item, manifest.as_ref());
             Json(json!({ "ok": true, "item": item })).into_response()
         }
         None => Json(json!({

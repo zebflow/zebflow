@@ -336,6 +336,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Piper".to_string(),
                 }],
                 default_value: Some(json!("piper")),
+                help: Some("TTS backend provider. Piper is the current local speech synthesis provider.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -356,6 +357,7 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "both".to_string(), label: "Both".to_string() },
                 ],
                 default_value: Some(json!("both")),
+                help: Some("Choose whether the node returns a file reference, an inline blob, or both.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
