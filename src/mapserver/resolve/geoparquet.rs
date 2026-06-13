@@ -204,9 +204,7 @@ async fn resolve_async(
         }
     };
 
-    let sql = format!(
-        "SELECT {select_cols} FROM layer {where_clause} LIMIT {hard_limit}"
-    );
+    let sql = format!("SELECT {select_cols} FROM layer {where_clause} LIMIT {hard_limit}");
 
     let df = ctx
         .sql(&sql)
@@ -318,7 +316,12 @@ async fn detect_bbox_columns(ctx: &SessionContext) -> Option<BboxCols> {
             schema
                 .field_with_unqualified_name(name)
                 .ok()
-                .map(|f| matches!(f.data_type(), datafusion::arrow::datatypes::DataType::Float64))
+                .map(|f| {
+                    matches!(
+                        f.data_type(),
+                        datafusion::arrow::datatypes::DataType::Float64
+                    )
+                })
                 .unwrap_or(false)
         });
         if has_all {
@@ -349,13 +352,48 @@ fn arrow_value_at(col: &dyn datafusion::arrow::array::Array, idx: usize) -> Valu
             json!(arr.value(idx))
         }
         DataType::Int8 => json!(col.as_any().downcast_ref::<Int8Array>().unwrap().value(idx)),
-        DataType::Int16 => json!(col.as_any().downcast_ref::<Int16Array>().unwrap().value(idx)),
-        DataType::Int32 => json!(col.as_any().downcast_ref::<Int32Array>().unwrap().value(idx)),
-        DataType::Int64 => json!(col.as_any().downcast_ref::<Int64Array>().unwrap().value(idx)),
-        DataType::UInt8 => json!(col.as_any().downcast_ref::<UInt8Array>().unwrap().value(idx)),
-        DataType::UInt16 => json!(col.as_any().downcast_ref::<UInt16Array>().unwrap().value(idx)),
-        DataType::UInt32 => json!(col.as_any().downcast_ref::<UInt32Array>().unwrap().value(idx)),
-        DataType::UInt64 => json!(col.as_any().downcast_ref::<UInt64Array>().unwrap().value(idx)),
+        DataType::Int16 => json!(
+            col.as_any()
+                .downcast_ref::<Int16Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::Int32 => json!(
+            col.as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::Int64 => json!(
+            col.as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::UInt8 => json!(
+            col.as_any()
+                .downcast_ref::<UInt8Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::UInt16 => json!(
+            col.as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::UInt32 => json!(
+            col.as_any()
+                .downcast_ref::<UInt32Array>()
+                .unwrap()
+                .value(idx)
+        ),
+        DataType::UInt64 => json!(
+            col.as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .value(idx)
+        ),
         DataType::Float32 => {
             let v = col
                 .as_any()
@@ -436,10 +474,8 @@ fn parse_geometry_value(value: &Value) -> Value {
                 }
             }
             // Try base64-encoded WKB
-            if let Ok(bytes) = base64::Engine::decode(
-                &base64::engine::general_purpose::STANDARD,
-                s,
-            ) {
+            if let Ok(bytes) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s)
+            {
                 if let Some(geojson) = wkb_to_geojson(&bytes) {
                     return geojson;
                 }

@@ -14,8 +14,8 @@ use std::path::Path;
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
-use serde::{Deserialize, Serialize};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use serde::{Deserialize, Serialize};
 
 /// Per-column statistics computed during optimization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,16 +56,15 @@ pub struct OptimizeReport {
 /// small row groups) to `geonative_geoparquet::optimize()`, then computes column
 /// statistics from the optimized output.
 pub fn optimize_geoparquet(source: &Path, dest: &Path) -> Result<OptimizeReport, String> {
-    let source_bytes = std::fs::metadata(source)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let source_bytes = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
 
     // Core optimization: geonative handles bbox columns, Hilbert sort, ZSTD, row groups
     let gn_report = geonative_geoparquet::optimize(
         source,
         dest,
         geonative_geoparquet::OptimizeOptions { batch_size: 10_000 },
-    ).map_err(|e| format!("optimize failed: {e}"))?;
+    )
+    .map_err(|e| format!("optimize failed: {e}"))?;
 
     // Column stats + extent: computed from the optimized file
     let (column_stats, geom_col, extent) = compute_column_stats_from_file(dest)?;
@@ -85,11 +84,13 @@ pub fn optimize_geoparquet(source: &Path, dest: &Path) -> Result<OptimizeReport,
 }
 
 /// Read an optimized parquet file and compute column stats + extent.
-fn compute_column_stats_from_file(path: &Path) -> Result<(Vec<ColumnStats>, String, [f64; 4]), String> {
+fn compute_column_stats_from_file(
+    path: &Path,
+) -> Result<(Vec<ColumnStats>, String, [f64; 4]), String> {
     use datafusion::arrow::compute::concat_batches;
 
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("failed to open optimized parquet: {e}"))?;
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("failed to open optimized parquet: {e}"))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("failed to create parquet reader: {e}"))?
         .with_batch_size(65536)
@@ -108,8 +109,8 @@ fn compute_column_stats_from_file(path: &Path) -> Result<(Vec<ColumnStats>, Stri
     let combined = concat_batches(&schema, &batches)
         .map_err(|e| format!("failed to concatenate batches: {e}"))?;
 
-    let geom_idx = detect_geom_column_index(&schema)
-        .ok_or("no geometry column found in optimized file")?;
+    let geom_idx =
+        detect_geom_column_index(&schema).ok_or("no geometry column found in optimized file")?;
     let geom_col = schema.field(geom_idx).name().clone();
     let column_stats = compute_column_stats(&combined, geom_idx);
 
@@ -138,20 +139,31 @@ fn read_extent_from_bbox_columns(batch: &RecordBatch) -> [f64; 4] {
     let xmax_arr = batch.column(xa).as_any().downcast_ref::<Float64Array>();
     let ymax_arr = batch.column(ya).as_any().downcast_ref::<Float64Array>();
 
-    let (Some(xmn), Some(ymn), Some(xmx), Some(ymx)) = (xmin_arr, ymin_arr, xmax_arr, ymax_arr) else {
+    let (Some(xmn), Some(ymn), Some(xmx), Some(ymx)) = (xmin_arr, ymin_arr, xmax_arr, ymax_arr)
+    else {
         return extent;
     };
 
     for i in 0..batch.num_rows() {
-        if xmn.is_null(i) { continue; }
+        if xmn.is_null(i) {
+            continue;
+        }
         let x0 = xmn.value(i);
         let y0 = ymn.value(i);
         let x1 = xmx.value(i);
         let y1 = ymx.value(i);
-        if x0 < extent[0] { extent[0] = x0; }
-        if y0 < extent[1] { extent[1] = y0; }
-        if x1 > extent[2] { extent[2] = x1; }
-        if y1 > extent[3] { extent[3] = y1; }
+        if x0 < extent[0] {
+            extent[0] = x0;
+        }
+        if y0 < extent[1] {
+            extent[1] = y0;
+        }
+        if x1 > extent[2] {
+            extent[2] = x1;
+        }
+        if y1 > extent[3] {
+            extent[3] = y1;
+        }
     }
     extent
 }
@@ -166,7 +178,9 @@ const TOP_VALUES_CARDINALITY_LIMIT: usize = 500;
 /// Skips geometry columns and bbox covering columns.
 pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<ColumnStats> {
     let schema = combined.schema();
-    let skip_names: &[&str] = &["xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y"];
+    let skip_names: &[&str] = &[
+        "xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y",
+    ];
     let num_rows = combined.num_rows();
     let mut stats = Vec::new();
 
@@ -199,7 +213,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Utf8 => {
                 if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let v = arr.value(i);
                         if !cardinality_capped {
                             let entry = value_counts.entry(v.to_string()).or_insert(0);
@@ -218,7 +234,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Int64 => {
                 if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let v = arr.value(i);
                         let fv = v as f64;
                         min_val = Some(min_val.map_or(fv, |m: f64| m.min(fv)));
@@ -237,7 +255,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Int32 => {
                 if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let v = arr.value(i);
                         let fv = v as f64;
                         min_val = Some(min_val.map_or(fv, |m: f64| m.min(fv)));
@@ -256,7 +276,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Float64 => {
                 if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let v = arr.value(i);
                         if v.is_finite() {
                             min_val = Some(min_val.map_or(v, |m: f64| m.min(v)));
@@ -280,7 +302,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Float32 => {
                 if let Some(arr) = col.as_any().downcast_ref::<Float32Array>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let v = arr.value(i) as f64;
                         if v.is_finite() {
                             min_val = Some(min_val.map_or(v, |m: f64| m.min(v)));
@@ -300,7 +324,9 @@ pub fn compute_column_stats(combined: &RecordBatch, geom_idx: usize) -> Vec<Colu
             DataType::Boolean => {
                 if let Some(arr) = col.as_any().downcast_ref::<BooleanArray>() {
                     for i in 0..num_rows {
-                        if arr.is_null(i) { continue; }
+                        if arr.is_null(i) {
+                            continue;
+                        }
                         let key = if arr.value(i) { "true" } else { "false" };
                         let entry = value_counts.entry(key.to_string()).or_insert(0);
                         *entry += 1;
@@ -383,7 +409,8 @@ pub fn is_already_optimized(path: &Path) -> bool {
     // Check for all four bbox columns as Float64
     let bbox_names = ["xmin", "ymin", "xmax", "ymax"];
     let has_bbox = bbox_names.iter().all(|name| {
-        schema.column_with_name(name)
+        schema
+            .column_with_name(name)
             .map(|(_, f)| matches!(f.data_type(), DataType::Float64))
             .unwrap_or(false)
     });
@@ -415,11 +442,9 @@ pub fn convert_geojson_to_geoparquet(source: &Path, dest: &Path) -> Result<Conve
             .map_err(|e| format!("failed to create output directory: {e}"))?;
     }
 
-    let stats = geonative_convert::convert(
-        source,
-        dest,
-        geonative_convert::ConvertOptions::default(),
-    ).map_err(|e| format!("convert failed: {e}"))?;
+    let stats =
+        geonative_convert::convert(source, dest, geonative_convert::ConvertOptions::default())
+            .map_err(|e| format!("convert failed: {e}"))?;
 
     Ok(ConvertReport {
         feature_count: stats.features as usize,
@@ -489,7 +514,9 @@ mod tests {
         let geojson_path = tmp.path().join("test.geojson");
         let parquet_path = tmp.path().join("test.parquet");
 
-        std::fs::write(&geojson_path, r#"{
+        std::fs::write(
+            &geojson_path,
+            r#"{
             "type": "FeatureCollection",
             "features": [
                 {
@@ -503,7 +530,9 @@ mod tests {
                     "geometry": {"type": "Point", "coordinates": [145.0, -37.7]}
                 }
             ]
-        }"#).expect("write geojson");
+        }"#,
+        )
+        .expect("write geojson");
 
         let report = convert_geojson_to_geoparquet(&geojson_path, &parquet_path).unwrap();
         assert_eq!(report.feature_count, 2);
@@ -527,14 +556,18 @@ mod tests {
         let geojson_path = tmp.path().join("test.geojson");
         let parquet_path = tmp.path().join("test.parquet");
 
-        std::fs::write(&geojson_path, r#"{
+        std::fs::write(
+            &geojson_path,
+            r#"{
             "type": "FeatureCollection",
             "features": [{
                 "type": "Feature",
                 "properties": {"name": "A"},
                 "geometry": {"type": "Point", "coordinates": [144.9, -37.8]}
             }]
-        }"#).expect("write geojson");
+        }"#,
+        )
+        .expect("write geojson");
 
         convert_geojson_to_geoparquet(&geojson_path, &parquet_path).unwrap();
         // geonative's converter includes bbox columns, so it's detected as optimized
@@ -548,14 +581,18 @@ mod tests {
         let raw_path = tmp.path().join("test.parquet");
         let opt_path = tmp.path().join("test.spatial.parquet");
 
-        std::fs::write(&geojson_path, r#"{
+        std::fs::write(
+            &geojson_path,
+            r#"{
             "type": "FeatureCollection",
             "features": [{
                 "type": "Feature",
                 "properties": {"name": "A"},
                 "geometry": {"type": "Point", "coordinates": [144.9, -37.8]}
             }]
-        }"#).expect("write geojson");
+        }"#,
+        )
+        .expect("write geojson");
 
         convert_geojson_to_geoparquet(&geojson_path, &raw_path).unwrap();
         optimize_geoparquet(&raw_path, &opt_path).unwrap();

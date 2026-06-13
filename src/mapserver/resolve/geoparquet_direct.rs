@@ -12,8 +12,8 @@ use std::sync::{Mutex, OnceLock};
 
 use datafusion::arrow::array::*;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tiny_skia::{
     Color, FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform,
 };
@@ -91,31 +91,40 @@ fn detect_bbox_cols(schema: &SchemaRef) -> Option<[usize; 4]> {
     None
 }
 
-fn get_or_create_meta(source_path: &Path) -> Result<(SchemaRef, usize, Option<[usize; 4]>), String> {
+fn get_or_create_meta(
+    source_path: &Path,
+) -> Result<(SchemaRef, usize, Option<[usize; 4]>), String> {
     let key = source_path.to_string_lossy().to_string();
     let (mtime, size) = file_version(source_path);
 
     {
-        let cache = meta_cache().lock().map_err(|e| format!("meta cache lock: {e}"))?;
+        let cache = meta_cache()
+            .lock()
+            .map_err(|e| format!("meta cache lock: {e}"))?;
         if let Some(entry) = cache.get(&key) {
             if entry.file_mtime == mtime && entry.file_size == size {
-                return Ok((entry.schema.clone(), entry.geom_col_idx, entry.bbox_col_indices));
+                return Ok((
+                    entry.schema.clone(),
+                    entry.geom_col_idx,
+                    entry.bbox_col_indices,
+                ));
             }
         }
     }
 
     // Build metadata from file
-    let file = std::fs::File::open(source_path)
-        .map_err(|e| format!("failed to open parquet: {e}"))?;
+    let file =
+        std::fs::File::open(source_path).map_err(|e| format!("failed to open parquet: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("failed to read parquet metadata: {e}"))?;
     let schema = builder.schema().clone();
 
-    let geom_idx = detect_geom_col(&schema)
-        .ok_or("no geometry column found in parquet")?;
+    let geom_idx = detect_geom_col(&schema).ok_or("no geometry column found in parquet")?;
     let bbox_indices = detect_bbox_cols(&schema);
 
-    let mut cache = meta_cache().lock().map_err(|e| format!("meta cache lock: {e}"))?;
+    let mut cache = meta_cache()
+        .lock()
+        .map_err(|e| format!("meta cache lock: {e}"))?;
     cache.insert(
         key,
         CachedParquetMeta {
@@ -156,18 +165,16 @@ pub fn render_tile_direct(
     }
 
     // Open file and build reader with projection mask (geometry + bbox + optional style field)
-    let file = std::fs::File::open(source_path)
-        .map_err(|e| format!("failed to open parquet: {e}"))?;
+    let file =
+        std::fs::File::open(source_path).map_err(|e| format!("failed to open parquet: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("failed to read parquet: {e}"))?;
 
     // Detect style field parquet leaf index for projection mask
-    let style_field_pq_idx = resolved
-        .and_then(|r| r.field_name())
-        .and_then(|fname| {
-            let ps = builder.parquet_schema();
-            (0..ps.num_columns()).find(|&i| ps.column(i).name() == fname)
-        });
+    let style_field_pq_idx = resolved.and_then(|r| r.field_name()).and_then(|fname| {
+        let ps = builder.parquet_schema();
+        (0..ps.num_columns()).find(|&i| ps.column(i).name() == fname)
+    });
 
     // Detect filter field parquet leaf indices for projection mask
     let filter_field_pq_indices: Vec<usize> = filter
@@ -185,14 +192,36 @@ pub fn render_tile_direct(
     // Row group pruning: skip row groups whose bbox stats don't intersect the tile
     let selected_row_groups = prune_row_groups(&builder, bbox_indices, &bbox);
 
-    let projection = build_projection_mask(builder.parquet_schema(), &schema, geom_idx, bbox_indices, style_field_pq_idx, &filter_field_pq_indices);
+    let projection = build_projection_mask(
+        builder.parquet_schema(),
+        &schema,
+        geom_idx,
+        bbox_indices,
+        style_field_pq_idx,
+        &filter_field_pq_indices,
+    );
     let mut b = builder.with_projection(projection).with_batch_size(8192);
     if let Some(ref rgs) = selected_row_groups {
         b = b.with_row_groups(rgs.clone());
     }
-    let reader = b.build().map_err(|e| format!("failed to build reader: {e}"))?;
+    let reader = b
+        .build()
+        .map_err(|e| format!("failed to build reader: {e}"))?;
 
-    render_batches(reader, &schema, geom_idx, bbox_indices, &bbox, width, height, zoom, style, resolved, filter, limit)
+    render_batches(
+        reader,
+        &schema,
+        geom_idx,
+        bbox_indices,
+        &bbox,
+        width,
+        height,
+        zoom,
+        style,
+        resolved,
+        filter,
+        limit,
+    )
 }
 
 /// Prune row groups using column statistics on bbox columns.
@@ -239,12 +268,17 @@ fn prune_row_groups(
         let ymax_stats = get_f64_col_stats(rg_meta, pi[3]);
 
         let pruned = match (xmin_stats, ymin_stats, xmax_stats, ymax_stats) {
-            (Some((xmin_min, _)), Some((ymin_min, _)), Some((_, xmax_max)), Some((_, ymax_max))) => {
+            (
+                Some((xmin_min, _)),
+                Some((ymin_min, _)),
+                Some((_, xmax_max)),
+                Some((_, ymax_max)),
+            ) => {
                 // Row group definitely doesn't intersect if:
                 xmin_min > tile_bbox[2]  // all features start right of tile
                     || xmax_max < tile_bbox[0]  // all features end left of tile
                     || ymin_min > tile_bbox[3]  // all features start above tile
-                    || ymax_max < tile_bbox[1]  // all features end below tile
+                    || ymax_max < tile_bbox[1] // all features end below tile
             }
             _ => false, // No stats — can't prune, include it
         };
@@ -566,10 +600,26 @@ fn render_batches(
         // Get bbox arrays
         let bbox_arrays: Option<[&Float64Array; 4]> = bb_indices.map(|bi| {
             [
-                batch.column(bi[0]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[1]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[2]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[3]).as_any().downcast_ref::<Float64Array>().unwrap(),
+                batch
+                    .column(bi[0])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[1])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[2])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[3])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
             ]
         });
 
@@ -580,9 +630,8 @@ fn render_batches(
         let batch_per_feature = use_per_feature && style_col.is_some();
 
         // Build filter column cache for this batch (once per batch)
-        let filter_col_cache = filter.map(|f| {
-            super::filter_dsl::build_filter_column_cache(f, &batch_schema)
-        });
+        let filter_col_cache =
+            filter.map(|f| super::filter_dsl::build_filter_column_cache(f, &batch_schema));
 
         for row in 0..batch.num_rows() {
             if count >= limit || saturated {
@@ -645,14 +694,23 @@ fn render_batches(
                             let fs = r.style_for_value(&sv);
                             let mut pp = Paint::default();
                             pp.set_color(Color::from_rgba8(
-                                fs.point_color[0], fs.point_color[1],
-                                fs.point_color[2], fs.point_color[3],
+                                fs.point_color[0],
+                                fs.point_color[1],
+                                fs.point_color[2],
+                                fs.point_color[3],
                             ));
                             pp.anti_alias = true;
                             draw_point(&mut pixmap, cx as f32, cy as f32, &pp, 1.0, transform);
                         }
                     } else {
-                        draw_point(&mut pixmap, cx as f32, cy as f32, &point_paint, 1.0, transform);
+                        draw_point(
+                            &mut pixmap,
+                            cx as f32,
+                            cy as f32,
+                            &point_paint,
+                            1.0,
+                            transform,
+                        );
                     }
                     count += 1;
                     continue;
@@ -673,15 +731,34 @@ fn render_batches(
                     let fs = r.style_for_value(&sv);
                     let (ff, fsp, fsd, fpp, fpr) = paints_from_feature_style(fs);
                     render_wkb_to_pixmap(
-                        wkb, bbox, w, h, &mut pixmap,
-                        ff.as_ref(), &fsp, &fsd, &fpp, fpr, transform, px_snap,
+                        wkb,
+                        bbox,
+                        w,
+                        h,
+                        &mut pixmap,
+                        ff.as_ref(),
+                        &fsp,
+                        &fsd,
+                        &fpp,
+                        fpr,
+                        transform,
+                        px_snap,
                     );
                 }
             } else {
                 render_wkb_to_pixmap(
-                    wkb, bbox, w, h, &mut pixmap,
-                    fill_paint.as_ref(), &stroke_paint, &stroke_def,
-                    &point_paint, style.point_radius, transform, px_snap,
+                    wkb,
+                    bbox,
+                    w,
+                    h,
+                    &mut pixmap,
+                    fill_paint.as_ref(),
+                    &stroke_paint,
+                    &stroke_def,
+                    &point_paint,
+                    style.point_radius,
+                    transform,
+                    px_snap,
                 );
             }
 
@@ -702,7 +779,10 @@ fn render_batches(
 
 /// Get binary bytes from an Arrow array (handles Binary and LargeBinary).
 #[inline]
-fn get_binary_bytes<'a>(col: &'a dyn datafusion::arrow::array::Array, idx: usize) -> Option<&'a [u8]> {
+fn get_binary_bytes<'a>(
+    col: &'a dyn datafusion::arrow::array::Array,
+    idx: usize,
+) -> Option<&'a [u8]> {
     if col.is_null(idx) {
         return None;
     }
@@ -790,7 +870,9 @@ fn render_wkb_to_pixmap(
             if let Some(num) = wkb_read_u32(wkb, cursor, is_le) {
                 cursor += 4;
                 for _ in 0..num {
-                    if cursor + 21 > wkb.len() { break; }
+                    if cursor + 21 > wkb.len() {
+                        break;
+                    }
                     let inner_le = wkb[cursor] == 1;
                     cursor += 5;
                     if let Some((x, y)) = read_f64_pair(wkb, cursor, inner_le) {
@@ -806,11 +888,22 @@ fn render_wkb_to_pixmap(
             if let Some(num) = wkb_read_u32(wkb, cursor, is_le) {
                 cursor += 4;
                 for _ in 0..num {
-                    if cursor + 5 > wkb.len() { break; }
+                    if cursor + 5 > wkb.len() {
+                        break;
+                    }
                     let inner_le = wkb[cursor] == 1;
                     cursor += 5;
                     let mut pb = PathBuilder::new();
-                    if build_linestring_path(&mut pb, wkb, &mut cursor, inner_le, bbox, w, h, px_snap) {
+                    if build_linestring_path(
+                        &mut pb,
+                        wkb,
+                        &mut cursor,
+                        inner_le,
+                        bbox,
+                        w,
+                        h,
+                        px_snap,
+                    ) {
                         if let Some(path) = pb.finish() {
                             pixmap.stroke_path(&path, stroke_paint, stroke_def, transform, None);
                         }
@@ -823,17 +916,26 @@ fn render_wkb_to_pixmap(
             if let Some(num) = wkb_read_u32(wkb, cursor, is_le) {
                 cursor += 4;
                 for _ in 0..num {
-                    if cursor + 5 > wkb.len() { break; }
+                    if cursor + 5 > wkb.len() {
+                        break;
+                    }
                     let inner_le = wkb[cursor] == 1;
                     cursor += 5;
                     let mut pb = PathBuilder::new();
-                    if build_polygon_path(&mut pb, wkb, &mut cursor, inner_le, bbox, w, h, px_snap) {
+                    if build_polygon_path(&mut pb, wkb, &mut cursor, inner_le, bbox, w, h, px_snap)
+                    {
                         if let Some(path) = pb.finish() {
                             if let Some(fp) = fill_paint {
                                 pixmap.fill_path(&path, fp, FillRule::EvenOdd, transform, None);
                             }
                             if stroke_def.width > 0.0 {
-                                pixmap.stroke_path(&path, stroke_paint, stroke_def, transform, None);
+                                pixmap.stroke_path(
+                                    &path,
+                                    stroke_paint,
+                                    stroke_def,
+                                    transform,
+                                    None,
+                                );
                             }
                         }
                     }
@@ -848,16 +950,28 @@ fn render_wkb_to_pixmap(
 
 #[inline(always)]
 fn wkb_read_f64(wkb: &[u8], offset: usize, is_le: bool) -> Option<f64> {
-    if offset + 8 > wkb.len() { return None; }
+    if offset + 8 > wkb.len() {
+        return None;
+    }
     let bytes: [u8; 8] = wkb[offset..offset + 8].try_into().ok()?;
-    Some(if is_le { f64::from_le_bytes(bytes) } else { f64::from_be_bytes(bytes) })
+    Some(if is_le {
+        f64::from_le_bytes(bytes)
+    } else {
+        f64::from_be_bytes(bytes)
+    })
 }
 
 #[inline(always)]
 fn wkb_read_u32(wkb: &[u8], offset: usize, is_le: bool) -> Option<u32> {
-    if offset + 4 > wkb.len() { return None; }
+    if offset + 4 > wkb.len() {
+        return None;
+    }
     let bytes: [u8; 4] = wkb[offset..offset + 4].try_into().ok()?;
-    Some(if is_le { u32::from_le_bytes(bytes) } else { u32::from_be_bytes(bytes) })
+    Some(if is_le {
+        u32::from_le_bytes(bytes)
+    } else {
+        u32::from_be_bytes(bytes)
+    })
 }
 
 #[inline(always)]
@@ -879,14 +993,18 @@ fn build_linestring_path(
     h: u32,
     snap: f32,
 ) -> bool {
-    let Some(num_points) = wkb_read_u32(wkb, *cursor, is_le) else { return false };
+    let Some(num_points) = wkb_read_u32(wkb, *cursor, is_le) else {
+        return false;
+    };
     *cursor += 4;
     let mut started = false;
     let mut last_px = 0.0f32;
     let mut last_py = 0.0f32;
     let snap_sq = snap * snap;
     for i in 0..num_points {
-        let Some((x, y)) = read_f64_pair(wkb, *cursor, is_le) else { return started };
+        let Some((x, y)) = read_f64_pair(wkb, *cursor, is_le) else {
+            return started;
+        };
         *cursor += 16;
         let (px, py) = geo_px(x, y, bbox, w, h);
         if !started {
@@ -921,18 +1039,24 @@ fn build_polygon_path(
     h: u32,
     snap: f32,
 ) -> bool {
-    let Some(num_rings) = wkb_read_u32(wkb, *cursor, is_le) else { return false };
+    let Some(num_rings) = wkb_read_u32(wkb, *cursor, is_le) else {
+        return false;
+    };
     *cursor += 4;
     let snap_sq = snap * snap;
     let mut any = false;
     for _ in 0..num_rings {
-        let Some(num_points) = wkb_read_u32(wkb, *cursor, is_le) else { return any };
+        let Some(num_points) = wkb_read_u32(wkb, *cursor, is_le) else {
+            return any;
+        };
         *cursor += 4;
         let mut started = false;
         let mut last_px = 0.0f32;
         let mut last_py = 0.0f32;
         for i in 0..num_points {
-            let Some((x, y)) = read_f64_pair(wkb, *cursor, is_le) else { return any };
+            let Some((x, y)) = read_f64_pair(wkb, *cursor, is_le) else {
+                return any;
+            };
             *cursor += 16;
             let (px, py) = geo_px(x, y, bbox, w, h);
             if !started {
@@ -970,7 +1094,9 @@ fn draw_point(
 ) {
     let rect = tiny_skia::Rect::from_xywh(cx - radius, cy - radius, radius * 2.0, radius * 2.0);
     let Some(rect) = rect else { return };
-    let Some(path) = PathBuilder::from_oval(rect) else { return };
+    let Some(path) = PathBuilder::from_oval(rect) else {
+        return;
+    };
     pixmap.fill_path(&path, paint, FillRule::Winding, transform, None);
 }
 
@@ -1006,7 +1132,13 @@ fn extract_style_value(
 /// Build Paint objects from a FeatureStyle for per-feature rendering.
 fn paints_from_feature_style(
     fs: super::style_dsl::FeatureStyle,
-) -> (Option<Paint<'static>>, Paint<'static>, Stroke, Paint<'static>, f32) {
+) -> (
+    Option<Paint<'static>>,
+    Paint<'static>,
+    Stroke,
+    Paint<'static>,
+    f32,
+) {
     let fill = fs.fill_color.map(|c| {
         let mut p = Paint::default();
         p.set_color(Color::from_rgba8(c[0], c[1], c[2], c[3]));
@@ -1015,8 +1147,10 @@ fn paints_from_feature_style(
     });
     let mut stroke_p = Paint::default();
     stroke_p.set_color(Color::from_rgba8(
-        fs.stroke_color[0], fs.stroke_color[1],
-        fs.stroke_color[2], fs.stroke_color[3],
+        fs.stroke_color[0],
+        fs.stroke_color[1],
+        fs.stroke_color[2],
+        fs.stroke_color[3],
     ));
     stroke_p.anti_alias = true;
     let stroke_d = {
@@ -1028,8 +1162,10 @@ fn paints_from_feature_style(
     };
     let mut point_p = Paint::default();
     point_p.set_color(Color::from_rgba8(
-        fs.point_color[0], fs.point_color[1],
-        fs.point_color[2], fs.point_color[3],
+        fs.point_color[0],
+        fs.point_color[1],
+        fs.point_color[2],
+        fs.point_color[3],
     ));
     point_p.anti_alias = true;
     (fill, stroke_p, stroke_d, point_p, fs.point_radius)
@@ -1056,8 +1192,8 @@ pub fn render_mvt_direct(
         return Err("no bbox columns — falling back to DataFusion".into());
     }
 
-    let file = std::fs::File::open(source_path)
-        .map_err(|e| format!("failed to open parquet: {e}"))?;
+    let file =
+        std::fs::File::open(source_path).map_err(|e| format!("failed to open parquet: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("failed to read parquet: {e}"))?;
 
@@ -1116,7 +1252,9 @@ pub fn render_mvt_direct(
     if let Some(ref rgs) = selected_row_groups {
         b = b.with_row_groups(rgs.clone());
     }
-    let reader = b.build().map_err(|e| format!("failed to build reader: {e}"))?;
+    let reader = b
+        .build()
+        .map_err(|e| format!("failed to build reader: {e}"))?;
 
     mvt_encode_batches(
         reader,
@@ -1145,7 +1283,7 @@ fn mvt_encode_batches(
     allowed_properties: &[String],
     limit: usize,
 ) -> Result<Vec<u8>, String> {
-    use super::mvt::{encode_wkb_feature, MvtValue};
+    use super::mvt::{MvtValue, encode_wkb_feature};
 
     let batch_geom_name = full_schema.field(geom_idx).name().clone();
     let batch_bbox_names: Option<[String; 4]> = bbox_indices.map(|bi| {
@@ -1183,10 +1321,26 @@ fn mvt_encode_batches(
 
         let bbox_arrays: Option<[&Float64Array; 4]> = bb_indices.map(|bi| {
             [
-                batch.column(bi[0]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[1]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[2]).as_any().downcast_ref::<Float64Array>().unwrap(),
-                batch.column(bi[3]).as_any().downcast_ref::<Float64Array>().unwrap(),
+                batch
+                    .column(bi[0])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[1])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[2])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
+                batch
+                    .column(bi[3])
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap(),
             ]
         });
 
@@ -1209,8 +1363,10 @@ fn mvt_encode_batches(
                 if GEOM_NAMES.contains(&name) {
                     return false;
                 }
-                if ["xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y"]
-                    .contains(&name)
+                if [
+                    "xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y",
+                ]
+                .contains(&name)
                 {
                     return false;
                 }
@@ -1222,9 +1378,8 @@ fn mvt_encode_batches(
             .map(|(idx, field)| (field.name().clone(), idx))
             .collect();
 
-        let filter_col_cache = filter.map(|f| {
-            super::filter_dsl::build_filter_column_cache(f, &batch_schema)
-        });
+        let filter_col_cache =
+            filter.map(|f| super::filter_dsl::build_filter_column_cache(f, &batch_schema));
 
         for row in 0..batch.num_rows() {
             if count >= limit {
@@ -1264,7 +1419,13 @@ fn mvt_encode_batches(
                 .collect();
 
             if let Some(feat_bytes) = encode_wkb_feature(
-                wkb, &props, bbox, 4096, &mut tags, &mut cursor, &mut feature_id,
+                wkb,
+                &props,
+                bbox,
+                4096,
+                &mut tags,
+                &mut cursor,
+                &mut feature_id,
             ) {
                 encoded_features.push(feat_bytes);
             }
@@ -1365,7 +1526,8 @@ mod tests {
         render_wkb_to_pixmap(
             &wkb,
             &[144.0, -38.0, 145.0, -37.0],
-            256, 256,
+            256,
+            256,
             &mut pixmap,
             None,
             &paint,
@@ -1406,7 +1568,8 @@ mod tests {
         render_wkb_to_pixmap(
             &wkb,
             &[144.0, -38.0, 145.0, -37.0],
-            256, 256,
+            256,
+            256,
             &mut pixmap,
             Some(&fill),
             &stroke_p,
@@ -1430,7 +1593,14 @@ mod tests {
         let mut pb = PathBuilder::new();
         let mut cursor = 0;
         let ok = build_linestring_path(
-            &mut pb, &wkb, &mut cursor, true, &[0.0, 0.0, 2.0, 1.0], 256, 256, 0.5,
+            &mut pb,
+            &wkb,
+            &mut cursor,
+            true,
+            &[0.0, 0.0, 2.0, 1.0],
+            256,
+            256,
+            0.5,
         );
         assert!(ok);
         assert!(pb.finish().is_some());

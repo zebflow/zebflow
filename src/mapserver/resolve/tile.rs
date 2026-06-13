@@ -57,8 +57,7 @@ pub fn render_features_to_pixmap(
     let w = request.width.min(4096).max(1);
     let h = request.height.min(4096).max(1);
 
-    let mut pixmap =
-        Pixmap::new(w, h).ok_or_else(|| "failed to create pixmap".to_string())?;
+    let mut pixmap = Pixmap::new(w, h).ok_or_else(|| "failed to create pixmap".to_string())?;
 
     let fill_paint = style.fill_color.map(|c| {
         let mut p = Paint::default();
@@ -120,7 +119,13 @@ pub fn render_features_to_pixmap(
         let (fp, sp, sd, pp, pr) = if let Some(ref fp) = feat_paints {
             (fp.0.as_ref(), &fp.1, &fp.2, &fp.3, fp.4)
         } else {
-            (fill_paint.as_ref(), &stroke_paint, &stroke_def, &point_paint, style.point_radius)
+            (
+                fill_paint.as_ref(),
+                &stroke_paint,
+                &stroke_def,
+                &point_paint,
+                style.point_radius,
+            )
         };
 
         match geom_type {
@@ -195,7 +200,13 @@ fn extract_geojson_style_value(feature: &Value, field: &str) -> super::style_dsl
 /// Build Paint objects from a FeatureStyle for per-feature rendering.
 fn feature_style_paints(
     fs: super::style_dsl::FeatureStyle,
-) -> (Option<Paint<'static>>, Paint<'static>, Stroke, Paint<'static>, f32) {
+) -> (
+    Option<Paint<'static>>,
+    Paint<'static>,
+    Stroke,
+    Paint<'static>,
+    f32,
+) {
     let fill = fs.fill_color.map(|c| {
         let mut p = Paint::default();
         p.set_color(Color::from_rgba8(c[0], c[1], c[2], c[3]));
@@ -204,8 +215,10 @@ fn feature_style_paints(
     });
     let mut stroke_p = Paint::default();
     stroke_p.set_color(Color::from_rgba8(
-        fs.stroke_color[0], fs.stroke_color[1],
-        fs.stroke_color[2], fs.stroke_color[3],
+        fs.stroke_color[0],
+        fs.stroke_color[1],
+        fs.stroke_color[2],
+        fs.stroke_color[3],
     ));
     stroke_p.anti_alias = true;
     let stroke_d = {
@@ -217,8 +230,10 @@ fn feature_style_paints(
     };
     let mut point_p = Paint::default();
     point_p.set_color(Color::from_rgba8(
-        fs.point_color[0], fs.point_color[1],
-        fs.point_color[2], fs.point_color[3],
+        fs.point_color[0],
+        fs.point_color[1],
+        fs.point_color[2],
+        fs.point_color[3],
     ));
     point_p.anti_alias = true;
     (fill, stroke_p, stroke_d, point_p, fs.point_radius)
@@ -283,10 +298,7 @@ pub fn compute_metatile_info(tile_bbox: &[f64; 4], grid_size: u32) -> MetatileIn
 /// Slice a metatile pixmap into grid_size × grid_size individual tile PNGs.
 ///
 /// Returns Vec of (col, row, png_bytes) for each sub-tile.
-pub fn slice_metatile(
-    pixmap: &Pixmap,
-    grid_size: u32,
-) -> Result<Vec<(u32, u32, Vec<u8>)>, String> {
+pub fn slice_metatile(pixmap: &Pixmap, grid_size: u32) -> Result<Vec<(u32, u32, Vec<u8>)>, String> {
     let tile_w = pixmap.width() / grid_size;
     let tile_h = pixmap.height() / grid_size;
     if tile_w == 0 || tile_h == 0 {
@@ -299,8 +311,8 @@ pub fn slice_metatile(
 
     for row in 0..grid_size {
         for col in 0..grid_size {
-            let mut sub =
-                Pixmap::new(tile_w, tile_h).ok_or_else(|| "failed to create sub-tile pixmap".to_string())?;
+            let mut sub = Pixmap::new(tile_w, tile_h)
+                .ok_or_else(|| "failed to create sub-tile pixmap".to_string())?;
             let dst_data = sub.data_mut();
             let dst_stride = tile_w as usize * 4;
 
@@ -756,7 +768,11 @@ mod tests {
             for col in 0..4u32 {
                 let sub = meta.sub_tile_bbox(col, row);
                 let (rc, rr) = meta.tile_position(&sub);
-                assert_eq!((rc, rr), (col, row), "position mismatch for col={col} row={row}");
+                assert_eq!(
+                    (rc, rr),
+                    (col, row),
+                    "position mismatch for col={col} row={row}"
+                );
                 positions.insert((rc, rr));
             }
         }

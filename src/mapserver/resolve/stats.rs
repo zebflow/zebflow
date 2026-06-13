@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mapserver::publish::manifest::{PublishedLayerManifest, SourceKind};
 use crate::mapserver::resolve::geoparquet_optimize::ColumnStats;
@@ -75,8 +75,8 @@ pub fn compute_layer_stats(manifest: &PublishedLayerManifest) -> Result<Value, S
 fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>), String> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-    let file = std::fs::File::open(source_path)
-        .map_err(|e| format!("failed to open parquet: {e}"))?;
+    let file =
+        std::fs::File::open(source_path).map_err(|e| format!("failed to open parquet: {e}"))?;
     let builder = ParquetRecordBatchReaderBuilder::try_new(file)
         .map_err(|e| format!("failed to read parquet metadata: {e}"))?;
 
@@ -91,7 +91,9 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
 
     // Skip geometry and bbox columns
     let geom_names: &[&str] = &["geometry", "geom", "wkb_geometry", "the_geom", "shape"];
-    let bbox_names: &[&str] = &["xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y"];
+    let bbox_names: &[&str] = &[
+        "xmin", "ymin", "xmax", "ymax", "min_x", "min_y", "max_x", "max_y",
+    ];
 
     let mut columns = Vec::new();
 
@@ -108,8 +110,8 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
         let data_type = format!("{:?}", field.data_type());
 
         // Find matching parquet leaf column
-        let pq_col_idx = (0..parquet_schema.num_columns())
-            .find(|&i| parquet_schema.column(i).name() == name);
+        let pq_col_idx =
+            (0..parquet_schema.num_columns()).find(|&i| parquet_schema.column(i).name() == name);
 
         let mut null_count: usize = 0;
         let mut min_val: Option<f64> = None;
@@ -135,20 +137,26 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
                         }
                         Statistics::Int64(s) => {
                             if let (Some(&mn), Some(&mx)) = (s.min_opt(), s.max_opt()) {
-                                min_val = Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
-                                max_val = Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
+                                min_val =
+                                    Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
+                                max_val =
+                                    Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
                             }
                         }
                         Statistics::Int32(s) => {
                             if let (Some(&mn), Some(&mx)) = (s.min_opt(), s.max_opt()) {
-                                min_val = Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
-                                max_val = Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
+                                min_val =
+                                    Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
+                                max_val =
+                                    Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
                             }
                         }
                         Statistics::Float(s) => {
                             if let (Some(&mn), Some(&mx)) = (s.min_opt(), s.max_opt()) {
-                                min_val = Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
-                                max_val = Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
+                                min_val =
+                                    Some(min_val.map_or(mn as f64, |m: f64| m.min(mn as f64)));
+                                max_val =
+                                    Some(max_val.map_or(mx as f64, |m: f64| m.max(mx as f64)));
                             }
                         }
                         _ => {}
@@ -159,22 +167,22 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
 
         // Cardinality: sample via get_field_distinct for string/int columns
         let cardinality = crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
-            source_path, name, 1000,
+            source_path,
+            name,
+            1000,
         )
         .map(|d| d.values.len())
         .unwrap_or(0);
 
         let top_values = if cardinality > 0 && cardinality <= 500 {
-            crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
-                source_path, name, 50,
-            )
-            .map(|d| {
-                d.values
-                    .into_iter()
-                    .map(|v| (v, 0usize)) // count not tracked in distinct
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+            crate::mapserver::resolve::geoparquet_direct::get_field_distinct(source_path, name, 50)
+                .map(|d| {
+                    d.values
+                        .into_iter()
+                        .map(|v| (v, 0usize)) // count not tracked in distinct
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -197,9 +205,7 @@ fn stats_from_geoparquet(source_path: &Path) -> Result<(usize, Vec<ColumnStats>)
 fn stats_from_geojson_file(source_path: &Path) -> Result<(usize, Vec<ColumnStats>), String> {
     const MAX_SCAN_SIZE: u64 = 50 * 1024 * 1024;
 
-    let file_size = std::fs::metadata(source_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(source_path).map(|m| m.len()).unwrap_or(0);
     if file_size > MAX_SCAN_SIZE {
         return Ok((0, Vec::new()));
     }

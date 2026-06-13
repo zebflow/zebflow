@@ -316,11 +316,7 @@ fn json_coord(val: &serde_json::Value, bbox: &[f64; 4], extent: u32) -> Option<(
 }
 
 /// Extract a ring of coordinates from a JSON array of arrays.
-fn json_ring(
-    coords: &serde_json::Value,
-    bbox: &[f64; 4],
-    extent: u32,
-) -> Vec<(i32, i32)> {
+fn json_ring(coords: &serde_json::Value, bbox: &[f64; 4], extent: u32) -> Vec<(i32, i32)> {
     coords
         .as_array()
         .map(|arr| {
@@ -404,7 +400,11 @@ fn encode_geojson_feature(
             for poly in coordinates.as_array()? {
                 let rings: Vec<Vec<(i32, i32)>> = poly
                     .as_array()
-                    .map(|arr| arr.iter().map(|ring| json_ring(ring, bbox, extent)).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|ring| json_ring(ring, bbox, extent))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 all_cmds.extend(encode_polygon_geom(&rings, cursor));
             }
@@ -723,7 +723,11 @@ pub fn features_to_mvt_gz(
 }
 
 /// Assemble Layer + Tile protobuf from encoded features and tag table.
-pub(crate) fn assemble_tile(layer_name: &str, tags: &TagTable, encoded_features: &[Vec<u8>]) -> Vec<u8> {
+pub(crate) fn assemble_tile(
+    layer_name: &str,
+    tags: &TagTable,
+    encoded_features: &[Vec<u8>],
+) -> Vec<u8> {
     // Build Layer message
     let mut layer_buf = Vec::new();
 
@@ -752,8 +756,7 @@ pub(crate) fn assemble_tile(layer_name: &str, tags: &TagTable, encoded_features:
 
 /// Gzip compress bytes.
 pub(crate) fn gzip_compress(data: &[u8]) -> Vec<u8> {
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     encoder.write_all(data).unwrap_or_default();
     encoder.finish().unwrap_or_default()
 }
@@ -825,11 +828,10 @@ mod tests {
     fn encode_point_geometry() {
         let mut cursor = (0, 0);
         let cmds = encode_point_geom(25, 17, &mut cursor);
-        assert_eq!(cmds, vec![
-            command_integer(CMD_MOVE_TO, 1),
-            zigzag(25),
-            zigzag(17),
-        ]);
+        assert_eq!(
+            cmds,
+            vec![command_integer(CMD_MOVE_TO, 1), zigzag(25), zigzag(17),]
+        );
         assert_eq!(cursor, (25, 17));
     }
 
@@ -968,12 +970,7 @@ mod tests {
         let bbox = [0.0, 0.0, 1.0, 1.0];
 
         // With allowed_properties filter
-        let mvt_filtered = features_to_mvt(
-            "filtered",
-            &features,
-            &bbox,
-            &["name".to_string()],
-        );
+        let mvt_filtered = features_to_mvt("filtered", &features, &bbox, &["name".to_string()]);
         // Without filter (all properties)
         let mvt_all = features_to_mvt("all", &features, &bbox, &[]);
 
@@ -994,7 +991,8 @@ mod tests {
         let mut cursor = (0, 0);
         let mut fid = 1u64;
         let props = vec![("name", MvtValue::Str("test".into()))];
-        let result = encode_wkb_feature(&wkb, &props, &bbox, 4096, &mut tags, &mut cursor, &mut fid);
+        let result =
+            encode_wkb_feature(&wkb, &props, &bbox, 4096, &mut tags, &mut cursor, &mut fid);
         assert!(result.is_some());
     }
 
