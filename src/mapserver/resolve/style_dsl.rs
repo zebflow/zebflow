@@ -8,7 +8,7 @@
 //!
 //! The same DSL string works as a URL `?style=` param and as `--style` in publish.
 
-use super::style::{parse_css_color, LayerStyle, LayerStyleConfig};
+use super::style::{LayerStyle, LayerStyleConfig, parse_css_color};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -132,15 +132,23 @@ impl StyleDefinition {
     pub fn needs_stats(&self) -> bool {
         matches!(
             self,
-            StyleDefinition::ClassBreaks { manual_breaks: None, .. }
-                | StyleDefinition::GraduatedSymbol { value_range: None, .. }
+            StyleDefinition::ClassBreaks {
+                manual_breaks: None,
+                ..
+            } | StyleDefinition::GraduatedSymbol {
+                value_range: None,
+                ..
+            }
         )
     }
 
     pub fn needs_distinct(&self) -> bool {
         matches!(
             self,
-            StyleDefinition::UniqueValue { manual_classes: None, .. }
+            StyleDefinition::UniqueValue {
+                manual_classes: None,
+                ..
+            }
         )
     }
 
@@ -448,7 +456,9 @@ pub fn interpolate_ramp(ramp: &[[u8; 4]], n: usize) -> Vec<[u8; 4]> {
 pub fn custom_gradient(spec: &str, n: usize) -> Result<Vec<[u8; 4]>, String> {
     let parts: Vec<&str> = spec.splitn(2, ':').collect();
     if parts.len() != 2 {
-        return Err(format!("custom gradient needs two colors separated by ':', got: '{spec}'"));
+        return Err(format!(
+            "custom gradient needs two colors separated by ':', got: '{spec}'"
+        ));
     }
     let c1 = parse_hex_short(parts[0])
         .ok_or_else(|| format!("invalid gradient start color: '{}'", parts[0]))?;
@@ -524,9 +534,9 @@ fn parse_unique_value(input: &str) -> Result<StyleDefinition, String> {
             if class_spec.is_empty() {
                 continue;
             }
-            let (value, props_str) = class_spec
-                .split_once('=')
-                .ok_or_else(|| format!("invalid class spec (expected 'value=props'): '{class_spec}'"))?;
+            let (value, props_str) = class_spec.split_once('=').ok_or_else(|| {
+                format!("invalid class spec (expected 'value=props'): '{class_spec}'")
+            })?;
             let props = parse_prop_assignments(props_str)?;
             classes.push((value.trim().to_string(), props));
         }
@@ -563,9 +573,7 @@ fn parse_class_breaks(input: &str) -> Result<StyleDefinition, String> {
     if field.is_empty() {
         return Err("cb() requires a field name".into());
     }
-    let num_classes = arg_parts
-        .get(1)
-        .and_then(|s| s.trim().parse::<u8>().ok());
+    let num_classes = arg_parts.get(1).and_then(|s| s.trim().parse::<u8>().ok());
     let ramp = arg_parts.get(2).map(|s| s.trim().to_string());
 
     let manual_breaks = if let Some(manual) = manual_part {
@@ -593,7 +601,9 @@ fn parse_class_breaks(input: &str) -> Result<StyleDefinition, String> {
                 let props = parse_prop_assignments(props_str)?;
                 breaks.push((max_val, props));
             } else {
-                return Err(format!("break spec must start with '~' or '+': '{break_spec}'"));
+                return Err(format!(
+                    "break spec must start with '~' or '+': '{break_spec}'"
+                ));
             }
         }
         Some(breaks)
@@ -684,10 +694,25 @@ fn apply_prop(pm: &mut PropMap, key: &str, val: &str) -> Result<(), String> {
     match key {
         "f" | "fill" => pm.fill = Some(val.to_string()),
         "s" | "stroke" => pm.stroke = Some(val.to_string()),
-        "sw" => pm.stroke_width = Some(val.parse::<f32>().map_err(|_| format!("invalid sw: '{val}'"))?),
-        "pr" => pm.point_radius = Some(val.parse::<f32>().map_err(|_| format!("invalid pr: '{val}'"))?),
+        "sw" => {
+            pm.stroke_width = Some(
+                val.parse::<f32>()
+                    .map_err(|_| format!("invalid sw: '{val}'"))?,
+            )
+        }
+        "pr" => {
+            pm.point_radius = Some(
+                val.parse::<f32>()
+                    .map_err(|_| format!("invalid pr: '{val}'"))?,
+            )
+        }
         "pc" => pm.point_color = Some(val.to_string()),
-        "o" | "opacity" => pm.opacity = Some(val.parse::<f32>().map_err(|_| format!("invalid opacity: '{val}'"))?),
+        "o" | "opacity" => {
+            pm.opacity = Some(
+                val.parse::<f32>()
+                    .map_err(|_| format!("invalid opacity: '{val}'"))?,
+            )
+        }
         _ => return Err(format!("unknown style property: '{key}'")),
     }
     Ok(())
@@ -799,8 +824,8 @@ pub fn resolve_style(
                     fallback: base,
                 })
             } else {
-                let distinct = distinct
-                    .ok_or("unique value style requires distinct values from data")?;
+                let distinct =
+                    distinct.ok_or("unique value style requires distinct values from data")?;
                 let pal_name = palette.as_deref().unwrap_or("default");
                 let colors = categorical_palette(pal_name)
                     .ok_or_else(|| format!("unknown palette: '{pal_name}'"))?;
@@ -852,8 +877,7 @@ pub fn resolve_style(
                     fallback: base,
                 })
             } else {
-                let stats =
-                    stats.ok_or("class breaks style requires min/max stats from data")?;
+                let stats = stats.ok_or("class breaks style requires min/max stats from data")?;
                 let n = num_classes.unwrap_or(5) as usize;
                 let colors = resolve_ramp_colors(ramp.as_deref(), n)?;
                 let range = stats.max - stats.min;
@@ -893,11 +917,8 @@ pub fn resolve_style(
             color,
             overrides,
         } => {
-            let (vmin, vmax) = value_range.unwrap_or_else(|| {
-                stats
-                    .map(|s| (s.min, s.max))
-                    .unwrap_or((0.0, 100.0))
-            });
+            let (vmin, vmax) = value_range
+                .unwrap_or_else(|| stats.map(|s| (s.min, s.max)).unwrap_or((0.0, 100.0)));
             let (rmin, rmax) = radius_range.unwrap_or((3.0, 16.0));
             let mut base = FeatureStyle::default();
             apply_props_to_feature_style(&mut base, overrides);
@@ -925,8 +946,8 @@ fn resolve_ramp_colors(ramp_spec: Option<&str>, n: usize) -> Result<Vec<[u8; 4]>
         None => Ok(interpolate_ramp(sequential_ramp("default").unwrap(), n)),
         Some(spec) if spec.len() <= 7 && spec.contains(':') => custom_gradient(spec, n),
         Some(name) => {
-            let ramp = sequential_ramp(name)
-                .ok_or_else(|| format!("unknown color ramp: '{name}'"))?;
+            let ramp =
+                sequential_ramp(name).ok_or_else(|| format!("unknown color ramp: '{name}'"))?;
             Ok(interpolate_ramp(ramp, n))
         }
     }
@@ -1015,10 +1036,7 @@ pub fn parse_style_value(style_json: &serde_json::Value) -> Result<StyleSource, 
 }
 
 /// Convert old-format LayerStyleConfig JSON into a ResolvedStyle.
-pub fn legacy_style_to_resolved(
-    style_json: &serde_json::Value,
-    zoom: Option<u8>,
-) -> ResolvedStyle {
+pub fn legacy_style_to_resolved(style_json: &serde_json::Value, zoom: Option<u8>) -> ResolvedStyle {
     if let Ok(config) = serde_json::from_value::<LayerStyleConfig>(style_json.clone()) {
         let ls = super::style::resolve_layer_style(Some(&config), zoom);
         ResolvedStyle::Uniform(FeatureStyle::from(&ls))
@@ -1277,18 +1295,27 @@ mod tests {
         let resolved = ResolvedStyle::ClassBreaks {
             field: "x".into(),
             breaks: vec![
-                (10.0, FeatureStyle {
-                    fill_color: Some([255, 0, 0, 255]),
-                    ..Default::default()
-                }),
-                (20.0, FeatureStyle {
-                    fill_color: Some([0, 255, 0, 255]),
-                    ..Default::default()
-                }),
-                (f64::MAX, FeatureStyle {
-                    fill_color: Some([0, 0, 255, 255]),
-                    ..Default::default()
-                }),
+                (
+                    10.0,
+                    FeatureStyle {
+                        fill_color: Some([255, 0, 0, 255]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    20.0,
+                    FeatureStyle {
+                        fill_color: Some([0, 255, 0, 255]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    f64::MAX,
+                    FeatureStyle {
+                        fill_color: Some([0, 0, 255, 255]),
+                        ..Default::default()
+                    },
+                ),
             ],
             fallback: FeatureStyle::default(),
         };
@@ -1308,14 +1335,20 @@ mod tests {
         let resolved = ResolvedStyle::UniqueValue {
             field: "type".into(),
             classes: vec![
-                ("A".into(), FeatureStyle {
-                    fill_color: Some([255, 0, 0, 255]),
-                    ..Default::default()
-                }),
-                ("B".into(), FeatureStyle {
-                    fill_color: Some([0, 255, 0, 255]),
-                    ..Default::default()
-                }),
+                (
+                    "A".into(),
+                    FeatureStyle {
+                        fill_color: Some([255, 0, 0, 255]),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "B".into(),
+                    FeatureStyle {
+                        fill_color: Some([0, 255, 0, 255]),
+                        ..Default::default()
+                    },
+                ),
             ],
             fallback: FeatureStyle {
                 fill_color: Some([128, 128, 128, 255]),
@@ -1425,9 +1458,18 @@ mod tests {
 
     #[test]
     fn field_name_extraction() {
-        assert_eq!(parse_style_dsl("cb(pop,5)").unwrap().field_name(), Some("pop"));
-        assert_eq!(parse_style_dsl("uv(type)").unwrap().field_name(), Some("type"));
-        assert_eq!(parse_style_dsl("gs(mag)").unwrap().field_name(), Some("mag"));
+        assert_eq!(
+            parse_style_dsl("cb(pop,5)").unwrap().field_name(),
+            Some("pop")
+        );
+        assert_eq!(
+            parse_style_dsl("uv(type)").unwrap().field_name(),
+            Some("type")
+        );
+        assert_eq!(
+            parse_style_dsl("gs(mag)").unwrap().field_name(),
+            Some("mag")
+        );
         assert_eq!(parse_style_dsl("f:FF0000").unwrap().field_name(), None);
     }
 

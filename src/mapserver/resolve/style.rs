@@ -223,12 +223,18 @@ mod tests {
 
     #[test]
     fn parse_rgba_int() {
-        assert_eq!(parse_css_color("rgba(65,105,225,128)"), Some([65, 105, 225, 128]));
+        assert_eq!(
+            parse_css_color("rgba(65,105,225,128)"),
+            Some([65, 105, 225, 128])
+        );
     }
 
     #[test]
     fn parse_rgba_float() {
-        assert_eq!(parse_css_color("rgba(65,105,225,0.5)"), Some([65, 105, 225, 128]));
+        assert_eq!(
+            parse_css_color("rgba(65,105,225,0.5)"),
+            Some([65, 105, 225, 128])
+        );
     }
 
     #[test]

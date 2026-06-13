@@ -110,8 +110,7 @@ fn write_layers(
     }
     let raw = serde_json::to_string_pretty(items)
         .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))?;
-    std::fs::write(path, raw)
-        .map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
+    std::fs::write(path, raw).map_err(|e| PipelineError::new("FW_NODE_MS_WRITE", e.to_string()))
 }
 
 fn layer_to_json(owner: &str, project: &str, record: &LayerRecord) -> Value {
@@ -523,7 +522,11 @@ pub fn unpublish_definition() -> NodeDefinition {
             "name",
             "Layer identifier to remove (required).",
         )],
-        fields: vec![text_field("name", "Layer ID", "Layer identifier to remove.")],
+        fields: vec![text_field(
+            "name",
+            "Layer ID",
+            "Layer identifier to remove.",
+        )],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         ..Default::default()
@@ -558,7 +561,11 @@ pub fn get_definition() -> NodeDefinition {
             "name",
             "Layer identifier to look up (required).",
         )],
-        fields: vec![text_field("name", "Layer ID", "Layer identifier to look up.")],
+        fields: vec![text_field(
+            "name",
+            "Layer ID",
+            "Layer identifier to look up.",
+        )],
         layout: vec![LayoutItem::Field("name".to_string())],
         ai_tool: Default::default(),
         ..Default::default()
@@ -674,7 +681,11 @@ impl Node {
         let path = require_non_empty(&self.config.path, "--path", "FW_NODE_MS_PUBLISH")?;
 
         // ── GeoJsonFunction mode: --function set → skip source-path / optimization
-        let is_function_mode = self.config.function.as_ref().is_some_and(|s| !s.trim().is_empty());
+        let is_function_mode = self
+            .config
+            .function
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty());
 
         // source_path: config takes priority, then input payload (not required for function mode)
         let mut source_path = if is_function_mode {
@@ -786,10 +797,11 @@ impl Node {
                     let stats_filename = format!("{name}.spatial.stats.json");
                     let stats_abs = optimized_dir.join(&stats_filename);
                     let stats_rel = format!("mapserver/.optimized/{stats_filename}");
-                    let stats_report = crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
-                        row_count: report.rows,
-                        columns: report.column_stats.clone(),
-                    };
+                    let stats_report =
+                        crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
+                            row_count: report.rows,
+                            columns: report.column_stats.clone(),
+                        };
                     if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
                         let _ = std::fs::write(&stats_abs, stats_json);
                     }
@@ -855,10 +867,7 @@ impl Node {
                     .map_err(|e| {
                         // Clean up temp file on error
                         let _ = std::fs::remove_file(&temp_raw);
-                        PipelineError::new(
-                            "FW_NODE_MS_PUBLISH",
-                            format!("optimize failed: {e}"),
-                        )
+                        PipelineError::new("FW_NODE_MS_PUBLISH", format!("optimize failed: {e}"))
                     })?;
 
                 // Clean up intermediate raw parquet
@@ -868,10 +877,11 @@ impl Node {
                 let stats_filename = format!("{name}.spatial.stats.json");
                 let stats_abs = optimized_dir.join(&stats_filename);
                 let stats_rel = format!("mapserver/.optimized/{stats_filename}");
-                let stats_report = crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
-                    row_count: opt_report.rows,
-                    columns: opt_report.column_stats.clone(),
-                };
+                let stats_report =
+                    crate::mapserver::resolve::geoparquet_optimize::ColumnStatsReport {
+                        row_count: opt_report.rows,
+                        columns: opt_report.column_stats.clone(),
+                    };
                 if let Ok(stats_json) = serde_json::to_string_pretty(&stats_report) {
                     let _ = std::fs::write(&stats_abs, stats_json);
                 }
@@ -963,8 +973,9 @@ impl Node {
         // Build style: prefer --style DSL over individual fill/stroke flags
         let style = if let Some(ref dsl) = self.config.style_dsl {
             // Validate DSL syntax at publish time
-            crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl)
-                .map_err(|e| PipelineError::new("MS_PUBLISH_STYLE", format!("invalid style DSL: {e}")))?;
+            crate::mapserver::resolve::style_dsl::parse_style_dsl(dsl).map_err(|e| {
+                PipelineError::new("MS_PUBLISH_STYLE", format!("invalid style DSL: {e}"))
+            })?;
             Some(json!(dsl)) // Store as JSON string value
         } else {
             let mut obj = serde_json::Map::new();
@@ -987,13 +998,18 @@ impl Node {
             if let Some(ref v) = self.config.point_color {
                 obj.insert("point_color".into(), json!(v));
             }
-            if obj.is_empty() { None } else { Some(Value::Object(obj)) }
+            if obj.is_empty() {
+                None
+            } else {
+                Some(Value::Object(obj))
+            }
         };
 
         // Validate filter syntax at publish time
         let filter = if let Some(ref f) = self.config.filter {
-            crate::mapserver::resolve::filter_dsl::parse_filter(f)
-                .map_err(|e| PipelineError::new("MS_PUBLISH_FILTER", format!("invalid filter: {e}")))?;
+            crate::mapserver::resolve::filter_dsl::parse_filter(f).map_err(|e| {
+                PipelineError::new("MS_PUBLISH_FILTER", format!("invalid filter: {e}"))
+            })?;
             Some(f.clone())
         } else {
             None

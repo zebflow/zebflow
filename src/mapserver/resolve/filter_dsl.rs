@@ -138,11 +138,7 @@ fn make_condition(field: &str, op: FilterOp, value: &str) -> Result<FilterCondit
     })
 }
 
-fn make_list_condition(
-    field: &str,
-    op: FilterOp,
-    value: &str,
-) -> Result<FilterCondition, String> {
+fn make_list_condition(field: &str, op: FilterOp, value: &str) -> Result<FilterCondition, String> {
     let field = field.trim().to_string();
     if field.is_empty() {
         return Err("filter condition has empty field name".into());
@@ -168,15 +164,11 @@ pub fn matches_geojson_feature(filter: &FilterExpr, feature: &serde_json::Value)
 
 fn eval_condition(cond: &FilterCondition, field_val: Option<&serde_json::Value>) -> bool {
     match (&cond.op, &cond.value) {
-        (FilterOp::Eq, FilterValue::Str(expected)) => {
-            json_str_eq(field_val, expected)
-        }
+        (FilterOp::Eq, FilterValue::Str(expected)) => json_str_eq(field_val, expected),
         (FilterOp::Eq, FilterValue::Num(expected)) => {
             json_num_cmp(field_val, *expected) == Some(std::cmp::Ordering::Equal)
         }
-        (FilterOp::Ne, FilterValue::Str(expected)) => {
-            !json_str_eq(field_val, expected)
-        }
+        (FilterOp::Ne, FilterValue::Str(expected)) => !json_str_eq(field_val, expected),
         (FilterOp::Ne, FilterValue::Num(expected)) => {
             json_num_cmp(field_val, *expected) != Some(std::cmp::Ordering::Equal)
         }
@@ -208,8 +200,14 @@ fn eval_condition(cond: &FilterCondition, field_val: Option<&serde_json::Value>)
                 match cond.op {
                     FilterOp::Gt => ord == Some(std::cmp::Ordering::Greater),
                     FilterOp::Lt => ord == Some(std::cmp::Ordering::Less),
-                    FilterOp::Gte => matches!(ord, Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
-                    FilterOp::Lte => matches!(ord, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
+                    FilterOp::Gte => matches!(
+                        ord,
+                        Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                    ),
+                    FilterOp::Lte => matches!(
+                        ord,
+                        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                    ),
                     _ => false,
                 }
             } else {
@@ -218,11 +216,13 @@ fn eval_condition(cond: &FilterCondition, field_val: Option<&serde_json::Value>)
         }
         (FilterOp::In, FilterValue::List(items)) => {
             let s = json_as_string(field_val);
-            s.map(|v| items.iter().any(|item| item == &v)).unwrap_or(false)
+            s.map(|v| items.iter().any(|item| item == &v))
+                .unwrap_or(false)
         }
         (FilterOp::NotIn, FilterValue::List(items)) => {
             let s = json_as_string(field_val);
-            s.map(|v| !items.iter().any(|item| item == &v)).unwrap_or(true)
+            s.map(|v| !items.iter().any(|item| item == &v))
+                .unwrap_or(true)
         }
         _ => false,
     }
@@ -378,25 +378,37 @@ pub fn matches_arrow_row(
 fn eval_arrow_str(cond: &FilterCondition, val: &str) -> bool {
     match (&cond.op, &cond.value) {
         (FilterOp::Eq, FilterValue::Str(expected)) => val == expected,
-        (FilterOp::Eq, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v == *expected).unwrap_or(false)
-        }
+        (FilterOp::Eq, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v == *expected)
+            .unwrap_or(false),
         (FilterOp::Ne, FilterValue::Str(expected)) => val != expected,
-        (FilterOp::Ne, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v != *expected).unwrap_or(true)
-        }
-        (FilterOp::Gt, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v > *expected).unwrap_or(false)
-        }
-        (FilterOp::Lt, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v < *expected).unwrap_or(false)
-        }
-        (FilterOp::Gte, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v >= *expected).unwrap_or(false)
-        }
-        (FilterOp::Lte, FilterValue::Num(expected)) => {
-            val.parse::<f64>().ok().map(|v| v <= *expected).unwrap_or(false)
-        }
+        (FilterOp::Ne, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v != *expected)
+            .unwrap_or(true),
+        (FilterOp::Gt, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v > *expected)
+            .unwrap_or(false),
+        (FilterOp::Lt, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v < *expected)
+            .unwrap_or(false),
+        (FilterOp::Gte, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v >= *expected)
+            .unwrap_or(false),
+        (FilterOp::Lte, FilterValue::Num(expected)) => val
+            .parse::<f64>()
+            .ok()
+            .map(|v| v <= *expected)
+            .unwrap_or(false),
         (FilterOp::In, FilterValue::List(items)) => items.iter().any(|item| item == val),
         (FilterOp::NotIn, FilterValue::List(items)) => !items.iter().any(|item| item == val),
         _ => false,
@@ -460,11 +472,17 @@ fn condition_to_sql(cond: &FilterCondition) -> String {
             format!("{quoted_field} <= '{}'", sql_escape_str(s))
         }
         (FilterOp::In, FilterValue::List(items)) => {
-            let vals: Vec<String> = items.iter().map(|i| format!("'{}'", sql_escape_str(i))).collect();
+            let vals: Vec<String> = items
+                .iter()
+                .map(|i| format!("'{}'", sql_escape_str(i)))
+                .collect();
             format!("{quoted_field} IN ({})", vals.join(", "))
         }
         (FilterOp::NotIn, FilterValue::List(items)) => {
-            let vals: Vec<String> = items.iter().map(|i| format!("'{}'", sql_escape_str(i))).collect();
+            let vals: Vec<String> = items
+                .iter()
+                .map(|i| format!("'{}'", sql_escape_str(i)))
+                .collect();
             format!("{quoted_field} NOT IN ({})", vals.join(", "))
         }
         // Fallback: shouldn't happen but handle gracefully
@@ -506,7 +524,10 @@ mod tests {
         assert_eq!(f.conditions.len(), 1);
         assert_eq!(f.conditions[0].field, "category");
         assert_eq!(f.conditions[0].op, FilterOp::Eq);
-        assert_eq!(f.conditions[0].value, FilterValue::Str("residential".into()));
+        assert_eq!(
+            f.conditions[0].value,
+            FilterValue::Str("residential".into())
+        );
     }
 
     #[test]
@@ -601,7 +622,8 @@ mod tests {
         let feature = json!({"type":"Feature","properties":{"type":"highway"},"geometry":null});
         assert!(matches_geojson_feature(&f, &feature));
 
-        let feature2 = json!({"type":"Feature","properties":{"type":"residential"},"geometry":null});
+        let feature2 =
+            json!({"type":"Feature","properties":{"type":"residential"},"geometry":null});
         assert!(!matches_geojson_feature(&f, &feature2));
     }
 
@@ -628,13 +650,16 @@ mod tests {
     #[test]
     fn matches_geojson_multi_condition() {
         let f = parse_filter("category:A;value>50").unwrap();
-        let hit = json!({"type":"Feature","properties":{"category":"A","value":100},"geometry":null});
+        let hit =
+            json!({"type":"Feature","properties":{"category":"A","value":100},"geometry":null});
         assert!(matches_geojson_feature(&f, &hit));
 
-        let miss_cat = json!({"type":"Feature","properties":{"category":"B","value":100},"geometry":null});
+        let miss_cat =
+            json!({"type":"Feature","properties":{"category":"B","value":100},"geometry":null});
         assert!(!matches_geojson_feature(&f, &miss_cat));
 
-        let miss_val = json!({"type":"Feature","properties":{"category":"A","value":10},"geometry":null});
+        let miss_val =
+            json!({"type":"Feature","properties":{"category":"A","value":10},"geometry":null});
         assert!(!matches_geojson_feature(&f, &miss_val));
     }
 

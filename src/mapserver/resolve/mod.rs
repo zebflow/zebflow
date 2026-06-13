@@ -4,13 +4,13 @@ use serde_json::Value;
 
 pub mod artifact;
 pub mod cache;
+pub mod filter_dsl;
 pub mod function_cache;
 pub mod geoparquet;
 pub mod geoparquet_direct;
 pub mod geoparquet_optimize;
-pub mod query;
-pub mod filter_dsl;
 pub mod mvt;
+pub mod query;
 pub mod stats;
 pub mod style;
 pub mod style_dsl;
@@ -73,8 +73,8 @@ pub fn resolve_features(
         ),
         SourceKind::GeoParquet => geoparquet::resolve_from_geoparquet(manifest, request),
         SourceKind::GeoJsonFunction => {
-            let fc = preloaded
-                .ok_or_else(|| "GeoJsonFunction: features not preloaded".to_string())?;
+            let fc =
+                preloaded.ok_or_else(|| "GeoJsonFunction: features not preloaded".to_string())?;
             query::resolve_feature_collection_from_value(manifest, request, fc.clone())
         }
     }?;

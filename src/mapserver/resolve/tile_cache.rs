@@ -311,7 +311,17 @@ mod tests {
 
     #[test]
     fn tile_cache_key_format() {
-        let key = tile_cache_key("lga", &[144.0, -38.0, 145.0, -37.0], 256, 256, Some(10), "/tmp/test.parquet", None, None, "png");
+        let key = tile_cache_key(
+            "lga",
+            &[144.0, -38.0, 145.0, -37.0],
+            256,
+            256,
+            Some(10),
+            "/tmp/test.parquet",
+            None,
+            None,
+            "png",
+        );
         assert!(key.starts_with("tile:lga:"));
         assert!(key.contains("256x256"));
         assert!(key.contains("z=10"));
