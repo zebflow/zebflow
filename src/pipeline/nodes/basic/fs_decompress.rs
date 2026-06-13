@@ -164,9 +164,7 @@ pub fn definition() -> NodeDefinition {
                 name: "delete_source".to_string(),
                 label: "Delete Source".to_string(),
                 field_type: NodeFieldType::Checkbox,
-                help: Some(
-                    "Delete the source archive after successful extraction.".to_string(),
-                ),
+                help: Some("Delete the source archive after successful extraction.".to_string()),
                 default_value: Some(json!(false)),
                 ..Default::default()
             },

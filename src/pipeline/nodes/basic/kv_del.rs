@@ -136,7 +136,10 @@ impl NodeHandler for Node {
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: input.payload,
-            trace: vec![format!("n.kv.del: key={} existed={} durable={}", key, existed, self.config.durable)],
+            trace: vec![format!(
+                "n.kv.del: key={} existed={} durable={}",
+                key, existed, self.config.durable
+            )],
         })
     }
 }

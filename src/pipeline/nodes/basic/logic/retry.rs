@@ -72,14 +72,12 @@ pub fn definition() -> NodeDefinition {
                 },
             ]
         },
-        layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("max_attempts".to_string()),
-                    LayoutItem::Field("delay_ms".to_string()),
-                ],
-            },
-        ],
+        layout: vec![LayoutItem::Row {
+            row: vec![
+                LayoutItem::Field("max_attempts".to_string()),
+                LayoutItem::Field("delay_ms".to_string()),
+            ],
+        }],
         ai_tool: Default::default(),
         ..Default::default()
     }

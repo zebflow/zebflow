@@ -75,15 +75,13 @@ pub fn definition() -> NodeDefinition {
             kind: DslFlagKind::Scalar,
             required: true,
         }],
-        fields: vec![
-            NodeFieldDef {
-                name: "channel".to_string(),
-                label: "Channel".to_string(),
-                field_type: NodeFieldType::Text,
-                help: Some("Channel name to subscribe to.".to_string()),
-                ..Default::default()
-            },
-        ],
+        fields: vec![NodeFieldDef {
+            name: "channel".to_string(),
+            label: "Channel".to_string(),
+            field_type: NodeFieldType::Text,
+            help: Some("Channel name to subscribe to.".to_string()),
+            ..Default::default()
+        }],
         layout: vec![],
         ai_tool: Default::default(),
         ..Default::default()

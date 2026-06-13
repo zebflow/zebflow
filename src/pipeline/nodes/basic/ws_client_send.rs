@@ -112,7 +112,10 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: Config, ws_client_manager: Arc<WsClientManager>) -> Result<Self, PipelineError> {
+    pub fn new(
+        config: Config,
+        ws_client_manager: Arc<WsClientManager>,
+    ) -> Result<Self, PipelineError> {
         Ok(Self {
             config,
             ws_client_manager,
@@ -187,7 +190,11 @@ impl NodeHandler for Node {
             }
         };
 
-        match self.ws_client_manager.send(&connection_key, message_str).await {
+        match self
+            .ws_client_manager
+            .send(&connection_key, message_str)
+            .await
+        {
             Ok(()) => Ok(NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_OUT.to_string()],
                 payload: input.payload,

@@ -8,9 +8,9 @@ use serde_json::Value;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CredentialFieldDef, CredentialFieldOption, CredentialTypeDef,
-    ProjectCredential, ProjectCredentialListItem, SecureRequestVariableDefinition,
-    UpsertProjectCredentialRequest, now_ts, slug_segment,
+    CredentialFieldDef, CredentialFieldOption, CredentialTypeDef, ProjectCredential,
+    ProjectCredentialListItem, SecureRequestVariableDefinition, UpsertProjectCredentialRequest,
+    now_ts, slug_segment,
 };
 
 /// Project-scoped credentials stored in the metadata catalog.
@@ -520,10 +520,19 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
     use CredentialFieldOption as O;
 
     let f = |key: &str, label: &str| -> F {
-        F { key: key.into(), label: label.into(), ..Default::default() }
+        F {
+            key: key.into(),
+            label: label.into(),
+            ..Default::default()
+        }
     };
     let fp = |key: &str, label: &str| -> F {
-        F { key: key.into(), label: label.into(), field_type: "password".into(), ..Default::default() }
+        F {
+            key: key.into(),
+            label: label.into(),
+            field_type: "password".into(),
+            ..Default::default()
+        }
     };
 
     vec![
