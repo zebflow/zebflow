@@ -264,27 +264,35 @@ Body fields are always merged to root — regardless of encoding. Path params an
 email=user%40example.com&password=secret
 ```
 
-→ same: `input.email`, `input.password` — percent-decoded automatically
+→ `input.body.email`, `input.body.password` — percent-decoded automatically
 
 ### `multipart/form-data` (file upload)
 
-Text fields merge to root. Files go under `input.files.{field_name}`:
+Text fields go under `input.body`. Files go under `input.files.{field_name}` as
+FileRef metadata:
 
 ```json
 {
-  "email": "user@example.com",
+  "body": {
+    "email": "user@example.com"
+  },
   "files": {
     "avatar": {
+      "__zf_type": "file_ref",
+      "backend": "zebfs",
+      "ref": "tmp/runs/<request_id>/files/<uuid>.jpg",
       "filename": "photo.jpg",
       "content_type": "image/jpeg",
-      "size": 12345,
-      "data": "<base64>"
+      "size": 12345
     }
   }
 }
 ```
 
-`data` is base64-encoded — pipe it to a script node to store, forward, or process.
+For multiple uploads, prefer repeated `FormData.append("photos", file)` calls.
+`photos[]` and `photos[0]` are also normalized to `input.files.photos` arrays,
+so downstream nodes can address a single file with dot paths like
+`files.photos.0`.
 
 ### Always present
 

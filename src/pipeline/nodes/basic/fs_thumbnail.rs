@@ -1,8 +1,8 @@
 //! n.fs.thumbnail — resize + compress an uploaded image into a small thumbnail.
 //!
-//! Reads `input.saved.path` (the output of `n.fs.save`) by default, or a custom
-//! `--source-key` dot-path into the payload. Produces a resized, re-encoded file and
-//! injects `thumbnail: { path, url, width, height, format, size }` into the payload.
+//! Reads `input.saved.path` by default, or a custom `--source-key` dot-path into
+//! the payload. The source may be a string path or FileRef. Produces a resized,
+//! re-encoded file and injects `thumbnail` FileRef metadata into the payload.
 //!
 //! Fit modes:
 //!   cover   — scale to fill the target box, crop center (default)
@@ -21,9 +21,11 @@ use async_trait::async_trait;
 use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::util::metadata_scope;
+use super::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE, file_ref_to_rel_path};
+use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -372,11 +374,22 @@ impl NodeHandler for Node {
             self.config.source_key.trim()
         };
 
-        let rel_path = get_dot_path(&input.payload, source_key)
-            .ok_or_else(|| PipelineError::new(
+        let source_value = resolve_path(&input.payload, source_key).ok_or_else(|| {
+            PipelineError::new(
                 "IMG_THUMBNAIL",
-                format!("source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"),
-            ))?;
+                format!(
+                    "source path not found at payload key '{source_key}' — chain after n.fs.save or set --source-key"
+                ),
+            )
+        })?;
+        let rel_path = file_ref_to_rel_path(source_value)
+            .or_else(|| source_value.as_str().map(ToString::to_string))
+            .ok_or_else(|| {
+                PipelineError::new(
+                    "IMG_THUMBNAIL",
+                    format!("payload key '{source_key}' must be a FileRef or string path"),
+                )
+            })?;
 
         // ── Resolve absolute path ─────────────────────────────────────────
         let layout = self
@@ -472,19 +485,36 @@ impl NodeHandler for Node {
             }
         }
 
-        let url = format!("/fs/{owner}/{project}/{thumb_rel}");
         let thumb_size = encoded.len();
+        let thumb_mime = match format_label {
+            "png" => "image/png",
+            "webp" => "image/webp",
+            _ => "image/jpeg",
+        };
+        let thumbnail = json!({
+            "__zf_type": FILE_REF_TYPE,
+            "backend": BACKEND_ZEBFS,
+            "ref": thumb_rel,
+            "path": thumb_rel,
+            "url": format!("/fs/{owner}/{project}/{thumb_rel}"),
+            "filename": storage_name,
+            "name": storage_name,
+            "mime": thumb_mime,
+            "content_type": thumb_mime,
+            "size": thumb_size,
+            "sha256": format!("sha256:{:x}", Sha256::digest(&encoded)),
+            "kind": "image",
+            "lifecycle": LIFECYCLE_DURABLE,
+            "origin": "fs.thumbnail",
+            "trust": "sanitized",
+            "width": actual_w,
+            "height": actual_h,
+            "format": format_label,
+        });
 
         // ── Replace payload with thumbnail result ──────────────────────────
         let out_payload = json!({
-            "thumbnail": {
-                "path":   thumb_rel,
-                "url":    url,
-                "width":  actual_w,
-                "height": actual_h,
-                "format": format_label,
-                "size":   thumb_size,
-            }
+            "thumbnail": thumbnail
         });
 
         Ok(NodeExecutionOutput {
@@ -592,16 +622,6 @@ fn encode_image(
             Ok((buf, "jpg", "jpg"))
         }
     }
-}
-
-/// Follow a dot-separated key path into a JSON value.
-/// "saved.path" → value.get("saved").get("path")
-fn get_dot_path<'a>(value: &'a serde_json::Value, key: &str) -> Option<String> {
-    let mut current = value;
-    for segment in key.split('.') {
-        current = current.get(segment)?;
-    }
-    current.as_str().map(|s| s.to_string())
 }
 
 /// Strip path traversal components from folder config.

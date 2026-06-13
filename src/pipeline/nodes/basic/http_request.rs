@@ -1,4 +1,12 @@
 //! HTTP request node for pulling external/internal data into pipeline flow.
+//!
+//! For general node authoring rules, read `src/pipeline/nodes/mod.rs`; for
+//! FileRef IR and backend/lifecycle rules, read
+//! `src/pipeline/nodes/basic/file_ref.rs`.
+//!
+//! Binary responses (`--response-type bytes`) are stored as temporary FileRefs.
+//! Multipart request bodies can send FileRefs as file parts without re-encoding
+//! the bytes into JSON.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,11 +18,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::language::LanguageEngine;
+use crate::pipeline::nodes::basic::file_ref::{
+    FileRefInput, is_file_ref, read_file_ref_bytes, write_tmp_file_ref,
+};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
 };
 use crate::platform::services::CredentialService;
+use crate::platform::services::PlatformService;
 
 use super::util::{eval_deno_expr, metadata_scope, resolve_path_cloned};
 use crate::pipeline::model::{DslFlag, DslFlagKind, LayoutItem};
@@ -36,7 +48,7 @@ pub fn definition() -> NodeDefinition {
         kind: NODE_KIND.to_string(),
         title: "HTTP Request".to_string(),
         description: "Perform HTTP call with support for JSON, text, and binary (bytes) responses. \
-            Supports JSON, raw text, and multipart form-data request bodies including __zf_bytes file parts. \
+            Supports JSON, raw text, and multipart form-data request bodies including FileRef and __zf_bytes file parts. \
             Returns normalized { request, response } envelope."
             .to_string(),
         input_schema: serde_json::json!({
@@ -70,8 +82,8 @@ pub fn definition() -> NodeDefinition {
             DslFlag { flag: "--header".to_string(), config_key: "headers".to_string(), description: "Static request header. Repeat for each header. Format: Header-Name=value. e.g. --header Content-Type=application/json".to_string(), kind: DslFlagKind::KeyValuePairs, required: false },
             DslFlag { flag: "--headers-expr".to_string(), config_key: "headers_expr".to_string(), description: "JS expression returning an object of request headers. Evaluated against input payload.".to_string(), kind: DslFlagKind::Scalar, required: false },
             DslFlag { flag: "--timeout-ms".to_string(), config_key: "timeout_ms".to_string(), description: "Request timeout in milliseconds (default 10000, max 120000).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--response-type".to_string(), config_key: "response_type".to_string(), description: "How to read the response: json (default, parses body as JSON), text (raw string), bytes (base64-encoded binary with __zf_bytes convention).".to_string(), kind: DslFlagKind::Scalar, required: false },
-            DslFlag { flag: "--body-type".to_string(), config_key: "body_type".to_string(), description: "How to send the request body: json (default), text (raw string), form-data (multipart with __zf_bytes support).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--response-type".to_string(), config_key: "response_type".to_string(), description: "How to read the response: json (default, parses body as JSON), text (raw string), bytes (stores body as FileRef).".to_string(), kind: DslFlagKind::Scalar, required: false },
+            DslFlag { flag: "--body-type".to_string(), config_key: "body_type".to_string(), description: "How to send the request body: json (default), text (raw string), form-data (multipart with FileRef/__zf_bytes support).".to_string(), kind: DslFlagKind::Scalar, required: false },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
@@ -88,9 +100,9 @@ pub fn definition() -> NodeDefinition {
                     options: vec![
                         SelectOptionDef { value: "json".to_string(), label: "JSON (parse body)".to_string() },
                         SelectOptionDef { value: "text".to_string(), label: "Text (raw string)".to_string() },
-                        SelectOptionDef { value: "bytes".to_string(), label: "Bytes (base64 binary)".to_string() },
+                        SelectOptionDef { value: "bytes".to_string(), label: "Bytes (FileRef)".to_string() },
                     ],
-                    help: Some("How to read the response body. 'bytes' returns __zf_bytes convention for binary pipelines.".to_string()),
+                    help: Some("How to read the response body. 'bytes' stores content in ZebFS tmp and returns FileRef metadata.".to_string()),
                     default_value: Some(json!("json")),
                     ..Default::default()
                 },
@@ -103,7 +115,7 @@ pub fn definition() -> NodeDefinition {
                         SelectOptionDef { value: "text".to_string(), label: "Text (raw string)".to_string() },
                         SelectOptionDef { value: "form-data".to_string(), label: "Form Data (multipart)".to_string() },
                     ],
-                    help: Some("How to send the request body. 'form-data' supports __zf_bytes objects as file parts.".to_string()),
+                    help: Some("How to send the request body. 'form-data' supports FileRef and __zf_bytes objects as file parts.".to_string()),
                     default_value: Some(json!("json")),
                     ..Default::default()
                 },
@@ -131,7 +143,7 @@ pub fn definition() -> NodeDefinition {
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
             tool_name: "http_request".to_string(),
-            tool_description: "Make an HTTP request. Args: url (required), method (GET/POST/etc.), body (string), headers (object), response_type (json/text/bytes), body_type (json/text/form-data).".to_string(),
+            tool_description: "Make an HTTP request. Args: url (required), method (GET/POST/etc.), body (string), headers (object), response_type (json/text/bytes where bytes returns FileRef), body_type (json/text/form-data).".to_string(),
             tool_input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -251,6 +263,7 @@ pub struct Node {
     config: Config,
     language: Arc<dyn LanguageEngine>,
     credentials: Option<Arc<CredentialService>>,
+    platform: Option<Arc<PlatformService>>,
 }
 
 impl Node {
@@ -258,6 +271,7 @@ impl Node {
         config: Config,
         language: Arc<dyn LanguageEngine>,
         credentials: Option<Arc<CredentialService>>,
+        platform: Option<Arc<PlatformService>>,
     ) -> Result<Self, PipelineError> {
         let url = config.url.trim();
         let has_credential = !config
@@ -288,6 +302,7 @@ impl Node {
             config,
             language,
             credentials,
+            platform,
         })
     }
 }
@@ -516,7 +531,12 @@ impl NodeHandler for Node {
             if let Some(body) = &prepared.body {
                 match body_type.as_str() {
                     "form-data" => {
-                        req = build_multipart_request(req, body)?;
+                        req = build_multipart_request(
+                            req,
+                            body,
+                            self.platform.as_ref(),
+                            &input.metadata,
+                        )?;
                     }
                     "text" => {
                         let body_str = match body {
@@ -579,12 +599,26 @@ impl NodeHandler for Node {
                 let bytes = resp.bytes().await.map_err(|err| {
                     PipelineError::new("FW_NODE_HTTP_REQUEST_READ_BODY", err.to_string())
                 })?;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                json!({
-                    "__zf_bytes": encoded,
-                    "__zf_mime": content_type,
-                    "__zf_size": bytes.len()
-                })
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_HTTP_REQUEST_FILE_REF",
+                        "platform service is required for --response-type bytes",
+                    ));
+                };
+                let (owner, project, _, request_id) = metadata_scope(&input.metadata)?;
+                write_tmp_file_ref(
+                    platform,
+                    FileRefInput {
+                        owner,
+                        project,
+                        request_id,
+                        bytes: &bytes,
+                        filename: filename_from_content_type(&content_type).as_deref(),
+                        mime: Some(&content_type),
+                        origin: "http.response",
+                        trust: "untrusted",
+                    },
+                )?
             }
             "text" => {
                 let text = resp.text().await.map_err(|err| {
@@ -652,10 +686,12 @@ impl NodeHandler for Node {
 
 /// Build a multipart/form-data request from a JSON value.
 /// - Scalar fields become text parts.
-/// - Objects with `__zf_bytes` become file parts (base64-decoded).
+/// - FileRef and objects with `__zf_bytes` become file parts.
 fn build_multipart_request(
     req: reqwest::RequestBuilder,
     body: &Value,
+    platform: Option<&Arc<PlatformService>>,
+    metadata: &Value,
 ) -> Result<reqwest::RequestBuilder, PipelineError> {
     let map = match body {
         Value::Object(m) => m,
@@ -670,6 +706,37 @@ fn build_multipart_request(
     let mut form = reqwest::multipart::Form::new();
     for (key, value) in map {
         match value {
+            Value::Object(obj) if is_file_ref(value) => {
+                let Some(platform) = platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_HTTP_REQUEST_BODY",
+                        format!("form-data: FileRef field '{key}' requires platform service"),
+                    ));
+                };
+                let (owner, project, _, _) = metadata_scope(metadata)?;
+                let bytes = read_file_ref_bytes(platform, owner, project, value)?;
+                let mime = obj
+                    .get("mime")
+                    .or_else(|| obj.get("content_type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("application/octet-stream");
+                let filename = obj
+                    .get("filename")
+                    .or_else(|| obj.get("name"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| derive_filename_from_mime(mime));
+                let part = reqwest::multipart::Part::bytes(bytes)
+                    .file_name(filename)
+                    .mime_str(mime)
+                    .map_err(|e| {
+                        PipelineError::new(
+                            "FW_NODE_HTTP_REQUEST_BODY",
+                            format!("form-data: invalid mime for FileRef field '{key}': {e}"),
+                        )
+                    })?;
+                form = form.part(key.clone(), part);
+            }
             Value::Object(obj) if obj.contains_key("__zf_bytes") => {
                 let b64 = obj
                     .get("__zf_bytes")
@@ -715,6 +782,10 @@ fn build_multipart_request(
         }
     }
     Ok(req.multipart(form))
+}
+
+fn filename_from_content_type(content_type: &str) -> Option<String> {
+    Some(derive_filename_from_mime(content_type))
 }
 
 fn derive_filename_from_mime(mime: &str) -> String {
@@ -978,6 +1049,7 @@ mod tests {
                                     ..Default::default()
                                 },
                                 Arc::new(NoopLanguageEngine),
+                                None,
                                 None,
                             )
                             .expect("build http.request node");
