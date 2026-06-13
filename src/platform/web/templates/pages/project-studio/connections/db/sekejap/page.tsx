@@ -153,6 +153,70 @@ function rawCellValue(cell) {
   try { return JSON.stringify(cell); } catch (_) { return String(cell); }
 }
 
+function isVectorColumn(vectorFields, colName) {
+  return Array.isArray(vectorFields) && vectorFields.includes(colName);
+}
+
+function vectorArrayFromCell(cell) {
+  if (Array.isArray(cell)) return cell;
+  if (cell && typeof cell === "object") {
+    if (Array.isArray(cell.vector)) return cell.vector;
+    if (Array.isArray(cell.embedding)) return cell.embedding;
+    if (Array.isArray(cell.values)) return cell.values;
+  }
+  if (typeof cell === "string") {
+    const trimmed = cell.trim();
+    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isNumericVectorArray(values) {
+  return Array.isArray(values) && values.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+function formatVectorNumber(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return String(value);
+  if (value === 0) return "0";
+  const abs = Math.abs(value);
+  if (abs < 0.000001 || abs >= 1000000) {
+    return value.toExponential(6).replace(/\.?0+e/, "e");
+  }
+  return value.toFixed(6).replace(/\.?0+$/, "");
+}
+
+function formatVectorPreview(cell) {
+  const values = vectorArrayFromCell(cell);
+  if (!isNumericVectorArray(values)) return "";
+  if (!values.length) return "[]";
+  if (values.length === 1) return `[${formatVectorNumber(values[0])}]`;
+  if (values.length === 2) return `[${formatVectorNumber(values[0])}, ${formatVectorNumber(values[1])}]`;
+  return `[${formatVectorNumber(values[0])}, ..., ${formatVectorNumber(values[values.length - 1])}]`;
+}
+
+function shouldCompactVectorCell(cell, colName, vectorFields) {
+  if (isVectorColumn(vectorFields, colName)) return !!formatVectorPreview(cell);
+  const values = vectorArrayFromCell(cell);
+  return isNumericVectorArray(values) && values.length >= 8;
+}
+
+function displayCellText(cell, colName, vectorFields) {
+  if (isVectorColumn(vectorFields, colName) && (cell === null || typeof cell === "undefined" || cell === "")) return "vector";
+  if (shouldCompactVectorCell(cell, colName, vectorFields)) return formatVectorPreview(cell);
+  return stringifyCell(cell);
+}
+
+function cellTitleText(cell, colName, vectorFields) {
+  if (shouldCompactVectorCell(cell, colName, vectorFields)) return displayCellText(cell, colName, vectorFields);
+  return stringifyCell(cell);
+}
+
 function defaultColumnWidth(colName) {
   const name = String(colName || "");
   if (name === "_collection") return 120;
@@ -166,7 +230,7 @@ function defaultColumnWidth(colName) {
   return Math.min(240, 80 + name.length * 10);
 }
 
-function autoSizeColumns(columns, rows) {
+function autoSizeColumns(columns, rows, vectorFields) {
   const widths = {};
   columns.forEach((col, colIdx) => {
     // Measure header length
@@ -175,7 +239,7 @@ function autoSizeColumns(columns, rows) {
     const sampleCount = Math.min(rows.length, 30);
     for (let i = 0; i < sampleCount; i++) {
       const cell = Array.isArray(rows[i]) ? rows[i][colIdx] : undefined;
-      const text = stringifyCell(cell);
+      const text = displayCellText(cell, col, vectorFields);
       if (text.length > maxLen) maxLen = text.length;
     }
     // Estimate width: ~8px per char + padding, clamped
@@ -195,8 +259,8 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
 
   // Auto-size widths when columns change
   useEffect(() => {
-    setColWidths(autoSizeColumns(columns, rows));
-  }, [columns.join(","), rows.length]);
+    setColWidths(autoSizeColumns(columns, rows, vectorFields));
+  }, [columns.join(","), rows.length, (vectorFields || []).join(",")]);
 
   // Reset sort when columns change
   useEffect(() => { setSortCol(null); }, [columns.join(",")]);
@@ -250,8 +314,8 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
     copy.sort((a, b) => {
       const av = Array.isArray(a) ? a[colIdx] : undefined;
       const bv = Array.isArray(b) ? b[colIdx] : undefined;
-      const as = stringifyCell(av);
-      const bs = stringifyCell(bv);
+      const as = displayCellText(av, sortCol, vectorFields);
+      const bs = displayCellText(bv, sortCol, vectorFields);
       // Try numeric comparison first
       const an = Number(as);
       const bn = Number(bs);
@@ -315,18 +379,19 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
                 const isEditing = editingCell && editingCell.rowIndex === rowIndex && editingCell.colIndex === cellIndex;
                 const hasPending = colName in rowPending;
                 const displayValue = hasPending ? rowPending[colName] : cell;
+                const isVectorCol = isVectorColumn(vectorFields, colName);
+                const compactVector = shouldCompactVectorCell(displayValue, colName, vectorFields);
                 return (
                   <td
                     key={`cell-${rowIndex}-${cellIndex}`}
                     className={`px-[0.65rem] border-b border-border-soft text-left text-[0.78rem] text-body cursor-pointer whitespace-nowrap overflow-hidden text-ellipsis ${isEditing ? "p-0" : "py-[0.35rem]"} ${hasPending ? "bg-amber-500/10" : ""}`}
                     style={{ maxWidth: colWidths[colName] || defaultColumnWidth(colName) }}
-                    title={isEditing ? undefined : stringifyCell(displayValue)}
+                    title={isEditing ? undefined : cellTitleText(displayValue, colName, vectorFields)}
                     onClick={() => {
                       onRowSelect(rowKey, record);
                       onCellInspect(colName, rowIndex, cell);
                     }}
                     onDoubleClick={() => {
-                      const isVectorCol = Array.isArray(vectorFields) && vectorFields.includes(colName);
                       if (!isSystemCol && !isVectorCol && rowKey && onEditingCellChange) {
                         onEditingCellChange({ rowIndex, colIndex: cellIndex, rowKey, colName });
                       }
@@ -376,7 +441,11 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
                         </svg>
                         <span>{formatGeoValue(displayValue)}</span>
                       </span>
-                    ) : (displayValue == null || displayValue === "") && Array.isArray(vectorFields) && vectorFields.includes(colName) ? (
+                    ) : compactVector ? (
+                      <span className="font-mono text-[0.73rem] text-violet-300/90">
+                        {formatVectorPreview(displayValue)}
+                      </span>
+                    ) : (displayValue == null || displayValue === "") && isVectorCol ? (
                       <span className="inline-flex items-center gap-1 text-violet-400/70">
                         <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
                           <circle cx="3" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
@@ -1087,7 +1156,7 @@ export default function Page(input) {
 
   function onCellInspect(columnName, rowIndex, cellValue) {
     setValueMeta(`${columnName} · row ${rowIndex + 1}`);
-    setValueBody(prettyValue(stringifyCell(cellValue)));
+    setValueBody(prettyValue(rawCellValue(cellValue)));
     setInspectedCellRaw(cellValue);
   }
 
@@ -1136,11 +1205,14 @@ export default function Page(input) {
         .filter(Boolean)
         .filter((item, index, arr) => arr.indexOf(item) === index);
 
-      const incomingTypes = edgeDefs
+      const incomingEdges = edgeDefs
         .filter((item) => String(item?.to || "") === tableName)
-        .map((item) => String(item?.type || "").trim())
-        .filter(Boolean)
-        .filter((item, index, arr) => arr.indexOf(item) === index);
+        .map((item) => ({
+          from: String(item?.from || "").trim(),
+          type: String(item?.type || "").trim(),
+        }))
+        .filter((item) => item.from && item.type)
+        .filter((item, index, arr) => arr.findIndex((other) => other.from === item.from && other.type === item.type) === index);
 
       const escapedKey = sqlStringLiteral(nodeKey);
 
@@ -1159,8 +1231,8 @@ export default function Page(input) {
       );
 
       const incomingLists = await Promise.all(
-        incomingTypes.map(async (type) => {
-          const query = `SELECT a._collection AS _collection, a._key AS _key, a.title AS title, a.name AS name, a.post_id AS post_id, a.slug AS slug FROM MATCH (b:${tableName})<-[:${type}]-(a) WHERE b._key = '${escapedKey}'`;
+        incomingEdges.map(async ({ from, type }) => {
+          const query = `SELECT a._collection AS _collection, a._key AS _key, a.title AS title, a.name AS name, a.post_id AS post_id, a.slug AS slug FROM MATCH (a:${from})-[:${type}]->(b:${tableName}) WHERE b._key = '${escapedKey}'`;
           const response = await runDbQuery(query, { readOnly: true, tableName, limit: 200 });
           return response.objects.map((source) => ({
             direction: "incoming",
@@ -2120,7 +2192,7 @@ export default function Page(input) {
                                     const colName = queryColumns[cellIndex] || `column_${cellIndex + 1}`;
                                     return (
                                       <StudioTd key={`qcell-${rowIndex}-${cellIndex}`} onClick={() => onCellInspect(colName, rowIndex, cell)}>
-                                        {stringifyCell(cell)}
+                                        {displayCellText(cell, colName, activeTable?.vectorFields)}
                                       </StudioTd>
                                     );
                                   })}

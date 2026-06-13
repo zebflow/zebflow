@@ -1296,6 +1296,54 @@ mod tests {
     }
 
     #[test]
+    fn execute_sql_supports_select_incoming_relation_with_rhs_filter() {
+        let tmp = tmp_root();
+        create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &CreateSimpleTableRequest {
+                table: "people".to_string(),
+                title: None,
+                attributes: vec![CollectionAttribute {
+                    name: "name".to_string(),
+                    kind: "string".to_string(),
+                    index_types: Vec::new(),
+                    default_value: None,
+                }],
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("table");
+
+        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
+        let mut db = db_arc.write().unwrap();
+        db.execute("INSERT INTO people (_key, name) VALUES ('alice', 'Alice')")
+            .expect("insert alice");
+        db.execute("INSERT INTO people (_key, name) VALUES ('bob', 'Bob')")
+            .expect("insert bob");
+        db.execute("INSERT ('people/alice')-[:knows]->('people/bob')")
+            .expect("insert edge");
+        drop(db);
+
+        let read = execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "SELECT a._key AS _key, a.name AS name FROM MATCH (a:people)-[:knows]->(b:people) WHERE b._key = 'bob'",
+            &[],
+            100,
+            true,
+        )
+        .expect("select incoming from match");
+        assert_eq!(read.row_count, 1);
+        assert_eq!(read.columns.len(), 2);
+        assert_eq!(read.rows[0][0], Value::String("alice".to_string()));
+        assert_eq!(read.rows[0][1], Value::String("Alice".to_string()));
+    }
+
+    #[test]
     fn execute_sql_supports_bind_params_for_write_and_read() {
         let tmp = tmp_root();
         create_table(
