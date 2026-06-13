@@ -80,16 +80,21 @@ pub fn tokenize(s: &str) -> Vec<String> {
     let mut current = String::new();
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
 
     for ch in s.chars() {
         match ch {
-            '\'' if !in_double => {
+            '\'' if !in_double && !in_backtick => {
                 in_single = !in_single;
             }
-            '"' if !in_single => {
+            '"' if !in_single && !in_backtick => {
                 in_double = !in_double;
             }
-            ' ' | '\t' | '\n' | '\r' if !in_single && !in_double => {
+            '`' if !in_single && !in_double => {
+                in_backtick = !in_backtick;
+                current.push(ch);
+            }
+            ' ' | '\t' | '\n' | '\r' if !in_single && !in_double && !in_backtick => {
                 if !current.is_empty() {
                     tokens.push(current.clone());
                     current.clear();
@@ -107,14 +112,44 @@ pub fn tokenize(s: &str) -> Vec<String> {
 }
 
 /// Split DSL string into individual commands.
-/// Joins `\` line continuations and splits on `&&`.
+/// Joins `\` line continuations and splits on `&&` outside quotes/backticks.
 pub fn split_commands(dsl: &str) -> Vec<String> {
     let joined = dsl.replace("\\\r\n", "\n").replace("\\\n", "\n");
-    joined
-        .split("&&")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    let bytes = joined.as_bytes();
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double && !in_backtick => in_single = !in_single,
+            b'"' if !in_single && !in_backtick => in_double = !in_double,
+            b'`' if !in_single && !in_double => in_backtick = !in_backtick,
+            b'&' if !in_single
+                && !in_double
+                && !in_backtick
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'&' =>
+            {
+                let seg = joined[start..i].trim();
+                if !seg.is_empty() {
+                    segments.push(seg.to_string());
+                }
+                i += 2;
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let last = joined[start..].trim();
+    if !last.is_empty() {
+        segments.push(last.to_string());
+    }
+    segments
 }
 
 /// Expand short node kind alias to full qualified kind.
@@ -126,6 +161,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
         "sqlite.query" | "n.sqlite.query" => Some("n.sqlite.query"),
+        "sqlite.mutate" | "n.sqlite.mutate" => Some("n.sqlite.mutate"),
         "table.convert" | "n.table.convert" => Some("n.table.convert"),
         "table.query" | "n.table.query" => Some("n.table.query"),
         "script" | "n.script" => Some("n.script"),
@@ -226,11 +262,13 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
 fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
     for (i, ch) in raw.char_indices() {
         match ch {
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '|' if !in_single && !in_double => return Some(i),
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '|' if !in_single && !in_double && !in_backtick => return Some(i),
             _ => {}
         }
     }
@@ -239,7 +277,9 @@ fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
 
 fn strip_outer_quotes(s: &str) -> &str {
     if s.len() >= 2
-        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+        && ((s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\''))
+            || (s.starts_with('`') && s.ends_with('`')))
     {
         &s[1..s.len() - 1]
     } else {
@@ -637,18 +677,20 @@ pub fn build_pipeline_graph(id: &str, body: &str) -> Result<PipelineGraph, Strin
     }
 }
 
-/// Split a pipe-notation body into segments, ignoring `|` inside single/double quotes.
+/// Split a pipe-notation body into segments, ignoring `|` inside quotes/backticks.
 fn split_pipe_segments(body: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut start = 0usize;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_backtick = false;
 
     for (byte_pos, ch) in body.char_indices() {
         match ch {
-            '\'' if !in_double => in_single = !in_single,
-            '"' if !in_single => in_double = !in_double,
-            '|' if !in_single && !in_double => {
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '|' if !in_single && !in_double && !in_backtick => {
                 let seg = body[start..byte_pos].trim();
                 if !seg.is_empty() {
                     segments.push(seg);
@@ -798,7 +840,7 @@ mod tests {
                     { "source": "datasets/posts.csv", "alias": "posts" },
                     { "source": "$input.rows", "alias": "rows" }
                 ],
-                "sql": "select * from posts",
+                "query": "select * from posts",
                 "to_json": true
             }),
             input_pins: vec!["in".to_string()],
@@ -834,6 +876,25 @@ run \
             other => panic!("expected run verb, got {other:?}"),
         }
     }
+
+    #[test]
+    fn split_commands_respects_quotes_around_ampersand() {
+        let dsl = r#"register pipelines/test [trigger] trigger.manual
+[echo] script -- "if (a && b) { return 1; }"
+[trigger] -> [echo]"#;
+        let commands = split_commands(dsl);
+        assert_eq!(commands.len(), 1, "&& inside double quotes must not split");
+
+        let dsl2 = r#"register pipelines/test [t] trigger.manual
+[s] script -- `${a && b}`
+[t] -> [s]"#;
+        let commands2 = split_commands(dsl2);
+        assert_eq!(commands2.len(), 1, "&& inside backticks must not split");
+
+        let dsl3 = "get pipelines && activate pipelines/foo";
+        let commands3 = split_commands(dsl3);
+        assert_eq!(commands3.len(), 2, "&& outside quotes must still split");
+    }
 }
 
 fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
@@ -853,8 +914,19 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         return Err(format!("node '[{label}]' has no kind"));
     }
     let raw_kind = &tokens[0];
-    let full_kind =
-        expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
+    let composite_kind: String;
+    let full_kind = match expand_kind(raw_kind) {
+        Some(k) => k,
+        None if raw_kind.starts_with("n.c.") => {
+            composite_kind = raw_kind.to_string();
+            &composite_kind
+        }
+        None if raw_kind.starts_with("c.") => {
+            composite_kind = format!("n.{raw_kind}");
+            &composite_kind
+        }
+        None => return Err(format!("Unknown node kind: '{raw_kind}'")),
+    };
     let (input_pins, mut output_pins) = default_pins(full_kind);
     let all_defs = builtin_node_definitions();
     let dsl_flags = all_defs
@@ -867,8 +939,9 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         let body_key = match full_kind {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
-            "n.sqlite.query" => "sql",
-            "n.table.query" => "sql",
+            "n.sqlite.query" => "query",
+            "n.sqlite.mutate" => "query",
+            "n.table.query" => "query",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
             "n.browser.run" => "code",
@@ -1065,8 +1138,9 @@ fn node_to_segment(node: &PipelineNode) -> String {
     let body_key = match node.kind.as_str() {
         "n.pg.query" => "query",
         "n.sekejap.query" => "query",
-        "n.sqlite.query" => "sql",
-        "n.table.query" => "sql",
+        "n.sqlite.query" => "query",
+        "n.sqlite.mutate" => "query",
+        "n.table.query" => "query",
         "n.script" => "source",
         "n.logic.match" | "n.logic.if" => "expression",
         _ => "body",
@@ -1107,8 +1181,9 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
         let body_key = match node.kind.as_str() {
             "n.pg.query" => "query",
             "n.sekejap.query" => "query",
-            "n.sqlite.query" => "sql",
-            "n.table.query" => "sql",
+            "n.sqlite.query" => "query",
+            "n.sqlite.mutate" => "query",
+            "n.table.query" => "query",
             "n.script" => "source",
             "n.logic.match" | "n.logic.if" => "expression",
             _ => "body",
@@ -1297,8 +1372,19 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         }
 
         let raw_kind = &seg_tokens[0];
-        let full_kind =
-            expand_kind(raw_kind).ok_or_else(|| format!("Unknown node kind: '{raw_kind}'"))?;
+        let composite_kind: String;
+        let full_kind = match expand_kind(raw_kind) {
+            Some(k) => k,
+            None if raw_kind.starts_with("n.c.") => {
+                composite_kind = raw_kind.to_string();
+                &composite_kind
+            }
+            None if raw_kind.starts_with("c.") => {
+                composite_kind = format!("n.{raw_kind}");
+                &composite_kind
+            }
+            None => return Err(format!("Unknown node kind: '{raw_kind}'")),
+        };
 
         let node_id = format!("n{idx}");
         let (input_pins, mut output_pins) = default_pins(full_kind);
@@ -1314,8 +1400,9 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
             let body_key = match full_kind {
                 "n.pg.query" => "query",
                 "n.sekejap.query" => "query",
-                "n.sqlite.query" => "sql",
-                "n.table.query" => "sql",
+                "n.sqlite.query" => "query",
+                "n.sqlite.mutate" => "query",
+                "n.table.query" => "query",
                 "n.script" => "source",
                 "n.browser.run" => "code",
                 _ => "body",

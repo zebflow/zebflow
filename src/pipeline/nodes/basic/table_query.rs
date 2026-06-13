@@ -25,7 +25,7 @@ use crate::zebfs::{LocalZebFs, normalize_object_path};
 use super::table_convert::{
     TableFormat, collect_columns, encode_rows, parse_format, record_batch_to_rows,
 };
-use super::util::{eval_deno_expr, metadata_scope, resolve_array_values};
+use super::util::{eval_deno_expr, metadata_scope, resolve_array_values, resolve_query_binding};
 
 pub const NODE_KIND: &str = "n.table.query";
 pub const INPUT_PIN_IN: &str = "in";
@@ -78,9 +78,16 @@ pub fn definition() -> NodeDefinition {
                 required: true,
             },
             DslFlag {
-                flag: "--sql".to_string(),
-                config_key: "sql".to_string(),
+                flag: "--query".to_string(),
+                config_key: "query".to_string(),
                 description: "SQL query. Body SQL after -- also writes this field.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--query-expr".to_string(),
+                config_key: "query_expr".to_string(),
+                description: "JS expression returning the SQL query string. Overrides --query at runtime.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -158,13 +165,21 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
             NodeFieldDef {
-                name: "sql".to_string(),
-                label: "SQL".to_string(),
+                name: "query".to_string(),
+                label: "Query".to_string(),
                 field_type: NodeFieldType::CodeEditor,
                 language: Some("sql".to_string()),
                 span: Some("full".to_string()),
                 help: Some("SQL over the source aliases. Use $1, $2 with params.".to_string()),
                 default_value: Some(json!("SELECT *\nFROM posts\nLIMIT 20")),
+                ..Default::default()
+            },
+            NodeFieldDef {
+                name: "query_expr".to_string(),
+                label: "Query Expr".to_string(),
+                field_type: NodeFieldType::Textarea,
+                rows: Some(3),
+                help: Some("JS expression returning SQL query string. Overrides the query editor above.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -232,7 +247,8 @@ pub fn definition() -> NodeDefinition {
                 LayoutItem::Field("to_json".to_string()),
             ] },
             LayoutItem::Field("sources".to_string()),
-            LayoutItem::Field("sql".to_string()),
+            LayoutItem::Field("query".to_string()),
+            LayoutItem::Field("query_expr".to_string()),
             LayoutItem::Row { row: vec![
                 LayoutItem::Field("params_path".to_string()),
                 LayoutItem::Field("params_expr".to_string()),
@@ -282,8 +298,10 @@ pub struct Config {
     pub engine: String,
     #[serde(default)]
     pub sources: Vec<SourceBindingConfig>,
+    #[serde(default, alias = "sql")]
+    pub query: String,
     #[serde(default)]
-    pub sql: String,
+    pub query_expr: Option<String>,
     #[serde(default)]
     pub params_path: Option<String>,
     #[serde(default)]
@@ -305,7 +323,8 @@ impl Default for Config {
         Self {
             engine: default_engine(),
             sources: Vec::new(),
-            sql: String::new(),
+            query: String::new(),
+            query_expr: None,
             params_path: None,
             params_expr: None,
             to_path: None,
@@ -339,10 +358,31 @@ impl Node {
                 "config.sources must include at least one --from binding",
             ));
         }
-        if config.sql.trim().is_empty() {
+        if config.query.trim().is_empty()
+            && config
+                .query_expr
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+        {
             return Err(PipelineError::new(
                 "FW_NODE_TABLE_QUERY_CONFIG",
-                "config.sql must not be empty",
+                "config.query must not be empty (set query or query_expr)",
+            ));
+        }
+        if !config.query.trim().is_empty()
+            && config
+                .query_expr
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .len()
+                > 0
+        {
+            return Err(PipelineError::new(
+                "FW_NODE_TABLE_QUERY_CONFIG",
+                "set either query or query_expr, not both",
             ));
         }
         Ok(Self {
@@ -372,7 +412,15 @@ impl NodeHandler for Node {
         input: NodeExecutionInput,
     ) -> Result<NodeExecutionOutput, PipelineError> {
         normalize_engine(&self.config.engine)?;
-        let sql = normalize_select_sql(&self.config.sql)?;
+        let raw_sql = resolve_query_binding(
+            self.language.as_ref(),
+            &input.payload,
+            &input.metadata,
+            self.config.query_expr.as_deref(),
+            &self.config.query,
+            "FW_NODE_TABLE_QUERY_SQL",
+        )?;
+        let sql = normalize_select_sql(&raw_sql)?;
         let params = resolve_params(&self.config, &self.language, &input)?;
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
         let layout = self

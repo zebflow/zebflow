@@ -154,3 +154,32 @@ pub fn eval_deno_expr(
         .map(|out| out.value)
         .map_err(|err| PipelineError::new("FW_NODE_BINDING_RUN", err.to_string()))
 }
+
+pub fn resolve_query_binding(
+    language: &dyn LanguageEngine,
+    input: &Value,
+    metadata: &Value,
+    query_expr: Option<&str>,
+    query_static: &str,
+    error_code: &'static str,
+) -> Result<String, PipelineError> {
+    let expr = query_expr.map(str::trim).filter(|s| !s.is_empty());
+    let static_val = query_static.trim();
+    if expr.is_some() && !static_val.is_empty() {
+        return Err(PipelineError::new(
+            error_code,
+            "set either query or query_expr, not both",
+        ));
+    }
+    if let Some(expr) = expr {
+        let value = eval_deno_expr(language, expr, input, metadata)?;
+        return value
+            .as_str()
+            .map(ToString::to_string)
+            .ok_or_else(|| PipelineError::new(error_code, "query_expr must return a string"));
+    }
+    if static_val.is_empty() {
+        return Err(PipelineError::new(error_code, "query must not be empty"));
+    }
+    Ok(static_val.to_string())
+}

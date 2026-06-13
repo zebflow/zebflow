@@ -52,6 +52,13 @@ pub fn definition() -> NodeDefinition {
                 kind: crate::pipeline::model::DslFlagKind::Scalar,
                 required: false,
             },
+            crate::pipeline::model::DslFlag {
+                flag: "--source-expr".to_string(),
+                config_key: "source_expr".to_string(),
+                description: "JS expression returning the script source string. Overrides the body source at runtime.".to_string(),
+                kind: crate::pipeline::model::DslFlagKind::Scalar,
+                required: false,
+            },
         ],
         fields: vec![
             NodeFieldDef {
@@ -119,10 +126,19 @@ pub fn definition() -> NodeDefinition {
                 ],
                 ..Default::default()
             },
+            NodeFieldDef {
+                name: "source_expr".to_string(),
+                label: "Source Expr".to_string(),
+                field_type: NodeFieldType::Textarea,
+                rows: Some(3),
+                help: Some("JS expression returning the script source string. Overrides the source editor above.".to_string()),
+                ..Default::default()
+            },
         ],
         layout: vec![
             LayoutItem::Field("language".to_string()),
             LayoutItem::Field("source".to_string()),
+            LayoutItem::Field("source_expr".to_string()),
         ],
         ai_tool: crate::pipeline::model::NodeAiToolDefinition {
             registered: true,
@@ -146,11 +162,14 @@ pub struct Config {
     pub language: String,
     #[serde(default)]
     pub source: String,
+    #[serde(default)]
+    pub source_expr: Option<String>,
 }
 
 pub struct Node {
     node_id: String,
-    compiled: CompiledProgram,
+    compiled: Option<CompiledProgram>,
+    source_expr: Option<String>,
     language: std::sync::Arc<dyn LanguageEngine>,
 }
 
@@ -160,11 +179,33 @@ impl Node {
         config: Config,
         language: std::sync::Arc<dyn LanguageEngine>,
     ) -> Result<Self, PipelineError> {
-        if config.source.trim().is_empty() {
+        let has_source = !config.source.trim().is_empty();
+        let has_expr = config
+            .source_expr
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .len()
+            > 0;
+        if !has_source && !has_expr {
             return Err(PipelineError::new(
                 "FW_NODE_SCRIPT_CONFIG",
-                format!("node '{}' requires config.source", node_id),
+                format!("node '{}' requires source or source_expr", node_id),
             ));
+        }
+        if has_source && has_expr {
+            return Err(PipelineError::new(
+                "FW_NODE_SCRIPT_CONFIG",
+                "set either source or source_expr, not both",
+            ));
+        }
+        if has_expr {
+            return Ok(Self {
+                node_id: node_id.to_string(),
+                compiled: None,
+                source_expr: config.source_expr,
+                language,
+            });
         }
         let module = ModuleSource {
             id: format!("pipeline:{node_id}"),
@@ -195,7 +236,8 @@ impl Node {
             })?;
         Ok(Self {
             node_id: node_id.to_string(),
-            compiled,
+            compiled: Some(compiled),
+            source_expr: None,
             language,
         })
     }
@@ -223,6 +265,57 @@ impl NodeHandler for Node {
                 format!("unsupported input pin '{}'", input.input_pin),
             ));
         }
+
+        let compiled = if let Some(ref pre) = self.compiled {
+            std::borrow::Cow::Borrowed(pre)
+        } else if let Some(ref expr) = self.source_expr {
+            let source_val = super::util::eval_deno_expr(
+                self.language.as_ref(),
+                expr,
+                &input.payload,
+                &input.metadata,
+            )?;
+            let source = source_val
+                .as_str()
+                .ok_or_else(|| {
+                    PipelineError::new("FW_NODE_SCRIPT_BINDING", "source_expr must return a string")
+                })?
+                .to_string();
+            let module = ModuleSource {
+                id: format!("pipeline:{}:dynamic", self.node_id),
+                source_path: None,
+                kind: SourceKind::Tsx,
+                code: source,
+            };
+            let ir = self.language.parse(&module).map_err(|err| {
+                PipelineError::new(
+                    "FW_NODE_SCRIPT_PARSE",
+                    format!("node '{}': {}", self.node_id, err),
+                )
+            })?;
+            let c = self
+                .language
+                .compile(
+                    &ir,
+                    &CompileOptions {
+                        target: COMPILE_TARGET_BACKEND.to_string(),
+                        optimize_level: 1,
+                        emit_trace_hints: true,
+                    },
+                )
+                .map_err(|err| {
+                    PipelineError::new(
+                        "FW_NODE_SCRIPT_COMPILE",
+                        format!("node '{}': {}", self.node_id, err),
+                    )
+                })?;
+            std::borrow::Cow::Owned(c)
+        } else {
+            return Err(PipelineError::new(
+                "FW_NODE_SCRIPT_CONFIG",
+                "no source or source_expr configured",
+            ));
+        };
 
         let ctx = ExecutionContext {
             project: input
@@ -253,7 +346,7 @@ impl NodeHandler for Node {
 
         let out = self
             .language
-            .run(&self.compiled, input.payload, &ctx)
+            .run(&compiled, input.payload, &ctx)
             .map_err(|err| {
                 PipelineError::new(
                     "FW_NODE_SCRIPT_RUN",

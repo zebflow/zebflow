@@ -160,7 +160,21 @@ impl Node {
         {
             return Err(PipelineError::new(
                 "FW_NODE_PG_CONFIG",
-                "config.query must not be empty",
+                "config.query must not be empty (set query or query_expr)",
+            ));
+        }
+        if !config.query.trim().is_empty()
+            && config
+                .query_expr
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .len()
+                > 0
+        {
+            return Err(PipelineError::new(
+                "FW_NODE_PG_CONFIG",
+                "set either query or query_expr, not both",
             ));
         }
         Ok(Self {
