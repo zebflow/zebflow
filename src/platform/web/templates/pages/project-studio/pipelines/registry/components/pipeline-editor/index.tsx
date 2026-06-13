@@ -216,6 +216,7 @@ export default function PipelineEditor({
     _raw: any;
   };
   const graphRef = useRef(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
   const nav = useNavigate();
 
   const requestJson = useCallback(async (url: string, options: RequestInit = {}): Promise<any> => {
@@ -295,6 +296,14 @@ export default function PipelineEditor({
   const [runBusy, setRunBusy] = useState(false);
   const [runStatus, setRunStatus] = useState("");
   const pollRef = useRef<any>(null);
+
+  // ── Multi-select & clipboard state ─────────────────────────────────────────
+  const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
+  const [clipboardData, setClipboardData] = useState<string | null>(null);
+  const [selectionToast, setSelectionToast] = useState("");
+  const [marquee, setMarquee] = useState<{x1: number, y1: number, x2: number, y2: number} | null>(null);
+  const marqueeStartRef = useRef<{x: number, y: number} | null>(null);
+  const toastTimerRef = useRef<any>(null);
 
   // ── graphui bundle ready ─────────────────────────────────────────────────────
   const [graphuiReady, setGraphuiReady] = useState(false);
@@ -947,6 +956,252 @@ export default function PipelineEditor({
   }
 
 
+  // ── Multi-select helpers ──────────────────────────────────────────────────
+  function showToast(msg: string) {
+    setSelectionToast(msg);
+    clearTimeout(toastTimerRef.current);
+    if (msg) toastTimerRef.current = setTimeout(() => setSelectionToast(""), 2000);
+  }
+
+  useEffect(() => {
+    const app = graphRef.current?.getApp?.();
+    if (!app?.graph?.nodes) return;
+    if (multiSelected.size > 1) app.ui?.clearSelection?.();
+    for (const node of app.graph.nodes) {
+      if (!node?.el) continue;
+      if (multiSelected.has(node.id)) {
+        node.el.style.outline = "2px solid var(--color-accent, #6d9eff)";
+        node.el.style.outlineOffset = "2px";
+      } else {
+        node.el.style.outline = "";
+        node.el.style.outlineOffset = "";
+      }
+    }
+  }, [multiSelected]);
+
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    function onClick(e: MouseEvent) {
+      if (currentLocked) return;
+      const app = graphRef.current?.getApp?.();
+      if (!app?.graph?.nodes) return;
+      const target = e.target as HTMLElement;
+      const clickedNode = app.graph.nodes.find((n: any) => n?.el?.contains?.(target));
+      if (clickedNode && (e.ctrlKey || e.metaKey)) {
+        setMultiSelected((prev) => {
+          const next = new Set(prev);
+          if (next.has(clickedNode.id)) next.delete(clickedNode.id);
+          else next.add(clickedNode.id);
+          return next;
+        });
+      } else if (!clickedNode && !e.shiftKey) {
+        setMultiSelected(new Set());
+      } else if (clickedNode && !e.ctrlKey && !e.metaKey) {
+        setMultiSelected(new Set());
+      }
+    }
+    el.addEventListener("click", onClick);
+    return () => el.removeEventListener("click", onClick);
+  }, [currentLocked]);
+
+  function handleCopySelected() {
+    const app = graphRef.current?.getApp?.();
+    if (!app?.graph?.nodes || multiSelected.size === 0) return;
+    const selectedNodes = app.graph.nodes.filter((n: any) => multiSelected.has(n.id));
+    if (selectedNodes.length === 0) return;
+    const selectedIds = new Set(selectedNodes.map((n: any) => n.id));
+    const links = (app.graph.links || []).filter(
+      (link: any) => selectedIds.has(link.fromNode) && selectedIds.has(link.toNode)
+    );
+    const data = {
+      type: "zebflow-pipeline-nodes",
+      nodes: selectedNodes.map((n: any) => ({
+        id: n.id,
+        x: n.x,
+        y: n.y,
+        zfKind: n.zfKind || "",
+        zfConfig: JSON.parse(JSON.stringify(n.zfConfig || {})),
+        zfPipelineNodeId: n.zfPipelineNodeId || "",
+        zfOutputLabels: n.zfOutputLabels || undefined,
+        title: n.title || "",
+        inputs: (n.inputs || []).map((p: any) => p.name),
+        outputs: (n.outputs || []).map((p: any) => p.name),
+      })),
+      links: links.map((link: any) => ({
+        fromNode: link.fromNode,
+        fromSlot: link.fromSlot ?? 0,
+        toNode: link.toNode,
+        toSlot: link.toSlot ?? 0,
+      })),
+    };
+    const json = JSON.stringify(data);
+    setClipboardData(json);
+    navigator.clipboard?.writeText?.(json)?.catch?.(() => {});
+    showToast(`Copied ${selectedNodes.length} node(s)`);
+  }
+
+  async function handlePasteNodes() {
+    const app = graphRef.current?.getApp?.();
+    if (!app?.graph || !app?.factory || !app?.ui) return;
+    let raw = clipboardData;
+    if (!raw) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          let parsed: any;
+          try { parsed = JSON.parse(text); } catch {}
+          if (parsed?.type === "zebflow-pipeline-nodes") raw = text;
+        }
+      } catch {}
+    }
+    if (!raw) return;
+    let data: any;
+    try { data = JSON.parse(raw); } catch { return; }
+    if (data?.type !== "zebflow-pipeline-nodes" || !Array.isArray(data.nodes) || data.nodes.length === 0) return;
+    const offset = 60;
+    const idMap = new Map<number, any>();
+    const newIds = new Set<number>();
+    for (const src of data.nodes) {
+      const kind = src.zfKind || "";
+      const entry = catalog.get(kind);
+      const inputPins = normalizeNodePins(kind, "input", src.inputs || [], ["in"]);
+      const outputPins = src.outputs || ["out"];
+      const node = app.factory.custom(src.x + offset, src.y + offset, {
+        title: src.title || entry?.title || kind,
+        color: nodeColor(kind),
+        icon: kindIcons[kind] || "",
+        inputs: inputPins,
+        outputs: outputPins,
+      });
+      node.zfKind = kind;
+      node.zfConfig = JSON.parse(JSON.stringify(src.zfConfig || {}));
+      node.zfOutputLabels = src.zfOutputLabels || deriveNodeOutputLabels(kind, node.zfConfig, outputPins);
+      node.zfPipelineNodeId = ensureUniqueSlug(app.graph.nodes, -1, src.zfPipelineNodeId || baseSlugForKind(kind));
+      app.addNode(node);
+      idMap.set(src.id, node);
+      newIds.add(node.id);
+    }
+    if (Array.isArray(data.links)) {
+      for (const link of data.links) {
+        const fromNode = idMap.get(link.fromNode);
+        const toNode = idMap.get(link.toNode);
+        if (fromNode && toNode) {
+          app.graph.connect(fromNode.id, link.fromSlot || 0, toNode.id, link.toSlot || 0, app.ui.options?.defaultManualLinkOptions || {});
+        }
+      }
+      app.ui.updateWires?.();
+    }
+    setMultiSelected(newIds);
+    showToast(`Pasted ${data.nodes.length} node(s)`);
+  }
+
+  function handleDeleteSelected() {
+    const app = graphRef.current?.getApp?.();
+    if (!app?.graph?.nodes || multiSelected.size === 0) return;
+    const toRemove = app.graph.nodes.filter((n: any) => multiSelected.has(n.id));
+    if (toRemove.length === 0) return;
+    if (app.ui.selectedNode && multiSelected.has(app.ui.selectedNode.id)) {
+      app.ui.clearSelection?.();
+    }
+    toRemove.forEach((n: any) => app.graph.remove(n));
+    app.ui.updateWires?.();
+    setMultiSelected(new Set());
+    showToast(`Deleted ${toRemove.length} node(s)`);
+  }
+
+  useEffect(() => {
+    function handleMultiSelectKeys(e: KeyboardEvent) {
+      const active = document.activeElement as Element | null;
+      if (active?.closest?.(".cm-editor, dialog[open]")) return;
+      const tag = active?.tagName || "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || active?.hasAttribute?.("contenteditable")) return;
+      if (currentLocked) return;
+      const mod = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "a" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        const app = graphRef.current?.getApp?.();
+        if (!app?.graph?.nodes) return;
+        const allIds = new Set<number>(app.graph.nodes.map((n: any) => n.id));
+        setMultiSelected(allIds);
+        showToast(`${allIds.size} node(s) selected`);
+        return;
+      }
+      if (mod && key === "c" && !e.shiftKey && !e.altKey && multiSelected.size > 0) {
+        e.preventDefault();
+        handleCopySelected();
+        return;
+      }
+      if (mod && key === "v" && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        handlePasteNodes();
+        return;
+      }
+      if ((key === "delete" || key === "backspace") && multiSelected.size > 0) {
+        e.preventDefault();
+        handleDeleteSelected();
+        return;
+      }
+      if (key === "escape" && multiSelected.size > 0) {
+        e.preventDefault();
+        setMultiSelected(new Set());
+        return;
+      }
+    }
+    window.addEventListener("keydown", handleMultiSelectKeys);
+    return () => window.removeEventListener("keydown", handleMultiSelectKeys);
+  }, [currentLocked, multiSelected, clipboardData]);
+
+  function handleMarqueeDown(e: React.MouseEvent) {
+    if (!e.shiftKey || currentLocked) return;
+    const app = graphRef.current?.getApp?.();
+    const target = e.target as HTMLElement;
+    if (app?.graph?.nodes?.some((n: any) => n?.el?.contains?.(target))) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    marqueeStartRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    setMarquee({ x1: marqueeStartRef.current.x, y1: marqueeStartRef.current.y, x2: marqueeStartRef.current.x, y2: marqueeStartRef.current.y });
+  }
+
+  function handleMarqueeMove(e: React.MouseEvent) {
+    if (!marqueeStartRef.current) return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setMarquee({
+      x1: marqueeStartRef.current.x, y1: marqueeStartRef.current.y,
+      x2: e.clientX - rect.left, y2: e.clientY - rect.top,
+    });
+  }
+
+  function handleMarqueeUp() {
+    if (!marqueeStartRef.current || !marquee) { marqueeStartRef.current = null; setMarquee(null); return; }
+    const left = Math.min(marquee.x1, marquee.x2);
+    const top = Math.min(marquee.y1, marquee.y2);
+    const right = Math.max(marquee.x1, marquee.x2);
+    const bottom = Math.max(marquee.y1, marquee.y2);
+    if (right - left > 5 && bottom - top > 5) {
+      const app = graphRef.current?.getApp?.();
+      const containerRect = canvasRef.current?.getBoundingClientRect();
+      if (app?.graph?.nodes && containerRect) {
+        const selected = new Set<number>();
+        for (const node of app.graph.nodes) {
+          if (!node?.el) continue;
+          const nodeRect = node.el.getBoundingClientRect();
+          const cx = nodeRect.left + nodeRect.width / 2 - containerRect.left;
+          const cy = nodeRect.top + nodeRect.height / 2 - containerRect.top;
+          if (cx >= left && cx <= right && cy >= top && cy <= bottom) selected.add(node.id);
+        }
+        if (selected.size > 0) {
+          setMultiSelected(selected);
+          showToast(`${selected.size} node(s) selected`);
+        }
+      }
+    }
+    marqueeStartRef.current = null;
+    setMarquee(null);
+  }
+
   // Read PipelineGraph from globalThis after bundle loads
   const PipelineGraph = graphuiReady ? (globalThis as any).PipelineGraph : null;
 
@@ -1083,7 +1338,13 @@ export default function PipelineEditor({
       </div>
 
       {/* Canvas + category tools */}
-      <div className="flex-1 min-h-0 border-b border-border-soft relative">
+      <div
+        ref={canvasRef}
+        className="flex-1 min-h-0 border-b border-border-soft relative"
+        onMouseDown={handleMarqueeDown}
+        onMouseMove={handleMarqueeMove}
+        onMouseUp={handleMarqueeUp}
+      >
         {/* Category buttons — open node picker dialog filtered by category */}
         <div className="absolute top-3 left-3 z-[35] flex flex-col gap-1.5">
           {Object.entries(catalogGroups).map(([cat, groups]) => {
@@ -1126,6 +1387,26 @@ export default function PipelineEditor({
               // No-op; edit buttons handled by PipelineGraph's MutationObserver
             }}
           />
+        )}
+
+        {/* Marquee selection overlay */}
+        {marquee && (
+          <div
+            className="absolute border border-accent/60 bg-accent/10 pointer-events-none z-[40]"
+            style={{
+              left: Math.min(marquee.x1, marquee.x2),
+              top: Math.min(marquee.y1, marquee.y2),
+              width: Math.abs(marquee.x2 - marquee.x1),
+              height: Math.abs(marquee.y2 - marquee.y1),
+            }}
+          />
+        )}
+
+        {/* Selection toast */}
+        {selectionToast && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md bg-surface-2 border border-border text-xs text-body font-medium shadow-md">
+            {selectionToast}
+          </div>
         )}
       </div>
 
@@ -1259,6 +1540,11 @@ export default function PipelineEditor({
         <span className="pipeline-editor-foot-item" title={latestErr}>
           Latest error: {latestErr}
         </span>
+        {multiSelected.size > 0 && (
+          <span className="pipeline-editor-foot-item text-accent font-medium">
+            {multiSelected.size} selected
+          </span>
+        )}
         {currentGraph && (
           <Button
             size="sm"
@@ -1320,7 +1606,7 @@ export default function PipelineEditor({
           setNodePickerCategory("all");
         }
       }}>
-        <DialogContent className="max-w-3xl border-border bg-[var(--color-surface,#161616)] text-body">
+        <DialogContent className="max-w-3xl border-border bg-[var(--color-surface,#161616)] text-body" onKeyDown={(e) => e.stopPropagation()}>
           <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
             <div>
               <DialogHeader>
