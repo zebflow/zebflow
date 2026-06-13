@@ -75,7 +75,8 @@ pub fn definition() -> NodeDefinition {
             DslFlag {
                 flag: "--durable".to_string(),
                 config_key: "durable".to_string(),
-                description: "Expire in durable storage (survives restart). Default: ephemeral.".to_string(),
+                description: "Expire in durable storage (survives restart). Default: ephemeral."
+                    .to_string(),
                 kind: DslFlagKind::Bool,
                 required: false,
             },
@@ -101,9 +102,7 @@ pub fn definition() -> NodeDefinition {
                 name: "durable".to_string(),
                 label: "Durable".to_string(),
                 field_type: NodeFieldType::Checkbox,
-                help: Some(
-                    "Check durable storage. Default: ephemeral.".to_string(),
-                ),
+                help: Some("Check durable storage. Default: ephemeral.".to_string()),
                 ..Default::default()
             },
         ],

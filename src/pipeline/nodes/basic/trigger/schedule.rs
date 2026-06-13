@@ -67,14 +67,12 @@ pub fn definition() -> NodeDefinition {
                 ..Default::default()
             },
         ],
-        layout: vec![
-            LayoutItem::Row {
-                row: vec![
-                    LayoutItem::Field("cron".to_string()),
-                    LayoutItem::Field("timezone".to_string()),
-                ],
-            },
-        ],
+        layout: vec![LayoutItem::Row {
+            row: vec![
+                LayoutItem::Field("cron".to_string()),
+                LayoutItem::Field("timezone".to_string()),
+            ],
+        }],
         ai_tool: Default::default(),
         ..Default::default()
     }

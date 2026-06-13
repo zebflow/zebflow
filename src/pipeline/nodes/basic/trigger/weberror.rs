@@ -121,33 +121,31 @@ pub fn definition() -> NodeDefinition {
             kind: DslFlagKind::Scalar,
             required: false,
         }],
-        fields: vec![
-            NodeFieldDef {
-                name: "code".to_string(),
-                label: "Error Code Pattern".to_string(),
-                field_type: NodeFieldType::Select,
-                options: vec![
-                    SelectOptionDef {
-                        value: "404".to_string(),
-                        label: "404 — Not Found".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "4xx".to_string(),
-                        label: "4xx — Any Client Error".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "5xx".to_string(),
-                        label: "5xx — Any Server Error".to_string(),
-                    },
-                    SelectOptionDef {
-                        value: "*".to_string(),
-                        label: "* — All errors (catch-all)".to_string(),
-                    },
-                ],
-                help: Some("Which HTTP error code(s) this pipeline handles.".to_string()),
-                ..Default::default()
-            },
-        ],
+        fields: vec![NodeFieldDef {
+            name: "code".to_string(),
+            label: "Error Code Pattern".to_string(),
+            field_type: NodeFieldType::Select,
+            options: vec![
+                SelectOptionDef {
+                    value: "404".to_string(),
+                    label: "404 — Not Found".to_string(),
+                },
+                SelectOptionDef {
+                    value: "4xx".to_string(),
+                    label: "4xx — Any Client Error".to_string(),
+                },
+                SelectOptionDef {
+                    value: "5xx".to_string(),
+                    label: "5xx — Any Server Error".to_string(),
+                },
+                SelectOptionDef {
+                    value: "*".to_string(),
+                    label: "* — All errors (catch-all)".to_string(),
+                },
+            ],
+            help: Some("Which HTTP error code(s) this pipeline handles.".to_string()),
+            ..Default::default()
+        }],
         layout: vec![LayoutItem::Field("code".to_string())],
         ai_tool: Default::default(),
         ..Default::default()

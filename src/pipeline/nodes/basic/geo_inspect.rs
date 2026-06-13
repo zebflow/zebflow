@@ -175,23 +175,19 @@ impl NodeHandler for Node {
         }
 
         let path_for_task = abs_path.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            geonative_convert::inspect(&path_for_task)
-        })
-        .await
-        .map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_GEO_INSPECT",
-                format!("inspect task panicked: {err}"),
-            )
-        })?
-        .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
+        let report =
+            tokio::task::spawn_blocking(move || geonative_convert::inspect(&path_for_task))
+                .await
+                .map_err(|err| {
+                    PipelineError::new(
+                        "FW_NODE_GEO_INSPECT",
+                        format!("inspect task panicked: {err}"),
+                    )
+                })?
+                .map_err(|err| PipelineError::new("FW_NODE_GEO_INSPECT", err.to_string()))?;
 
         let report_json = serde_json::to_value(&report).map_err(|err| {
-            PipelineError::new(
-                "FW_NODE_GEO_INSPECT",
-                format!("serialising report: {err}"),
-            )
+            PipelineError::new("FW_NODE_GEO_INSPECT", format!("serialising report: {err}"))
         })?;
 
         Ok(NodeExecutionOutput {

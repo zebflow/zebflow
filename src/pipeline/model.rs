@@ -396,13 +396,17 @@ impl serde::Serialize for NodeFieldDataSource {
             Self::TemplatesPages => serializer.serialize_str("templates_pages"),
             Self::CredentialsBrowser => serializer.serialize_str("credentials_browser"),
             Self::CredentialsOpenAi => serializer.serialize_str("credentials_open_ai"),
-            Self::CredentialsSecureRequest => serializer.serialize_str("credentials_secure_request"),
+            Self::CredentialsSecureRequest => {
+                serializer.serialize_str("credentials_secure_request")
+            }
             Self::AiTools => serializer.serialize_str("ai_tools"),
             Self::FunctionPipelines => serializer.serialize_str("function_pipelines"),
             Self::CredentialJwtRoles => serializer.serialize_str("credential_jwt_roles"),
             Self::CredentialsHttpAuth => serializer.serialize_str("credentials_http_auth"),
             Self::CredentialsWebhookAuth => serializer.serialize_str("credentials_webhook_auth"),
-            Self::CredentialsByKind(kind) => serializer.serialize_str(&format!("credentials:{}", kind)),
+            Self::CredentialsByKind(kind) => {
+                serializer.serialize_str(&format!("credentials:{}", kind))
+            }
         }
     }
 }
@@ -429,11 +433,21 @@ impl<'de> serde::Deserialize<'de> for NodeFieldDataSource {
                 } else {
                     Err(serde::de::Error::unknown_variant(
                         other,
-                        &["credentials_all", "credentials_postgres", "credentials_jwt",
-                          "templates_pages", "credentials_browser", "credentials_open_ai",
-                          "credentials_secure_request", "ai_tools", "function_pipelines",
-                          "credential_jwt_roles", "credentials_http_auth",
-                          "credentials_webhook_auth", "credentials:<kind>"],
+                        &[
+                            "credentials_all",
+                            "credentials_postgres",
+                            "credentials_jwt",
+                            "templates_pages",
+                            "credentials_browser",
+                            "credentials_open_ai",
+                            "credentials_secure_request",
+                            "ai_tools",
+                            "function_pipelines",
+                            "credential_jwt_roles",
+                            "credentials_http_auth",
+                            "credentials_webhook_auth",
+                            "credentials:<kind>",
+                        ],
                     ))
                 }
             }

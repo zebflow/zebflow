@@ -155,10 +155,7 @@ impl WsClientManager {
 
         // Create send channel for n.ws.client.send to communicate with this connection.
         let (send_tx, send_rx) = mpsc::channel::<String>(256);
-        self.senders
-            .lock()
-            .await
-            .insert(task_key.clone(), send_tx);
+        self.senders.lock().await.insert(task_key.clone(), send_tx);
 
         // Resolve credential headers once at registration time.
         let extra_headers = if !credential_id.is_empty() {
@@ -199,10 +196,9 @@ impl WsClientManager {
 
                         let (mut ws_write, mut ws_read) = ws_stream.split();
                         let mut send_rx = send_rx.lock().await;
-                        let mut heartbeat =
-                            tokio::time::interval(std::time::Duration::from_millis(
-                                heartbeat_interval_ms,
-                            ));
+                        let mut heartbeat = tokio::time::interval(
+                            std::time::Duration::from_millis(heartbeat_interval_ms),
+                        );
                         heartbeat.tick().await; // Consume the initial immediate tick.
 
                         loop {
@@ -375,7 +371,10 @@ impl WsClientManager {
                 }
 
                 // Check if pipeline is still active before reconnecting.
-                if runtime.get(&owner_s, &project_s, &file_rel_path_s).is_none() {
+                if runtime
+                    .get(&owner_s, &project_s, &file_rel_path_s)
+                    .is_none()
+                {
                     println!(
                         "🔌 WsClient: pipeline deactivated, stopping connection to {}",
                         url_s
@@ -384,7 +383,10 @@ impl WsClientManager {
                 }
 
                 if !reconnect {
-                    println!("🔌 WsClient: reconnect disabled, stopping connection to {}", url_s);
+                    println!(
+                        "🔌 WsClient: reconnect disabled, stopping connection to {}",
+                        url_s
+                    );
                     return;
                 }
 
@@ -474,7 +476,9 @@ fn resolve_credential_headers(
             // Also support a top-level "token" for any kind.
             if let Some(token) = secret.get("token").and_then(|v| v.as_str()) {
                 if !token.is_empty()
-                    && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                    && !headers
+                        .iter()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
                 {
                     headers.push(("Authorization".into(), format!("Bearer {}", token)));
                 }
@@ -501,9 +505,7 @@ fn build_ws_request(
 ) -> tokio_tungstenite::tungstenite::http::Request<()> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    let mut request = url
-        .into_client_request()
-        .expect("valid WS URL");
+    let mut request = url.into_client_request().expect("valid WS URL");
 
     let headers = request.headers_mut();
     for (name, value) in extra_headers {

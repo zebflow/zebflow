@@ -205,7 +205,10 @@ impl NodeHandler for Node {
             self.config.out_key.trim().to_string()
         };
 
-        let trace = format!("n.kv.get: key={} out_key={} durable={}", key, out_key, self.config.durable);
+        let trace = format!(
+            "n.kv.get: key={} out_key={} durable={}",
+            key, out_key, self.config.durable
+        );
         Ok(NodeExecutionOutput {
             output_pins: vec![OUTPUT_PIN_OUT.to_string()],
             payload: json!({ out_key: value }),

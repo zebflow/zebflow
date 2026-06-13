@@ -32,21 +32,17 @@ pub fn definition() -> NodeDefinition {
         script_bridge: None,
         config_schema: Default::default(),
         dsl_flags: Default::default(),
-        fields: vec![
-            NodeFieldDef {
-                name: "__manual_note".to_string(),
-                label: "Manual Trigger".to_string(),
-                field_type: NodeFieldType::Text,
-                readonly: true,
-                default_value: Some(serde_json::json!(
-                    "Runs only when pipeline execute trigger=manual."
-                )),
-                ..Default::default()
-            },
-        ],
-        layout: vec![
-            LayoutItem::Field("__manual_note".to_string()),
-        ],
+        fields: vec![NodeFieldDef {
+            name: "__manual_note".to_string(),
+            label: "Manual Trigger".to_string(),
+            field_type: NodeFieldType::Text,
+            readonly: true,
+            default_value: Some(serde_json::json!(
+                "Runs only when pipeline execute trigger=manual."
+            )),
+            ..Default::default()
+        }],
+        layout: vec![LayoutItem::Field("__manual_note".to_string())],
         ai_tool: Default::default(),
         ..Default::default()
     }

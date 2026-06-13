@@ -786,13 +786,16 @@ impl Node {
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let verify_fn: Option<Box<crate::automaton::agents::zebtune::VerifyFn>> =
-            match (verify_slug, &self.platform) {
-                (Some(slug), Some(platform_arc)) => {
-                    let platform = Arc::clone(platform_arc);
-                    let owner_v = owner.to_string();
-                    let project_v = project.to_string();
-                    Some(Box::new(move |candidate: &str, goal: &str| -> (bool, String) {
+        let verify_fn: Option<Box<crate::automaton::agents::zebtune::VerifyFn>> = match (
+            verify_slug,
+            &self.platform,
+        ) {
+            (Some(slug), Some(platform_arc)) => {
+                let platform = Arc::clone(platform_arc);
+                let owner_v = owner.to_string();
+                let project_v = project.to_string();
+                Some(Box::new(
+                    move |candidate: &str, goal: &str| -> (bool, String) {
                         let platform = Arc::clone(&platform);
                         let slug = slug.clone();
                         let owner_v = owner_v.clone();
@@ -825,10 +828,11 @@ impl Node {
                             },
                             Err(e) => (false, format!("verifier pipeline error: {}", e)),
                         }
-                    }))
-                }
-                _ => None,
-            };
+                    },
+                ))
+            }
+            _ => None,
+        };
 
         let result = agent
             .run(
