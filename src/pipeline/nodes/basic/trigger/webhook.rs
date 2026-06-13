@@ -28,6 +28,14 @@
 //!            → event: done  {"ok":true,"value":{...}}
 //!            (or event: error on failure)
 //! ```
+//!
+//! # Multipart files
+//!
+//! Files are emitted as FileRef metadata under `input.files.<field>`. If a client
+//! repeats a field name or uses common frontend array names (`photos[]`,
+//! `photos[0]`), the value becomes an array and individual files can be addressed
+//! by dot path (`files.photos.0`). See `src/pipeline/nodes/basic/file_ref.rs` for
+//! the FileRef shape.
 
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, LayoutItem, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
@@ -53,7 +61,7 @@ pub fn definition() -> NodeDefinition {
             User-submitted data is namespaced under input.body to prevent collisions with request context: \
             application/json → parsed value at input.body; \
             application/x-www-form-urlencoded → form fields at input.body (percent-decoded); \
-            multipart/form-data → text fields at input.body, files under input.files.{field} as {filename,content_type,size,data(base64)}. \
+            multipart/form-data → text fields at input.body, files under input.files.{field} as FileRef metadata; repeated fields, field[], and field[0] become arrays. \
             GET requests → input.body is null. \
             Request context is at root: input.query (URL query params), input.params (path params), \
             input.path (request path), input.method (HTTP method). \
@@ -69,7 +77,7 @@ pub fn definition() -> NodeDefinition {
             Accept header is the only switch.".to_string(),
         input_schema: serde_json::json!({
             "type": "object",
-            "description": "Structured request payload. User body at input.body (JSON/form/multipart text). Request context at root: input.query, input.params, input.path, input.method. Files at input.files.{field}. JWT claims at input.auth."
+            "description": "Structured request payload. User body at input.body (JSON/form/multipart text). Request context at root: input.query, input.params, input.path, input.method. FileRef uploads at input.files.{field}; repeated fields and field[]/field[0] names become arrays. JWT claims at input.auth."
         }),
         output_schema: serde_json::json!({
             "type":"object",

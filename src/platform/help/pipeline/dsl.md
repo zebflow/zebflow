@@ -418,13 +418,13 @@ n.logic.match --help            # same
 | `fs.list` | `n.fs.list` | `[--path <prefix> \| --prefix <prefix>]` — list immediate children under a ZebFS prefix; output `{ fs: { operation, path, count, entries } }`. |
 | `fs.head` | `n.fs.head` | `--path <object-or-prefix>` — read object/prefix metadata without reading content. |
 | `fs.get` | `n.fs.get` | `--path <object> [--encoding text\|base64]` — read one object; default text requires UTF-8, base64 is for binary objects. |
-| `fs.put` | `n.fs.put` | `--path <object> (--from-key <dot.path> \| --text <text> \| --base64 <base64>)` — write one object from payload, text, or base64 bytes. |
+| `fs.put` | `n.fs.put` | `--path <object> (--from-key <dot.path> \| --text <text> \| --base64 <base64>)` — write one object from FileRef, payload, text, or base64 bytes. |
 | `fs.delete` | `n.fs.delete` | `--path <object-or-prefix>` — delete one object or prefix tree; absent paths are treated as already deleted. |
 | `fs.copy` | `n.fs.copy` | `--from <object> --to <object>` — copy one object. |
 | `fs.move` | `n.fs.move` | `--from <object> --to <object>` — move one object by copying it then deleting the source. |
 | `fs.mkdir` | `n.fs.mkdir` | `--path <prefix>` — create a prefix directory. |
-| `fs.save` | `n.fs.save` | `[--field <name>] [--path <object-path>] [--folder <subdir>] [--allowed-kinds <images,pdf,csv,json,glb,audio,video>] [--max-size <mb>] [--filename <name>]` — saves an uploaded file from a multipart webhook to Zebflow FS; output `{ saved: { path, url, original_name, content_type, size } }`. `--filename` overrides the default UUID with a custom name (without extension). |
-| `fs.thumbnail` | `n.fs.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads an object path from `saved.path` by default, resizes/re-encodes it, writes thumbnail to Zebflow FS; replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`. `--filename` overrides the default UUID. |
+| `fs.save` | `n.fs.save` | `[--field <name>] [--path <object-path>] [--folder <subdir>] [--allowed-kinds <images,pdf,csv,json,glb,audio,video>] [--max-size <mb>] [--filename <name>]` — validates/promotes an uploaded FileRef or legacy upload object to Zebflow FS; output `{ saved: { path, url, original_name, content_type, size } }`. |
+| `fs.thumbnail` | `n.fs.thumbnail` | `[--width <px>] [--height <px>] [--fit cover|contain|fill] [--format jpg|png|webp] [--quality <1-100>] [--folder <subdir>] [--source-key <dot.path>] [--delete-source] [--filename <name>]` — reads a FileRef or object path from `saved.path` by default, resizes/re-encodes it, writes thumbnail to Zebflow FS; replaces the payload with `{ thumbnail: FileRef + { width, height, format } }`. |
 | `ai.zebtune` | `n.ai.zebtune` | `--budget <n> --output <mode>` |
 | `ai.tts` | `n.ai.tts` | `--provider piper --credential <tts_credential_id> --text-expr <expr> [--output-path <path.wav> \| --output-path-expr <expr>] [--return file\|blob\|both] [--speaker <id>] [--speed <factor>] [--volume <factor>] [--lipsync none\|basic\|timed_words\|audio_guided] [--lipsync-expr <expr>]` — synthesize speech from text. First stable provider is local Piper. Credential secret must reference `model_file` and `config_file` under Zebflow FS; `espeak_data_dir` is an optional override. When lipsync is enabled the output also includes `word_timings` and `lipsync { metadata, cues }`. |
 | `trigger.ws` | `n.trigger.ws` | `--event <name> --room <id>` |
@@ -519,10 +519,34 @@ or a row-producing expression such as `$input.rows`.
     --sql "select * from posts where author_id is not null"
 ```
 
+### FileRef convention
+
+File-like bytes should travel through pipelines as FileRef metadata, not inline base64. Current
+FileRefs use `backend: "zebfs"` and may be `lifecycle: "temporary"` for ingress/intermediate files
+or `lifecycle: "durable"` for promoted/generated artifacts.
+
+```json
+{
+  "__zf_type": "file_ref",
+  "backend": "zebfs",
+  "ref": "tmp/runs/webhook-123/files/input.geojson",
+  "lifecycle": "temporary",
+  "filename": "input.geojson",
+  "mime": "application/geo+json",
+  "size": 123456,
+  "sha256": "sha256:..."
+}
+```
+
+The `backend` field is reserved for future storage implementations such as S3/R2/MinIO. Today only
+`zebfs` is implemented.
+
 ### `n.fs.save` — saving uploaded files
 
 Reads a file from `input.files.{field}` (set by `trigger.webhook` multipart parsing), validates it,
-and saves it to Zebflow FS at `uploads/{uuid}.{ext}` by default.
+and saves/promotes it to Zebflow FS at `uploads/{uuid}.{ext}` by default. New webhook uploads are
+already FileRef values in tmp storage; `fs.save` is now the validation/promotion step, not the only
+way to get upload bytes into Zebflow FS.
 
 The saved file is immediately accessible at the URL returned in `saved.url`.
 
@@ -638,9 +662,9 @@ register generate-canonical-page --path /ops \
 
 ### `n.fs.thumbnail` — image resizing and compression
 
-Reads an image file from disk (path resolved from the payload, default `saved.path`), resizes and
-re-encodes it, then writes the result to the project's file storage. Decompression bomb protection
-is built in — images over 16000×16000 or 128 MB decoded are rejected.
+Reads an image file from disk (FileRef or path resolved from the payload, default `saved.path`),
+resizes and re-encodes it, then writes the result to the project's file storage. Decompression bomb
+protection is built in — images over 16000×16000 or 128 MB decoded are rejected.
 
 **Flags:**
 
@@ -652,20 +676,19 @@ is built in — images over 16000×16000 or 128 MB decoded are rejected.
 | `--format` | `jpg` | Output format: `jpg`, `png`, or `webp` |
 | `--quality` | `82` | JPEG/WebP quality (1–100). Ignored for PNG. |
 | `--folder` | `thumbnails` | Zebflow FS object folder |
-| `--source-key` | `saved.path` | Dot-notation path into payload for the source file relative path |
+| `--source-key` | `saved.path` | Dot-notation path into payload for the source FileRef or relative path |
 | `--delete-source` | _(off)_ | Delete the original source file after successful thumbnail write |
 | `--filename` | _(UUID)_ | Custom filename without extension. If set, overwrites existing thumbnail with same name. Sanitized to alphanumeric, dash, underscore only. |
 
-**Output:** replaces the payload with `{ thumbnail: { path, url, width, height, format, size } }`.
+**Output:** replaces the payload with `{ thumbnail: FileRef + { path, url, width, height, format, size } }`.
 
 **Examples:**
 
 ```zf
-# Upload → save → thumbnail (avatar use case: re-encode strips any embedded payload)
+# Upload FileRef → thumbnail (avatar use case: re-encode strips any embedded payload)
 register upload-avatar -- \
   | trigger.webhook --path /upload/avatar --method POST \
-  | fs.save --field photo --folder uploads \
-  | fs.thumbnail --width 200 --height 200 --fit cover --format jpg --quality 80 \
+  | fs.thumbnail --source-key files.photo --width 200 --height 200 --fit cover --format jpg --quality 80 \
                   --folder avatars --delete-source \
   | sekejap.query --params-expr "[$input.thumbnail.url, $trigger.auth.sub]" --read-only false -- "UPDATE users SET avatar_url = $1 WHERE id = $2" \
   | web.response

@@ -32,16 +32,15 @@ use crate::pipeline::model::{
 };
 use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
-    fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect,
-    http_request, logic, mapserver_crud,
-    kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, pg_query, script,
-    sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
+    fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
+    kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
+    pg_query, script, sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
     trigger::{
-        function as trigger_function, manual, mcp_trigger, kv_subscribe, schedule,
-        weberror, webhook, ws_client as trigger_ws_client,
+        function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
+        webhook, ws_client as trigger_ws_client,
     },
-    web_docs_generate, web_response, web_static_generate, web_static_site, ws_client_send,
-    ws_emit, ws_sync_state, ws_trigger,
+    web_docs_generate, web_response, web_static_generate, web_static_site, ws_client_send, ws_emit,
+    ws_sync_state, ws_trigger,
 };
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 use crate::platform::services::CredentialService;
@@ -435,6 +434,7 @@ impl BasicPipelineEngine {
                 })?,
                 self.language.clone(),
                 self.credentials.clone(),
+                self.platform.clone(),
             )?)),
             sqlite_query::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
@@ -448,6 +448,7 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SQLITE_QUERY_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
+                    self.language.clone(),
                 )?))
             }
             sekejap_query::NODE_KIND => {
@@ -477,6 +478,7 @@ impl BasicPipelineEngine {
                         PipelineError::new("FW_NODE_SQLITE_MUTATE_CONFIG", err.to_string())
                     })?,
                     data_root.clone(),
+                    self.language.clone(),
                 )?))
             }
             browser_run::NODE_KIND => {
@@ -569,10 +571,8 @@ impl BasicPipelineEngine {
                 })
             }
             agent::NODE_KIND => {
-                let config: agent::Config =
-                    serde_json::from_value(node.config.clone()).map_err(|err| {
-                        PipelineError::new("FW_NODE_AGENT_CONFIG", err.to_string())
-                    })?;
+                let config: agent::Config = serde_json::from_value(node.config.clone())
+                    .map_err(|err| PipelineError::new("FW_NODE_AGENT_CONFIG", err.to_string()))?;
                 Ok(NodeDispatch::Agent(agent::Node::new(
                     config,
                     self.credentials.clone(),
@@ -914,9 +914,8 @@ impl BasicPipelineEngine {
                     ));
                 };
                 Ok(NodeDispatch::KvIncr(kv_incr::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_KV_INCR_CONFIG", e.to_string())
-                    })?,
+                    serde_json::from_value(node.config.clone())
+                        .map_err(|e| PipelineError::new("FW_NODE_KV_INCR_CONFIG", e.to_string()))?,
                     state_bus.clone(),
                 )))
             }
@@ -972,13 +971,11 @@ impl BasicPipelineEngine {
                     PipelineError::new("FW_NODE_KV_SUBSCRIBE_CONFIG", e.to_string())
                 })?,
             ))),
-            trigger_ws_client::NODE_KIND => {
-                Ok(NodeDispatch::WsClientTrigger(trigger_ws_client::Node::new(
-                    serde_json::from_value(node.config.clone()).map_err(|e| {
-                        PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string())
-                    })?,
-                )))
-            }
+            trigger_ws_client::NODE_KIND => Ok(NodeDispatch::WsClientTrigger(
+                trigger_ws_client::Node::new(serde_json::from_value(node.config.clone()).map_err(
+                    |e| PipelineError::new("FW_NODE_WS_CLIENT_TRIGGER_CONFIG", e.to_string()),
+                )?),
+            )),
             ws_client_send::NODE_KIND => {
                 let Some(ws_client_manager) = &self.ws_client_manager else {
                     return Err(PipelineError::new(
@@ -1968,12 +1965,8 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::FileDecompress(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::GeoInspect(node) => {
-                        node.execute_many_async(input_for_exec).await
-                    }
-                    NodeDispatch::GeoConvert(node) => {
-                        node.execute_many_async(input_for_exec).await
-                    }
+                    NodeDispatch::GeoInspect(node) => node.execute_many_async(input_for_exec).await,
+                    NodeDispatch::GeoConvert(node) => node.execute_many_async(input_for_exec).await,
                     NodeDispatch::FilePdfConvert(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
@@ -2002,26 +1995,16 @@ impl PipelineEngine for BasicPipelineEngine {
                         config,
                         platform,
                     } => {
-                        execute_composite_trigger(
-                            &kind,
-                            &config,
-                            &platform,
-                            vec![input_for_exec],
-                        )
-                        .await
+                        execute_composite_trigger(&kind, &config, &platform, vec![input_for_exec])
+                            .await
                     }
                     NodeDispatch::CompositeNode {
                         kind,
                         config,
                         platform,
                     } => {
-                        execute_composite_node(
-                            &kind,
-                            &config,
-                            &platform,
-                            vec![input_for_exec],
-                        )
-                        .await
+                        execute_composite_node(&kind, &config, &platform, vec![input_for_exec])
+                            .await
                     }
                     NodeDispatch::WasmNodeStub { kind } => Err(PipelineError::new(
                         "FW_NODE_WASM_UNAVAILABLE",
@@ -2761,7 +2744,7 @@ mod tests {
                         "sources": [
                             { "source": "datasets/posts.csv", "alias": "posts" }
                         ],
-                        "sql": "select * from posts where id = $1",
+                        "query": "select * from posts where id = $1",
                         "params_expr": "[$input.post_id]",
                         "to_json": true,
                         "preview": 1
@@ -3222,10 +3205,12 @@ async fn execute_composite_trigger(
 
         if let Some(fn_name) = on_message_fn {
             // Load and execute the on_message transform pipeline.
-            let graph = match platform
-                .node_registry
-                .load_composite_function(&owner, &project, kind, Some(&fn_name))
-            {
+            let graph = match platform.node_registry.load_composite_function(
+                &owner,
+                &project,
+                kind,
+                Some(&fn_name),
+            ) {
                 Ok(g) => g,
                 Err(e) => {
                     // If transform function fails to load, pass through raw payload.
@@ -3353,7 +3338,10 @@ async fn execute_composite_node(
             .to_string();
 
         // Load the inner pipeline graph from the installed package.
-        let graph = match platform.node_registry.load_composite_pipeline(&owner, &project, kind) {
+        let graph = match platform
+            .node_registry
+            .load_composite_pipeline(&owner, &project, kind)
+        {
             Ok(g) => g,
             Err(e) => {
                 results.push(NodeExecutionOutput {
@@ -3366,9 +3354,8 @@ async fn execute_composite_node(
         };
 
         // Build $placeholder map from credential declarations in the manifest.
-        let mut placeholder_map = build_composite_placeholder_map(
-            kind, config, &owner, &project, platform,
-        );
+        let mut placeholder_map =
+            build_composite_placeholder_map(kind, config, &owner, &project, platform);
 
         // Inject non-credential config fields as CONFIG_<KEY> placeholders so
         // inner pipelines can access node config (e.g. model override).
@@ -3494,33 +3481,32 @@ pub fn build_composite_placeholder_map(
         };
 
         // Fetch the credential from the credential service.
-        let credential = match platform.credentials.get_project_credential(
-            owner, project, &credential_id,
-        ) {
-            Ok(Some(c)) => c,
-            Ok(None) => {
-                eprintln!(
-                    "composite '{}': credential '{}' not found",
-                    kind, credential_id
-                );
-                continue;
-            }
-            Err(e) => {
-                eprintln!(
-                    "composite '{}': failed to fetch credential '{}': {}",
-                    kind, credential_id, e.message
-                );
-                continue;
-            }
-        };
+        let credential =
+            match platform
+                .credentials
+                .get_project_credential(owner, project, &credential_id)
+            {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    eprintln!(
+                        "composite '{}': credential '{}' not found",
+                        kind, credential_id
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "composite '{}': failed to fetch credential '{}': {}",
+                        kind, credential_id, e.message
+                    );
+                    continue;
+                }
+            };
 
         // Build placeholder entries from the manifest's placeholder map.
         for (placeholder_name, secret_field) in &cred_decl.placeholders {
             if let Some(value) = credential.secret.get(secret_field) {
-                placeholder_map.insert(
-                    placeholder_name.clone(),
-                    value.clone(),
-                );
+                placeholder_map.insert(placeholder_name.clone(), value.clone());
             }
         }
     }

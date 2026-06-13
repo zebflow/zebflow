@@ -1,4 +1,23 @@
-//! Built-in framework node set.
+//! Built-in framework node registry and shared conventions.
+//!
+//! Read [`crate::pipeline::nodes`] (`src/pipeline/nodes/mod.rs`) before adding
+//! or changing a node. That parent module documents the node authoring contract:
+//! module docs, `definition()`, typed config, runtime handler, DSL flags, schemas,
+//! and registration expectations.
+//!
+//! This module is the local catalog for framework-provided nodes. Add a new node
+//! here only after its `definition()` is complete, then register it in
+//! [`builtin_node_definitions`]. Keep cross-node payload conventions documented in
+//! the smallest shared module that owns them:
+//!
+//! - [`file_ref`] owns FileRef IR for file-like bytes moving through pipelines.
+//! - [`util`] owns metadata scope and dot-path resolution shared by node handlers.
+//! - [`trigger`] owns ingress triggers and their root payload shape.
+//!
+//! File-like content should move as FileRef metadata, not inline base64, unless a
+//! node is explicitly preserving a legacy shape. Multipart webhook files and
+//! `http.request --response-type bytes` produce temporary FileRefs; FS nodes either
+//! read those bytes (`fs.put`) or validate/promote them (`fs.save`).
 
 use crate::pipeline::NodeDefinition;
 
@@ -7,18 +26,17 @@ pub mod ai_tts;
 pub mod auth_token_create;
 pub mod browser_run;
 pub mod crypto;
+pub mod file_ref;
 pub mod fs_compress;
 pub mod fs_decompress;
-pub mod geo_convert;
-pub mod geo_inspect;
 pub mod fs_object;
 pub mod fs_pdf_convert;
 pub mod fs_save;
 pub mod fs_thumbnail;
 pub mod function_call;
+pub mod geo_convert;
+pub mod geo_inspect;
 pub mod http_request;
-pub mod logic;
-pub mod mapserver_crud;
 pub mod kv_del;
 pub mod kv_exists;
 pub mod kv_expire;
@@ -26,6 +44,8 @@ pub mod kv_get;
 pub mod kv_incr;
 pub mod kv_publish;
 pub mod kv_set;
+pub mod logic;
+pub mod mapserver_crud;
 pub mod pg_query;
 pub mod script;
 pub mod sekejap_query;

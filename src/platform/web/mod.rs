@@ -1,4 +1,11 @@
 //! Axum web layer for Zebflow platform flows, rendered via RWE templates.
+//!
+//! Pipeline webhook ingress is normalized in [`build_webhook_ingress_input`].
+//! Keep the wire-to-pipeline payload contract there in sync with
+//! `src/pipeline/nodes/basic/trigger/mod.rs` and
+//! `src/pipeline/nodes/basic/file_ref.rs`: user body data lives under
+//! `input.body`, request context at root, and multipart files under
+//! `input.files` as FileRef metadata.
 
 pub(crate) mod embedded;
 
@@ -19,7 +26,7 @@ use axum::http::{
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use rand::RngExt as _;
 use serde::Deserialize;
@@ -48,7 +55,7 @@ use crate::platform::model::{
     ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
     TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
     TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
-    UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
+    UpdateSimpleTableRequest, UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
     UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
     slug_segment,
 };
@@ -738,6 +745,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/tables",
             get(api_list_simple_tables).post(api_create_simple_table),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/{table}",
+            put(api_update_simple_table).delete(api_delete_simple_table),
         )
         .route(
             "/api/projects/{owner}/{project}/db/connections/{connection_id}/describe",
@@ -8394,8 +8405,7 @@ async fn api_list_node_definitions(
                 });
 
             if let Some(bytes) = icon_bytes {
-                item.icon_url =
-                    format!("/api/projects/{}/{}/nodes/icon/{}", owner, project, kind);
+                item.icon_url = format!("/api/projects/{}/{}/nodes/icon/{}", owner, project, kind);
                 use sha2::{Digest, Sha256};
                 let hash = Sha256::digest(&bytes);
                 item.icon_hash = format!(
@@ -11768,7 +11778,11 @@ async fn api_activate_pipeline_definition(
                 .await;
             // Run composite lifecycle hooks (on_activate).
             run_composite_lifecycle_hooks(
-                &state, &owner, &project, &req.file_rel_path, "on_activate",
+                &state,
+                &owner,
+                &project,
+                &req.file_rel_path,
+                "on_activate",
             )
             .await;
             Json(json!({"ok": true, "meta": meta})).into_response()
@@ -11817,7 +11831,11 @@ async fn api_deactivate_pipeline_definition(
         Ok(meta) => {
             // Run composite lifecycle hooks (on_deactivate) before eviction.
             run_composite_lifecycle_hooks(
-                &state, &owner, &project, &req.file_rel_path, "on_deactivate",
+                &state,
+                &owner,
+                &project,
+                &req.file_rel_path,
+                "on_deactivate",
             )
             .await;
             state
@@ -11873,7 +11891,11 @@ async fn run_composite_lifecycle_hooks(
         if !node.kind.starts_with("n.c.") {
             continue;
         }
-        let manifest = match state.platform.node_registry.get_manifest(owner, project, &node.kind) {
+        let manifest = match state
+            .platform
+            .node_registry
+            .get_manifest(owner, project, &node.kind)
+        {
             Some(m) => m,
             None => continue,
         };
@@ -11918,11 +11940,10 @@ async fn run_composite_lifecycle_hooks(
         );
 
         // Resolve public URL for platform context.
-        let public_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL")
-            .unwrap_or_else(|_| {
-                let port = std::env::var("ZEBFLOW_PORT").unwrap_or_else(|_| "10611".to_string());
-                format!("http://localhost:{}", port)
-            });
+        let public_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL").unwrap_or_else(|_| {
+            let port = std::env::var("ZEBFLOW_PORT").unwrap_or_else(|_| "10611".to_string());
+            format!("http://localhost:{}", port)
+        });
 
         // Build execution context with node config, placeholders, and platform info.
         let ctx = crate::pipeline::PipelineContext {
@@ -16696,6 +16717,75 @@ async fn api_create_simple_table(
     }
 }
 
+async fn api_update_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, table)): Path<(String, String, String)>,
+    Json(req): Json<UpdateSimpleTableRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+
+    match sekejap::update_table(
+        &state.platform.config.data_root,
+        &owner,
+        &project,
+        &table,
+        &req,
+    ) {
+        Ok(updated) => Json(json!({"ok": true, "table": updated})).into_response(),
+        Err(err)
+            if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
+                || err.code == "PLATFORM_SEKEJAP_TABLE_NOT_FOUND" =>
+        {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_simple_table(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, table)): Path<(String, String, String)>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+
+    match sekejap::delete_table(&state.platform.config.data_root, &owner, &project, &table) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err)
+            if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
+                || err.code == "PLATFORM_SEKEJAP_TABLE_NOT_FOUND" =>
+        {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_get_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -18310,9 +18400,29 @@ async fn public_webhook_ingress(
     }
     apply_rwe_project_options(&state, &owner, &project, &mut graph);
 
-    let mut input =
-        build_webhook_ingress_input(&method, &uri, &headers, &body, &path, &selected.path_params)
-            .await;
+    let mut input = match build_webhook_ingress_input(
+        &state.platform,
+        &owner,
+        &project,
+        &request_id,
+        &method,
+        &uri,
+        &headers,
+        &body,
+        &path,
+        &selected.path_params,
+    )
+    .await
+    {
+        Ok(input) => input,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+            )
+                .into_response();
+        }
+    };
     // Inject JWT claims as `auth` field when auth_type == "jwt".
     if let Some(claims) = auth_claims {
         if let Value::Object(ref mut map) = input {
@@ -18837,7 +18947,7 @@ async fn public_mapserver_ingress(
         z: u8,
         x: u32,
         y: u32,
-        ext: String,       // "mvt", "pbf", or "png"
+        ext: String,        // "mvt", "pbf", or "png"
         layer_path: String, // path with z/x/y stripped
     }
 
@@ -18894,10 +19004,8 @@ async fn public_mapserver_ingress(
     let zxy_match = parse_zxy_tile_url(&raw_path);
 
     // ── /stats suffix detection ───────────────────────────────────────
-    let is_stats_request = zxy_match.is_none()
-        && raw_path
-            .trim_end_matches('/')
-            .ends_with("/stats");
+    let is_stats_request =
+        zxy_match.is_none() && raw_path.trim_end_matches('/').ends_with("/stats");
 
     // Determine the layer path for manifest lookup
     let path = if let Some(ref zm) = zxy_match {
@@ -19021,7 +19129,12 @@ async fn public_mapserver_ingress(
             .get("tolerance")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.001); // ~111m at equator
-        Some([lon - tolerance, lat - tolerance, lon + tolerance, lat + tolerance])
+        Some([
+            lon - tolerance,
+            lat - tolerance,
+            lon + tolerance,
+            lat + tolerance,
+        ])
     } else {
         None
     };
@@ -19068,7 +19181,10 @@ async fn public_mapserver_ingress(
     };
     // zoom priority: z/x/y tile > URL ?zoom= param
     let zoom = zoom_override.or_else(|| {
-        params.get("zoom").or_else(|| params.get("ZOOM")).and_then(|s| s.parse::<u8>().ok())
+        params
+            .get("zoom")
+            .or_else(|| params.get("ZOOM"))
+            .and_then(|s| s.parse::<u8>().ok())
     });
     let style_param = params.get("style").or_else(|| params.get("STYLE")).cloned();
 
@@ -19126,57 +19242,59 @@ async fn public_mapserver_ingress(
     } else {
         "geojson"
     };
-    let preloaded_features: Option<serde_json::Value> =
-        if manifest.source_kind == crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction {
-            let slug = manifest.function_slug.as_deref().unwrap_or("");
-            if slug.is_empty() {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"ok": false, "error": "geojson_function layer has no function_slug"})),
-                )
-                    .into_response();
-            }
-            let cache_key = crate::mapserver::resolve::function_cache::cache_key(&owner, &project, slug);
-            if let Some(cached) = crate::mapserver::resolve::function_cache::get_cached(&cache_key) {
-                Some(cached)
-            } else {
-                let fn_input = serde_json::json!({
-                    "layer": {
-                        "id": manifest.layer_id,
-                        "path": manifest.path,
-                    },
-                    "request": {
-                        "bbox": bbox,
-                        "zoom": zoom,
-                        "format": render_format,
-                        "filter": effective_filter,
-                        "limit": limit,
-                    },
-                    "owner": owner,
-                    "project": project,
-                });
-                match state
-                    .platform
-                    .execute_function_pipeline(&owner, &project, slug, fn_input)
-                    .await
-                {
-                    Ok(result) => {
-                        let ttl = manifest.cache_ttl_secs.unwrap_or(60);
-                        crate::mapserver::resolve::function_cache::put_cached(&cache_key, &result, ttl);
-                        Some(result)
-                    }
-                    Err(e) => {
-                        return (
+    let preloaded_features: Option<serde_json::Value> = if manifest.source_kind
+        == crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction
+    {
+        let slug = manifest.function_slug.as_deref().unwrap_or("");
+        if slug.is_empty() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false, "error": "geojson_function layer has no function_slug"})),
+            )
+                .into_response();
+        }
+        let cache_key =
+            crate::mapserver::resolve::function_cache::cache_key(&owner, &project, slug);
+        if let Some(cached) = crate::mapserver::resolve::function_cache::get_cached(&cache_key) {
+            Some(cached)
+        } else {
+            let fn_input = serde_json::json!({
+                "layer": {
+                    "id": manifest.layer_id,
+                    "path": manifest.path,
+                },
+                "request": {
+                    "bbox": bbox,
+                    "zoom": zoom,
+                    "format": render_format,
+                    "filter": effective_filter,
+                    "limit": limit,
+                },
+                "owner": owner,
+                "project": project,
+            });
+            match state
+                .platform
+                .execute_function_pipeline(&owner, &project, slug, fn_input)
+                .await
+            {
+                Ok(result) => {
+                    let ttl = manifest.cache_ttl_secs.unwrap_or(60);
+                    crate::mapserver::resolve::function_cache::put_cached(&cache_key, &result, ttl);
+                    Some(result)
+                }
+                Err(e) => {
+                    return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             Json(json!({"ok": false, "error": format!("function pipeline error: {}", e.message)})),
                         )
                             .into_response();
-                    }
                 }
             }
-        } else {
-            None
-        };
+        }
+    } else {
+        None
+    };
 
     // ── MVT vector tile branch ─────────────────────────────────────────
     if is_mvt_request {
@@ -19264,7 +19382,11 @@ async fn public_mapserver_ingress(
         }
 
         // ── GeoJSON → MVT fallback ────────────────────────────────────────
-        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &tile_request, preloaded_features.as_ref()) {
+        let resolved = match crate::mapserver::resolve::resolve_features(
+            &manifest,
+            &tile_request,
+            preloaded_features.as_ref(),
+        ) {
             Ok(v) => v,
             Err(err) => {
                 return (
@@ -19334,20 +19456,24 @@ async fn public_mapserver_ingress(
         // ── Style resolution ─────────────────────────────────────────────
         // Priority: ?style= URL param > manifest DSL string > manifest JSON > defaults
         let style_dsl_str: Option<String> = style_param.clone().or_else(|| {
-            manifest.style.as_ref().and_then(|v| v.as_str().map(|s| s.to_string()))
+            manifest
+                .style
+                .as_ref()
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
         });
 
         // Base layer style (uniform fallback)
         let style_config: Option<crate::mapserver::resolve::style::LayerStyleConfig> =
             if style_dsl_str.is_none() {
-                manifest.style.as_ref().and_then(|v| serde_json::from_value(v.clone()).ok())
+                manifest
+                    .style
+                    .as_ref()
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
             } else {
                 None
             };
-        let style = crate::mapserver::resolve::style::resolve_layer_style(
-            style_config.as_ref(),
-            zoom,
-        );
+        let style =
+            crate::mapserver::resolve::style::resolve_layer_style(style_config.as_ref(), zoom);
 
         // Resolve DSL → ResolvedStyle for per-feature data-driven styling
         let resolved_style: Option<crate::mapserver::resolve::style_dsl::ResolvedStyle> =
@@ -19356,35 +19482,49 @@ async fn public_mapserver_ingress(
                 let source_path = std::path::Path::new(&manifest.source_ref);
                 let stats = if def.needs_stats() {
                     def.field_name().and_then(|fname| {
-                        crate::mapserver::resolve::geoparquet_direct::get_field_stats(source_path, fname)
+                        crate::mapserver::resolve::geoparquet_direct::get_field_stats(
+                            source_path,
+                            fname,
+                        )
                     })
                 } else {
                     None
                 };
                 let distinct = if def.needs_distinct() {
                     def.field_name().and_then(|fname| {
-                        crate::mapserver::resolve::geoparquet_direct::get_field_distinct(source_path, fname, 50)
+                        crate::mapserver::resolve::geoparquet_direct::get_field_distinct(
+                            source_path,
+                            fname,
+                            50,
+                        )
                     })
                 } else {
                     None
                 };
                 crate::mapserver::resolve::style_dsl::resolve_style(
-                    &def, stats.as_ref(), distinct.as_ref(), zoom,
-                ).ok()
+                    &def,
+                    stats.as_ref(),
+                    distinct.as_ref(),
+                    zoom,
+                )
+                .ok()
             });
 
         // If resolved style is Uniform, override the base LayerStyle
-        let style = if let Some(crate::mapserver::resolve::style_dsl::ResolvedStyle::Uniform(ref fs)) = resolved_style {
-            crate::mapserver::resolve::style::LayerStyle {
-                fill_color: fs.fill_color,
-                stroke_color: fs.stroke_color,
-                stroke_width: fs.stroke_width,
-                point_radius: fs.point_radius,
-                point_color: fs.point_color,
-            }
-        } else {
-            style
-        };
+        let style =
+            if let Some(crate::mapserver::resolve::style_dsl::ResolvedStyle::Uniform(ref fs)) =
+                resolved_style
+            {
+                crate::mapserver::resolve::style::LayerStyle {
+                    fill_color: fs.fill_color,
+                    stroke_color: fs.stroke_color,
+                    stroke_width: fs.stroke_width,
+                    point_radius: fs.point_radius,
+                    point_color: fs.point_color,
+                }
+            } else {
+                style
+            };
 
         // Check tile cache (style hash included in key)
         let tile_key = crate::mapserver::resolve::tile_cache::tile_cache_key(
@@ -19451,9 +19591,8 @@ async fn public_mapserver_ingress(
         // Non-blocking: if a metatile pixmap is cached, slice from it (very fast).
         // Otherwise, render the individual tile normally and spawn a background
         // task to render+cache the metatile pixmap for future requests.
-        let use_metatile = zoom.map(|z| z >= 8).unwrap_or(false)
-            && tile_width == 256
-            && tile_height == 256;
+        let use_metatile =
+            zoom.map(|z| z >= 8).unwrap_or(false) && tile_width == 256 && tile_height == 256;
 
         if use_metatile {
             const META_GRID: u32 = 4;
@@ -19547,7 +19686,11 @@ async fn public_mapserver_ingress(
         }
 
         // ── Individual tile rendering ──────────────────────────────────────
-        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &tile_request, preloaded_features.as_ref()) {
+        let resolved = match crate::mapserver::resolve::resolve_features(
+            &manifest,
+            &tile_request,
+            preloaded_features.as_ref(),
+        ) {
             Ok(v) => v,
             Err(err) => {
                 return (
@@ -19608,12 +19751,21 @@ async fn public_mapserver_ingress(
             .unwrap_or(0.001);
         let pq_request = crate::mapserver::resolve::ResolveRequest {
             layer_id: manifest.layer_id.clone(),
-            bbox: Some([lon - tolerance, lat - tolerance, lon + tolerance, lat + tolerance]),
+            bbox: Some([
+                lon - tolerance,
+                lat - tolerance,
+                lon + tolerance,
+                lat + tolerance,
+            ]),
             zoom: None,
             limit: Some(pq_limit),
             filter: effective_filter.clone(),
         };
-        let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &pq_request, preloaded_features.as_ref()) {
+        let resolved = match crate::mapserver::resolve::resolve_features(
+            &manifest,
+            &pq_request,
+            preloaded_features.as_ref(),
+        ) {
             Ok(v) => v,
             Err(err) => {
                 return (
@@ -19671,7 +19823,11 @@ async fn public_mapserver_ingress(
         );
         return resp;
     }
-    let resolved = match crate::mapserver::resolve::resolve_features(&manifest, &request, preloaded_features.as_ref()) {
+    let resolved = match crate::mapserver::resolve::resolve_features(
+        &manifest,
+        &request,
+        preloaded_features.as_ref(),
+    ) {
         Ok(v) => v,
         Err(err) => {
             return (
@@ -19697,7 +19853,11 @@ async fn public_mapserver_ingress(
             ));
         }
     };
-    crate::mapserver::resolve::cache::put_response_bytes(response_cache_key, body.clone(), &manifest.source_ref);
+    crate::mapserver::resolve::cache::put_response_bytes(
+        response_cache_key,
+        body.clone(),
+        &manifest.source_ref,
+    );
     let mut resp = (StatusCode::OK, body).into_response();
     resp.headers_mut().insert(
         CONTENT_TYPE,
@@ -19862,39 +20022,40 @@ fn resolve_mapserver_manifest_for_path(
     let layer = layers.into_iter().find(|item| item.path == normalized);
     let layout = state.platform.file.ensure_project_layout(owner, project)?;
     Ok(layer.map(|item| {
-        let (source_kind, source_ref) = if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
-            (
-                crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
-                layout
-                    .files_dir
-                    .join(artifact_rel.trim_start_matches('/'))
-                    .display()
-                    .to_string(),
-            )
-        } else if item.source_kind == "geoparquet" {
-            (
-                crate::mapserver::publish::manifest::SourceKind::GeoParquet,
-                layout
-                    .files_dir
-                    .join(item.source_path.trim_start_matches('/'))
-                    .display()
-                    .to_string(),
-            )
-        } else if item.source_kind == "geojson_function" {
-            (
-                crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction,
-                String::new(),
-            )
-        } else {
-            (
-                crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
-                layout
-                    .files_dir
-                    .join(item.source_path.trim_start_matches('/'))
-                    .display()
-                    .to_string(),
-            )
-        };
+        let (source_kind, source_ref) =
+            if let Some(artifact_rel) = item.artifact_manifest_path.clone() {
+                (
+                    crate::mapserver::publish::manifest::SourceKind::GeoJsonArtifact,
+                    layout
+                        .files_dir
+                        .join(artifact_rel.trim_start_matches('/'))
+                        .display()
+                        .to_string(),
+                )
+            } else if item.source_kind == "geoparquet" {
+                (
+                    crate::mapserver::publish::manifest::SourceKind::GeoParquet,
+                    layout
+                        .files_dir
+                        .join(item.source_path.trim_start_matches('/'))
+                        .display()
+                        .to_string(),
+                )
+            } else if item.source_kind == "geojson_function" {
+                (
+                    crate::mapserver::publish::manifest::SourceKind::GeoJsonFunction,
+                    String::new(),
+                )
+            } else {
+                (
+                    crate::mapserver::publish::manifest::SourceKind::GeoJsonFile,
+                    layout
+                        .files_dir
+                        .join(item.source_path.trim_start_matches('/'))
+                        .display()
+                        .to_string(),
+                )
+            };
         crate::mapserver::publish::registry::manifest_from_runtime(
             item.layer_id,
             item.path,
@@ -19966,27 +20127,43 @@ fn build_structured_payload(
 }
 
 async fn build_webhook_ingress_input(
+    platform: &Arc<PlatformService>,
+    owner: &str,
+    project: &str,
+    request_id: &str,
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
     body: &Bytes,
     path: &str,
     path_params: &serde_json::Map<String, Value>,
-) -> Value {
-    use base64::Engine as _;
-
+) -> Result<Value, crate::pipeline::PipelineError> {
     let query = parse_query_to_json(uri.query());
     let params = Value::Object(path_params.clone());
     let method_str = method.as_str();
 
     // GET with no body: body is null, query params at root
     if method == Method::GET && body.is_empty() {
-        return build_structured_payload(Value::Null, &query, &params, path, method_str, None);
+        return Ok(build_structured_payload(
+            Value::Null,
+            &query,
+            &params,
+            path,
+            method_str,
+            None,
+        ));
     }
 
     // Non-GET with empty body
     if body.is_empty() {
-        return build_structured_payload(Value::Null, &query, &params, path, method_str, None);
+        return Ok(build_structured_payload(
+            Value::Null,
+            &query,
+            &params,
+            path,
+            method_str,
+            None,
+        ));
     }
 
     let content_type = headers
@@ -20000,7 +20177,9 @@ async fn build_webhook_ingress_input(
     if content_type_lc.contains("application/json")
         && let Ok(parsed) = serde_json::from_slice::<Value>(body)
     {
-        return build_structured_payload(parsed, &query, &params, path, method_str, None);
+        return Ok(build_structured_payload(
+            parsed, &query, &params, path, method_str, None,
+        ));
     }
 
     // Form-urlencoded → form fields under .body
@@ -20010,13 +20189,20 @@ async fn build_webhook_ingress_input(
             for (k, v) in fields {
                 form_obj.insert(k, Value::String(v));
             }
-            return build_structured_payload(
-                Value::Object(form_obj), &query, &params, path, method_str, None,
-            );
+            return Ok(build_structured_payload(
+                Value::Object(form_obj),
+                &query,
+                &params,
+                path,
+                method_str,
+                None,
+            ));
         }
     }
 
-    // Multipart → text fields under .body, files at root .files
+    // Multipart → text fields under .body, files at root .files.
+    // Repeated names and common frontend array names (`field[]`, `field[0]`)
+    // become JSON arrays so dot paths like `files.photos.0` are stable.
     if content_type_lc.contains("multipart/form-data") {
         if let Ok(boundary) = multer::parse_boundary(&content_type) {
             let body_clone = body.clone();
@@ -20033,34 +20219,190 @@ async fn build_webhook_ingress_input(
                     data.extend_from_slice(&chunk);
                 }
                 if let Some(filename) = filename {
-                    let size = data.len();
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-                    files.insert(
-                        name,
-                        json!({
-                            "filename": filename,
-                            "content_type": field_ct.unwrap_or_default(),
-                            "size": size,
-                            "data": encoded,
-                        }),
-                    );
+                    let mime = field_ct
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("application/octet-stream");
+                    let file_ref = crate::pipeline::nodes::basic::file_ref::write_tmp_file_ref(
+                        platform,
+                        crate::pipeline::nodes::basic::file_ref::FileRefInput {
+                            owner,
+                            project,
+                            request_id,
+                            bytes: &data,
+                            filename: Some(&filename),
+                            mime: Some(mime),
+                            origin: "webhook",
+                            trust: "untrusted",
+                        },
+                    )?;
+                    insert_multipart_value(&mut files, &name, file_ref);
                 } else {
                     let text = String::from_utf8_lossy(&data).to_string();
-                    text_fields.insert(name, Value::String(text));
+                    insert_multipart_value(&mut text_fields, &name, Value::String(text));
                 }
             }
-            let files_val = if files.is_empty() { None } else { Some(Value::Object(files)) };
-            return build_structured_payload(
-                Value::Object(text_fields), &query, &params, path, method_str, files_val,
-            );
+            let files_val = if files.is_empty() {
+                None
+            } else {
+                Some(Value::Object(files))
+            };
+            return Ok(build_structured_payload(
+                Value::Object(text_fields),
+                &query,
+                &params,
+                path,
+                method_str,
+                files_val,
+            ));
         }
     }
 
     // Raw text / unknown content type
     let body_text = String::from_utf8_lossy(body).to_string();
-    build_structured_payload(
-        Value::String(body_text), &query, &params, path, method_str, None,
-    )
+    Ok(build_structured_payload(
+        Value::String(body_text),
+        &query,
+        &params,
+        path,
+        method_str,
+        None,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MultipartValueKey {
+    base: String,
+    index: Option<usize>,
+    force_array: bool,
+}
+
+fn parse_multipart_value_key(raw: &str) -> MultipartValueKey {
+    let name = raw.trim();
+    if let Some(base) = name.strip_suffix("[]").filter(|base| !base.is_empty()) {
+        return MultipartValueKey {
+            base: base.to_string(),
+            index: None,
+            force_array: true,
+        };
+    }
+    if let Some(open) = name.rfind('[')
+        && name.ends_with(']')
+        && open > 0
+    {
+        let inner = &name[open + 1..name.len() - 1];
+        if !inner.is_empty()
+            && inner.chars().all(|ch| ch.is_ascii_digit())
+            && let Ok(index) = inner.parse::<usize>()
+        {
+            return MultipartValueKey {
+                base: name[..open].to_string(),
+                index: Some(index),
+                force_array: true,
+            };
+        }
+    }
+    MultipartValueKey {
+        base: name.to_string(),
+        index: None,
+        force_array: false,
+    }
+}
+
+fn insert_multipart_value(map: &mut serde_json::Map<String, Value>, raw_name: &str, value: Value) {
+    let key = parse_multipart_value_key(raw_name);
+    if key.base.is_empty() {
+        return;
+    }
+
+    if let Some(index) = key.index {
+        let entry = map
+            .entry(key.base)
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !entry.is_array() {
+            let existing = std::mem::take(entry);
+            *entry = Value::Array(vec![existing]);
+        }
+        if let Some(items) = entry.as_array_mut() {
+            if items.len() <= index {
+                items.resize(index + 1, Value::Null);
+            }
+            items[index] = value;
+        }
+        return;
+    }
+
+    if key.force_array {
+        let entry = map
+            .entry(key.base)
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !entry.is_array() {
+            let existing = std::mem::take(entry);
+            *entry = Value::Array(vec![existing]);
+        }
+        if let Some(items) = entry.as_array_mut() {
+            items.push(value);
+        }
+        return;
+    }
+
+    match map.get_mut(&key.base) {
+        Some(existing) if existing.is_array() => {
+            if let Some(items) = existing.as_array_mut() {
+                items.push(value);
+            }
+        }
+        Some(existing) => {
+            let first = std::mem::take(existing);
+            *existing = Value::Array(vec![first, value]);
+        }
+        None => {
+            map.insert(key.base, value);
+        }
+    }
+}
+
+#[cfg(test)]
+mod webhook_ingress_tests {
+    use serde_json::{Map, json};
+
+    use super::{insert_multipart_value, parse_multipart_value_key};
+
+    #[test]
+    fn multipart_repeated_plain_fields_become_arrays() {
+        let mut values = Map::new();
+        insert_multipart_value(&mut values, "photos", json!("a"));
+        insert_multipart_value(&mut values, "photos", json!("b"));
+
+        assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
+    }
+
+    #[test]
+    fn multipart_bracket_fields_become_arrays() {
+        let mut values = Map::new();
+        insert_multipart_value(&mut values, "photos[]", json!("a"));
+        insert_multipart_value(&mut values, "photos[]", json!("b"));
+
+        assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
+    }
+
+    #[test]
+    fn multipart_indexed_fields_keep_index_order() {
+        let mut values = Map::new();
+        insert_multipart_value(&mut values, "photos[1]", json!("b"));
+        insert_multipart_value(&mut values, "photos[0]", json!("a"));
+
+        assert_eq!(values.get("photos"), Some(&json!(["a", "b"])));
+    }
+
+    #[test]
+    fn multipart_non_numeric_brackets_remain_literal() {
+        let key = parse_multipart_value_key("meta[name]");
+
+        assert_eq!(key.base, "meta[name]");
+        assert_eq!(key.index, None);
+        assert!(!key.force_array);
+    }
 }
 
 fn parse_query_to_json(raw_query: Option<&str>) -> Value {
@@ -20994,7 +21336,9 @@ async fn ws_room_handler(
             .as_nanos()
     );
     // Capture connection headers for per-trigger auth checks on incoming messages.
-    ws.on_upgrade(move |socket| handle_ws_room(socket, owner, project, room_id, session_id, headers, state))
+    ws.on_upgrade(move |socket| {
+        handle_ws_room(socket, owner, project, room_id, session_id, headers, state)
+    })
 }
 
 async fn handle_ws_room(

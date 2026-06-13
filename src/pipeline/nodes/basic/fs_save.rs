@@ -1,9 +1,14 @@
-//! n.fs.save — save an uploaded file from a multipart webhook payload to Zebflow FS.
+//! n.fs.save — validate and promote one uploaded/intermediate file to Zebflow FS.
 //!
-//! Input: `input.files.{field}` as set by `trigger.webhook` multipart parsing.
+//! For general node authoring rules, read `src/pipeline/nodes/mod.rs`; for
+//! FileRef IR and backend/lifecycle rules, read
+//! `src/pipeline/nodes/basic/file_ref.rs`.
+//!
+//! Input: `input.files.{field}` as set by `trigger.webhook` multipart parsing,
+//! where `{field}` is a dot-path so array uploads can be addressed as `photos.0`.
 //! Output: `{ saved: { path, url, original_name, content_type, size } }`
 //!
-//! Files are stored as ZebFS object paths, usually `uploads/{uuid}.{ext}`.
+//! Files are stored as durable ZebFS object paths, usually `uploads/{uuid}.{ext}`.
 //!
 //! Content validation uses magic-byte inspection (via the `infer` crate) in addition to
 //! the browser-reported MIME type. Both must agree, and both must match the allowed-types list.
@@ -16,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::util::metadata_scope;
+use super::file_ref::{is_file_ref, read_file_ref_bytes};
+use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -458,13 +464,15 @@ impl NodeHandler for Node {
             self.config.field.trim()
         };
 
-        // Primary source: input.files.{field} (multipart webhook convention)
+        // Primary source: input.files.{field} (multipart webhook convention).
+        // `field` is resolved as a dot-path so array uploads can use e.g. `photos.0`.
         let file_from_webhook = input
             .payload
             .get("files")
-            .and_then(|files| files.get(field));
+            .and_then(|files| resolve_path(files, field));
 
-        // Fallback: response.body with __zf_bytes convention (from n.http.request --response-type bytes)
+        // Fallback: response.body from n.http.request --response-type bytes (FileRef now,
+        // __zf_bytes in older payloads).
         let file_obj = match file_from_webhook {
             Some(obj) => obj,
             None => {
@@ -472,12 +480,12 @@ impl NodeHandler for Node {
                     .payload
                     .get("response")
                     .and_then(|r| r.get("body"))
-                    .filter(|b| b.get("__zf_bytes").is_some());
+                    .filter(|b| is_file_ref(b) || b.get("__zf_bytes").is_some());
                 zf_body.ok_or_else(|| {
                     PipelineError::new(
                         "FW_NODE_FILE_SAVE",
                         format!(
-                            "input.files.{field} not found and no __zf_bytes in response.body — \
+                            "input.files.{field} not found and no FileRef/__zf_bytes in response.body — \
                             is this triggered by a multipart webhook or http.request with --response-type bytes?"
                         ),
                     )
@@ -485,11 +493,25 @@ impl NodeHandler for Node {
             }
         };
 
-        // Determine if this is a __zf_bytes object or a webhook file object
+        // Determine if this is a FileRef, __zf_bytes object, or legacy webhook file object.
+        let is_file_ref = is_file_ref(file_obj);
         let is_zf_bytes = file_obj.get("__zf_bytes").is_some();
 
-        let (original_name, browser_mime, size, data_b64);
-        if is_zf_bytes {
+        let (original_name, browser_mime, size, bytes);
+        if is_file_ref {
+            original_name = file_obj
+                .get("filename")
+                .or_else(|| file_obj.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("upload");
+            browser_mime = file_obj
+                .get("mime")
+                .or_else(|| file_obj.get("content_type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("application/octet-stream");
+            size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            bytes = read_file_ref_bytes(&self.platform, owner, project, file_obj)?;
+        } else if is_zf_bytes {
             original_name = "download";
             browser_mime = file_obj
                 .get("__zf_mime")
@@ -499,11 +521,16 @@ impl NodeHandler for Node {
                 .get("__zf_size")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0) as usize;
-            data_b64 = file_obj
+            let data_b64 = file_obj
                 .get("__zf_bytes")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     PipelineError::new("FW_NODE_FILE_SAVE", "__zf_bytes field is not a string")
+                })?;
+            bytes = base64::engine::general_purpose::STANDARD
+                .decode(data_b64)
+                .map_err(|err| {
+                    PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
                 })?;
         } else {
             original_name = file_obj
@@ -515,11 +542,16 @@ impl NodeHandler for Node {
                 .and_then(|v| v.as_str())
                 .unwrap_or("application/octet-stream");
             size = file_obj.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            data_b64 = file_obj
+            let data_b64 = file_obj
                 .get("data")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     PipelineError::new("FW_NODE_FILE_SAVE", "input.files.{field}.data is missing")
+                })?;
+            bytes = base64::engine::general_purpose::STANDARD
+                .decode(data_b64)
+                .map_err(|err| {
+                    PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
                 })?;
         }
 
@@ -534,13 +566,6 @@ impl NodeHandler for Node {
                 ),
             ));
         }
-
-        // ── Decode base64 ─────────────────────────────────────────────────────
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(data_b64)
-            .map_err(|err| {
-                PipelineError::new("FW_NODE_FILE_SAVE", format!("base64 decode error: {err}"))
-            })?;
 
         // Re-check against actual decoded size
         if bytes.len() > max_bytes {

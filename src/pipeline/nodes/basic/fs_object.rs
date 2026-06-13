@@ -1,4 +1,12 @@
 //! S3-like object operations for Zebflow FS.
+//!
+//! For general node authoring rules, read `src/pipeline/nodes/mod.rs`; for
+//! FileRef IR and backend/lifecycle rules, read
+//! `src/pipeline/nodes/basic/file_ref.rs`.
+//!
+//! `fs.put --from-key` accepts text-like JSON, legacy byte envelopes, and FileRef
+//! metadata. FileRef values are read through the shared helper instead of treating
+//! `ref` as a local filesystem path.
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -9,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::util::{metadata_scope, resolve_path};
+use crate::pipeline::nodes::basic::file_ref::{is_file_ref, read_file_ref_bytes};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     model::{DslFlag, DslFlagKind, LayoutItem, NodeFieldDef, NodeFieldType, SelectOptionDef},
@@ -193,16 +202,24 @@ pub fn put_definition() -> NodeDefinition {
     object_definition(
         PUT_NODE_KIND,
         "FS Put",
-        "Write one Zebflow FS object from literal text, base64, or a payload dot-path. Output: `{ fs: { object } }`.",
+        "Write one Zebflow FS object from literal text, base64, FileRef, or a payload dot-path. Output: `{ fs: { object } }`.",
         vec![
             scalar_flag("--path", "path", "Destination object path."),
-            scalar_flag("--from-key", "from_key", "Dot-path in payload to write."),
+            scalar_flag(
+                "--from-key",
+                "from_key",
+                "Dot-path in payload to write. FileRef values are read as file bytes.",
+            ),
             scalar_flag("--text", "text", "Literal UTF-8 content."),
             scalar_flag("--base64", "base64", "Base64 encoded content."),
         ],
         vec![
             text_field("path", "Path", "Destination object path."),
-            text_field("from_key", "From Key", "Dot-path in payload to write."),
+            text_field(
+                "from_key",
+                "From Key",
+                "Dot-path in payload to write. FileRef values are read as file bytes.",
+            ),
             NodeFieldDef {
                 name: "text".to_string(),
                 label: "Text".to_string(),
@@ -464,7 +481,7 @@ impl NodeHandler for Node {
             }
             Operation::Put => {
                 let path = required(&self.config.path, "--path", "FW_NODE_FS_PUT")?;
-                let bytes = self.resolve_put_bytes(&input.payload)?;
+                let bytes = self.resolve_put_bytes(owner, project, &input.payload)?;
                 let stat = zebfs
                     .put(path, &bytes)
                     .map_err(|err| PipelineError::new("FW_NODE_FS_PUT", err.to_string()))?;
@@ -533,7 +550,12 @@ impl NodeHandler for Node {
 }
 
 impl Node {
-    fn resolve_put_bytes(&self, payload: &Value) -> Result<Vec<u8>, PipelineError> {
+    fn resolve_put_bytes(
+        &self,
+        owner: &str,
+        project: &str,
+        payload: &Value,
+    ) -> Result<Vec<u8>, PipelineError> {
         let from_key = self.config.from_key.trim();
         if !from_key.is_empty() {
             let value = resolve_path(payload, from_key).ok_or_else(|| {
@@ -542,6 +564,9 @@ impl Node {
                     format!("payload key '{from_key}' was not found"),
                 )
             })?;
+            if is_file_ref(value) {
+                return read_file_ref_bytes(&self.platform, owner, project, value);
+            }
             return value_to_bytes(value);
         }
         if let Some(encoded) = self
@@ -570,6 +595,15 @@ fn value_to_bytes(value: &Value) -> Result<Vec<u8>, PipelineError> {
         return Ok(text.as_bytes().to_vec());
     }
     if let Some(encoded) = value.get("__zf_bytes").and_then(Value::as_str) {
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
+    }
+    if value.get("filename").is_some()
+        && value.get("content_type").is_some()
+        && value.get("size").is_some()
+        && let Some(encoded) = value.get("data").and_then(Value::as_str)
+    {
         return base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|err| PipelineError::new("FW_NODE_FS_PUT_BASE64", err.to_string()));
@@ -649,5 +683,27 @@ fn content_type_for_path(path: &str) -> &'static str {
         "pdf" => "application/pdf",
         "parquet" => "application/vnd.apache.parquet",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine as _;
+    use serde_json::json;
+
+    use super::value_to_bytes;
+
+    #[test]
+    fn put_decodes_legacy_webhook_file_object() {
+        let original = b"{\"type\":\"FeatureCollection\",\"features\":[]}";
+        let value = json!({
+            "filename": "data.geojson",
+            "content_type": "application/geo+json",
+            "size": original.len(),
+            "data": base64::engine::general_purpose::STANDARD.encode(original),
+        });
+
+        let bytes = value_to_bytes(&value).expect("decode webhook file object");
+        assert_eq!(bytes, original);
     }
 }
