@@ -65,6 +65,12 @@ export interface PipelineGraphProps {
   kindIcons?: Record<string, string>;
   /** Called when the user clicks the "E" (edit) button on a node */
   onNodeEdit?: (node: PipelineNodeData) => void;
+  /** Canvas selection mode shown in the bottom-right selection control */
+  selectionMode?: "normal" | "box";
+  /** Called when the bottom-right selection mode control changes mode */
+  onSelectionModeChange?: (mode: "normal" | "box") => void;
+  /** Called when the bottom-right select-all button is clicked */
+  onSelectAll?: () => void;
   /** Called once after the graphui app is created and the first scene loads */
   onReady?: (app: unknown) => void;
   className?: string;
