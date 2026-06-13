@@ -39,6 +39,13 @@ export interface PipelineGraphHandle {
   ): void;
   /** Collect current canvas state as a zebflow pipeline JSON object */
   collectPipeline(): object;
+  /** Reflow the current canvas as a left-to-right layered pipeline graph */
+  autoTidy(options?: {
+    baseX?: number;
+    baseY?: number;
+    rankGapX?: number;
+    nodeGapY?: number;
+  }): unknown[];
   /** Raw graphApp escape hatch for advanced imperative use */
   getApp(): unknown;
 }
