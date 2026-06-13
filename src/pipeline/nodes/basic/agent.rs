@@ -176,6 +176,7 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "strategic".to_string(), label: "Strategic".to_string() },
                 ],
                 default_value: Some(json!("direct")),
+                help: Some("Direct runs a single tool-capable agent loop; Strategic plans, executes, verifies, and can repair the answer.".to_string()),
                 span: Some("full".to_string()),
                 ..Default::default()
             },
@@ -196,6 +197,7 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "final_only".to_string(), label: "Final Only".to_string() },
                 ],
                 default_value: Some(json!("full")),
+                help: Some("Full returns the agent trace and final answer; Final Only returns just the final response payload.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -218,6 +220,7 @@ pub fn definition() -> NodeDefinition {
                 label: "System Prompt".to_string(),
                 field_type: NodeFieldType::Textarea,
                 rows: Some(6),
+                help: Some("Optional system instruction appended to the agent runtime prompt.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {

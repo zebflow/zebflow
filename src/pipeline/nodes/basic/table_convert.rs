@@ -235,6 +235,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Preview rows".to_string(),
                 field_type: NodeFieldType::Number,
                 placeholder: Some("20".to_string()),
+                help: Some("Number of converted rows to include in the inline preview output.".to_string()),
                 span: Some("half".to_string()),
                 ..Default::default()
             },
@@ -242,6 +243,7 @@ pub fn definition() -> NodeDefinition {
                 name: "limit".to_string(),
                 label: "Limit rows".to_string(),
                 field_type: NodeFieldType::Number,
+                help: Some("Maximum number of source rows to convert. Leave empty to convert all rows.".to_string()),
                 span: Some("half".to_string()),
                 ..Default::default()
             },

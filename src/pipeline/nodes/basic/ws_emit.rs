@@ -162,13 +162,13 @@ pub fn definition() -> NodeDefinition {
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
             vec![
-                NodeFieldDef { name: "event".to_string(), label: "Event".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("message")), ..Default::default() },
-                NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                NodeFieldDef { name: "event".to_string(), label: "Event".to_string(), field_type: NodeFieldType::Text, default_value: Some(serde_json::json!("message")), help: Some("Event name emitted to WebSocket clients.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "room".to_string(), label: "Room".to_string(), field_type: NodeFieldType::Text, help: Some("WebSocket room to broadcast into when target is Room.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "to".to_string(), label: "To".to_string(), field_type: NodeFieldType::Select, options: vec![
                     SelectOptionDef { value: "room".to_string(), label: "Room — broadcast to all members".to_string() },
                     SelectOptionDef { value: "sender".to_string(), label: "Sender — reply to triggering socket only".to_string() },
-                ], ..Default::default() },
-                NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                ], help: Some("Choose whether to broadcast to the room or reply only to the triggering sender.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "payload_path".to_string(), label: "Payload Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer to emit as event payload. Empty emits the whole input payload.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![

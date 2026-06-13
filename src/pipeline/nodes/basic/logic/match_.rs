@@ -66,6 +66,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Expression".to_string(),
                     field_type: NodeFieldType::Textarea,
                     rows: Some(4),
+                    help: Some("JS expression evaluated against $input/$trigger/$nodes; its string result selects a route pin.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {

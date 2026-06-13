@@ -165,6 +165,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Status Code".to_string(),
                     field_type: NodeFieldType::Text,
                     placeholder: Some("200".to_string()),
+                    help: Some("HTTP status code to return. Defaults to 200 when omitted.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
@@ -172,6 +173,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Redirect URL".to_string(),
                     field_type: NodeFieldType::Text,
                     placeholder: Some("/auth/login".to_string()),
+                    help: Some("Redirect target used with 3xx status codes.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
@@ -187,6 +189,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Message".to_string(),
                     field_type: NodeFieldType::Text,
                     placeholder: Some("Access denied".to_string()),
+                    help: Some("Plain fallback response message when no template/body path is used.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {
@@ -194,6 +197,7 @@ pub fn definition() -> NodeDefinition {
                     label: "Set-Cookie".to_string(),
                     field_type: NodeFieldType::Text,
                     placeholder: Some("name=session,value=$.token,http-only,max-age=86400".to_string()),
+                    help: Some("Cookie specification string for a Set-Cookie header.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {

@@ -22,10 +22,10 @@ pub use interface::PipelineEngine;
 pub use layout::auto_tidy_pipeline_graph;
 pub use model::{
     ExecuteOptions, ExecutionBus, NodeAiToolDefinition, NodeContractDocument, NodeContractItem,
-    NodeDefinition, NodeFieldDataSource, NodeFieldDef, NodeFieldType, NodeScriptBridge,
-    NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix, PipelineContext, PipelineEdge,
-    PipelineError, PipelineGraph, PipelineNode, PipelineOutput, SelectOptionDef, SidebarItem,
-    SidebarSection, Signal, StepEvent,
+    NodeCredentialRequirement, NodeDefinition, NodeFieldDataSource, NodeFieldDef, NodeFieldType,
+    NodeScriptBridge, NodeScriptUsageContract, NodeToolUsageContract, NodeUsageMatrix,
+    PipelineContext, PipelineEdge, PipelineError, PipelineGraph, PipelineNode, PipelineOutput,
+    SelectOptionDef, SidebarItem, SidebarSection, Signal, StepEvent,
 };
 pub use nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler};
 pub use registry::PipelineEngineRegistry;

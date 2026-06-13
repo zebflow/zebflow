@@ -84,6 +84,7 @@ pub fn definition() -> NodeDefinition {
                         label: "Sequential".to_string(),
                     }],
                     default_value: Some(json!("seq")),
+                    help: Some("Dispatch policy for emitted items. Current runtime supports sequential dispatch.".to_string()),
                     ..Default::default()
                 },
                 NodeFieldDef {

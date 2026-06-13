@@ -158,6 +158,7 @@ pub fn definition() -> NodeDefinition {
                     label: "tar.gz".to_string(),
                     value: "tar.gz".to_string(),
                 }],
+                help: Some("Archive format to read. Current runtime supports tar.gz.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {

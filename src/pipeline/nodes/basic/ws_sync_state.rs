@@ -176,7 +176,7 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "patch".to_string(), label: "Patch — deep-merge into state".to_string() },
                     SelectOptionDef { value: "delete".to_string(), label: "Delete — remove key from state".to_string() },
                     SelectOptionDef { value: "clear".to_string(), label: "Clear — wipe entire state".to_string() },
-                ], ..Default::default() },
+                ], help: Some("State mutation operation to apply before optional broadcast.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "path".to_string(), label: "State Path".to_string(), field_type: NodeFieldType::Text, help: Some("Dot-separated key path in shared state.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "value_path".to_string(), label: "Value Path".to_string(), field_type: NodeFieldType::Text, help: Some("Payload path to read the value from.".to_string()), ..Default::default() },
                 NodeFieldDef { name: "silent".to_string(), label: "Silent (no broadcast)".to_string(), field_type: NodeFieldType::Checkbox, help: Some("Update server-side without broadcasting.".to_string()), ..Default::default() },

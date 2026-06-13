@@ -40,6 +40,10 @@ pub fn definition() -> NodeDefinition {
             default_value: Some(serde_json::json!(
                 "Runs only when pipeline execute trigger=manual."
             )),
+            help: Some(
+                "Read-only note: this trigger fires only from explicit manual pipeline execution."
+                    .to_string(),
+            ),
             ..Default::default()
         }],
         layout: vec![LayoutItem::Field("__manual_note".to_string())],

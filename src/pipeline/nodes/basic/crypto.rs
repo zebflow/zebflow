@@ -172,12 +172,12 @@ pub fn definition() -> NodeDefinition {
                     SelectOptionDef { value: "base64_encode".to_string(), label: "Base64 encode".to_string() },
                     SelectOptionDef { value: "base64_decode".to_string(), label: "Base64 decode".to_string() },
                     SelectOptionDef { value: "random_hex".to_string(), label: "Random hex token".to_string() },
-                ], ..Default::default() },
-                NodeFieldDef { name: "input_path".to_string(), label: "Input Path".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "hash_path".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "key_path".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "cost".to_string(), label: "Cost (bcrypt)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
-                NodeFieldDef { name: "length".to_string(), label: "Length (random_hex)".to_string(), field_type: NodeFieldType::Text, ..Default::default() },
+                ], help: Some("Cryptographic operation to perform. Verify operations route to true/false pins.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "input_path".to_string(), label: "Input Path".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the primary input value. Empty reads payload.input.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "hash_path".to_string(), label: "Hash Path (verify)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the stored hash used by verify operations. Empty reads payload.hash.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "key_path".to_string(), label: "Key Path (HMAC)".to_string(), field_type: NodeFieldType::Text, help: Some("JSON pointer for the HMAC secret key. Empty reads payload.key.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "cost".to_string(), label: "Cost (bcrypt)".to_string(), field_type: NodeFieldType::Text, help: Some("bcrypt cost factor from 4 to 31. Defaults to 12.".to_string()), ..Default::default() },
+                NodeFieldDef { name: "length".to_string(), label: "Length (random_hex)".to_string(), field_type: NodeFieldType::Text, help: Some("Random byte count for random_hex output. Defaults to 32.".to_string()), ..Default::default() },
             ]
         },
         layout: vec![
