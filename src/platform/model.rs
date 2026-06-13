@@ -1503,6 +1503,9 @@ pub struct CollectionAttribute {
     /// Active index types: `hash` | `range` | `fulltext` | `vector` | `spatial`.
     #[serde(default)]
     pub index_types: Vec<String>,
+    /// SQL DEFAULT expression (e.g. `UUIDV4()`, `NOW()`, a literal value).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_value: Option<String>,
 }
 
 /// One managed Simple Table definition stored inside the project runtime DB.
@@ -1723,6 +1726,22 @@ pub struct CreateSimpleTableRequest {
     /// Optional display title.
     pub title: Option<String>,
     /// Attribute schema definitions.
+    #[serde(default)]
+    pub attributes: Vec<CollectionAttribute>,
+    /// Hash indexed payload fields.
+    #[serde(default)]
+    pub hash_indexed_fields: Vec<String>,
+    /// Range indexed payload fields.
+    #[serde(default)]
+    pub range_indexed_fields: Vec<String>,
+}
+
+/// Update payload for an existing sekejap table (attributes + indexes).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateSimpleTableRequest {
+    /// Optional new display title.
+    pub title: Option<String>,
+    /// New attribute schema definitions (replaces existing).
     #[serde(default)]
     pub attributes: Vec<CollectionAttribute>,
     /// Hash indexed payload fields.
