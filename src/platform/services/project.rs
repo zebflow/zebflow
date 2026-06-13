@@ -1,6 +1,6 @@
 //! Project management service.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -145,6 +145,73 @@ pub fn first_webhook_trigger_from_source(source: &str) -> Option<(String, String
         .into_iter()
         .next()
         .map(|trigger| (trigger.path, trigger.method))
+}
+
+fn validate_pipeline_graph_structure(graph: &PipelineGraph) -> Result<(), PlatformError> {
+    if graph.nodes.is_empty() {
+        return Err(PlatformError::new(
+            "FW_EMPTY_GRAPH",
+            format!("pipeline '{}' has no nodes", graph.id),
+        ));
+    }
+
+    let node_map: HashMap<&str, &crate::pipeline::PipelineNode> =
+        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+
+    for entry in &graph.entry_nodes {
+        if !node_map.contains_key(entry.as_str()) {
+            return Err(PlatformError::new(
+                "FW_ENTRY_NODE",
+                format!("unknown entry node '{}'", entry),
+            ));
+        }
+    }
+
+    for (idx, edge) in graph.edges.iter().enumerate() {
+        let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
+            PlatformError::new(
+                "FW_EDGE_FROM_NODE",
+                format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
+            )
+        })?;
+        let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
+            PlatformError::new(
+                "FW_EDGE_TO_NODE",
+                format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
+            )
+        })?;
+        if !from.output_pins.iter().any(|pin| pin == &edge.from_pin) && edge.from_pin != "error" {
+            return Err(PlatformError::new(
+                "FW_EDGE_FROM_PIN",
+                format!(
+                    "edge[{idx}] invalid from_pin '{}' for node '{}'",
+                    edge.from_pin, from.id
+                ),
+            ));
+        }
+        if !to.input_pins.iter().any(|pin| pin == &edge.to_pin) {
+            return Err(PlatformError::new(
+                "FW_EDGE_TO_PIN",
+                format!(
+                    "edge[{idx}] invalid to_pin '{}' for node '{}'",
+                    edge.to_pin, to.id
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
+    let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_PIPELINE_PARSE",
+            format!("failed parsing pipeline source: {err}"),
+        )
+    })?;
+    validate_pipeline_graph_structure(&graph)?;
+    Ok(graph)
 }
 
 fn canonical_pipeline_node_kind(kind: &str) -> &str {
@@ -519,6 +586,7 @@ impl ProjectService {
             ));
         }
         self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
+        parse_and_validate_pipeline_source(source)?;
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;
@@ -723,6 +791,7 @@ impl ProjectService {
         };
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
+        parse_and_validate_pipeline_source(&source)?;
         self.ensure_webhook_paths_available(&owner, &project, &source, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
         self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
@@ -2886,6 +2955,112 @@ mod tests {
         let zebflow_cfg = Arc::new(ZebflowJsonService::new(root.join("users")));
         let zeb_lock = Arc::new(ZebLockService::new(root.join("users")));
         ProjectService::new(data, file, project_data, zebflow_cfg, zeb_lock)
+    }
+
+    fn create_default_project(svc: &ProjectService) {
+        svc.create_or_update_project(
+            "superadmin",
+            &CreateProjectRequest {
+                project: "default".to_string(),
+                title: Some("Default".to_string()),
+                local_branch: None,
+                runtime: ProjectRuntimeSelectionRequest::default(),
+            },
+        )
+        .expect("create project");
+    }
+
+    fn invalid_logic_match_router_source() -> &'static str {
+        r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"invalid-router",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"kind_route","kind":"n.logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"csv_branch","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{}}
+  ],
+  "edges":[
+    {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
+    {"from_node":"kind_route","from_pin":"out","to_node":"csv_branch","to_pin":"in"}
+  ]
+}"#
+    }
+
+    fn valid_logic_match_router_source() -> &'static str {
+        r#"{
+  "kind":"zebflow.pipeline",
+  "version":"0.1",
+  "id":"valid-router",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/router","method":"POST"}},
+    {"id":"kind_route","kind":"n.logic.match","input_pins":["in"],"output_pins":["csv","geojson","archive","default"],"config":{"expression":"$input.input_kind","cases":["csv","geojson","archive"],"default":"default"}},
+    {"id":"csv_branch","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{}}
+  ],
+  "edges":[
+    {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
+    {"from_node":"kind_route","from_pin":"csv","to_node":"csv_branch","to_pin":"in"}
+  ]
+}"#
+    }
+
+    #[test]
+    fn upsert_pipeline_rejects_invalid_logic_match_edge_pin() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let err = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "pipelines/api/router.zf.json",
+                "Router",
+                "",
+                "webhook",
+                invalid_logic_match_router_source(),
+            )
+            .expect_err("invalid graph should be rejected before save");
+
+        assert_eq!(err.code, "FW_EDGE_FROM_PIN");
+        assert!(err.message.contains("kind_route"));
+        assert!(err.message.contains("'out'"));
+    }
+
+    #[test]
+    fn activate_pipeline_rejects_invalid_saved_logic_match_edge_pin() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+
+        let file_rel_path = "pipelines/api/router.zf.json";
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Router",
+            "",
+            "webhook",
+            valid_logic_match_router_source(),
+        )
+        .expect("valid graph should save");
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let abs = layout.repo_dir.join(file_rel_path);
+        std::fs::write(abs, invalid_logic_match_router_source()).expect("write invalid source");
+
+        let err = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("invalid saved graph should be rejected before activation");
+
+        assert_eq!(err.code, "FW_EDGE_FROM_PIN");
+        assert!(err.message.contains("kind_route"));
+        assert!(err.message.contains("'out'"));
     }
 
     #[test]
