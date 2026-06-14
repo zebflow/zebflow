@@ -5798,9 +5798,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.8.15"
+version = "0.8.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a30d25e48b947b3a9337a0755ee037afb159ec3d521d1c7bb9143ccd36e7fcb7"
+checksum = "442c5e5171586cbeb57e551a6552a86ad62c23f468aa0ca30b520a50e2a66541"
 dependencies = [
  "chrono",
  "crc32fast",
