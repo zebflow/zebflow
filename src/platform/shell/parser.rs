@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::pipeline::auto_tidy_pipeline_graph;
 use crate::pipeline::model::{DslFlag, DslFlagKind, PipelineEdge, PipelineGraph, PipelineNode};
@@ -122,13 +122,30 @@ pub fn split_commands(dsl: &str) -> Vec<String> {
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
+    let mut in_opaque_body = false;
     let mut i = 0;
     while i < bytes.len() {
+        if !in_single
+            && !in_double
+            && !in_backtick
+            && !in_opaque_body
+            && bytes[i] == b'-'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'-'
+            && is_standalone_token(bytes, i, i + 2)
+            && command_accepts_opaque_body(&joined[start..i])
+        {
+            in_opaque_body = true;
+            i += 2;
+            continue;
+        }
+
         match bytes[i] {
-            b'\'' if !in_double && !in_backtick => in_single = !in_single,
-            b'"' if !in_single && !in_backtick => in_double = !in_double,
-            b'`' if !in_single && !in_double => in_backtick = !in_backtick,
-            b'&' if !in_single
+            b'\'' if !in_opaque_body && !in_double && !in_backtick => in_single = !in_single,
+            b'"' if !in_opaque_body && !in_single && !in_backtick => in_double = !in_double,
+            b'`' if !in_opaque_body && !in_single && !in_double => in_backtick = !in_backtick,
+            b'&' if !in_opaque_body
+                && !in_single
                 && !in_double
                 && !in_backtick
                 && i + 1 < bytes.len()
@@ -140,6 +157,7 @@ pub fn split_commands(dsl: &str) -> Vec<String> {
                 }
                 i += 2;
                 start = i;
+                in_opaque_body = false;
                 continue;
             }
             _ => {}
@@ -151,6 +169,23 @@ pub fn split_commands(dsl: &str) -> Vec<String> {
         segments.push(last.to_string());
     }
     segments
+}
+
+fn is_standalone_token(bytes: &[u8], start: usize, end: usize) -> bool {
+    let before_ok = start == 0 || bytes[start - 1].is_ascii_whitespace();
+    let after_ok = end >= bytes.len() || bytes[end].is_ascii_whitespace();
+    before_ok && after_ok
+}
+
+fn command_accepts_opaque_body(prefix: &str) -> bool {
+    let tokens = tokenize(prefix);
+    let Some(verb) = tokens.first().map(|s| s.to_lowercase()) else {
+        return false;
+    };
+    matches!(
+        verb.as_str(),
+        "patch" | "register" | "reg" | "run" | "write" | "create" | "git"
+    )
 }
 
 /// Expand short node kind alias to full qualified kind.
@@ -291,12 +326,43 @@ fn strip_outer_quotes(s: &str) -> &str {
 /// Extracts the raw body substring after ` -- ` in a segment string.
 /// Strips outer quotes if the entire body is quoted.
 fn extract_raw_body_from(raw: &str) -> Option<String> {
-    raw.find(" -- ")
-        .map(|pos| {
-            let after = raw[pos + 4..].trim();
+    find_body_delimiter(raw)
+        .map(|body_start| {
+            let after = raw[body_start..].trim();
             strip_outer_quotes(after).to_string()
         })
         .filter(|s| !s.is_empty())
+}
+
+fn find_body_delimiter(raw: &str) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double && !in_backtick => in_single = !in_single,
+            b'"' if !in_single && !in_backtick => in_double = !in_double,
+            b'`' if !in_single && !in_double => in_backtick = !in_backtick,
+            b'-' if !in_single
+                && !in_double
+                && !in_backtick
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'-'
+                && is_standalone_token(bytes, i, i + 2) =>
+            {
+                let mut body_start = i + 2;
+                while body_start < bytes.len() && bytes[body_start].is_ascii_whitespace() {
+                    body_start += 1;
+                }
+                return Some(body_start);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Coerce a DSL flag string value to the appropriate JSON type.
@@ -379,6 +445,18 @@ pub fn parse_node_config(
                     }
                     i += 2;
                 }
+                DslFlagKind::SchemaField => {
+                    let spec = tokens.get(i + 1).cloned().unwrap_or_default();
+                    if spec.trim().is_empty() {
+                        return Err(format!(
+                            "schema field flag `{}` requires name:type",
+                            dsl_flag.flag
+                        ));
+                    }
+                    let desc = tokens.get(i + 2).filter(|v| !v.starts_with("--")).cloned();
+                    push_schema_field(&mut config, &dsl_flag.config_key, &spec, desc.as_deref())?;
+                    i += if desc.is_some() { 3 } else { 2 };
+                }
             }
         } else {
             i += 1;
@@ -438,6 +516,97 @@ fn push_list_flag_value(
         existing.extend(values);
     }
     Ok(())
+}
+
+fn push_schema_field(
+    config: &mut Map<String, Value>,
+    config_key: &str,
+    spec: &str,
+    description: Option<&str>,
+) -> Result<(), String> {
+    let (name, property, required) = schema_field_from_spec(spec, description)?;
+    let entry = config
+        .entry(config_key.to_string())
+        .or_insert_with(|| json!({ "type": "object", "properties": {}, "required": [] }));
+    if !entry.is_object() {
+        *entry = json!({ "type": "object", "properties": {}, "required": [] });
+    }
+    let schema = entry.as_object_mut().expect("schema object");
+    schema.insert("type".to_string(), json!("object"));
+    let properties = schema
+        .entry("properties".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !properties.is_object() {
+        *properties = Value::Object(Map::new());
+    }
+    properties
+        .as_object_mut()
+        .expect("properties object")
+        .insert(name.clone(), property);
+    if required {
+        let required_values = schema
+            .entry("required".to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if !required_values.is_array() {
+            *required_values = Value::Array(Vec::new());
+        }
+        let arr = required_values.as_array_mut().expect("required array");
+        if !arr.iter().any(|v| v.as_str() == Some(name.as_str())) {
+            arr.push(json!(name));
+        }
+    }
+    Ok(())
+}
+
+fn schema_field_from_spec(
+    spec: &str,
+    description: Option<&str>,
+) -> Result<(String, Value, bool), String> {
+    let (raw_name, raw_type) = spec
+        .split_once(':')
+        .ok_or_else(|| format!("schema field `{spec}` must use name:type syntax"))?;
+    let name = raw_name.trim();
+    if name.is_empty() {
+        return Err(format!("schema field `{spec}` has empty name"));
+    }
+    let mut type_spec = raw_type.trim();
+    let required = type_spec.ends_with('!');
+    if required {
+        type_spec = type_spec.trim_end_matches('!').trim();
+    }
+    let mut property = schema_property_for_type(type_spec)?;
+    if let Some(desc) = description.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(obj) = property.as_object_mut() {
+            obj.insert("description".to_string(), json!(desc));
+        }
+    }
+    Ok((name.to_string(), property, required))
+}
+
+fn schema_property_for_type(type_spec: &str) -> Result<Value, String> {
+    let trimmed = type_spec.trim();
+    if trimmed.is_empty() {
+        return Err("schema field type must not be empty".to_string());
+    }
+    if let Some(item) = trimmed.strip_suffix("[]") {
+        return Ok(json!({
+            "type": "array",
+            "items": schema_property_for_type(item)?
+        }));
+    }
+    match trimmed {
+        "string" | "number" | "integer" | "boolean" | "object" | "array" => {
+            Ok(json!({ "type": trimmed }))
+        }
+        "json" | "any" => Ok(json!({})),
+        "file" | "bytes" | "blob" => Ok(json!({
+            "type": "object",
+            "x-zebflow-type": trimmed
+        })),
+        other => Err(format!(
+            "unsupported schema field type `{other}`; use string, number, integer, boolean, object, array, any, json, file, bytes, blob, or []"
+        )),
+    }
 }
 
 /// Parse flags for patch operations without DslFlag validation.
@@ -898,6 +1067,75 @@ run \
         let commands3 = split_commands(dsl3);
         assert_eq!(commands3.len(), 2, "&& outside quotes must still split");
     }
+
+    #[test]
+    fn patch_script_body_is_opaque_to_shell_separators() {
+        let source = r#"const lat = row.Stop_lat ?? row.stop_lat;
+const lon = row.Stop_long ?? row.stop_long;
+const ok = !!((lat || lon) && /Stop_lat|Stop_long/.test("Stop_lat|Stop_long"));
+return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
+        let dsl = format!(
+            "patch pipeline pipelines/goveyes/functions/e1/ingestion-tools/e1-tool-ing-transform-tabular-spatial.zf.json node n1 -- {source}"
+        );
+
+        let commands = split_commands(&dsl);
+        assert_eq!(
+            commands.len(),
+            1,
+            "operators inside a patch body must not become command separators"
+        );
+
+        let verb = parse_one_command(&commands[0]);
+        match verb {
+            DslVerb::Patch {
+                file_rel_path,
+                node_id,
+                body,
+                ..
+            } => {
+                assert_eq!(
+                    file_rel_path,
+                    "pipelines/goveyes/functions/e1/ingestion-tools/e1-tool-ing-transform-tabular-spatial.zf.json"
+                );
+                assert_eq!(node_id, "n1");
+                let body = body.expect("patch body");
+                assert!(body.contains("lat || lon"));
+                assert!(body.contains("/Stop_lat|Stop_long/"));
+                assert!(body.contains("\"lat|lon\""));
+                assert!(body.contains("`${lat || \"\"}|${lon || \"\"}`"));
+            }
+            other => panic!("expected patch verb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_trigger_schema_field_flags_build_json_schema() {
+        let dsl = r#"
+[fn] trigger.function --title "Inspect CSV" --description "Reads a CSV." --input source:file! "CSV file reference." --input options:any "Provider options." --output ok:boolean! "Whether it worked." --output columns:string[] "Detected columns."
+[fn] -> [done]
+[done] script -- return input;
+"#;
+
+        let graph = build_pipeline_graph("function-schema-field-test", dsl).expect("graph");
+        let node = graph.nodes.iter().find(|node| node.id == "fn").expect("fn");
+
+        assert_eq!(node.config["description"], json!("Reads a CSV."));
+        assert_eq!(node.config["input_schema"]["type"], json!("object"));
+        assert_eq!(node.config["input_schema"]["required"], json!(["source"]));
+        assert_eq!(
+            node.config["input_schema"]["properties"]["source"]["x-zebflow-type"],
+            json!("file")
+        );
+        assert_eq!(
+            node.config["input_schema"]["properties"]["options"],
+            json!({"description": "Provider options."})
+        );
+        assert_eq!(node.config["output_schema"]["required"], json!(["ok"]));
+        assert_eq!(
+            node.config["output_schema"]["properties"]["columns"]["items"]["type"],
+            json!("string")
+        );
+    }
 }
 
 fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
@@ -1134,6 +1372,16 @@ fn node_to_segment(node: &PipelineNode) -> String {
                     }
                 }
             }
+            DslFlagKind::SchemaField => {
+                if let Ok(s) = serde_json::to_string(val) {
+                    parts.push(
+                        flag.flag
+                            .replace("--input", "--input-schema")
+                            .replace("--output", "--output-schema"),
+                    );
+                    parts.push(quote_dsl_arg(&s));
+                }
+            }
         }
     }
 
@@ -1247,6 +1495,16 @@ pub fn node_to_segment_no_body(node: &PipelineNode) -> String {
                         parts.push(flag.flag.clone());
                         parts.push(format!("{}={}", k, v_str));
                     }
+                }
+            }
+            DslFlagKind::SchemaField => {
+                if let Ok(s) = serde_json::to_string(val) {
+                    parts.push(
+                        flag.flag
+                            .replace("--input", "--input-schema")
+                            .replace("--output", "--output-schema"),
+                    );
+                    parts.push(quote_dsl_arg(&s));
                 }
             }
         }

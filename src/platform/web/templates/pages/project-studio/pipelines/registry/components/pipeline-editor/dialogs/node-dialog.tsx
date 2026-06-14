@@ -8,6 +8,56 @@ import type { PipelineNodeData, EditorDataState, NodeCatalogEntry } from "@/page
 import { extractNodeConfig, ensureUniqueSlug } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/extract";
 import { canonicalNodeKind } from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/nodes/catalog";
 
+function parseMaybeJson(value: any): any {
+  if (typeof value === "string" && value.trim()) {
+    try { return JSON.parse(value); } catch { return value; }
+  }
+  return value;
+}
+
+function schemaType(def: any): string {
+  const zebType = String(def?.["x-zebflow-type"] || "");
+  if (zebType) return zebType;
+  if (def?.type === "array") return `${schemaType(def?.items || { type: "any" })}[]`;
+  return String(def?.type || "any");
+}
+
+function schemaPropertiesFromTriggerConfig(config: any): Record<string, any> | null {
+  const inputSchema = parseMaybeJson(config?.input_schema);
+  if (inputSchema && typeof inputSchema === "object" && !Array.isArray(inputSchema)) {
+    const props = inputSchema.properties && typeof inputSchema.properties === "object"
+      ? inputSchema.properties
+      : inputSchema;
+    const required = new Set(Array.isArray(inputSchema.required) ? inputSchema.required.map(String) : []);
+    const out: Record<string, any> = {};
+    for (const [name, def] of Object.entries(props)) {
+      out[name] = {
+        ...(def as any),
+        type: schemaType(def),
+        required: required.has(name) || Boolean((def as any)?.required),
+      };
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+  const params = parseMaybeJson(config?.params);
+  return params && typeof params === "object" && !Array.isArray(params) && Object.keys(params).length > 0
+    ? params
+    : null;
+}
+
+function coerceFunctionParamInput(value: string, def: any): any {
+  const type = String(def?.type || "");
+  if (type === "number" || type === "integer") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : value;
+  }
+  if (type === "boolean") return value === "true" || value === "1" || value === "yes";
+  if (type === "object" || type === "array" || type.endsWith("[]") || type === "any") {
+    try { return JSON.parse(value); } catch { return value; }
+  }
+  return value;
+}
+
 interface NodeDialogProps {
   nodeData: PipelineNodeData | null;   // null = closed
   catalog: Map<string, NodeCatalogEntry>;
@@ -100,16 +150,7 @@ export default function NodeDialog({
         let graph: any;
         try { graph = JSON.parse(data.source || "{}"); } catch { graph = {}; }
         const triggerNode = (graph?.nodes || []).find((n: any) => n.kind === "n.trigger.function");
-        let params: Record<string, any> | null = null;
-        if (triggerNode?.config?.params) {
-          const raw = triggerNode.config.params;
-          // params may be a string (code editor) or already parsed object
-          if (typeof raw === "string") {
-            try { params = JSON.parse(raw); } catch { params = null; }
-          } else if (typeof raw === "object" && raw !== null) {
-            params = raw;
-          }
-        }
+        const params = schemaPropertiesFromTriggerConfig(triggerNode?.config || {});
         setFunctionParams(params && Object.keys(params).length > 0 ? params : null);
 
         // Auto-populate input with defaults if currently empty
@@ -193,7 +234,10 @@ export default function NodeDialog({
     const raw = String(formState.input || "").trim();
     let current: Record<string, any> = {};
     if (raw) { try { current = JSON.parse(raw); } catch { current = {}; } }
-    handleChange("input", JSON.stringify({ ...current, [key]: val }, null, 2));
+    handleChange("input", JSON.stringify({
+      ...current,
+      [key]: coerceFunctionParamInput(val, functionParams?.[key]),
+    }, null, 2));
   }
 
   const title = `Edit Node | ${kind || "node"}`;
@@ -321,7 +365,7 @@ export default function NodeDialog({
                         {name}
                         {def?.type && (
                           <span className="ml-1.5 text-[0.68rem] font-normal text-body-muted">
-                            {def.type}
+                            {def.type}{def.required ? " required" : ""}
                           </span>
                         )}
                       </Label>

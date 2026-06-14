@@ -209,6 +209,12 @@ pub enum DslFlagKind {
     /// `--claim player_id=$.player_id --claim roles=$.roles`
     /// → `config["claims"] = {"player_id": "$.player_id", "roles": "$.roles"}`
     KeyValuePairs,
+    /// Repeated schema-field declarations collected into a JSON Schema object.
+    ///
+    /// Each occurrence consumes a compact field spec plus an optional description token:
+    /// `--input columns:string[]! "Source column names."`
+    /// → `config["input_schema"] = {"type":"object","required":["columns"],"properties":{...}}`.
+    SchemaField,
 }
 
 /// One DSL flag declaration owned by a [`NodeDefinition`].

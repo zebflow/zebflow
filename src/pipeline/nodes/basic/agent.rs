@@ -468,47 +468,22 @@ impl Node {
                     continue;
                 }
 
-                // Extract params schema from the trigger node's config.
-                // The `params` value may be stored as a JSON string (from DSL --params flag)
-                // or as a parsed object (from UI editor). Either way, wrap it as a full
-                // JSON Schema: {"type":"object","properties": <params>}.
-                let params_schema = compiled
+                let trigger_config = compiled
                     .graph
                     .nodes
                     .iter()
                     .find(|n| n.kind == FN_TRIGGER)
-                    .and_then(|n| n.config.get("params"))
-                    .and_then(|v| {
-                        let props = if let Some(s) = v.as_str() {
-                            serde_json::from_str::<Value>(s).ok()
-                        } else if v.is_object() {
-                            Some(v.clone())
-                        } else {
-                            None
-                        };
-                        props.map(|p| json!({ "type": "object", "properties": p }))
-                    })
-                    .unwrap_or_else(|| {
-                        json!({
-                            "type": "object",
-                            "additionalProperties": true
-                        })
-                    });
-
-                let description = format!(
-                    "Call the '{}' function pipeline. {}",
-                    slug,
-                    compiled
-                        .graph
-                        .nodes
-                        .iter()
-                        .find(|n| n.kind == FN_TRIGGER)
-                        .and_then(|n| n.config.get("description"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                )
-                .trim_end()
-                .to_string();
+                    .map(|n| n.config.clone())
+                    .unwrap_or_default();
+                let params_schema =
+                    crate::pipeline::nodes::basic::trigger::function::input_schema_from_config(
+                        &trigger_config,
+                    );
+                let description =
+                    crate::pipeline::nodes::basic::trigger::function::tool_description_from_config(
+                        &slug,
+                        &trigger_config,
+                    );
 
                 defs.push(ToolDef {
                     name: slug,
@@ -656,12 +631,7 @@ impl Node {
                         })
                     });
 
-                    return match result {
-                        Ok(v) => {
-                            Ok(serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()))
-                        }
-                        Err(e) => Err(e.to_string()),
-                    };
+                    return function_tool_result_for_agent(result);
                 }
 
                 Err(format!("tool '{}' not found", tool_name))
@@ -865,13 +835,7 @@ impl Node {
                             })
                         });
 
-                        return match result {
-                            Ok(v) => {
-                                Ok(serde_json::to_string_pretty(&v)
-                                    .unwrap_or_else(|_| v.to_string()))
-                            }
-                            Err(e) => Err(e.to_string()),
-                        };
+                        return function_tool_result_for_agent(result);
                     }
 
                     Err(format!("tool '{}' not found", tool_name))
@@ -890,6 +854,7 @@ impl Node {
                         "verified":         result.verified,
                         "repairs_used":     result.repairs_used,
                         "metrics":          result.metrics,
+                        "tool_events":      result.tool_events,
                         "trace":            result.trace,
                     })
                 } else {
@@ -900,6 +865,7 @@ impl Node {
                         "verified":         result.verified,
                         "repairs_used":     result.repairs_used,
                         "metrics":          result.metrics,
+                        "tool_events":      result.tool_events,
                         "trace":            result.trace,
                     })
                 }
@@ -917,6 +883,23 @@ impl Node {
             payload,
             trace: result.trace,
         })
+    }
+}
+
+fn function_tool_result_for_agent(result: Result<Value, PipelineError>) -> Result<String, String> {
+    match result {
+        Ok(v) => Ok(serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())),
+        Err(e) if e.code == "FW_FUNCTION_INPUT_INVALID" => {
+            let parsed = serde_json::from_str::<Value>(&e.message).unwrap_or_else(|_| {
+                json!({
+                    "ok": false,
+                    "code": e.code,
+                    "message": e.message
+                })
+            });
+            Ok(serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| parsed.to_string()))
+        }
+        Err(e) => Err(e.to_string()),
     }
 }
 

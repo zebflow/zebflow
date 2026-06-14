@@ -318,6 +318,29 @@ impl PlatformService {
                 )
             })?;
 
+        let trigger_config = compiled
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.kind == FUNCTION_TRIGGER_KIND)
+            .map(|n| n.config.clone())
+            .unwrap_or_default();
+        let input_schema =
+            crate::pipeline::nodes::basic::trigger::function::input_schema_from_config(
+                &trigger_config,
+            );
+        if let Err(err_payload) =
+            crate::pipeline::nodes::basic::trigger::function::validate_function_input(
+                &input_schema,
+                &input,
+            )
+        {
+            return Err(crate::pipeline::PipelineError::new(
+                "FW_FUNCTION_INPUT_INVALID",
+                serde_json::to_string(&err_payload).unwrap_or_else(|_| err_payload.to_string()),
+            ));
+        }
+
         let ctx = crate::pipeline::PipelineContext {
             owner: owner.to_string(),
             project: project.to_string(),

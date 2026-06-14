@@ -70,6 +70,7 @@ function defaultFor(type: NodeFieldType): unknown {
   if (type === "multi_checkbox") return [];
   if (type === "key_value_pairs") return {};
   if (type === "claims_pairs") return {};
+  if (type === "params_builder") return { type: "object", required: [], properties: {} };
   if (type === "match_cases") return { cases: [], default: { pin: "default", label: "Default" } };
   return "";
 }

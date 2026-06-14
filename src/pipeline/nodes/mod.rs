@@ -545,6 +545,7 @@ pub fn format_node_definition_markdown(def: &NodeDefinition) -> String {
                 DslFlagKind::RepeatedList => "repeated-list",
                 DslFlagKind::Bool => "bool",
                 DslFlagKind::KeyValuePairs => "key-value-pairs",
+                DslFlagKind::SchemaField => "schema-field",
             };
             let desc = f.description.replace('|', "\\|");
             s.push_str(&format!(

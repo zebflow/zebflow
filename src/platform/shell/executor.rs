@@ -40,13 +40,25 @@ impl DslExecutor {
         if commands.is_empty() {
             return DslOutput::err("Empty command");
         }
-        let mut combined = DslOutput::new_ok();
+        let mut parsed = Vec::new();
         for cmd in commands {
             let cmd = cmd.trim();
             if cmd.is_empty() {
                 continue;
             }
             let verb = parse_one_command(cmd);
+            if let DslVerb::Unknown { raw } = &verb {
+                let verb_word = raw.split_whitespace().next().unwrap_or("?");
+                return DslOutput::err(format!(
+                    "Unknown command: '{}'. Type help for available commands.",
+                    verb_word
+                ));
+            }
+            parsed.push(verb);
+        }
+
+        let mut combined = DslOutput::new_ok();
+        for verb in parsed {
             let result = self.execute_verb(verb).await;
             if !result.ok {
                 combined.ok = false;
