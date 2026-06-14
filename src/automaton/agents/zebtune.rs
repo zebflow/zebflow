@@ -147,6 +147,8 @@ pub struct ZebtuneResult {
     pub repairs_used: u32,
     /// Per-run metrics (cost/timing/stop reason) for benchmarking.
     pub metrics: RunMetrics,
+    /// Full structured tool calls and results for debugging and audit.
+    pub tool_events: Vec<Value>,
     /// Execution trace entries (for logging and audit).
     pub trace: Vec<String>,
 }
@@ -205,6 +207,7 @@ impl ZebtuneAgent {
                     stop_reason: "no_llm".to_string(),
                     ..Default::default()
                 },
+                tool_events: vec![],
                 trace: vec!["zebtune_no_llm".to_string()],
             };
         };
@@ -218,6 +221,7 @@ impl ZebtuneAgent {
         let start = Instant::now();
         let mut trace = vec!["agent=zebtune".to_string()];
         let mut chain: Vec<ChainStep> = Vec::new();
+        let mut tool_events: Vec<Value> = Vec::new();
         let mut budget = self.config.step_budget;
         // VERIFY/REPAIR state. `verified` starts true only when there is no
         // contract to satisfy — neither a JSON schema (shape) nor a verifier
@@ -464,6 +468,20 @@ impl ZebtuneAgent {
                             Ok(out) => out,
                             Err(e) => format!("Tool error: {}", e),
                         };
+                        let parsed_result = serde_json::from_str::<Value>(&tool_out)
+                            .unwrap_or_else(|_| {
+                                json!({
+                                    "text": tool_out.clone()
+                                })
+                            });
+                        tool_events.push(json!({
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "args": serde_json::from_str::<Value>(&tc.arguments)
+                                .unwrap_or_else(|_| json!({ "raw": tc.arguments })),
+                            "result": parsed_result,
+                            "at": format_elapsed(start),
+                        }));
 
                         let short_out = if tool_out.len() > 200 {
                             format!(
@@ -515,6 +533,7 @@ impl ZebtuneAgent {
             verified,
             repairs_used,
             metrics,
+            tool_events,
             trace,
         }
     }
