@@ -980,6 +980,8 @@ export default function Page(input) {
   const connection = input?.connection ?? {};
   const dbApi = input?.db_runtime_api ?? {};
   const simpleTablesApi = `/api/projects/${encodeURIComponent(input?.owner || "")}/${encodeURIComponent(input?.project || "")}/tables`;
+  const sekejapSchemaExportApi = `${simpleTablesApi}/schema/export`;
+  const sekejapSchemaSyncApi = `${simpleTablesApi}/schema/sync`;
   const initialTable = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("table") || "" : "";
 
   const [schemas, setSchemas] = useState([]);
@@ -1025,6 +1027,8 @@ export default function Page(input) {
   const [propsAttributes, setPropsAttributes] = useState([]);
   const [propsBusy, setPropsBusy] = useState(false);
   const [propsStatus, setPropsStatus] = useState("");
+  const [schemaSyncBusy, setSchemaSyncBusy] = useState(false);
+  const [schemaSyncStatus, setSchemaSyncStatus] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -1425,9 +1429,7 @@ export default function Page(input) {
     setContentTab("data");
   }, [activeTable?.table, activeTable?.updatedAt]);
 
-  async function handleUpdateTable(event) {
-    event?.preventDefault?.();
-    if (!activeTable) return;
+  function currentPropertiesPayload() {
     const attrs = (propsAttributes || [])
       .map((item) => ({
         name: String(item?.name || "").trim(),
@@ -1436,24 +1438,64 @@ export default function Page(input) {
         default_value: String(item?.default_value || "").trim() || null,
       }))
       .filter((item) => item.name);
+    return {
+      title: String(propsTitle || "").trim() || null,
+      attributes: attrs,
+    };
+  }
 
+  async function saveActiveTableProperties(status = "Saving…") {
+    if (!activeTable) return null;
     setPropsBusy(true);
-    setPropsStatus("Saving…");
+    setPropsStatus(status);
+    const payload = currentPropertiesPayload();
+    const response = await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    setPropsStatus("Saved");
+    setReloadToken((v) => v + 1);
+    return response;
+  }
+
+  async function handleUpdateTable(event) {
+    event?.preventDefault?.();
+    if (!activeTable) return;
+
     try {
-      await requestJson(`${simpleTablesApi}/${encodeURIComponent(activeTable.table)}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          title: String(propsTitle || "").trim() || null,
-          attributes: attrs,
-        }),
-      });
-      setPropsStatus("Saved");
-      setReloadToken((v) => v + 1);
+      await saveActiveTableProperties("Saving…");
     } catch (error) {
       setPropsStatus(`Error · ${String(error?.message || error)}`);
     } finally {
       setPropsBusy(false);
     }
+  }
+
+  async function handleSyncSchemaToRepo() {
+    setSchemaSyncBusy(true);
+    setSchemaSyncStatus(activeTable ? "Saving table and syncing schema…" : "Syncing schema…");
+    try {
+      if (activeTable) {
+        await saveActiveTableProperties("Saving before schema sync…");
+      }
+      const payload = await requestJson(sekejapSchemaSyncApi, { method: "POST" });
+      const sync = payload?.sync || {};
+      setSchemaSyncStatus(`Synced · ${Number(sync?.table_count || 0)} tables · ${Number(sync?.files_written?.length || 0)} files`);
+      setReloadToken((v) => v + 1);
+    } catch (error) {
+      setSchemaSyncStatus(`Sync failed · ${String(error?.message || error)}`);
+    } finally {
+      setSchemaSyncBusy(false);
+      setPropsBusy(false);
+    }
+  }
+
+  function handleDownloadSchema() {
+    const a = Object.assign(document.createElement("a"), {
+      href: sekejapSchemaExportApi,
+      download: `${input?.project || "project"}-sekejap-schema.json`,
+    });
+    a.click();
   }
 
   async function handleDeleteTable() {
@@ -1753,14 +1795,38 @@ export default function Page(input) {
                                   {activeTable ? `${activeTable.schema} schema` : "Choose a table from the left or create a new one."}
                                 </p>
                               </div>
-                              {activeTable ? (
-                                <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] uppercase tracking-[0.14em] text-ui-text-soft">
-                                  <span className="rounded-full border border-ui-border/80 px-2 py-1">{activeTable.rowCount || 0} rows</span>
-                                  <span className="rounded-full border border-ui-border/80 px-2 py-1">{Math.max(schemaRows.length, activeTable.attributes.length)} fields</span>
-                                  <span className="rounded-full border border-ui-border/80 px-2 py-1">{indexCount} indexed</span>
+                              <div className="flex flex-wrap items-center justify-end gap-2">
+                                {activeTable ? (
+                                  <div className="flex flex-wrap items-center justify-end gap-2 text-[11px] uppercase tracking-[0.14em] text-ui-text-soft">
+                                    <span className="rounded-full border border-ui-border/80 px-2 py-1">{activeTable.rowCount || 0} rows</span>
+                                    <span className="rounded-full border border-ui-border/80 px-2 py-1">{Math.max(schemaRows.length, activeTable.attributes.length)} fields</span>
+                                    <span className="rounded-full border border-ui-border/80 px-2 py-1">{indexCount} indexed</span>
+                                  </div>
+                                ) : null}
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    className="rounded border border-ui-border px-2 py-1 text-xs font-medium text-ui-text-soft hover:text-ui-text disabled:opacity-50"
+                                    disabled={schemaSyncBusy || propsBusy}
+                                    onClick={handleSyncSchemaToRepo}
+                                  >
+                                    Sync schema to repo
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="rounded border border-ui-border px-2 py-1 text-xs font-medium text-ui-text-soft hover:text-ui-text"
+                                    onClick={handleDownloadSchema}
+                                  >
+                                    Download schema
+                                  </button>
                                 </div>
-                              ) : null}
+                              </div>
                             </div>
+                            {schemaSyncStatus ? (
+                              <div className="border-b border-ui-border/70 px-3 py-1 text-xs text-ui-text-soft">
+                                {schemaSyncStatus}
+                              </div>
+                            ) : null}
 
                             {activeTable ? (
                               <div className="flex items-center gap-1 border-b border-ui-border/70 px-3">
