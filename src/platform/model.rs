@@ -2384,6 +2384,27 @@ pub struct PipelineInvocationEntry {
     pub trace: Vec<crate::pipeline::model::NodeTraceEntry>,
 }
 
+/// Per-pipeline invocation log storage summary.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineInvocationLogPipelineStats {
+    pub file_rel_path: String,
+    pub count: u64,
+    pub trace_bytes: u64,
+    pub largest_trace_bytes: u64,
+    pub latest_at: i64,
+}
+
+/// Project-scoped invocation log storage summary.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PipelineInvocationLogStats {
+    pub count: u64,
+    pub trace_bytes: u64,
+    pub db_bytes: u64,
+    pub wal_bytes: u64,
+    pub shm_bytes: u64,
+    pub pipelines: Vec<PipelineInvocationLogPipelineStats>,
+}
+
 /// Assistant settings section of zebflow.json.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZebflowJsonAssistant {

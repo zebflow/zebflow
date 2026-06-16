@@ -717,6 +717,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_get_project_assistant_config).put(api_upsert_project_assistant_config),
         )
         .route(
+            "/api/projects/{owner}/{project}/settings/logs/invocations",
+            get(api_project_invocation_log_stats).delete(api_clear_project_invocation_logs),
+        )
+        .route(
             "/api/projects/{owner}/{project}/settings/{section}",
             get(api_get_settings_section).put(api_upsert_settings_section),
         )
@@ -747,6 +751,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/tables",
             get(api_list_simple_tables).post(api_create_simple_table),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/schema/export",
+            get(api_export_sekejap_schema),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/tables/schema/sync",
+            post(api_sync_sekejap_schema),
         )
         .route(
             "/api/projects/{owner}/{project}/tables/{table}",
@@ -6327,7 +6339,8 @@ async fn render_settings_tab_page(
                     "automatons": tab == "automatons",
                     "libraries": tab == "libraries",
                     "nodes": tab == "nodes",
-                    "files": tab == "files"
+                    "files": tab == "files",
+                    "logs": tab == "logs"
                 },
                 "page_title": tab_title,
                 "page_subtitle": tab_subtitle,
@@ -6350,6 +6363,7 @@ async fn render_settings_tab_page(
                 },
                 "logging": {
                     "api": format!("/api/projects/{owner}/{project}/settings/logging"),
+                    "invocations_api": format!("/api/projects/{owner}/{project}/settings/logs/invocations"),
                     "config": zebflow_cfg.configs.pipelines.logging
                 },
                 "git": {
@@ -6407,6 +6421,7 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
         "libraries" => "libraries",
         "nodes" => "nodes",
         "files" => "files",
+        "logs" => "logs",
         _ => "general",
     }
 }
@@ -6418,6 +6433,7 @@ fn settings_tab_title(tab: &str) -> &'static str {
         "libraries" => "Libraries",
         "nodes" => "Nodes",
         "files" => "Files",
+        "logs" => "Logs",
         _ => "General",
     }
 }
@@ -6429,6 +6445,7 @@ fn settings_tab_subtitle(tab: &str) -> &'static str {
         "libraries" => "Installed web libraries and runtime package contracts.",
         "nodes" => "Live node contracts and script/tool availability.",
         "files" => "External file storage backends — S3, R2, and compatible object stores.",
+        "logs" => "Project-owned invocation history, storage size, retention, and cleanup.",
         _ => "Core project defaults and shared runtime switches.",
     }
 }
@@ -6442,6 +6459,7 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
         ("libraries", "Libraries"),
         ("nodes", "Nodes"),
         ("files", "Files"),
+        ("logs", "Logs"),
     ];
     entries
         .iter()
@@ -13458,6 +13476,10 @@ async fn api_files_upload(
         .map(|s| s.to_string())
         .or_else(|| field.name().map(|s| s.to_string()))
         .unwrap_or_else(|| "upload.bin".to_string());
+    let content_type = field
+        .content_type()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     let filename = match sanitize_asset_filename(&raw_filename) {
         Some(name) => name,
         None => {
@@ -13488,8 +13510,19 @@ async fn api_files_upload(
 
     Json(json!({
         "ok": true,
+        "__zf_type": crate::pipeline::nodes::basic::file_ref::FILE_REF_TYPE,
+        "backend": crate::pipeline::nodes::basic::file_ref::BACKEND_ZEBFS,
+        "ref": entry_rel,
         "path": entry_rel,
-        "url": format!("/fs/{owner}/{project}/{entry_rel}")
+        "url": format!("/fs/{owner}/{project}/{entry_rel}"),
+        "filename": filename,
+        "name": filename,
+        "mime": content_type,
+        "content_type": content_type,
+        "size": bytes.len(),
+        "lifecycle": crate::pipeline::nodes::basic::file_ref::LIFECYCLE_DURABLE,
+        "origin": "project.files.upload",
+        "trust": "user"
     }))
     .into_response()
 }
@@ -14365,6 +14398,91 @@ async fn api_get_settings_section(
             Json(json!({"ok": false, "error": format!("unknown settings section '{section}'")})),
         )
             .into_response(),
+    }
+}
+
+async fn api_project_invocation_log_stats(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    match state
+        .platform
+        .data
+        .get_pipeline_invocation_log_stats(&owner, &project)
+    {
+        Ok(stats) => Json(json!({"ok": true, "stats": stats})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_clear_project_invocation_logs(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::DELETE,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+    let pipeline = params
+        .get("pipeline")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    match state
+        .platform
+        .data
+        .clear_pipeline_invocation_logs(&owner, &project, pipeline)
+    {
+        Ok(deleted) => Json(json!({"ok": true, "deleted": deleted})).into_response(),
+        Err(err) => internal_error(err),
     }
 }
 
@@ -16788,6 +16906,102 @@ async fn api_create_simple_table(
             )
                 .into_response()
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_export_sekejap_schema(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let export = match sekejap::export_schema(&state.platform.config.data_root, &owner, &project) {
+        Ok(export) => export,
+        Err(err) => return internal_error(err),
+    };
+    let body = match serde_json::to_string_pretty(&export) {
+        Ok(value) => value + "\n",
+        Err(err) => {
+            return internal_error(PlatformError::new("SEKEJAP_SCHEMA_EXPORT", err.to_string()));
+        }
+    };
+    let filename = format!("{project}-sekejap-schema.json");
+    (
+        [
+            (
+                CONTENT_TYPE,
+                HeaderValue::from_static("application/json; charset=utf-8"),
+            ),
+            (
+                CONTENT_DISPOSITION,
+                HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+                    .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn api_sync_sekejap_schema(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::POST,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match sekejap::sync_schema_to_repo(&state.platform.config.data_root, &owner, &project) {
+        Ok(report) => Json(json!({"ok": true, "sync": report})).into_response(),
         Err(err) => internal_error(err),
     }
 }

@@ -12,11 +12,11 @@ use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     DataAdapterKind, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority,
-    MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
-    PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection, ProjectInvite,
-    ProjectMarketplaceRepository, ProjectMember, ProjectOperationRecord, ProjectPolicy,
-    ProjectPolicyBinding, StoredUser,
+    MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry,
+    PipelineInvocationLogStats, PipelineMeta, PlatformMarketplaceRepository, PlatformOffice,
+    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential,
+    ProjectDbConnection, ProjectInvite, ProjectMarketplaceRepository, ProjectMember,
+    ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -585,6 +585,25 @@ pub trait DataAdapter: Send + Sync {
         _max_age_secs: Option<i64>,
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
         Ok(vec![])
+    }
+
+    /// Return project-level invocation log storage statistics.
+    fn get_pipeline_invocation_log_stats(
+        &self,
+        _owner: &str,
+        _project: &str,
+    ) -> Result<PipelineInvocationLogStats, PlatformError> {
+        Ok(PipelineInvocationLogStats::default())
+    }
+
+    /// Clear invocation log rows for a whole project or one pipeline.
+    fn clear_pipeline_invocation_logs(
+        &self,
+        _owner: &str,
+        _project: &str,
+        _file_rel_path: Option<&str>,
+    ) -> Result<u64, PlatformError> {
+        Ok(0)
     }
 
     /// Re-key all project-scoped records from `(old_owner, project)` to
