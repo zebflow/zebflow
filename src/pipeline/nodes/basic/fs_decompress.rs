@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -222,7 +223,7 @@ impl NodeHandler for Node {
         };
 
         let source_rel = resolve_path(&input.payload, source_key)
-            .and_then(|value| value.as_str())
+            .and_then(file_ref_to_rel_path_or_string)
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FILE_DECOMPRESS",
@@ -232,7 +233,7 @@ impl NodeHandler for Node {
                 )
             })?;
 
-        let source_rel = sanitize_rel_path(source_rel);
+        let source_rel = sanitize_rel_path(&source_rel);
         if source_rel.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_FILE_DECOMPRESS",

@@ -14,10 +14,15 @@
 //! - [`util`] owns metadata scope and dot-path resolution shared by node handlers.
 //! - [`trigger`] owns ingress triggers and their root payload shape.
 //!
-//! File-like content should move as FileRef metadata, not inline base64, unless a
-//! node is explicitly preserving a legacy shape. Multipart webhook files and
+//! ZebFS is the project storage backend; FileRef is the payload IR for passing
+//! file-like bytes between nodes without embedding bytes in JSON. File-like
+//! content should move as FileRef metadata, not inline base64, unless a node is
+//! explicitly preserving a legacy shape. Multipart webhook files and
 //! `http.request --response-type bytes` produce temporary FileRefs; FS nodes either
-//! read those bytes (`fs.put`) or validate/promote them (`fs.save`).
+//! read those bytes (`fs.put`) or validate/promote them (`fs.save`). Durable
+//! dataset nodes such as table, geo, and mapserver nodes operate on ZebFS paths,
+//! but payload path keys should accept either a plain path string or a FileRef and
+//! resolve it through [`file_ref`].
 
 use crate::pipeline::NodeDefinition;
 

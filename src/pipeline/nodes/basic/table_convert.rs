@@ -23,6 +23,7 @@ use parquet::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::file_ref::file_ref_to_rel_path;
 use super::util::{eval_deno_expr, metadata_scope};
 use crate::language::LanguageEngine;
 use crate::pipeline::{
@@ -469,6 +470,24 @@ impl Node {
                     &input.payload,
                     &input.metadata,
                 )?;
+                if let Some(path) = file_ref_to_rel_path(&value) {
+                    let rel_path = normalize_object_path(&path).map_err(|err| {
+                        PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
+                    })?;
+                    let format = normalize_format(
+                        self.config.from_format.as_deref(),
+                        Some(&rel_path),
+                        "source",
+                    )?;
+                    let object = zebfs.get(&rel_path).map_err(|err| {
+                        PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
+                    })?;
+                    return Ok(SourceData {
+                        label: rel_path,
+                        value: SourceValue::Bytes(object.bytes),
+                        format,
+                    });
+                }
                 let format = normalize_format(self.config.from_format.as_deref(), None, "source")
                     .or_else(|_| infer_json_source_format(&value))?;
                 Ok(SourceData {
