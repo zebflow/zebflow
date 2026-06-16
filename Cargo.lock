@@ -2355,7 +2355,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2796,14 +2796,17 @@ dependencies = [
 
 [[package]]
 name = "geonative-convert"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a924da00482f4d9698ca9dab5808a0584a0f78937a8009f97f9bb20eae23867d"
+checksum = "95245db9369277ea24cd02df128e26debbf032395de96e7470b76633fe3f287a"
 dependencies = [
  "geonative-core",
  "geonative-filegdb",
  "geonative-geojson",
  "geonative-geoparquet",
+ "geonative-geotiff",
+ "geonative-image",
+ "geonative-processing",
  "geonative-proj",
  "geonative-shapefile",
  "serde",
@@ -2813,18 +2816,18 @@ dependencies = [
 
 [[package]]
 name = "geonative-core"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da17f9e3449b310b4bb285127c1b3a5548c22d42813ab25803d497b9d54e67fc"
+checksum = "6bfacdcd22fa4da31f65000ebe00ffbded5bde365cccab2dd2cebc0c331260e6"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "geonative-filegdb"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31ead6bf67e3a5fc382bf8230b4fc0e61f6057e94e4e20d1e0939917140f5b73"
+checksum = "831f207e2dbf16cf18bf4fa82a89d55caf27ebaaa93e8e71c94316a760901bbb"
 dependencies = [
  "geonative-core",
  "memmap2",
@@ -2833,9 +2836,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-geojson"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743c7cc951a451e66f017804a600d1a30bc8ffeb4e235190501a62e5c62f3677"
+checksum = "566ceab176bc94c4b30986ee83fe68894fc988db0408c5d58ccdcf43c277de51"
 dependencies = [
  "geonative-core",
  "serde",
@@ -2845,9 +2848,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-geoparquet"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4b6f9c5226b3e13eedf3fa95d15e39e38344b31839b7f456d38075c59e2b690"
+checksum = "693cffb61bead13711267b18ddf763d754d05e4407b2fb4c2cee69ba83dbd3d0"
 dependencies = [
  "arrow",
  "geonative-core",
@@ -2857,10 +2860,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "geonative-proj"
-version = "0.2.0"
+name = "geonative-geotiff"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9b49d4d652779112f6265fefd51de0d3fd082047d83a94cde270c91a256d7e"
+checksum = "4e0670826e4fd62cfea16345d432834a23b4a8860c9fd40c8d29e2c59a9a8e64"
+dependencies = [
+ "flate2",
+ "geonative-core",
+ "memmap2",
+ "thiserror 2.0.18",
+ "weezl",
+]
+
+[[package]]
+name = "geonative-image"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a09c658979ffb1672381025f7a2d5c196e469ae4d5c98eab1f1132e7e4f2dd77"
+dependencies = [
+ "geonative-core",
+ "jpeg-decoder",
+ "png 0.17.16",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "geonative-processing"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b640346f8d40f7912e6070ccefba38ccc347d1499e29c209ea304a2cceaefc2a"
+dependencies = [
+ "geonative-core",
+ "geonative-proj",
+ "serde",
+]
+
+[[package]]
+name = "geonative-proj"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eef099999ba4c765161e6cbd52b7226a472aeb9afdd305fe9ba031fdb15f62dd"
 dependencies = [
  "geonative-core",
  "thiserror 2.0.18",
@@ -2868,9 +2907,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-shapefile"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebbafa954e13f227cf185469ad3438063ee821f620043addc5f03ee36b8370bf"
+checksum = "c615e396e2d1053138e1e493219009b404879015025f4623e4ed68acdb3c9e85"
 dependencies = [
  "geonative-core",
  "memmap2",
@@ -2879,18 +2918,18 @@ dependencies = [
 
 [[package]]
 name = "geonative-tile"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c933a03cab23268147a34484ced30b565444ae03ce4540e702729979c69c7579"
+checksum = "11ae9dc1a547a9c5f1e597c78da76c3a472bde17e2ea93f1383414847eea6046"
 dependencies = [
  "geonative-core",
 ]
 
 [[package]]
 name = "geonative-utils"
-version = "0.2.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcb01abde669c458eb397a2b2b6f28242acedec92647637c128bc478ca0dbf4e"
+checksum = "44f127b13d5da252b12307f7153b1906569cd7644ab6c4a4e0ec53b67270c25c"
 dependencies = [
  "geonative-core",
 ]
@@ -3672,7 +3711,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3709,6 +3748,15 @@ checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
+]
+
+[[package]]
+name = "jpeg-decoder"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00810f1d8b74be64b13dbf3db89ac67740615d6c891f0e7b6179326533011a07"
+dependencies = [
+ "rayon",
 ]
 
 [[package]]
@@ -5643,7 +5691,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6698,7 +6746,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7652,7 +7700,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -8080,7 +8128,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "arc-swap",
  "argon2",
