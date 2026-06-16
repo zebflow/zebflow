@@ -83,6 +83,19 @@ function formatOperationTimestamp(ts) {
   }
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+}
+
 function settingsStatusToneClass(tone) {
   if (tone === "ok") {
     return "text-dark-accent2";
@@ -1204,13 +1217,35 @@ function NodeRegistryPanel({ groups, count }) {
 
 // ─── Logging Settings Panel ─────────────────────────────────────────────────
 
-function LoggingPanel({ api, initialConfig }) {
+function LoggingPanel({ api, invocationsApi, initialConfig }) {
   const [maxInv, setMaxInv] = useState(String(initialConfig?.max_invocations ?? 20));
   const [statusMsg, setStatusMsg] = useState("Ready.");
   const [statusTone, setStatusTone] = useState("info");
   const [saving, setSaving] = useState(false);
   const [commitOpen, setCommitOpen] = useState(false);
   const [pendingData, setPendingData] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [clearTarget, setClearTarget] = useState(null);
+  const [clearing, setClearing] = useState(false);
+
+  async function loadStats() {
+    if (!invocationsApi) return;
+    setLoadingStats(true);
+    try {
+      const resp = await requestJson(invocationsApi);
+      setStats(resp?.stats ?? null);
+    } catch (err) {
+      setStatusMsg(`Failed to load logs: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setLoadingStats(false);
+    }
+  }
+
+  useEffect(() => {
+    loadStats();
+  }, [invocationsApi]);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -1247,6 +1282,31 @@ function LoggingPanel({ api, initialConfig }) {
     }
   }
 
+  async function handleClearLogs() {
+    if (!invocationsApi || !clearTarget) return;
+    setClearing(true);
+    setStatusMsg("Clearing invocation logs...");
+    setStatusTone("info");
+    try {
+      const url = clearTarget.file_rel_path
+        ? `${invocationsApi}?pipeline=${encodeURIComponent(clearTarget.file_rel_path)}`
+        : invocationsApi;
+      const resp = await requestJson(url, { method: "DELETE" });
+      setStatusMsg(`Cleared ${resp?.deleted ?? 0} invocation log row(s).`);
+      setStatusTone("ok");
+      await loadStats();
+    } catch (err) {
+      setStatusMsg(`Clear failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setClearing(false);
+      setClearTarget(null);
+    }
+  }
+
+  const pipelines = Array.isArray(stats?.pipelines) ? stats.pipelines : [];
+  const dbTotal = Number(stats?.db_bytes || 0) + Number(stats?.wal_bytes || 0) + Number(stats?.shm_bytes || 0);
+
   return (
     <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
@@ -1256,14 +1316,47 @@ function LoggingPanel({ api, initialConfig }) {
         onConfirm={handleCommit}
         onCancel={() => { setCommitOpen(false); setPendingData(null); }}
       />
+      <ConfirmDialog
+        open={!!clearTarget}
+        title={clearTarget?.file_rel_path ? "Clear Pipeline Invocation Logs" : "Clear All Invocation Logs"}
+        message={
+          clearTarget?.file_rel_path
+            ? `Delete invocation history for ${clearTarget.file_rel_path}? This cannot be undone.`
+            : "Delete all invocation history for this project? This cannot be undone."
+        }
+        confirmLabel={clearing ? "Clearing..." : "Clear Logs"}
+        cancelLabel="Cancel"
+        variant="destructive"
+        onConfirm={handleClearLogs}
+        onClose={() => !clearing && setClearTarget(null)}
+      />
       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
         <div>
           <h3 className="project-card-title">Pipeline Logging</h3>
-          <p className="project-card-copy">Retention settings for pipeline invocation logs.</p>
+          <p className="project-card-copy">Retention, storage, and cleanup for project invocation logs.</p>
         </div>
         <span className="project-inline-chip">Logging</span>
       </header>
-      <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={handleSubmit}>
+      <div className="grid grid-cols-4 gap-2 mb-4">
+        <div className="border border-dark-border bg-dark-panel p-3">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Rows</p>
+          <p className="mt-1 text-[1rem] font-semibold text-body">{stats?.count ?? 0}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel p-3">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Trace JSON</p>
+          <p className="mt-1 text-[1rem] font-semibold text-body">{formatBytes(stats?.trace_bytes)}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel p-3">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Log Store</p>
+          <p className="mt-1 text-[1rem] font-semibold text-body">{formatBytes(dbTotal)}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel p-3">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Pipelines</p>
+          <p className="mt-1 text-[1rem] font-semibold text-body">{pipelines.length}</p>
+        </div>
+      </div>
+
+      <form className="grid grid-cols-2 gap-[0.65rem] mb-4" onSubmit={handleSubmit}>
         <Field label="Max Invocations Per Pipeline">
           <Input
             name="max_invocations"
@@ -1277,7 +1370,7 @@ function LoggingPanel({ api, initialConfig }) {
             How many invocation log entries to retain per pipeline. Oldest are dropped. Default: 20.
           </small>
         </Field>
-        <div className="col-span-full flex items-center gap-[0.7rem]">
+        <div className="col-span-full flex flex-wrap items-center gap-[0.7rem]">
           <Button
             type="submit"
             variant="primary"
@@ -1285,9 +1378,64 @@ function LoggingPanel({ api, initialConfig }) {
             disabled={saving}
             label={saving ? "Saving..." : "Save Logging Config"}
           />
-          <span className={cx("text-[0.72rem]", statusTone === "ok" ? "text-dark-accent2" : statusTone === "error" ? "text-red-300" : "text-body-soft")}>{statusMsg}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={loadingStats}
+            onClick={loadStats}
+          >
+            {loadingStats ? "Refreshing..." : "Refresh Stats"}
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            disabled={clearing || Number(stats?.count || 0) === 0}
+            onClick={() => setClearTarget({ file_rel_path: null })}
+          >
+            Clear All Logs
+          </Button>
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
         </div>
       </form>
+
+      <div className="border border-dark-border">
+        <div className="grid grid-cols-[minmax(0,1fr)_5.5rem_7rem_7rem_10rem_5rem] gap-2 border-b border-dark-border bg-dark-panel px-3 py-2 text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-body-soft">
+          <span>Pipeline</span>
+          <span className="text-right">Rows</span>
+          <span className="text-right">Trace</span>
+          <span className="text-right">Largest</span>
+          <span>Latest</span>
+          <span className="text-right">Action</span>
+        </div>
+        <div className="max-h-[420px] overflow-auto">
+          {pipelines.length ? pipelines.map((item) => (
+            <div key={item.file_rel_path} className="grid grid-cols-[minmax(0,1fr)_5.5rem_7rem_7rem_10rem_5rem] gap-2 border-b border-dark-border px-3 py-2 text-[0.74rem] last:border-b-0">
+              <span className="truncate font-mono text-body" title={item.file_rel_path}>{item.file_rel_path}</span>
+              <span className="text-right text-body-soft">{item.count}</span>
+              <span className="text-right text-body-soft">{formatBytes(item.trace_bytes)}</span>
+              <span className="text-right text-body-soft">{formatBytes(item.largest_trace_bytes)}</span>
+              <span className="truncate text-body-soft">{formatOperationTimestamp(item.latest_at)}</span>
+              <span className="text-right">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={clearing}
+                  onClick={() => setClearTarget({ file_rel_path: item.file_rel_path })}
+                >
+                  Clear
+                </Button>
+              </span>
+            </div>
+          )) : (
+            <div className="px-3 py-4 text-[0.78rem] text-body-soft">
+              {loadingStats ? "Loading invocation logs..." : "No invocation logs stored for this project."}
+            </div>
+          )}
+        </div>
+      </div>
     </article>
   );
 }
@@ -1727,14 +1875,21 @@ export default function Page(input) {
                       owner={input?.owner}
                       project={input?.project}
                     />
-                    <Separator className="my-6" />
-                    <LoggingPanel
-                      api={input?.logging?.api ?? ""}
-                      initialConfig={input?.logging?.config ?? {}}
-                    />
                     <div className="project-card-grid cols-2">
                       {renderCardGrid(input?.cards_policy)}
                     </div>
+                  </div>
+                </section>
+              ) : null}
+
+              {tabFlags?.logs ? (
+                <section className="project-content-section">
+                  <div className="project-content-body">
+                    <LoggingPanel
+                      api={input?.logging?.api ?? ""}
+                      invocationsApi={input?.logging?.invocations_api ?? ""}
+                      initialConfig={input?.logging?.config ?? {}}
+                    />
                   </div>
                 </section>
               ) : null}

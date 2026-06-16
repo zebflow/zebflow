@@ -4,7 +4,7 @@
 //! WAL journaling. Safe across K8s restarts — no unsafe mmap code.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, Transaction, TransactionBehavior, params};
@@ -18,13 +18,13 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher,
-    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineMeta,
-    PlatformMarketplaceRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
-    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectInvite, ProjectInviteStatus,
-    ProjectMarketplaceRepository, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
-    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
-    now_ts,
+    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogPipelineStats,
+    PipelineInvocationLogStats, PipelineMeta, PlatformMarketplaceRepository, PlatformOffice,
+    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser,
+    PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
+    ProjectDbConnection, ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository,
+    ProjectMember, ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus,
+    ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser, now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -465,6 +465,7 @@ struct MigrationDef {
 /// Platform catalog adapter backed by a single WAL-mode SQLite file.
 pub struct SqliteDataAdapter {
     conn: Arc<Mutex<Connection>>,
+    data_root: Option<PathBuf>,
 }
 
 impl SqliteDataAdapter {
@@ -473,7 +474,7 @@ impl SqliteDataAdapter {
     pub fn new(data_root: &Path) -> Result<Self, PlatformError> {
         std::fs::create_dir_all(data_root.join("platform"))?;
         let path = data_root.join("platform").join("catalog.db");
-        Self::new_at_db_path_with_foreign_keys(&path, true)
+        Self::new_at_db_path_with_foreign_keys(&path, true, Some(data_root.to_path_buf()))
     }
 
     /// Opens or creates an exact SQLite DB path with the same catalog schema.
@@ -481,12 +482,13 @@ impl SqliteDataAdapter {
     /// Platform services use this to keep service-owned operational state under
     /// their own mounted service root instead of the platform control DB.
     pub fn new_at_db_path(path: &Path) -> Result<Self, PlatformError> {
-        Self::new_at_db_path_with_foreign_keys(path, false)
+        Self::new_at_db_path_with_foreign_keys(path, false, None)
     }
 
     fn new_at_db_path_with_foreign_keys(
         path: &Path,
         foreign_keys: bool,
+        data_root: Option<PathBuf>,
     ) -> Result<Self, PlatformError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -503,6 +505,7 @@ impl SqliteDataAdapter {
             .map_err(|e| PlatformError::new("PLATFORM_SQLITE_PRAGMA", e.to_string()))?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            data_root,
         })
     }
 
@@ -512,6 +515,69 @@ impl SqliteDataAdapter {
 
     fn json_error(e: serde_json::Error) -> PlatformError {
         PlatformError::new("PLATFORM_SQLITE_JSON", e.to_string())
+    }
+
+    fn project_invocations_db_path(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        let Some(data_root) = &self.data_root else {
+            return Ok(None);
+        };
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        if owner.is_empty() || project.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_INVOCATION_LOG_PROJECT",
+                "owner/project must not be empty for project invocation logs",
+            ));
+        }
+        Ok(Some(
+            data_root
+                .join("users")
+                .join(owner)
+                .join(project)
+                .join("data")
+                .join("logs")
+                .join("invocations.db"),
+        ))
+    }
+
+    fn open_project_invocations_conn(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<Connection>, PlatformError> {
+        let Some(path) = self.project_invocations_db_path(owner, project)? else {
+            return Ok(None);
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(&path)
+            .map_err(|e| PlatformError::new("PLATFORM_INVOCATION_LOG_OPEN", e.to_string()))?;
+        conn.execute_batch(
+            "
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            CREATE TABLE IF NOT EXISTS pipeline_invocations (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_rel_path TEXT NOT NULL,
+                run_id        TEXT NOT NULL DEFAULT '',
+                at            INTEGER NOT NULL,
+                duration_ms   INTEGER NOT NULL,
+                status        TEXT NOT NULL,
+                trigger       TEXT NOT NULL DEFAULT '',
+                error         TEXT,
+                trace_json    TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE INDEX IF NOT EXISTS idx_pipeline_invocations_project_pipeline
+                ON pipeline_invocations (file_rel_path, at DESC);
+            ",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_INVOCATION_LOG_SCHEMA", e.to_string()))?;
+        Ok(Some(conn))
     }
 
     fn sha256_hex(input: &str) -> String {
@@ -5617,6 +5683,46 @@ impl DataAdapter for SqliteDataAdapter {
         max_age_secs: Option<i64>,
     ) -> Result<(), PlatformError> {
         let trace_json = serde_json::to_string(&entry.trace)?;
+        if let Some(conn) = self.open_project_invocations_conn(owner, project)? {
+            conn.execute(
+                "INSERT INTO pipeline_invocations
+                 (file_rel_path, run_id, at, duration_ms, status, trigger, error, trace_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    file_rel_path,
+                    &entry.run_id,
+                    entry.at,
+                    entry.duration_ms as i64,
+                    &entry.status,
+                    &entry.trigger,
+                    entry.error.as_deref(),
+                    &trace_json,
+                ],
+            )
+            .map_err(Self::qe)?;
+            if let Some(max_age_secs) = max_age_secs {
+                let cutoff = entry.at.saturating_sub(max_age_secs.max(0));
+                conn.execute(
+                    "DELETE FROM pipeline_invocations
+                     WHERE file_rel_path = ?1 AND at < ?2",
+                    params![file_rel_path, cutoff],
+                )
+                .map_err(Self::qe)?;
+            }
+            conn.execute(
+                "DELETE FROM pipeline_invocations
+                 WHERE file_rel_path = ?1
+                   AND id NOT IN (
+                     SELECT id FROM pipeline_invocations
+                     WHERE file_rel_path = ?1
+                     ORDER BY at DESC LIMIT ?2
+                   )",
+                params![file_rel_path, max_n as i64],
+            )
+            .map_err(Self::qe)?;
+            return Ok(());
+        }
+
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO pipeline_invocations
@@ -5668,6 +5774,85 @@ impl DataAdapter for SqliteDataAdapter {
         max_age_secs: Option<i64>,
     ) -> Result<Vec<PipelineInvocationEntry>, PlatformError> {
         let cutoff = max_age_secs.map(|age| now_ts().saturating_sub(age.max(0)));
+        if let Some(conn) = self.open_project_invocations_conn(owner, project)? {
+            let items = if let Some(cutoff) = cutoff {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
+                         FROM pipeline_invocations
+                         WHERE file_rel_path = ?1 AND at >= ?2
+                         ORDER BY at DESC",
+                    )
+                    .map_err(Self::qe)?;
+                stmt.query_map(params![file_rel_path, cutoff], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .map_err(Self::qe)?
+                .filter_map(|r| r.ok())
+                .map(
+                    |(run_id, at, duration_ms, status, trigger, error, trace_json)| {
+                        let trace = serde_json::from_str(&trace_json).unwrap_or_default();
+                        PipelineInvocationEntry {
+                            run_id,
+                            at,
+                            duration_ms: duration_ms as u64,
+                            status,
+                            trigger,
+                            error,
+                            trace,
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+            } else {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT run_id, at, duration_ms, status, trigger, error, trace_json
+                         FROM pipeline_invocations
+                         WHERE file_rel_path = ?1
+                         ORDER BY at DESC",
+                    )
+                    .map_err(Self::qe)?;
+                stmt.query_map(params![file_rel_path], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .map_err(Self::qe)?
+                .filter_map(|r| r.ok())
+                .map(
+                    |(run_id, at, duration_ms, status, trigger, error, trace_json)| {
+                        let trace = serde_json::from_str(&trace_json).unwrap_or_default();
+                        PipelineInvocationEntry {
+                            run_id,
+                            at,
+                            duration_ms: duration_ms as u64,
+                            status,
+                            trigger,
+                            error,
+                            trace,
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+            };
+            return Ok(items);
+        }
+
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let items = if let Some(cutoff) = cutoff {
             let mut stmt = conn
@@ -5747,6 +5932,103 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
+    fn get_pipeline_invocation_log_stats(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<PipelineInvocationLogStats, PlatformError> {
+        let Some(path) = self.project_invocations_db_path(owner, project)? else {
+            return Ok(PipelineInvocationLogStats::default());
+        };
+        if !path.exists() {
+            return Ok(PipelineInvocationLogStats::default());
+        }
+        let conn = self
+            .open_project_invocations_conn(owner, project)?
+            .ok_or_else(|| {
+                PlatformError::new(
+                    "PLATFORM_INVOCATION_LOG_OPEN",
+                    "project invocation log adapter unavailable",
+                )
+            })?;
+        let (count, trace_bytes): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(LENGTH(trace_json)), 0) FROM pipeline_invocations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Self::qe)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT file_rel_path,
+                        COUNT(*) AS count,
+                        COALESCE(SUM(LENGTH(trace_json)), 0) AS trace_bytes,
+                        COALESCE(MAX(LENGTH(trace_json)), 0) AS largest_trace_bytes,
+                        COALESCE(MAX(at), 0) AS latest_at
+                 FROM pipeline_invocations
+                 GROUP BY file_rel_path
+                 ORDER BY trace_bytes DESC, count DESC, file_rel_path ASC",
+            )
+            .map_err(Self::qe)?;
+        let pipelines = stmt
+            .query_map([], |row| {
+                Ok(PipelineInvocationLogPipelineStats {
+                    file_rel_path: row.get(0)?,
+                    count: row.get::<_, i64>(1)? as u64,
+                    trace_bytes: row.get::<_, i64>(2)? as u64,
+                    largest_trace_bytes: row.get::<_, i64>(3)? as u64,
+                    latest_at: row.get(4)?,
+                })
+            })
+            .map_err(Self::qe)?
+            .filter_map(|row| row.ok())
+            .collect::<Vec<_>>();
+        let file_size =
+            |path: &Path| -> u64 { std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0) };
+        Ok(PipelineInvocationLogStats {
+            count: count.max(0) as u64,
+            trace_bytes: trace_bytes.max(0) as u64,
+            db_bytes: file_size(&path),
+            wal_bytes: file_size(Path::new(&format!("{}-wal", path.display()))),
+            shm_bytes: file_size(Path::new(&format!("{}-shm", path.display()))),
+            pipelines,
+        })
+    }
+
+    fn clear_pipeline_invocation_logs(
+        &self,
+        owner: &str,
+        project: &str,
+        file_rel_path: Option<&str>,
+    ) -> Result<u64, PlatformError> {
+        let Some(path) = self.project_invocations_db_path(owner, project)? else {
+            return Ok(0);
+        };
+        if !path.exists() {
+            return Ok(0);
+        }
+        let conn = self
+            .open_project_invocations_conn(owner, project)?
+            .ok_or_else(|| {
+                PlatformError::new(
+                    "PLATFORM_INVOCATION_LOG_OPEN",
+                    "project invocation log adapter unavailable",
+                )
+            })?;
+        let affected = if let Some(file_rel_path) = file_rel_path {
+            conn.execute(
+                "DELETE FROM pipeline_invocations WHERE file_rel_path = ?1",
+                params![file_rel_path],
+            )
+        } else {
+            conn.execute("DELETE FROM pipeline_invocations", [])
+        }
+        .map_err(Self::qe)? as u64;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+            .map_err(Self::qe)?;
+        Ok(affected)
+    }
+
     fn transfer_project_owner(
         &self,
         old_owner: &str,
@@ -5809,5 +6091,92 @@ impl DataAdapter for SqliteDataAdapter {
 
         tx.commit().map_err(Self::qe)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::pipeline::model::NodeTraceEntry;
+    use crate::platform::adapters::data::DataAdapter;
+
+    #[test]
+    fn invocation_logs_are_project_local_under_data_logs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let adapter = SqliteDataAdapter::new(tmp.path()).expect("adapter");
+        let entry = PipelineInvocationEntry {
+            run_id: "run-1".to_string(),
+            at: 1_700_000_000,
+            duration_ms: 42,
+            status: "ok".to_string(),
+            trigger: "manual".to_string(),
+            error: None,
+            trace: vec![NodeTraceEntry {
+                node_id: "a".to_string(),
+                node_kind: "n.test".to_string(),
+                config: None,
+                duration_ms: 42,
+                input: json!({"in": true}),
+                output: json!({"out": true}),
+                error: None,
+            }],
+        };
+
+        adapter
+            .log_pipeline_invocation(
+                "superadmin",
+                "default",
+                "pipelines/demo.zf.json",
+                &entry,
+                20,
+                None,
+            )
+            .expect("log invocation");
+
+        let project_log = tmp
+            .path()
+            .join("users")
+            .join("superadmin")
+            .join("default")
+            .join("data")
+            .join("logs")
+            .join("invocations.db");
+        assert!(project_log.exists(), "project invocation DB should exist");
+
+        let stored = adapter
+            .get_pipeline_invocations("superadmin", "default", "pipelines/demo.zf.json", None)
+            .expect("read invocations");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].run_id, "run-1");
+        assert_eq!(stored[0].trace.len(), 1);
+
+        let stats = adapter
+            .get_pipeline_invocation_log_stats("superadmin", "default")
+            .expect("invocation stats");
+        assert_eq!(stats.count, 1);
+        assert_eq!(stats.pipelines.len(), 1);
+        assert_eq!(stats.pipelines[0].file_rel_path, "pipelines/demo.zf.json");
+        assert!(stats.trace_bytes > 0);
+        assert!(stats.db_bytes > 0);
+
+        let platform_db =
+            Connection::open(tmp.path().join("platform").join("catalog.db")).expect("platform db");
+        let legacy_count: i64 = platform_db
+            .query_row("SELECT COUNT(*) FROM pipeline_invocations", [], |row| {
+                row.get(0)
+            })
+            .expect("legacy count");
+        assert_eq!(legacy_count, 0);
+
+        let deleted = adapter
+            .clear_pipeline_invocation_logs("superadmin", "default", Some("pipelines/demo.zf.json"))
+            .expect("clear invocation logs");
+        assert_eq!(deleted, 1);
+        let stats = adapter
+            .get_pipeline_invocation_log_stats("superadmin", "default")
+            .expect("invocation stats after clear");
+        assert_eq!(stats.count, 0);
     }
 }
