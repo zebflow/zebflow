@@ -13,11 +13,16 @@ export default function ChromeHeader(props) {
     props?.children != null ? (
       props.children
     ) : (
-      <form method="post" action="/logout">
-        <Button type="submit" size="sm" variant="primary" className="rounded-md">
-          Logout
+      <>
+        <Button as={Link} href="/profile" size="sm" variant="outline" className="rounded-md">
+          Profile
         </Button>
-      </form>
+        <form method="post" action="/logout">
+          <Button type="submit" size="sm" variant="primary" className="rounded-md">
+            Logout
+          </Button>
+        </form>
+      </>
     );
 
   return (

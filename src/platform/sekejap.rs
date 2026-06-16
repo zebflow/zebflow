@@ -731,7 +731,9 @@ pub fn delete_table(
         ));
     }
 
-    let mut defs = load_catalog(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    let mut defs = merge_catalog_with_live(&db, load_catalog(data_root, owner, project)?);
     let pos = defs.iter().position(|d| d.table == table_slug);
     let def = match pos {
         Some(i) => defs.remove(i),
@@ -743,9 +745,18 @@ pub fn delete_table(
         }
     };
 
-    let db_arc = get_db(data_root, owner, project)?;
-    let mut db = db_arc.write().unwrap();
-    let _ = db.execute(&format!("DROP TABLE {}", def.collection));
+    db.execute(&format!("DROP TABLE IF EXISTS {}", def.collection))
+        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_TABLE_DROP", err.to_string()))?;
+    if db
+        .collection_names()
+        .into_iter()
+        .any(|collection| collection == def.collection)
+    {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_TABLE_DROP",
+            format!("table '{}' still exists after DROP TABLE", table_slug),
+        ));
+    }
     drop(db);
 
     save_catalog(data_root, owner, project, &defs)?;
@@ -1558,6 +1569,46 @@ mod tests {
                 .files_removed
                 .iter()
                 .any(|path| path == "schemas/sekejap/tables/stale.json")
+        );
+    }
+
+    #[test]
+    fn delete_table_removes_live_discovered_collection() {
+        let tmp = tmp_root();
+        {
+            let db_arc = get_db(tmp.path(), "alice", "demo").expect("open db");
+            let mut db = db_arc.write().unwrap();
+            db.execute("CREATE TABLE live_only (_key TEXT PRIMARY KEY)")
+                .expect("create live table");
+            db.execute("INSERT INTO live_only (_key) VALUES ('row-1')")
+                .expect("insert live row");
+        }
+
+        assert!(
+            load_catalog(tmp.path(), "alice", "demo")
+                .expect("catalog")
+                .is_empty()
+        );
+        assert!(
+            list_tables(tmp.path(), "alice", "demo")
+                .expect("list before delete")
+                .iter()
+                .any(|item| item.table == "live_only")
+        );
+
+        delete_table(tmp.path(), "alice", "demo", "live_only").expect("delete table");
+
+        assert!(
+            !list_tables(tmp.path(), "alice", "demo")
+                .expect("list after delete")
+                .iter()
+                .any(|item| item.table == "live_only")
+        );
+        assert!(
+            !load_catalog(tmp.path(), "alice", "demo")
+                .expect("catalog after delete")
+                .iter()
+                .any(|item| item.table == "live_only")
         );
     }
 

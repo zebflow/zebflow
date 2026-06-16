@@ -1088,7 +1088,18 @@ export default function Page(input) {
   }
 
   useEffect(() => {
-    if (!dbApi.preview || !selectedTable) return;
+    if (!dbApi.preview) return;
+    if (!selectedTable) {
+      setPreviewColumns([]);
+      setPreviewRows([]);
+      setPreviewError("");
+      if (typeof window !== "undefined") {
+        const next = new URL(window.location.href);
+        next.searchParams.delete("table");
+        window.history.replaceState({}, "", next.toString());
+      }
+      return;
+    }
     let active = true;
     loadPreviewData(selectedTable).catch((error) => {
       if (!active) return;
