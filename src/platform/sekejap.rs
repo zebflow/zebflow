@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Instant;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::platform::error::PlatformError;
@@ -49,6 +50,43 @@ fn get_db(
 pub const BUILTIN_CONNECTION_SLUG: &str = "default-multimodel";
 pub const BUILTIN_CONNECTION_LABEL: &str = "Default Multimodel Store";
 pub const DB_KIND: &str = "sekejap";
+pub const REPO_SCHEMA_VERSION: &str = "zebflow.sekejap.schema.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapTableSchemaExport {
+    pub table: String,
+    pub title: String,
+    pub collection: String,
+    #[serde(default)]
+    pub attributes: Vec<CollectionAttribute>,
+    #[serde(default)]
+    pub hash_indexed_fields: Vec<String>,
+    #[serde(default)]
+    pub range_indexed_fields: Vec<String>,
+    #[serde(default)]
+    pub fulltext_fields: Vec<String>,
+    #[serde(default)]
+    pub vector_fields: Vec<String>,
+    #[serde(default)]
+    pub spatial_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapSchemaExport {
+    pub schema_version: String,
+    pub database: String,
+    pub connection_slug: String,
+    pub tables: Vec<SekejapTableSchemaExport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapSchemaSyncReport {
+    pub changed: bool,
+    pub root: String,
+    pub files_written: Vec<String>,
+    pub files_removed: Vec<String>,
+    pub table_count: usize,
+}
 
 pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     data_root
@@ -61,6 +99,20 @@ pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
 
 fn catalog_path(data_root: &Path, owner: &str, project: &str) -> PathBuf {
     project_dir(data_root, owner, project).join("tables.json")
+}
+
+fn repo_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
+    data_root
+        .join("users")
+        .join(slug_segment(owner))
+        .join(slug_segment(project))
+        .join("repo")
+}
+
+fn repo_schema_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
+    repo_dir(data_root, owner, project)
+        .join("schemas")
+        .join("sekejap")
 }
 
 fn ensure_project_dir(
@@ -440,6 +492,164 @@ fn merge_catalog_with_live(
     by_table.into_values().collect()
 }
 
+fn stable_list(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn export_table_schema(def: SimpleTableDefinition) -> SekejapTableSchemaExport {
+    let mut attributes = def.attributes;
+    attributes.sort_by(|a, b| a.name.cmp(&b.name));
+    for attr in &mut attributes {
+        attr.index_types = stable_list(std::mem::take(&mut attr.index_types));
+    }
+    SekejapTableSchemaExport {
+        table: def.table,
+        title: def.title,
+        collection: def.collection,
+        attributes,
+        hash_indexed_fields: stable_list(def.hash_indexed_fields),
+        range_indexed_fields: stable_list(def.range_indexed_fields),
+        fulltext_fields: stable_list(def.fulltext_fields),
+        vector_fields: stable_list(def.vector_fields),
+        spatial_fields: stable_list(def.spatial_fields),
+    }
+}
+
+pub fn export_schema(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<SekejapSchemaExport, PlatformError> {
+    let tables = export_tables_from_defs(list_tables(data_root, owner, project)?);
+    Ok(SekejapSchemaExport {
+        schema_version: REPO_SCHEMA_VERSION.to_string(),
+        database: DB_KIND.to_string(),
+        connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
+        tables,
+    })
+}
+
+fn export_tables_from_defs(defs: Vec<SimpleTableDefinition>) -> Vec<SekejapTableSchemaExport> {
+    let mut tables = defs
+        .into_iter()
+        .map(export_table_schema)
+        .collect::<Vec<_>>();
+    tables.sort_by(|a, b| a.table.cmp(&b.table));
+    tables
+}
+
+fn sync_catalog_with_live(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<Vec<SimpleTableDefinition>, PlatformError> {
+    let db_arc = get_db(data_root, owner, project)?;
+    let db = db_arc.read().unwrap();
+    let defs = load_catalog(data_root, owner, project)?;
+    let merged = merge_catalog_with_live(&db, defs);
+    drop(db);
+    save_catalog(data_root, owner, project, &merged)?;
+    Ok(merged)
+}
+
+fn write_json_if_changed(path: &Path, value: &Value) -> Result<bool, PlatformError> {
+    let encoded = serde_json::to_string_pretty(value).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
+            format!("failed to encode schema JSON: {err}"),
+        )
+    })? + "\n";
+    if path.exists() {
+        let existing = std::fs::read_to_string(path)?;
+        if existing == encoded {
+            return Ok(false);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, encoded)?;
+    Ok(true)
+}
+
+pub fn sync_schema_to_repo(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<SekejapSchemaSyncReport, PlatformError> {
+    let defs = sync_catalog_with_live(data_root, owner, project)?;
+    let export = SekejapSchemaExport {
+        schema_version: REPO_SCHEMA_VERSION.to_string(),
+        database: DB_KIND.to_string(),
+        connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
+        tables: export_tables_from_defs(defs),
+    };
+    let schema_root = repo_schema_dir(data_root, owner, project);
+    let tables_dir = schema_root.join("tables");
+    std::fs::create_dir_all(&tables_dir)?;
+
+    let mut changed = false;
+    let mut files_written = Vec::new();
+    let mut files_removed = Vec::new();
+
+    let schema_path = schema_root.join("schema.json");
+    let schema_value = serde_json::to_value(&export).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
+            format!("failed to serialise schema export: {err}"),
+        )
+    })?;
+    if write_json_if_changed(&schema_path, &schema_value)? {
+        changed = true;
+    }
+    files_written.push("schemas/sekejap/schema.json".to_string());
+
+    let mut expected = BTreeSet::new();
+    for table in &export.tables {
+        let file_name = format!("{}.json", slug_segment(&table.table));
+        expected.insert(file_name.clone());
+        let table_path = tables_dir.join(&file_name);
+        let table_value = serde_json::to_value(table).map_err(|err| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
+                format!("failed to serialise table schema: {err}"),
+            )
+        })?;
+        if write_json_if_changed(&table_path, &table_value)? {
+            changed = true;
+        }
+        files_written.push(format!("schemas/sekejap/tables/{file_name}"));
+    }
+
+    if tables_dir.exists() {
+        for entry in std::fs::read_dir(&tables_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|v| v.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
+                continue;
+            };
+            if !expected.contains(name) {
+                std::fs::remove_file(&path)?;
+                changed = true;
+                files_removed.push(format!("schemas/sekejap/tables/{name}"));
+            }
+        }
+    }
+
+    Ok(SekejapSchemaSyncReport {
+        changed,
+        root: "schemas/sekejap".to_string(),
+        files_written,
+        files_removed,
+        table_count: export.tables.len(),
+    })
+}
+
 pub fn list_tables(
     data_root: &Path,
     owner: &str,
@@ -502,6 +712,8 @@ pub fn create_table(
 
     let mut created = def;
     created.row_count = row_count_for_collection(&db, &created.collection);
+    drop(db);
+    sync_schema_to_repo(data_root, owner, project)?;
     Ok(created)
 }
 
@@ -534,8 +746,10 @@ pub fn delete_table(
     let db_arc = get_db(data_root, owner, project)?;
     let mut db = db_arc.write().unwrap();
     let _ = db.execute(&format!("DROP TABLE {}", def.collection));
+    drop(db);
 
     save_catalog(data_root, owner, project, &defs)?;
+    sync_schema_to_repo(data_root, owner, project)?;
     Ok(())
 }
 
@@ -680,6 +894,9 @@ pub fn update_table(
         let _ = db.execute(&build_index_sql(&existing.collection, "spatial", field));
     }
 
+    let row_count = row_count_for_collection(&db, &existing.collection);
+    drop(db);
+
     let updated = SimpleTableDefinition {
         table: existing.table.clone(),
         title,
@@ -690,13 +907,14 @@ pub fn update_table(
         fulltext_fields,
         vector_fields,
         spatial_fields,
-        row_count: row_count_for_collection(&db, &existing.collection),
+        row_count,
         created_at: existing.created_at,
         updated_at: now_ts(),
     };
 
     defs[idx] = updated.clone();
     save_catalog(data_root, owner, project, &defs)?;
+    sync_schema_to_repo(data_root, owner, project)?;
 
     Ok(updated)
 }
@@ -819,6 +1037,134 @@ fn statement_is_write(sql: &str) -> bool {
     )
 }
 
+pub fn statement_changes_schema(sql: &str) -> bool {
+    let mut words = sql
+        .trim_start()
+        .trim_end_matches(';')
+        .split_whitespace()
+        .map(|part| part.to_ascii_uppercase());
+    let first = words.next().unwrap_or_default();
+    let second = words.next().unwrap_or_default();
+    matches!(
+        (first.as_str(), second.as_str()),
+        ("CREATE", "TABLE")
+            | ("CREATE", "COLLECTION")
+            | ("CREATE", "INDEX")
+            | ("ALTER", "TABLE")
+            | ("ALTER", "COLLECTION")
+            | ("DROP", "TABLE")
+            | ("DROP", "COLLECTION")
+            | ("DROP", "INDEX")
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SchemaStatementKind {
+    CreateOrAlter,
+    Drop,
+}
+
+fn schema_statement_table(sql: &str) -> Option<(SchemaStatementKind, String)> {
+    let normalized = sql.trim_start().trim_end_matches(';');
+    let parts = normalized.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return None;
+    }
+    let first = parts[0].to_ascii_uppercase();
+    let second = parts[1].to_ascii_uppercase();
+    let (kind, mut idx) = match (first.as_str(), second.as_str()) {
+        ("CREATE", "TABLE") | ("CREATE", "COLLECTION") => (SchemaStatementKind::CreateOrAlter, 2),
+        ("ALTER", "TABLE") | ("ALTER", "COLLECTION") => (SchemaStatementKind::CreateOrAlter, 2),
+        ("DROP", "TABLE") | ("DROP", "COLLECTION") => (SchemaStatementKind::Drop, 2),
+        _ => return None,
+    };
+    if matches!(kind, SchemaStatementKind::CreateOrAlter)
+        && parts
+            .get(idx)
+            .is_some_and(|part| part.eq_ignore_ascii_case("IF"))
+    {
+        idx += 3;
+    }
+    if matches!(kind, SchemaStatementKind::Drop)
+        && parts
+            .get(idx)
+            .is_some_and(|part| part.eq_ignore_ascii_case("IF"))
+    {
+        idx += 2;
+    }
+    let raw = parts.get(idx)?;
+    let name = raw
+        .trim_matches(['`', '"', '\''])
+        .trim_end_matches('(')
+        .trim_end_matches(';');
+    let table = slug_segment(name.rsplit('.').next().unwrap_or(name));
+    if table.is_empty() {
+        None
+    } else {
+        Some((kind, table))
+    }
+}
+
+fn refresh_catalog_table_from_live(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    db: &sekejap::CoreDB,
+    table: &str,
+) -> Result<(), PlatformError> {
+    let table = slug_segment(table);
+    if table.is_empty() {
+        return Ok(());
+    }
+    let mut defs = load_catalog(data_root, owner, project)?;
+    let existing = defs.iter().find(|def| def.table == table).cloned();
+    defs.retain(|def| def.table != table);
+    let collection = existing
+        .as_ref()
+        .map(|def| def.collection.clone())
+        .unwrap_or_else(|| table.clone());
+    let (attrs, hash, range, fulltext, vector, spatial) = backfill_from_schema(db, &collection);
+    let now = now_ts();
+    defs.push(SimpleTableDefinition {
+        table: table.clone(),
+        title: existing
+            .as_ref()
+            .map(|def| def.title.clone())
+            .unwrap_or_else(|| table.clone()),
+        collection: collection.clone(),
+        attributes: attrs,
+        hash_indexed_fields: hash,
+        range_indexed_fields: range,
+        fulltext_fields: fulltext,
+        vector_fields: vector,
+        spatial_fields: spatial,
+        row_count: row_count_for_collection(db, &collection),
+        created_at: existing.as_ref().map(|def| def.created_at).unwrap_or(now),
+        updated_at: now,
+    });
+    defs.sort_by(|a, b| a.table.cmp(&b.table));
+    save_catalog(data_root, owner, project, &defs)
+}
+
+fn remove_catalog_table(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    table: &str,
+) -> Result<(), PlatformError> {
+    let table = slug_segment(table);
+    if table.is_empty() {
+        return Ok(());
+    }
+    let mut defs = load_catalog(data_root, owner, project)?;
+    let before = defs.len();
+    defs.retain(|def| def.table != table);
+    if defs.len() != before {
+        save_catalog(data_root, owner, project, &defs)?;
+    }
+    Ok(())
+}
+
 fn statement_is_show(sql: &str) -> bool {
     let first = sql
         .trim_start()
@@ -921,6 +1267,21 @@ pub fn execute_sql(
             db.execute_params(trimmed, params)
         }
         .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_QUERY_FAILED", err.to_string()))?;
+        let should_sync_schema = statement_changes_schema(trimmed);
+        if let Some((kind, table)) = schema_statement_table(trimmed) {
+            match kind {
+                SchemaStatementKind::CreateOrAlter => {
+                    refresh_catalog_table_from_live(data_root, owner, project, &db, &table)?;
+                }
+                SchemaStatementKind::Drop => {
+                    remove_catalog_table(data_root, owner, project, &table)?;
+                }
+            }
+        }
+        drop(db);
+        if should_sync_schema {
+            sync_schema_to_repo(data_root, owner, project)?;
+        }
         return Ok(QueryPayload {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -1126,6 +1487,112 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].table, "posts");
         assert_eq!(items[0].row_count, 0);
+    }
+
+    #[test]
+    fn create_table_syncs_portable_schema_to_repo() {
+        let tmp = tmp_root();
+        create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &CreateSimpleTableRequest {
+                table: "posts".to_string(),
+                title: Some("Posts".to_string()),
+                attributes: vec![CollectionAttribute {
+                    name: "title".to_string(),
+                    kind: "string".to_string(),
+                    index_types: vec!["hash".to_string()],
+                    default_value: None,
+                }],
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("create table");
+
+        let schema_path = tmp
+            .path()
+            .join("users/alice/demo/repo/schemas/sekejap/schema.json");
+        let table_path = tmp
+            .path()
+            .join("users/alice/demo/repo/schemas/sekejap/tables/posts.json");
+        assert!(schema_path.is_file());
+        assert!(table_path.is_file());
+
+        let schema: Value =
+            serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
+                .expect("schema json");
+        assert_eq!(schema["schema_version"], REPO_SCHEMA_VERSION);
+        assert_eq!(schema["tables"][0]["table"], "posts");
+        assert!(schema["tables"][0].get("row_count").is_none());
+        assert!(schema["tables"][0].get("updated_at").is_none());
+    }
+
+    #[test]
+    fn sync_schema_removes_stale_table_files() {
+        let tmp = tmp_root();
+        create_table(
+            tmp.path(),
+            "alice",
+            "demo",
+            &CreateSimpleTableRequest {
+                table: "posts".to_string(),
+                title: None,
+                attributes: Vec::new(),
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("create table");
+        let stale_path = tmp
+            .path()
+            .join("users/alice/demo/repo/schemas/sekejap/tables/stale.json");
+        std::fs::write(&stale_path, "{}").expect("stale file");
+
+        let report = sync_schema_to_repo(tmp.path(), "alice", "demo").expect("sync schema");
+        assert!(report.changed);
+        assert!(!stale_path.exists());
+        assert!(
+            report
+                .files_removed
+                .iter()
+                .any(|path| path == "schemas/sekejap/tables/stale.json")
+        );
+    }
+
+    #[test]
+    fn schema_changing_sql_syncs_repo_schema() {
+        let tmp = tmp_root();
+        assert!(statement_changes_schema(
+            "CREATE TABLE posts (_key TEXT PRIMARY KEY)"
+        ));
+        assert!(statement_changes_schema(
+            "DROP INDEX ON posts USING hash (title)"
+        ));
+        assert!(!statement_changes_schema(
+            "INSERT INTO posts (_key) VALUES ('a')"
+        ));
+
+        execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT)",
+            &[],
+            100,
+            false,
+        )
+        .expect("create table sql");
+
+        let schema_path = tmp
+            .path()
+            .join("users/alice/demo/repo/schemas/sekejap/schema.json");
+        assert!(schema_path.is_file());
+        let schema: Value =
+            serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
+                .expect("schema json");
+        assert_eq!(schema["tables"][0]["table"], "posts");
     }
 
     #[test]
