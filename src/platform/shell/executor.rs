@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::parser::{DslVerb, build_pipeline_graph, parse_one_command, split_commands};
+use super::parser::{
+    DslVerb, build_pipeline_graph_with_definitions, parse_one_command, split_commands,
+};
 use super::{DslLine, DslOutput};
 use crate::platform::services::PlatformService;
 
@@ -23,6 +25,12 @@ impl DslExecutor {
             owner: owner.to_string(),
             project: project.to_string(),
         }
+    }
+
+    fn node_definitions(&self) -> Vec<crate::pipeline::NodeDefinition> {
+        self.platform
+            .node_registry
+            .merged_definitions(&self.owner, &self.project)
     }
 
     /// Execute a run body with an optional initial JSON payload.
@@ -458,10 +466,11 @@ impl DslExecutor {
         }
 
         let name = crate::platform::services::project::name_from_file_rel_path(file_rel_path);
+        let node_definitions = self.node_definitions();
         let graph_source = if as_json {
             body.to_string()
         } else {
-            match build_pipeline_graph(&name, body) {
+            match build_pipeline_graph_with_definitions(&name, body, &node_definitions) {
                 Ok(mut graph) => {
                     if !description.trim().is_empty() {
                         graph.description = Some(description.trim().to_string());
@@ -550,7 +559,7 @@ impl DslExecutor {
                     meta.file_rel_path
                 )));
                 // Emit non-fatal warnings for unknown config keys (likely flag typos).
-                for w in validate_graph_flags(&graph) {
+                for w in validate_graph_flags(&graph, &node_definitions) {
                     out.push(DslLine::muted(format!("⚠ {}", w)));
                 }
                 out
@@ -982,7 +991,8 @@ impl DslExecutor {
             );
         }
 
-        match build_pipeline_graph("ephemeral", body) {
+        let node_definitions = self.node_definitions();
+        match build_pipeline_graph_with_definitions("ephemeral", body, &node_definitions) {
             Ok(graph) => {
                 if dry_run {
                     let mut out = DslOutput::new_ok();
@@ -1274,17 +1284,17 @@ const GLOBAL_CONFIG_KEYS: &[&str] = &[
     "params_expr",
     "room",
     "event",
+    "ui",
 ];
 
 /// Validate node config keys against declared DSL flags for each node kind.
 /// Returns a list of warning strings for unknown config keys (likely typos).
-fn validate_graph_flags(graph: &crate::pipeline::PipelineGraph) -> Vec<String> {
-    let defs: HashMap<String, crate::pipeline::NodeDefinition> =
-        crate::pipeline::nodes::builtin_node_definitions()
-            .into_iter()
-            .map(|d| (d.kind.clone(), d))
-            .collect();
-
+fn validate_graph_flags(
+    graph: &crate::pipeline::PipelineGraph,
+    definitions: &[crate::pipeline::NodeDefinition],
+) -> Vec<String> {
+    let defs: HashMap<String, &crate::pipeline::NodeDefinition> =
+        definitions.iter().map(|d| (d.kind.clone(), d)).collect();
     let mut warnings = vec![];
     for node in &graph.nodes {
         let Some(def) = defs.get(&node.kind) else {

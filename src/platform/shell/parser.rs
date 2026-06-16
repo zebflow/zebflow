@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use serde_json::{Map, Value, json};
 
 use crate::pipeline::auto_tidy_pipeline_graph;
-use crate::pipeline::model::{DslFlag, DslFlagKind, PipelineEdge, PipelineGraph, PipelineNode};
+use crate::pipeline::model::{
+    DslFlag, DslFlagKind, NodeDefinition, PipelineEdge, PipelineGraph, PipelineNode,
+};
 use crate::pipeline::nodes::builtin_node_definitions;
 
 /// Parsed DSL command verb ready for execution.
@@ -309,6 +311,34 @@ fn find_first_pipe_in_raw(raw: &str) -> Option<usize> {
         }
     }
     None
+}
+
+fn find_first_graph_marker_in_raw(raw: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_backtick = false;
+    for (i, ch) in raw.char_indices() {
+        match ch {
+            '\'' if !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_single && !in_double => in_backtick = !in_backtick,
+            '[' if !in_single && !in_double && !in_backtick => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn extract_pipeline_body(raw: &str) -> String {
+    match (
+        find_first_pipe_in_raw(raw),
+        find_first_graph_marker_in_raw(raw),
+    ) {
+        (Some(pipe), Some(graph)) => raw[pipe.min(graph)..].to_string(),
+        (Some(pipe), None) => raw[pipe..].to_string(),
+        (None, Some(graph)) => raw[graph..].to_string(),
+        (None, None) => String::new(),
+    }
 }
 
 fn strip_outer_quotes(s: &str) -> &str {
@@ -678,13 +708,7 @@ fn parse_register(tokens: &[String], cmd: &str) -> DslVerb {
 
     // Extract body from raw string to preserve quoted values (e.g. --cron "* * * * *").
     // Pipe mode bodies start with `|`; graph mode bodies start with `[`.
-    let body = match find_first_pipe_in_raw(cmd) {
-        Some(pos) => cmd[pos..].to_string(),
-        None => cmd
-            .find('[')
-            .map(|pos| cmd[pos..].to_string())
-            .unwrap_or_default(),
-    };
+    let body = extract_pipeline_body(cmd);
 
     DslVerb::Register {
         file_rel_path,
@@ -791,13 +815,7 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
         "run" => {
             let dry_run = tokens.iter().any(|t| t == "--dry-run");
             // Extract body from raw string to preserve quoted values.
-            let body = match find_first_pipe_in_raw(cmd) {
-                Some(pos) => cmd[pos..].to_string(),
-                None => cmd
-                    .find('[')
-                    .map(|pos| cmd[pos..].to_string())
-                    .unwrap_or_default(),
-            };
+            let body = extract_pipeline_body(cmd);
             DslVerb::Run { body, dry_run }
         }
         "git" => {
@@ -835,37 +853,70 @@ pub fn parse_one_command(cmd: &str) -> DslVerb {
 
 /// Build a `PipelineGraph` from pipe (`|`) or graph (`[id] ->`) notation.
 pub fn build_pipeline_graph(id: &str, body: &str) -> Result<PipelineGraph, String> {
+    let all_defs = builtin_node_definitions();
+    build_pipeline_graph_with_definitions(id, body, &all_defs)
+}
+
+/// Build a `PipelineGraph` using a caller-supplied node catalog.
+///
+/// Platform-facing callers should pass the merged native + composite registry so DSL flags
+/// declared by installed/embedded composites are parsed the same way native node flags are.
+pub fn build_pipeline_graph_with_definitions(
+    id: &str,
+    body: &str,
+    definitions: &[NodeDefinition],
+) -> Result<PipelineGraph, String> {
     let body = body.trim();
     if body.is_empty() {
         return Err("Pipeline body is empty".to_string());
     }
     // Detect graph mode: body contains `[` and `] ->` (with space before arrow)
     if body.contains('[') && body.contains("] ->") {
-        build_graph_mode(id, body)
+        build_graph_mode(id, body, definitions)
     } else {
-        build_pipe_mode(id, body)
+        build_pipe_mode(id, body, definitions)
     }
 }
 
 /// Split a pipe-notation body into segments, ignoring `|` inside quotes/backticks.
 fn split_pipe_segments(body: &str) -> Vec<&str> {
+    let bytes = body.as_bytes();
     let mut segments = Vec::new();
     let mut start = 0usize;
     let mut in_single = false;
     let mut in_double = false;
     let mut in_backtick = false;
+    let mut in_opaque_body = false;
 
     for (byte_pos, ch) in body.char_indices() {
+        if !in_opaque_body
+            && !in_single
+            && !in_double
+            && !in_backtick
+            && ch == '-'
+            && byte_pos + 1 < bytes.len()
+            && bytes[byte_pos + 1] == b'-'
+            && is_standalone_token(bytes, byte_pos, byte_pos + 2)
+        {
+            in_opaque_body = true;
+            continue;
+        }
+
         match ch {
-            '\'' if !in_double && !in_backtick => in_single = !in_single,
-            '"' if !in_single && !in_backtick => in_double = !in_double,
-            '`' if !in_single && !in_double => in_backtick = !in_backtick,
-            '|' if !in_single && !in_double && !in_backtick => {
+            '\'' if !in_opaque_body && !in_double && !in_backtick => in_single = !in_single,
+            '"' if !in_opaque_body && !in_single && !in_backtick => in_double = !in_double,
+            '`' if !in_opaque_body && !in_single && !in_double => in_backtick = !in_backtick,
+            '|' if !in_single
+                && !in_double
+                && !in_backtick
+                && (!in_opaque_body || pipe_starts_node_segment(body, byte_pos)) =>
+            {
                 let seg = body[start..byte_pos].trim();
                 if !seg.is_empty() {
                     segments.push(seg);
                 }
                 start = byte_pos + ch.len_utf8();
+                in_opaque_body = false;
             }
             _ => {}
         }
@@ -877,29 +928,39 @@ fn split_pipe_segments(body: &str) -> Vec<&str> {
     segments
 }
 
+fn pipe_starts_node_segment(body: &str, pipe_pos: usize) -> bool {
+    let bytes = body.as_bytes();
+    if pipe_pos > 0 && bytes[pipe_pos - 1] == b'|' {
+        return false;
+    }
+    if pipe_pos + 1 < bytes.len() && bytes[pipe_pos + 1] == b'|' {
+        return false;
+    }
+
+    let after = body[pipe_pos + 1..].trim_start();
+    let Some(raw_kind) = after.split_whitespace().next() else {
+        return false;
+    };
+    let kind = raw_kind.trim_matches(|ch: char| ch == ';' || ch == ',' || ch == ')');
+    expand_kind(kind).is_some() || kind.starts_with("n.c.") || kind.starts_with("c.")
+}
+
 /// Build pipeline from graph notation: `[label] node_kind --flags...\n[from] -> [to]`
-fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
+fn build_graph_mode(
+    id: &str,
+    body: &str,
+    definitions: &[NodeDefinition],
+) -> Result<PipelineGraph, String> {
     let mut nodes: Vec<PipelineNode> = Vec::new();
     let mut edges: Vec<PipelineEdge> = Vec::new();
 
-    // Join line continuations then split on newlines
-    let joined = body.replace("\\\n", " ").replace("\\\r\n", " ");
-    let lines: Vec<&str> = joined
-        .lines()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    for line in &lines {
-        if !line.starts_with('[') {
-            continue;
-        }
-        if line.contains("->") {
+    for statement in graph_mode_statements(body) {
+        if is_graph_edge_statement(&statement) {
             // Edge declaration: [from]:pin -> [to]:pin  or  [from] -> [to]
-            parse_graph_edge(line, &mut edges)?;
+            parse_graph_edge(&statement, &mut edges)?;
         } else {
             // Node declaration: [label] node_kind --flags...
-            parse_graph_node(line, &mut nodes)?;
+            parse_graph_node(&statement, &mut nodes, definitions)?;
         }
     }
 
@@ -926,13 +987,88 @@ fn build_graph_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
     Ok(graph)
 }
 
+fn graph_mode_statements(body: &str) -> Vec<String> {
+    let joined = body.replace("\\\r\n", " ").replace("\\\n", " ");
+    let mut statements = Vec::new();
+    let mut current: Option<String> = None;
+
+    for line in joined.lines().map(str::trim).filter(|s| !s.is_empty()) {
+        if is_graph_structural_statement(line) {
+            if let Some(statement) = current.take() {
+                statements.push(statement);
+            }
+            current = Some(line.to_string());
+        } else if let Some(statement) = current.as_mut() {
+            statement.push('\n');
+            statement.push_str(line);
+        }
+    }
+
+    if let Some(statement) = current {
+        statements.push(statement);
+    }
+    statements
+}
+
+fn is_graph_structural_statement(line: &str) -> bool {
+    is_graph_edge_statement(line) || is_graph_node_statement(line)
+}
+
+fn is_graph_edge_statement(line: &str) -> bool {
+    let Some(arrow_pos) = line.find("->") else {
+        return false;
+    };
+    graph_endpoint_is_complete(&line[..arrow_pos])
+        && graph_endpoint_is_complete(&line[arrow_pos + 2..])
+}
+
+fn graph_endpoint_is_complete(value: &str) -> bool {
+    let value = value.trim();
+    let Some(inner) = value.strip_prefix('[') else {
+        return false;
+    };
+    let Some((label, rest)) = inner.split_once(']') else {
+        return false;
+    };
+    if label.trim().is_empty() {
+        return false;
+    }
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return true;
+    }
+    let Some(pin) = rest.strip_prefix(':') else {
+        return false;
+    };
+    let pin = pin.trim();
+    !pin.is_empty() && !pin.chars().any(char::is_whitespace)
+}
+
+fn is_graph_node_statement(line: &str) -> bool {
+    let Some(inner) = line.strip_prefix('[') else {
+        return false;
+    };
+    let Some((label, rest)) = inner.split_once(']') else {
+        return false;
+    };
+    if label.trim().is_empty() {
+        return false;
+    }
+    let tokens = tokenize(rest.trim());
+    let Some(raw_kind) = tokens.first().map(String::as_str) else {
+        return false;
+    };
+    expand_kind(raw_kind).is_some() || raw_kind.starts_with("n.c.") || raw_kind.starts_with("c.")
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::pipeline::model::PipelineNode;
+    use crate::pipeline::model::{DslFlag, DslFlagKind, NodeDefinition, PipelineNode};
     use serde_json::json;
 
     use super::{
-        DslVerb, build_pipeline_graph, node_to_segment_no_body, parse_one_command, split_commands,
+        DslVerb, build_pipeline_graph, build_pipeline_graph_with_definitions,
+        node_to_segment_no_body, parse_one_command, split_commands,
     };
 
     #[test]
@@ -1069,6 +1205,154 @@ run \
     }
 
     #[test]
+    fn register_graph_body_prefers_graph_marker_before_js_pipe() {
+        let dsl = r#"register pipelines/e1/rename [a] trigger.manual
+[b] script -- const left = input.old_name;
+const ok = /old|new/.test(left) || left === "legacy|name";
+return { ok };
+[a] -> [b]"#;
+
+        let commands = split_commands(dsl);
+        assert_eq!(commands.len(), 1);
+        let verb = parse_one_command(&commands[0]);
+        match verb {
+            DslVerb::Register { body, .. } => {
+                assert!(
+                    body.trim_start().starts_with("[a]"),
+                    "graph body must start at the first graph marker, not at a later JS pipe"
+                );
+                let graph = build_pipeline_graph("register-graph-js-pipe", &body).expect("graph");
+                assert_eq!(graph.nodes.len(), 2);
+                assert_eq!(graph.edges.len(), 1);
+                let script = graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == "b")
+                    .expect("script node");
+                let source = script
+                    .config
+                    .get("source")
+                    .and_then(|value| value.as_str())
+                    .expect("source");
+                assert!(source.contains("/old|new/"));
+                assert!(source.contains("legacy|name"));
+                assert!(source.contains("||"));
+            }
+            other => panic!("expected register verb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipe_mode_long_script_body_keeps_downstream_nodes() {
+        let dsl = r#"
+| trigger.manual
+| script -- const ok = !!(input.left || input.right);
+const label = "left|right";
+return { ok, label };
+| script -- return { downstream: input.ok, label: input.label };
+"#;
+
+        let graph = build_pipeline_graph("pipe-long-script-body", dsl).expect("graph");
+        assert_eq!(graph.nodes.len(), 3);
+        assert_eq!(graph.edges.len(), 2);
+        assert_eq!(graph.nodes[1].kind, "n.script");
+        assert_eq!(graph.nodes[2].kind, "n.script");
+        let first_source = graph.nodes[1]
+            .config
+            .get("source")
+            .and_then(|value| value.as_str())
+            .expect("first source");
+        assert!(first_source.contains("input.left || input.right"));
+        assert!(first_source.contains("left|right"));
+        let second_source = graph.nodes[2]
+            .config
+            .get("source")
+            .and_then(|value| value.as_str())
+            .expect("second source");
+        assert!(second_source.contains("downstream"));
+    }
+
+    #[test]
+    fn graph_mode_multiline_script_body_keeps_edges() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- const values = [1, 2, 3];
+[1, 2, 3].map((value) => value + 1);
+return { values };
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("graph-multiline-script-body", dsl).expect("graph");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        let source = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "b")
+            .expect("script node")
+            .config
+            .get("source")
+            .and_then(|value| value.as_str())
+            .expect("source");
+        assert!(source.contains("[1, 2, 3].map"));
+        assert!(source.contains("return { values };"));
+    }
+
+    #[test]
+    fn registry_definitions_parse_composite_dsl_flags() {
+        let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
+        definitions.push(NodeDefinition {
+            kind: "n.c.ai.embedding".to_string(),
+            title: "AI Embedding".to_string(),
+            description: "Composite embedding node.".to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string(), "error".to_string()],
+            dsl_flags: vec![
+                DslFlag {
+                    flag: "--credential".to_string(),
+                    config_key: "credential_id".to_string(),
+                    description: "OpenAI-compatible credential.".to_string(),
+                    kind: DslFlagKind::Scalar,
+                    required: true,
+                },
+                DslFlag {
+                    flag: "--model".to_string(),
+                    config_key: "model".to_string(),
+                    description: "Embedding model.".to_string(),
+                    kind: DslFlagKind::Scalar,
+                    required: false,
+                },
+                DslFlag {
+                    flag: "--input-expr".to_string(),
+                    config_key: "input_expr".to_string(),
+                    description: "Text expression.".to_string(),
+                    kind: DslFlagKind::Scalar,
+                    required: false,
+                },
+            ],
+            ..Default::default()
+        });
+
+        let graph = build_pipeline_graph_with_definitions(
+            "composite-embedding-dsl",
+            r#"
+| trigger.manual
+| n.c.ai.embedding --credential qwen-embed --model text-embedding-v4 --input-expr input.text
+"#,
+            &definitions,
+        )
+        .expect("graph");
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "n.c.ai.embedding")
+            .expect("composite node");
+        assert_eq!(node.config["credential_id"], json!("qwen-embed"));
+        assert_eq!(node.config["model"], json!("text-embedding-v4"));
+        assert_eq!(node.config["input_expr"], json!("input.text"));
+    }
+
+    #[test]
     fn patch_script_body_is_opaque_to_shell_separators() {
         let source = r#"const lat = row.Stop_lat ?? row.stop_lat;
 const lon = row.Stop_long ?? row.stop_long;
@@ -1138,7 +1422,11 @@ return { ok, label: "lat|lon", pair: `${lat || ""}|${lon || ""}` };"#;
     }
 }
 
-fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), String> {
+fn parse_graph_node(
+    line: &str,
+    nodes: &mut Vec<PipelineNode>,
+    definitions: &[NodeDefinition],
+) -> Result<(), String> {
     let rest = line
         .strip_prefix('[')
         .ok_or("expected '[' at start of node declaration")?;
@@ -1169,8 +1457,7 @@ fn parse_graph_node(line: &str, nodes: &mut Vec<PipelineNode>) -> Result<(), Str
         None => return Err(format!("Unknown node kind: '{raw_kind}'")),
     };
     let (input_pins, mut output_pins) = default_pins(full_kind);
-    let all_defs = builtin_node_definitions();
-    let dsl_flags = all_defs
+    let dsl_flags = definitions
         .iter()
         .find(|d| d.kind == full_kind)
         .map(|d| d.dsl_flags.as_slice())
@@ -1595,7 +1882,11 @@ fn graph_to_graph_mode(graph: &PipelineGraph) -> String {
 // ─── Pipe mode builder ───────────────────────────────────────────────────────
 
 /// Build pipeline from pipe-notation: `trigger.webhook --path /test | pg.query --credential main`
-fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
+fn build_pipe_mode(
+    id: &str,
+    body: &str,
+    definitions: &[NodeDefinition],
+) -> Result<PipelineGraph, String> {
     // Strip leading `|` if present
     let body = body.trim_start_matches('|').trim();
     let segments: Vec<&str> = split_pipe_segments(body);
@@ -1624,8 +1915,6 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
         });
     }
 
-    let all_defs = builtin_node_definitions();
-
     for (idx, segment) in segments.iter().enumerate() {
         let seg_tokens = tokenize(segment);
         if seg_tokens.is_empty() {
@@ -1649,7 +1938,7 @@ fn build_pipe_mode(id: &str, body: &str) -> Result<PipelineGraph, String> {
 
         let node_id = format!("n{idx}");
         let (input_pins, mut output_pins) = default_pins(full_kind);
-        let dsl_flags = all_defs
+        let dsl_flags = definitions
             .iter()
             .find(|d| d.kind == full_kind)
             .map(|d| d.dsl_flags.as_slice())
