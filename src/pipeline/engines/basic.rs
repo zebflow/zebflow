@@ -12,7 +12,7 @@
 //! | `timeout_secs`  | `--timeout`   | Per-node execution timeout in seconds (5–3600). Overrides project-level `pipeline_node_timeout_secs`. |
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
@@ -94,12 +94,291 @@ struct ReducePendingState {
     expected: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NodesAccess {
+    None,
+    Exact(HashSet<String>),
+}
+
+impl Default for NodesAccess {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct NodesRetentionPlan {
+    consumer_access: HashMap<String, NodesAccess>,
+    retained_nodes: HashSet<String>,
+}
+
 const RETRY_STATE_KEY: &str = "__zf_retry";
 
 fn hash_markup(s: &str) -> u64 {
     let mut h = DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+fn build_nodes_retention_plan(graph: &PipelineGraph) -> Result<NodesRetentionPlan, PipelineError> {
+    let mut plan = NodesRetentionPlan::default();
+
+    for node in &graph.nodes {
+        let access = scan_node_nodes_access(node)?;
+        match &access {
+            NodesAccess::None => {}
+            NodesAccess::Exact(ids) => {
+                plan.retained_nodes.extend(ids.iter().cloned());
+            }
+        }
+        plan.consumer_access.insert(node.id.clone(), access);
+    }
+
+    Ok(plan)
+}
+
+fn scan_node_nodes_access(node: &PipelineNode) -> Result<NodesAccess, PipelineError> {
+    let mut access = NodesAccessAccumulator::default();
+    scan_value_nodes_access(node, &node.config, &mut access)?;
+    Ok(access.finish())
+}
+
+#[derive(Debug, Default)]
+struct NodesAccessAccumulator {
+    refs: HashSet<String>,
+}
+
+impl NodesAccessAccumulator {
+    fn mark_ref(&mut self, id: String) {
+        self.refs.insert(id);
+    }
+
+    fn finish(self) -> NodesAccess {
+        if self.refs.is_empty() {
+            NodesAccess::None
+        } else {
+            NodesAccess::Exact(self.refs)
+        }
+    }
+}
+
+fn scan_value_nodes_access(
+    node: &PipelineNode,
+    value: &Value,
+    access: &mut NodesAccessAccumulator,
+) -> Result<(), PipelineError> {
+    match value {
+        Value::String(text) => scan_text_nodes_access(node, text, access)?,
+        Value::Array(items) => {
+            for item in items {
+                scan_value_nodes_access(node, item, access)?;
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                scan_value_nodes_access(node, item, access)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn scan_text_nodes_access(
+    node: &PipelineNode,
+    text: &str,
+    access: &mut NodesAccessAccumulator,
+) -> Result<(), PipelineError> {
+    scan_nodes_marker(node, text, "$nodes", access)?;
+    scan_nodes_marker(node, text, "ctx.nodes", access)?;
+    Ok(())
+}
+
+fn scan_nodes_marker(
+    node: &PipelineNode,
+    text: &str,
+    marker: &str,
+    access: &mut NodesAccessAccumulator,
+) -> Result<(), PipelineError> {
+    let mut offset = 0;
+    while let Some(found) = text[offset..].find(marker) {
+        let marker_start = offset + found;
+        let marker_end = marker_start + marker.len();
+        if !marker_boundary_ok(text, marker_start, marker_end) {
+            offset = marker_end;
+            continue;
+        }
+
+        match parse_nodes_reference_after_marker(text, marker_end) {
+            NodesReferenceScan::Exact(id, next) => {
+                access.mark_ref(id);
+                offset = next;
+            }
+            NodesReferenceScan::Dynamic(_) => {
+                return Err(PipelineError::new(
+                    "FW_NODES_SCOPE_DYNAMIC",
+                    format!(
+                        "node '{}' uses dynamic {} access; use a literal node id like {}.foo or {}[\"foo\"]",
+                        node.id, marker, marker, marker
+                    ),
+                ));
+            }
+            NodesReferenceScan::NoReference(next) => {
+                offset = next;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn marker_boundary_ok(text: &str, start: usize, end: usize) -> bool {
+    let before_ok = text[..start]
+        .chars()
+        .next_back()
+        .is_none_or(|ch| !is_js_ident_continue(ch));
+    let after_ok = text[end..]
+        .chars()
+        .next()
+        .is_none_or(|ch| !is_js_ident_continue(ch));
+    before_ok && after_ok
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NodesReferenceScan {
+    Exact(String, usize),
+    Dynamic(usize),
+    NoReference(usize),
+}
+
+fn parse_nodes_reference_after_marker(text: &str, marker_end: usize) -> NodesReferenceScan {
+    let mut idx = skip_ascii_ws(text, marker_end);
+    let Some(ch) = text[idx..].chars().next() else {
+        return NodesReferenceScan::NoReference(idx);
+    };
+
+    if ch == '.' {
+        idx += ch.len_utf8();
+        let start = idx;
+        while let Some(next) = text[idx..].chars().next() {
+            if is_js_ident_continue(next) || next == '-' {
+                idx += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if idx == start {
+            return NodesReferenceScan::Dynamic(idx);
+        }
+        return NodesReferenceScan::Exact(text[start..idx].to_string(), idx);
+    }
+
+    if ch == '[' {
+        return parse_bracket_nodes_reference(text, idx);
+    }
+
+    NodesReferenceScan::Dynamic(idx)
+}
+
+fn parse_bracket_nodes_reference(text: &str, bracket_start: usize) -> NodesReferenceScan {
+    let mut idx = skip_ascii_ws(text, bracket_start + 1);
+    let Some(quote) = text[idx..].chars().next() else {
+        return NodesReferenceScan::Dynamic(idx);
+    };
+    if quote != '\'' && quote != '"' {
+        return NodesReferenceScan::Dynamic(idx);
+    }
+    idx += quote.len_utf8();
+    let value_start = idx;
+    let mut escaped = false;
+    let mut out = String::new();
+    while let Some(ch) = text[idx..].chars().next() {
+        idx += ch.len_utf8();
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == quote {
+            let after_quote = skip_ascii_ws(text, idx);
+            if text[after_quote..].starts_with(']') {
+                let id = if out.is_empty() {
+                    text[value_start..idx - quote.len_utf8()].to_string()
+                } else {
+                    out
+                };
+                if id.trim().is_empty() {
+                    return NodesReferenceScan::Dynamic(after_quote + 1);
+                }
+                return NodesReferenceScan::Exact(id, after_quote + 1);
+            }
+            return NodesReferenceScan::Dynamic(after_quote);
+        }
+        out.push(ch);
+    }
+    NodesReferenceScan::Dynamic(idx)
+}
+
+fn skip_ascii_ws(text: &str, mut idx: usize) -> usize {
+    while let Some(ch) = text[idx..].chars().next() {
+        if ch.is_ascii_whitespace() {
+            idx += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    idx
+}
+
+fn is_js_ident_continue(ch: char) -> bool {
+    ch == '_' || ch == '$' || ch.is_ascii_alphanumeric()
+}
+
+fn nodes_scope_for_target(
+    target_node_id: &str,
+    nodes_output: &serde_json::Map<String, Value>,
+    retention: &NodesRetentionPlan,
+) -> Value {
+    match retention
+        .consumer_access
+        .get(target_node_id)
+        .unwrap_or(&NodesAccess::None)
+    {
+        NodesAccess::None => json!({}),
+        NodesAccess::Exact(ids) => {
+            let mut scoped = serde_json::Map::new();
+            for id in ids {
+                if let Some(value) = nodes_output.get(id) {
+                    scoped.insert(id.clone(), value.clone());
+                }
+            }
+            Value::Object(scoped)
+        }
+    }
+}
+
+fn should_retain_node_output(node_id: &str, retention: &NodesRetentionPlan) -> bool {
+    retention.retained_nodes.contains(node_id)
+}
+
+fn execution_metadata(
+    ctx: &PipelineContext,
+    nodes_scope: Value,
+    placeholder: Option<Value>,
+) -> Value {
+    json!({
+        "owner": ctx.owner,
+        "project": ctx.project,
+        "pipeline": ctx.pipeline,
+        "request_id": ctx.request_id,
+        "route": ctx.route,
+        "trigger": ctx.trigger,
+        "nodes": nodes_scope,
+        "placeholder": placeholder,
+    })
 }
 
 fn take_private_tokens(payload: &mut Value, key: &str) -> Vec<String> {
@@ -1097,6 +1376,7 @@ impl PipelineEngine for BasicPipelineEngine {
                 self.build_node(node)?;
             }
         }
+        build_nodes_retention_plan(graph)?;
         Ok(())
     }
 
@@ -1130,8 +1410,10 @@ impl PipelineEngine for BasicPipelineEngine {
         };
 
         let bus = options.bus.clone();
-        // nodes_output: accumulates each completed node's output payload for $nodes access.
+        // nodes_output: accumulates only completed node outputs required by the
+        // graph's `$nodes`/`ctx.nodes` retention plan.
         // Declared here (before the initial queue push) so entry-node metadata can include it.
+        let nodes_retention = build_nodes_retention_plan(graph)?;
         let mut nodes_output = serde_json::Map::<String, Value>::new();
         let mut queue = VecDeque::new();
         for node_id in start_nodes {
@@ -1143,16 +1425,11 @@ impl PipelineEngine for BasicPipelineEngine {
                 node_id: node.id.clone(),
                 input_pin: first_pin,
                 payload: ctx.input.clone(),
-                metadata: json!({
-                    "owner": ctx.owner,
-                    "project": ctx.project,
-                    "pipeline": ctx.pipeline,
-                    "request_id": ctx.request_id,
-                    "route": ctx.route,
-                    "trigger": ctx.trigger,
-                    "nodes": Value::Object(nodes_output.clone()),
-                    "placeholder": ctx.placeholder,
-                }),
+                metadata: execution_metadata(
+                    ctx,
+                    nodes_scope_for_target(&node.id, &nodes_output, &nodes_retention),
+                    ctx.placeholder.clone(),
+                ),
                 bus: bus.clone(),
             });
         }
@@ -2076,7 +2353,9 @@ impl PipelineEngine for BasicPipelineEngine {
                     } else {
                         Value::Array(processed_payloads)
                     };
-                    nodes_output.insert(trace_node_id.clone(), nodes_output_value);
+                    if should_retain_node_output(&trace_node_id, &nodes_retention) {
+                        nodes_output.insert(trace_node_id.clone(), nodes_output_value);
+                    }
                     node_trace.push(NodeTraceEntry {
                         node_id: trace_node_id.clone(),
                         node_kind: trace_node_kind.clone(),
@@ -2110,16 +2389,15 @@ impl PipelineEngine for BasicPipelineEngine {
                                 node_id: (*to_node).to_string(),
                                 input_pin: (*to_pin).to_string(),
                                 payload: error_payload.clone(),
-                                metadata: json!({
-                                    "owner": ctx.owner,
-                                    "project": ctx.project,
-                                    "pipeline": ctx.pipeline,
-                                    "request_id": ctx.request_id,
-                                    "route": ctx.route,
-                                    "trigger": ctx.trigger,
-                                    "nodes": Value::Object(nodes_output.clone()),
-                                    "placeholder": ctx.placeholder,
-                                }),
+                                metadata: execution_metadata(
+                                    ctx,
+                                    nodes_scope_for_target(
+                                        to_node,
+                                        &nodes_output,
+                                        &nodes_retention,
+                                    ),
+                                    ctx.placeholder.clone(),
+                                ),
                                 bus: bus.clone(),
                             });
                         }
@@ -2237,16 +2515,15 @@ impl PipelineEngine for BasicPipelineEngine {
                                         node_id: (*to_node).to_string(),
                                         input_pin: (*to_pin).to_string(),
                                         payload: combined,
-                                        metadata: json!({
-                                            "owner": ctx.owner,
-                                            "project": ctx.project,
-                                            "pipeline": ctx.pipeline,
-                                            "request_id": ctx.request_id,
-                                            "route": ctx.route,
-                                            "trigger": ctx.trigger,
-                                            "nodes": Value::Object(nodes_output.clone()),
-                                            "placeholder": ctx.placeholder,
-                                        }),
+                                        metadata: execution_metadata(
+                                            ctx,
+                                            nodes_scope_for_target(
+                                                to_node,
+                                                &nodes_output,
+                                                &nodes_retention,
+                                            ),
+                                            ctx.placeholder.clone(),
+                                        ),
                                         bus: bus.clone(),
                                     });
                                 }
@@ -2255,16 +2532,15 @@ impl PipelineEngine for BasicPipelineEngine {
                                     node_id: (*to_node).to_string(),
                                     input_pin: (*to_pin).to_string(),
                                     payload: output.payload.clone(),
-                                    metadata: json!({
-                                        "owner": ctx.owner,
-                                        "project": ctx.project,
-                                        "pipeline": ctx.pipeline,
-                                        "request_id": ctx.request_id,
-                                        "route": ctx.route,
-                                        "trigger": ctx.trigger,
-                                        "nodes": Value::Object(nodes_output.clone()),
-                                        "placeholder": ctx.placeholder,
-                                    }),
+                                    metadata: execution_metadata(
+                                        ctx,
+                                        nodes_scope_for_target(
+                                            to_node,
+                                            &nodes_output,
+                                            &nodes_retention,
+                                        ),
+                                        ctx.placeholder.clone(),
+                                    ),
                                     bus: bus.clone(),
                                 });
                             }
@@ -2289,12 +2565,16 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BasicPipelineEngine, PipelineContext, redact_json_value, take_private_redact_except_paths,
+        BasicPipelineEngine, NodesAccess, NodesAccessAccumulator, PipelineContext,
+        redact_json_value, scan_text_nodes_access, take_private_redact_except_paths,
         take_private_redact_tokens, take_private_trace_redact_tokens, trace_config_snapshot,
     };
     use crate::pipeline::interface::PipelineEngine;
     use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
-    use crate::pipeline::nodes::basic::table_convert::{TableFormat, collect_columns, encode_rows};
+    use crate::pipeline::nodes::basic::{
+        script,
+        table_convert::{TableFormat, collect_columns, encode_rows},
+    };
     use crate::platform::model::PlatformConfig;
     use crate::platform::services::PlatformService;
     use crate::platform::shell::parser::build_pipeline_graph;
@@ -2383,6 +2663,119 @@ mod tests {
         assert!(snapshot.get("ui").is_none());
         assert_eq!(snapshot["password"], "••••••");
         assert_eq!(snapshot["headers"]["authorization"], "••••••");
+    }
+
+    #[test]
+    fn nodes_access_scanner_detects_literal_references() {
+        let mut access = NodesAccessAccumulator::default();
+        scan_text_nodes_access(
+            &PipelineNode {
+                id: "reader".to_string(),
+                kind: script::NODE_KIND.to_string(),
+                input_pins: vec!["in".to_string()],
+                output_pins: vec!["out".to_string()],
+                config: json!({}),
+            },
+            "return ctx.nodes.prepare.id + $nodes['geo-convert'].path + $nodes.match.value;",
+            &mut access,
+        )
+        .expect("scan exact refs");
+        let result = access.finish();
+        let NodesAccess::Exact(ids) = result else {
+            panic!("expected exact node references");
+        };
+        assert!(ids.contains("prepare"));
+        assert!(ids.contains("geo-convert"));
+        assert!(ids.contains("match"));
+    }
+
+    #[test]
+    fn nodes_access_scanner_rejects_dynamic_references() {
+        let mut dynamic = NodesAccessAccumulator::default();
+        let err = scan_text_nodes_access(
+            &PipelineNode {
+                id: "reader".to_string(),
+                kind: script::NODE_KIND.to_string(),
+                input_pins: vec!["in".to_string()],
+                output_pins: vec!["out".to_string()],
+                config: json!({}),
+            },
+            "const key = input.key; return ctx.nodes[key];",
+            &mut dynamic,
+        )
+        .expect_err("dynamic node access should be rejected");
+        assert_eq!(err.code, "FW_NODES_SCOPE_DYNAMIC");
+    }
+
+    #[tokio::test]
+    async fn nodes_scope_only_carries_referenced_upstream_outputs() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { big: 'huge-marker-that-should-not-leak' };"
+[c] script -- "return { small: 7 };"
+[d] script -- "return { small: ctx.nodes.c.small, leaked: JSON.stringify(ctx).includes('huge-marker-that-should-not-leak') };"
+
+[a] -> [b]
+[b] -> [c]
+[c] -> [d]
+"#;
+
+        let graph = build_pipeline_graph("nodes-retention-exact-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "nodes-retention-exact-test".to_string(),
+                    request_id: "req-nodes-retention-exact".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["small"], 7);
+        assert_eq!(out.value["leaked"], false);
+    }
+
+    #[tokio::test]
+    async fn nodes_scope_rejects_dynamic_script_access() {
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { big: 'dynamic-access-should-not-work' };"
+[c] script -- "return { small: 7 };"
+[d] script -- "const key = 'b'; return { big: ctx.nodes[key].big, small: ctx.nodes.c.small };"
+
+[a] -> [b]
+[b] -> [c]
+[c] -> [d]
+"#;
+
+        let graph = build_pipeline_graph("nodes-retention-dynamic-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let err = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "nodes-retention-dynamic-test".to_string(),
+                    request_id: "req-nodes-retention-dynamic".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect_err("dynamic nodes access should fail validation");
+
+        assert_eq!(err.code, "FW_NODES_SCOPE_DYNAMIC");
     }
 
     #[tokio::test]
