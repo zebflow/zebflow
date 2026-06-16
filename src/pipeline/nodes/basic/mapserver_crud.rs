@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::metadata_scope;
 use crate::pipeline::{
     NodeDefinition, NodeFieldDataSource, PipelineError,
@@ -693,10 +694,7 @@ impl Node {
         } else if !self.config.source_path.trim().is_empty() {
             self.config.source_path.trim().to_string()
         } else {
-            input
-                .payload
-                .get("source_path")
-                .and_then(Value::as_str)
+            source_path_from_payload(&input.payload)
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
@@ -1172,4 +1170,34 @@ fn normalize_layer_path(path: &str) -> String {
         .trim_start_matches('/')
         .trim_end_matches('/')
         .to_string()
+}
+
+fn source_path_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("source_path")
+        .and_then(file_ref_to_rel_path_or_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::source_path_from_payload;
+
+    #[test]
+    fn publish_source_path_accepts_file_ref_payload() {
+        let payload = json!({
+            "source_path": {
+                "__zf_type": "file_ref",
+                "backend": "zebfs",
+                "ref": "mapserver/sources/roads.geojson",
+                "sha256": "sha256:abc"
+            }
+        });
+
+        assert_eq!(
+            source_path_from_payload(&payload),
+            Some("mapserver/sources/roads.geojson".to_string())
+        );
+    }
 }

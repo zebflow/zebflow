@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -212,7 +213,7 @@ fn resolve_input_path(
     // 2. Dynamic --path-expr resolves from upstream payload.
     if !config.path_expr.trim().is_empty() {
         let val = resolve_path(payload, config.path_expr.trim())
-            .and_then(|v| v.as_str())
+            .and_then(file_ref_to_rel_path_or_string)
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_GEO_INSPECT",
@@ -222,7 +223,7 @@ fn resolve_input_path(
                     ),
                 )
             })?;
-        return Ok(sanitize_rel_path(val));
+        return Ok(sanitize_rel_path(&val));
     }
     Err(PipelineError::new(
         "FW_NODE_GEO_INSPECT",
@@ -235,4 +236,32 @@ fn sanitize_rel_path(path: &str) -> String {
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Config, resolve_input_path};
+
+    #[test]
+    fn path_expr_accepts_file_ref_payload() {
+        let config = Config {
+            path_expr: "source".to_string(),
+            ..Default::default()
+        };
+        let payload = json!({
+            "source": {
+                "__zf_type": "file_ref",
+                "backend": "zebfs",
+                "ref": "tmp/runs/r/files/data.geojson",
+                "sha256": "sha256:abc"
+            }
+        });
+
+        assert_eq!(
+            resolve_input_path(&config, &payload).expect("input path"),
+            "tmp/runs/r/files/data.geojson"
+        );
+    }
 }

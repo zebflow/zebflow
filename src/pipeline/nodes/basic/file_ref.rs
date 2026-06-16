@@ -5,9 +5,10 @@
 //! `src/pipeline/nodes/basic/mod.rs`.
 //!
 //! FileRef is the pipeline IR for bytes that should not be copied into JSON as
-//! base64. Producers write bytes to a storage backend and pass a small metadata
-//! object downstream. Consumers validate `backend`, read bytes through this module,
-//! and avoid assuming the backend is always a local file path.
+//! base64. ZebFS is storage; FileRef is the transport handle passed between
+//! nodes. Producers write bytes to a storage backend and pass a small metadata
+//! object downstream. Consumers validate `backend`, read bytes through this
+//! module, and avoid assuming the backend is always a local file path.
 //!
 //! Current implementation:
 //!
@@ -57,6 +58,7 @@ pub fn is_file_ref(value: &Value) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|path| !path.trim().is_empty())
             && value.get("sha256").is_some()
+        || is_legacy_zebfs_file_ref(value)
 }
 
 pub fn file_ref_path(value: &Value) -> Option<&str> {
@@ -69,6 +71,32 @@ pub fn file_ref_path(value: &Value) -> Option<&str> {
         .or_else(|| value.get("path").and_then(Value::as_str))
         .map(str::trim)
         .filter(|path| !path.is_empty())
+}
+
+fn is_legacy_zebfs_file_ref(value: &Value) -> bool {
+    let Some(path) = value.get("path").and_then(Value::as_str).map(str::trim) else {
+        return false;
+    };
+    if path.is_empty() {
+        return false;
+    }
+    if value.get("size").and_then(Value::as_u64).is_none() {
+        return false;
+    }
+    let backend = value
+        .get("backend")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(BACKEND_ZEBFS);
+    if backend != BACKEND_ZEBFS {
+        return false;
+    }
+    value
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|url| url.starts_with("/fs/"))
 }
 
 pub fn file_ref_backend(value: &Value) -> &str {
@@ -166,6 +194,16 @@ pub fn file_ref_to_rel_path(value: &Value) -> Option<String> {
     file_ref_path(value).map(ToString::to_string)
 }
 
+pub fn file_ref_to_rel_path_or_string(value: &Value) -> Option<String> {
+    file_ref_to_rel_path(value).or_else(|| {
+        value
+            .as_str()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
 fn sanitize_filename(raw: &str) -> String {
     let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
     let mut out = String::new();
@@ -243,7 +281,7 @@ fn infer_kind(mime: &str, filename: &str) -> &'static str {
 mod tests {
     use serde_json::json;
 
-    use super::{file_ref_path, is_file_ref};
+    use super::{file_ref_path, file_ref_to_rel_path_or_string, is_file_ref};
 
     #[test]
     fn detects_file_ref_shape() {
@@ -257,5 +295,55 @@ mod tests {
 
         assert!(is_file_ref(&value));
         assert_eq!(file_ref_path(&value), Some("tmp/runs/r/files/a.bin"));
+    }
+
+    #[test]
+    fn detects_legacy_zebfs_file_metadata_as_file_ref() {
+        let value = json!({
+            "path": "tmp/e1-agent-upload-file-ref-smoke.csv",
+            "url": "/fs/superadmin/default/tmp/e1-agent-upload-file-ref-smoke.csv",
+            "size": 228,
+            "kind": "object",
+            "content_type": "text/csv",
+        });
+
+        assert!(is_file_ref(&value));
+        assert_eq!(
+            file_ref_path(&value),
+            Some("tmp/e1-agent-upload-file-ref-smoke.csv")
+        );
+    }
+
+    #[test]
+    fn does_not_treat_arbitrary_path_object_as_file_ref() {
+        let value = json!({
+            "path": "tmp/e1-agent-upload-file-ref-smoke.csv",
+            "size": 228,
+        });
+
+        assert!(!is_file_ref(&value));
+        assert_eq!(file_ref_path(&value), None);
+    }
+
+    #[test]
+    fn resolves_file_ref_or_plain_path_for_path_only_nodes() {
+        let file_ref = json!({
+            "__zf_type": "file_ref",
+            "backend": "zebfs",
+            "ref": "tmp/runs/r/files/a.csv",
+            "sha256": "sha256:abc"
+        });
+        assert_eq!(
+            file_ref_to_rel_path_or_string(&file_ref),
+            Some("tmp/runs/r/files/a.csv".to_string())
+        );
+        assert_eq!(
+            file_ref_to_rel_path_or_string(&json!("uploads/a.csv")),
+            Some("uploads/a.csv".to_string())
+        );
+        assert_eq!(
+            file_ref_to_rel_path_or_string(&json!({ "path": "x" })),
+            None
+        );
     }
 }

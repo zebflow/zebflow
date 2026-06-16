@@ -22,6 +22,7 @@ use crate::pipeline::{
 use crate::platform::services::PlatformService;
 use crate::zebfs::{LocalZebFs, normalize_object_path};
 
+use super::file_ref::file_ref_to_rel_path;
 use super::table_convert::{
     TableFormat, collect_columns, encode_rows, parse_format, record_batch_to_rows,
 };
@@ -626,6 +627,39 @@ async fn register_source(
 ) -> Result<(), PipelineError> {
     if binding.source.trim_start().starts_with('$') {
         let value = eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?;
+        if let Some(path) = file_ref_to_rel_path(&value) {
+            let rel = normalize_object_path(&path)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+            let _ = zebfs
+                .get(&rel)
+                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+            let abs = files_dir.join(&rel);
+            let path = abs.to_string_lossy();
+            match source_format(&rel)? {
+                TableFormat::Csv => {
+                    ctx.register_csv(
+                        binding.alias.as_str(),
+                        path,
+                        CsvReadOptions::new().has_header(true),
+                    )
+                    .await
+                }
+                TableFormat::Json | TableFormat::Ndjson => {
+                    ctx.register_json(binding.alias.as_str(), path, JsonReadOptions::default())
+                        .await
+                }
+                TableFormat::Parquet => {
+                    ctx.register_parquet(
+                        binding.alias.as_str(),
+                        path,
+                        ParquetReadOptions::default(),
+                    )
+                    .await
+                }
+            }
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_REGISTER", err.to_string()))?;
+            return Ok(());
+        }
         let rows = rows_from_json_value(value);
         let mut temp = tempfile::Builder::new()
             .suffix(".json")

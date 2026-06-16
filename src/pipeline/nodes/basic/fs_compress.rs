@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::file_ref::file_ref_to_rel_path_or_string;
 use super::util::{metadata_scope, resolve_path};
 use crate::pipeline::{
     NodeDefinition, PipelineError,
@@ -220,7 +221,7 @@ impl NodeHandler for Node {
         };
 
         let primary_source_rel = resolve_path(&input.payload, source_key)
-            .and_then(|value| value.as_str())
+            .and_then(file_ref_to_rel_path_or_string)
             .ok_or_else(|| {
                 PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
@@ -230,7 +231,7 @@ impl NodeHandler for Node {
                 )
             })?;
 
-        let primary_source_rel = sanitize_rel_path(primary_source_rel);
+        let primary_source_rel = sanitize_rel_path(&primary_source_rel);
         if primary_source_rel.is_empty() {
             return Err(PipelineError::new(
                 "FW_NODE_FILE_COMPRESS",
@@ -245,14 +246,14 @@ impl NodeHandler for Node {
                 continue;
             }
             let extra_rel = resolve_path(&input.payload, extra_key)
-                .and_then(|value| value.as_str())
+                .and_then(file_ref_to_rel_path_or_string)
                 .ok_or_else(|| {
                     PipelineError::new(
                         "FW_NODE_FILE_COMPRESS",
                         format!("extra source path not found at payload key '{extra_key}'"),
                     )
                 })?;
-            let extra_rel = sanitize_rel_path(extra_rel);
+            let extra_rel = sanitize_rel_path(&extra_rel);
             if extra_rel.is_empty() {
                 return Err(PipelineError::new(
                     "FW_NODE_FILE_COMPRESS",
