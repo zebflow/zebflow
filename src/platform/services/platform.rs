@@ -82,7 +82,7 @@ pub struct PlatformService {
     pub mcp_sessions: Arc<McpSessionService>,
     /// WebSocket hub — real-time room management for WS pipelines.
     pub ws_hub: Arc<WsHub>,
-    /// In-memory KV + pub/sub hub for n.mem.* pipeline nodes.
+    /// In-memory KV + pub/sub hub for n.kv.* pipeline nodes.
     pub mem_hub: Arc<MemHub>,
     /// Shared state-bus seam currently backed by the same in-process mem hub.
     pub state_bus: DynStateBus,
