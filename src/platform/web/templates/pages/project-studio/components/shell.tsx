@@ -342,6 +342,18 @@ export default function ProjectStudioShell(props) {
 
                   <GitRepoPanel owner={owner} project={project} />
                   <SessionPanel owner={owner} project={project} />
+                  <a
+                    href="/profile"
+                    className={cx(
+                      isLight
+                        ? "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                        : "bg-dark-accent3 !text-dark-menus hover:bg-dark-accent4",
+                      "flex h-9 items-center px-3 text-xs font-medium hover:no-underline",
+                    )}
+                    title="Profile"
+                  >
+                    Profile
+                  </a>
                 </div>
               </div>
             </header>

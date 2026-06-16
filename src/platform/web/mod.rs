@@ -56,9 +56,9 @@ use crate::platform::model::{
     ProjectTransferArtifactKind, QueryProjectDbConnectionRequest, TemplateCompileRequest,
     TemplateCompileResponse, TemplateCreateRequest, TemplateDiagnostic, TemplateMoveRequest,
     TemplateSaveRequest, TestProjectDbConnectionRequest, UpdateSettingsSectionRequest,
-    UpdateSimpleTableRequest, UpsertPipelineDefinitionRequest, UpsertProjectAssistantConfigRequest,
-    UpsertProjectCredentialRequest, UpsertProjectDbConnectionRequest, UpsertProjectDocRequest,
-    slug_segment,
+    UpdateSimpleTableRequest, UpdateUserSettingsRequest, UpsertPipelineDefinitionRequest,
+    UpsertProjectAssistantConfigRequest, UpsertProjectCredentialRequest,
+    UpsertProjectDbConnectionRequest, UpsertProjectDocRequest, slug_segment,
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
@@ -135,6 +135,11 @@ const TEMPLATE_SOURCE_DIR: &str =
 const PAGE_DEFS: &[(&str, &str, &str)] = &[
     ("platform-login", "platform.login", "pages/login/page.tsx"),
     ("platform-home", "platform.home", "pages/home/page.tsx"),
+    (
+        "platform-profile",
+        "platform.profile",
+        "pages/profile/page.tsx",
+    ),
     (
         "platform-marketplace",
         "platform.marketplace",
@@ -376,6 +381,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
+        .route("/profile", get(profile_page))
         .route("/marketplace", get(platform_marketplace_page))
         .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
@@ -473,6 +479,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_node_icon),
         )
         .route("/api/users", get(api_list_users).post(api_create_user))
+        .route("/api/profile", get(api_get_profile).put(api_update_profile))
         .route("/api/cluster/workers", get(api_cluster_workers))
         .route(
             "/api/internal/cluster/workers/register",
@@ -2856,6 +2863,40 @@ fn require_project_marketplace_producer(
             })),
         )
             .into_response())
+    }
+}
+
+async fn profile_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return Redirect::to(LOGIN_PATH).into_response();
+    };
+    let user = match state.platform.users.get_user(&owner) {
+        Ok(Some(user)) => user,
+        Ok(None) => return Redirect::to(LOGIN_PATH).into_response(),
+        Err(err) => return internal_error(err),
+    };
+    let resolved = state
+        .platform
+        .git_identity
+        .resolve_for_actor(Some(&owner), &owner);
+    match render_page(
+        &state,
+        "platform-profile",
+        "/profile",
+        json!({
+            "seo": {
+                "title": "Profile",
+                "description": "User profile and git identity"
+            },
+            "owner": owner,
+            "user": user,
+            "effective_git_identity": resolved,
+            "profile_api": "/api/profile",
+            "app_version": APP_VERSION,
+        }),
+    ) {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal_error(err),
     }
 }
 
@@ -8867,6 +8908,62 @@ async fn api_create_user(
     }
 }
 
+async fn api_get_profile(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    match state.platform.users.get_user(&owner) {
+        Ok(Some(user)) => {
+            let identity = state
+                .platform
+                .git_identity
+                .resolve_for_actor(Some(&owner), &owner);
+            Json(json!({"ok": true, "user": user, "effective_git_identity": identity}))
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": "user not found"})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_update_profile(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<UpdateUserSettingsRequest>,
+) -> Response {
+    let Some(owner) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    match state.platform.users.update_user_settings(&owner, &req) {
+        Ok(user) => {
+            let identity = state
+                .platform
+                .git_identity
+                .resolve_for_actor(Some(&owner), &owner);
+            Json(json!({"ok": true, "user": user, "effective_git_identity": identity}))
+                .into_response()
+        }
+        Err(err) if err.code == "PLATFORM_USER_NOT_FOUND" => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
+        )
+            .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
 async fn api_list_projects(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -11421,6 +11518,17 @@ fn git_identity_args(
     ]
 }
 
+fn git_failure_message(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    match (stderr.is_empty(), stdout.is_empty()) {
+        (false, false) => format!("{stderr}\n{stdout}"),
+        (false, true) => stderr,
+        (true, false) => stdout,
+        (true, true) => format!("git exited with status {}", output.status),
+    }
+}
+
 async fn api_git_commit(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -11493,10 +11601,9 @@ async fn api_git_commit(
         }
     };
     if !add_out.status.success() {
-        let stderr = String::from_utf8_lossy(&add_out.stderr).to_string();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": stderr})),
+            Json(json!({"ok": false, "error": git_failure_message(&add_out)})),
         )
             .into_response();
     }
@@ -11524,10 +11631,9 @@ async fn api_git_commit(
         }
     };
     if !commit_out.status.success() {
-        let stderr = String::from_utf8_lossy(&commit_out.stderr).to_string();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"ok": false, "error": stderr})),
+            Json(json!({"ok": false, "error": git_failure_message(&commit_out)})),
         )
             .into_response();
     }
@@ -11605,7 +11711,11 @@ async fn api_git_commit(
         };
 
         // Pull --rebase before push to handle diverged remote
-        let pull_out = std::process::Command::new("git")
+        let mut pull_cmd = std::process::Command::new("git");
+        for arg in &identity_args {
+            pull_cmd.arg(arg);
+        }
+        let pull_out = pull_cmd
             .arg("-C")
             .arg(&layout.repo_dir)
             .arg("pull")
@@ -11629,7 +11739,7 @@ async fn api_git_commit(
                     .arg("rebase")
                     .arg("--abort")
                     .output();
-                let raw = String::from_utf8_lossy(&o.stderr);
+                let raw = git_failure_message(o);
                 let safe = redact_auth_urls(&raw);
                 return (
                     StatusCode::CONFLICT,
@@ -11658,7 +11768,7 @@ async fn api_git_commit(
                     .into_response();
             }
             Ok(ref o) if !o.status.success() => {
-                let raw = String::from_utf8_lossy(&o.stderr);
+                let raw = git_failure_message(o);
                 let safe = redact_auth_urls(&raw);
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
