@@ -8,9 +8,11 @@
 
 use std::sync::Arc;
 
+use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::OriginalUri;
-use axum::http::{self, StatusCode, header};
-use axum::response::IntoResponse;
+use axum::http::{self, HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use base64::Engine as _;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::handler::server::{ServerHandler, tool::Extension};
 use rmcp::model::{
@@ -21,8 +23,13 @@ use rmcp::schemars::JsonSchema;
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, schemars, tool, tool_router};
 
-use crate::platform::model::{McpSession, ProjectAccessSubject, mcp_tool_capability};
+use crate::infra::execution::placement::ProjectRuntimePlacementTarget;
+use crate::platform::model::{McpSession, mcp_tool_capability};
 use crate::platform::services::{PlatformOps, PlatformService};
+
+const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
+const INTERNAL_MCP_SESSION_HEADER: &str = "x-zebflow-mcp-session";
+const MCP_PROXY_BODY_LIMIT: usize = 16 * 1024 * 1024;
 
 // ── Parameter structs (MCP schema only) ──────────────────────────────────────
 
@@ -1480,22 +1487,16 @@ impl ZebflowMcpHandler {
         let required_capability = mcp_tool_capability(tool_name)
             .ok_or_else(|| McpError::invalid_params(format!("Unknown tool '{tool_name}'"), None))?;
 
-        let subject = ProjectAccessSubject::mcp_session(&session.token);
-        match self.platform.authz.ensure_project_capability(
-            &subject,
-            &session.owner,
-            &session.project,
-            required_capability,
-        ) {
-            Ok(()) => Ok(()),
-            Err(_) => Err(McpError::invalid_params(
-                format!(
-                    "Tool '{tool_name}' requires capability '{}' which is not allowed in this session",
-                    required_capability.key()
-                ),
-                None,
-            )),
+        if session.capabilities.contains(&required_capability) {
+            return Ok(());
         }
+        Err(McpError::invalid_params(
+            format!(
+                "Tool '{tool_name}' requires capability '{}' which is not allowed in this session",
+                required_capability.key()
+            ),
+            None,
+        ))
     }
 }
 
@@ -1634,22 +1635,15 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
             move |mut req: axum::extract::Request, next: middleware::Next| {
                 let platform = platform_for_middleware.clone();
                 async move {
-                    let Some(token) = req
-                        .headers()
-                        .get(header::AUTHORIZATION)
-                        .and_then(|h| h.to_str().ok())
-                        .and_then(parse_bearer_token)
-                    else {
-                        return StatusCode::UNAUTHORIZED.into_response();
-                    };
-
-                    let Some(session) = platform.mcp_sessions.lookup(token) else {
-                        return StatusCode::UNAUTHORIZED.into_response();
-                    };
-
                     let Some((owner, project)) = mcp_project_scope_from_request(&req) else {
                         return StatusCode::BAD_REQUEST.into_response();
                     };
+
+                    let session = match mcp_session_from_request(&platform, req.headers()) {
+                        Some(session) => session,
+                        None => return StatusCode::UNAUTHORIZED.into_response(),
+                    };
+
                     if crate::platform::model::slug_segment(&session.owner)
                         != crate::platform::model::slug_segment(&owner)
                         || crate::platform::model::slug_segment(&session.project)
@@ -1658,12 +1652,202 @@ pub fn build_mcp_service<S: Clone + Send + Sync + 'static>(
                         return StatusCode::FORBIDDEN.into_response();
                     }
 
+                    match mcp_remote_project_worker_id(&platform, &owner, &project) {
+                        Ok(Some(worker_id)) => {
+                            return match forward_mcp_request_to_worker(
+                                &platform, req, &worker_id, &session,
+                            )
+                            .await
+                            {
+                                Ok(response) => response,
+                                Err(response) => response,
+                            };
+                        }
+                        Ok(None) => {}
+                        Err(response) => return response,
+                    }
+
                     req.extensions_mut().insert(session);
 
                     next.run(req).await
                 }
             },
         ))
+}
+
+fn mcp_session_from_request(platform: &PlatformService, headers: &HeaderMap) -> Option<McpSession> {
+    if let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(parse_bearer_token)
+        && let Some(session) = platform.mcp_sessions.lookup(token)
+    {
+        return Some(session);
+    }
+
+    if !has_valid_cluster_token(platform, headers) {
+        return None;
+    }
+    let encoded = headers
+        .get(INTERNAL_MCP_SESSION_HEADER)
+        .and_then(|h| h.to_str().ok())?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .ok()?;
+    let session: McpSession = serde_json::from_slice(&bytes).ok()?;
+    if session.enabled { Some(session) } else { None }
+}
+
+fn has_valid_cluster_token(platform: &PlatformService, headers: &HeaderMap) -> bool {
+    let Some(expected) = platform.cluster_bootstrap.join_token() else {
+        return false;
+    };
+    headers
+        .get(INTERNAL_CLUSTER_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
+fn mcp_remote_project_worker_id(
+    platform: &PlatformService,
+    owner: &str,
+    project: &str,
+) -> Result<Option<String>, Response> {
+    let placement = platform
+        .cluster_placement
+        .get(owner, project)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed reading project placement: {}", err.message),
+            )
+                .into_response()
+        })?;
+    let worker_id = match placement {
+        Some(record) if record.target == ProjectRuntimePlacementTarget::Worker => record.worker_id,
+        _ => None,
+    };
+    let local_id = platform.cluster_bootstrap.node_id();
+    if worker_id.as_deref() == Some(local_id.as_str()) {
+        return Ok(None);
+    }
+    Ok(worker_id)
+}
+
+async fn forward_mcp_request_to_worker(
+    platform: &PlatformService,
+    req: axum::extract::Request,
+    worker_id: &str,
+    session: &McpSession,
+) -> Result<Response, Response> {
+    let worker = platform
+        .cluster_registry
+        .get_worker(worker_id)
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed reading worker registry: {}", err.message),
+            )
+                .into_response()
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("office '{worker_id}' not found"),
+            )
+                .into_response()
+        })?;
+    let token = platform.cluster_bootstrap.join_token().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "cluster join token is not configured".to_string(),
+        )
+            .into_response()
+    })?;
+
+    let (parts, body) = req.into_parts();
+    let body = to_bytes(body, MCP_PROXY_BODY_LIMIT).await.map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("failed reading MCP request body: {err}"),
+        )
+            .into_response()
+    })?;
+
+    let original_uri = parts.extensions.get::<OriginalUri>();
+    let path_and_query = original_uri
+        .and_then(|uri| uri.path_and_query().map(|pq| pq.as_str().to_string()))
+        .or_else(|| parts.uri.path_and_query().map(|pq| pq.as_str().to_string()))
+        .unwrap_or_else(|| parts.uri.path().to_string());
+    let url = format!(
+        "{}{}",
+        worker.base_url.trim_end_matches('/'),
+        path_and_query
+    );
+    let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes()).map_err(|err| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unsupported MCP method '{}': {err}", parts.method),
+        )
+            .into_response()
+    })?;
+
+    let mut request = reqwest::Client::new()
+        .request(method, url)
+        .header(INTERNAL_CLUSTER_TOKEN_HEADER, token);
+    for (name, value) in parts.headers.iter() {
+        let header_name = name.as_str();
+        if header_name.eq_ignore_ascii_case("host")
+            || header_name.eq_ignore_ascii_case("content-length")
+            || header_name.eq_ignore_ascii_case("cookie")
+            || header_name.eq_ignore_ascii_case(INTERNAL_CLUSTER_TOKEN_HEADER)
+            || header_name.eq_ignore_ascii_case(INTERNAL_MCP_SESSION_HEADER)
+        {
+            continue;
+        }
+        request = request.header(name, value);
+    }
+
+    let session_bytes = serde_json::to_vec(session).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed serializing MCP session: {err}"),
+        )
+            .into_response()
+    })?;
+    let session_header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_bytes);
+    let response = request
+        .header(INTERNAL_MCP_SESSION_HEADER, session_header)
+        .body(body)
+        .send()
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("MCP worker proxy failed: {err}"),
+            )
+                .into_response()
+        })?;
+    Ok(reqwest_response_to_axum(response).await)
+}
+
+async fn reqwest_response_to_axum(response: reqwest::Response) -> Response {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.bytes().await.unwrap_or_else(|_| Bytes::new());
+    let mut builder = Response::builder().status(status);
+    for (name, value) in headers.iter() {
+        if name.as_str().eq_ignore_ascii_case("connection")
+            || name.as_str().eq_ignore_ascii_case("transfer-encoding")
+        {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    builder
+        .body(Body::from(body))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
 }
 
 fn parse_bearer_token(header_value: &str) -> Option<&str> {
