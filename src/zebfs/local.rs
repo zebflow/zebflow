@@ -21,6 +21,18 @@ impl LocalZebFs {
         &self.root
     }
 
+    /// Resolves a ZebFS object path to the backend-relative path and local
+    /// filesystem path without reading the object bytes.
+    ///
+    /// This is for engines such as DataFusion, GDAL, and map serving that can
+    /// stream from a file path themselves. Callers must still check metadata
+    /// when existence is required.
+    pub fn resolve_object_path(&self, path: &str) -> Result<(String, PathBuf), ZebFsError> {
+        let rel = normalize_object_path(path)?;
+        let abs = self.abs_path(&rel)?;
+        Ok((rel, abs))
+    }
+
     /// Writes one object, creating parent directories as needed.
     pub fn put(&self, path: &str, bytes: &[u8]) -> Result<ZebFsStat, ZebFsError> {
         let rel = normalize_object_path(path)?;
