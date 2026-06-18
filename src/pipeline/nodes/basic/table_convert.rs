@@ -1,7 +1,9 @@
 //! n.table.convert — convert table-like data between ZebFS objects and JSON payloads.
 
 use std::collections::HashSet;
+use std::fs;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -15,6 +17,8 @@ use datafusion::arrow::{
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
+use datafusion::dataframe::DataFrameWriteOptions;
+use datafusion::prelude::{CsvReadOptions, SessionContext};
 use parquet::{
     arrow::{ArrowWriter, arrow_reader::ParquetRecordBatchReaderBuilder},
     basic::Compression,
@@ -37,6 +41,7 @@ use crate::zebfs::{LocalZebFs, normalize_object_path};
 pub const NODE_KIND: &str = "n.table.convert";
 const INPUT_PIN_IN: &str = "in";
 const OUTPUT_PIN_OUT: &str = "out";
+const MAX_MATERIALIZED_OBJECT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -357,6 +362,20 @@ impl NodeHandler for Node {
             .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
         let zebfs = LocalZebFs::new(layout.files_dir);
 
+        if non_empty(self.config.to_path.as_deref()).is_none() && !self.config.to_json {
+            return Err(PipelineError::new(
+                "FW_NODE_TABLE_CONVERT",
+                "set --to to write a ZebFS object or --to-json to emit rows downstream",
+            ));
+        }
+
+        if let Some(output) = self
+            .try_streaming_file_conversion(&input, &zebfs, owner, project)
+            .await?
+        {
+            return Ok(output);
+        }
+
         let source = self.read_source(&input, &zebfs)?;
         let from_format = source.format;
         let mut rows = rows_from_source(source.value, from_format)?;
@@ -381,13 +400,6 @@ impl NodeHandler for Node {
             url = Some(format!("/fs/{owner}/{project}/{rel_path}"));
             to_path = Some(rel_path);
             to_format_value = Some(to_format.as_str().to_string());
-        }
-
-        if to_path.is_none() && !self.config.to_json {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_CONVERT",
-                "set --to to write a ZebFS object or --to-json to emit rows downstream",
-            ));
         }
 
         let preview_len = self.config.preview.unwrap_or(0).min(rows.len());
@@ -454,6 +466,7 @@ impl Node {
                     Some(&rel_path),
                     "source",
                 )?;
+                ensure_materialization_safe(zebfs, &rel_path)?;
                 let object = zebfs
                     .get(&rel_path)
                     .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
@@ -479,6 +492,7 @@ impl Node {
                         Some(&rel_path),
                         "source",
                     )?;
+                    ensure_materialization_safe(zebfs, &rel_path)?;
                     let object = zebfs.get(&rel_path).map_err(|err| {
                         PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string())
                     })?;
@@ -501,6 +515,200 @@ impl Node {
                 "set --from for a ZebFS object or --from-expr for upstream rows",
             )),
         }
+    }
+
+    async fn try_streaming_file_conversion(
+        &self,
+        input: &NodeExecutionInput,
+        zebfs: &LocalZebFs,
+        owner: &str,
+        project: &str,
+    ) -> Result<Option<NodeExecutionOutput>, PipelineError> {
+        if self.config.to_json {
+            return Ok(None);
+        }
+        let Some(to_path) = non_empty(self.config.to_path.as_deref()) else {
+            return Ok(None);
+        };
+        let Some(source_path) = self.resolve_streaming_source_path(input)? else {
+            return Ok(None);
+        };
+
+        let from_format = normalize_format(
+            self.config.from_format.as_deref(),
+            Some(&source_path),
+            "source",
+        )?;
+        let (rel_to, abs_to) = zebfs
+            .resolve_object_path(to_path)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        let to_format =
+            normalize_format(self.config.to_format.as_deref(), Some(&rel_to), "target")?;
+        if from_format != TableFormat::Csv || to_format != TableFormat::Parquet {
+            return Ok(None);
+        }
+
+        let (rel_from, abs_from) = zebfs
+            .resolve_object_path(&source_path)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+        ensure_local_table_file(&abs_from)?;
+
+        let columns = stream_csv_to_parquet(&abs_from, &abs_to, self.config.limit).await?;
+        let size = fs::metadata(&abs_to)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let url = format!("/fs/{owner}/{project}/{rel_to}");
+
+        let mut table = Map::new();
+        table.insert("from".to_string(), Value::String(rel_from));
+        table.insert("to".to_string(), Value::String(rel_to.clone()));
+        table.insert("url".to_string(), Value::String(url));
+        table.insert("from_format".to_string(), Value::String("csv".to_string()));
+        table.insert(
+            "to_format".to_string(),
+            Value::String("parquet".to_string()),
+        );
+        table.insert("rows".to_string(), Value::Null);
+        table.insert("columns".to_string(), json!(columns));
+        table.insert("preview".to_string(), Value::Array(Vec::new()));
+        table.insert("streamed".to_string(), Value::Bool(true));
+        table.insert("size".to_string(), json!(size));
+
+        Ok(Some(NodeExecutionOutput {
+            output_pins: vec![OUTPUT_PIN_OUT.to_string()],
+            payload: json!({ "table": table }),
+            trace: vec![
+                format!("node_kind={NODE_KIND} from_format=csv to_format=parquet streamed=true"),
+                format!("to={rel_to} bytes={size}"),
+            ],
+        }))
+    }
+
+    fn resolve_streaming_source_path(
+        &self,
+        input: &NodeExecutionInput,
+    ) -> Result<Option<String>, PipelineError> {
+        let from_path = non_empty(self.config.from_path.as_deref());
+        let from_expr = non_empty(self.config.from_expr.as_deref());
+        match (from_path, from_expr) {
+            (Some(_), Some(_)) => Err(PipelineError::new(
+                "FW_NODE_TABLE_CONVERT",
+                "use either --from or --from-expr, not both",
+            )),
+            (Some(path), None) => Ok(Some(path.to_string())),
+            (None, Some(expr)) => {
+                let value = eval_deno_expr(
+                    self.language.as_ref(),
+                    expr,
+                    &input.payload,
+                    &input.metadata,
+                )?;
+                Ok(file_ref_to_rel_path(&value))
+            }
+            (None, None) => Err(PipelineError::new(
+                "FW_NODE_TABLE_CONVERT",
+                "set --from for a ZebFS object or --from-expr for upstream rows",
+            )),
+        }
+    }
+}
+
+fn ensure_materialization_safe(zebfs: &LocalZebFs, rel_path: &str) -> Result<(), PipelineError> {
+    let stat = zebfs
+        .head(rel_path)
+        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+    if stat.size > MAX_MATERIALIZED_OBJECT_BYTES {
+        return Err(PipelineError::new(
+            "FW_NODE_TABLE_CONVERT_LIMIT",
+            format!(
+                "source object is {}; table.convert would materialize it in node JSON. Use the streamed CSV-to-Parquet path or reduce the input before converting",
+                format_bytes(stat.size)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_local_table_file(path: &Path) -> Result<(), PipelineError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(PipelineError::new(
+            "FW_NODE_TABLE_CONVERT",
+            "table source path is not a file",
+        )),
+        Err(_) => Err(PipelineError::new(
+            "FW_NODE_TABLE_CONVERT",
+            "table source object not found",
+        )),
+    }
+}
+
+async fn stream_csv_to_parquet(
+    from_abs: &Path,
+    to_abs: &Path,
+    limit: Option<usize>,
+) -> Result<Vec<String>, PipelineError> {
+    if let Some(parent) = to_abs.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+    }
+
+    let ctx = SessionContext::new();
+    let from_path = from_abs.to_string_lossy().into_owned();
+    let mut df = ctx
+        .read_csv(from_path.as_str(), CsvReadOptions::new().has_header(true))
+        .await
+        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT_CSV", err.to_string()))?;
+    if let Some(limit) = limit {
+        df = df
+            .limit(0, Some(limit))
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT_LIMIT", err.to_string()))?;
+    }
+    let columns = df
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect::<Vec<_>>();
+
+    let tmp_abs = temp_output_path(to_abs, "parquet");
+    let tmp_path = tmp_abs.to_string_lossy().into_owned();
+    let write_result = df
+        .write_parquet(
+            tmp_path.as_str(),
+            DataFrameWriteOptions::new().with_single_file_output(true),
+            None,
+        )
+        .await;
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_abs);
+        return Err(PipelineError::new(
+            "FW_NODE_TABLE_CONVERT_PARQUET",
+            err.to_string(),
+        ));
+    }
+    fs::rename(&tmp_abs, to_abs)
+        .map_err(|err| PipelineError::new("FW_NODE_TABLE_CONVERT", err.to_string()))?;
+    Ok(columns)
+}
+
+fn temp_output_path(path: &Path, extension: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("table");
+    path.with_file_name(format!(
+        ".{file_name}.{}.tmp.{extension}",
+        std::process::id()
+    ))
+}
+
+fn format_bytes(size: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    if size >= MIB {
+        format!("{:.1} MiB", size as f64 / MIB as f64)
+    } else {
+        format!("{size} bytes")
     }
 }
 
@@ -1201,5 +1409,24 @@ mod tests {
         assert_eq!(decoded[0]["title"], "A");
         assert_eq!(decoded[0]["score"], 1.5);
         assert_eq!(decoded[1]["active"], false);
+    }
+
+    #[tokio::test]
+    async fn streams_csv_to_parquet_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let source = dir.path().join("input.csv");
+        let target = dir.path().join("output.parquet");
+        std::fs::write(&source, "id,name\n1,Ada\n2,Bob\n").expect("write csv");
+
+        let columns = stream_csv_to_parquet(&source, &target, None)
+            .await
+            .expect("stream csv to parquet");
+
+        assert_eq!(columns, vec!["id".to_string(), "name".to_string()]);
+        let rows = rows_from_parquet_bytes(std::fs::read(&target).expect("read parquet"))
+            .expect("decode parquet");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], 1);
+        assert_eq!(rows[1]["name"], "Bob");
     }
 }

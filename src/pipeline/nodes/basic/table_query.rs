@@ -1,5 +1,6 @@
 //! Table query node — SQL over one or more table sources.
 
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -31,6 +32,7 @@ use super::util::{eval_deno_expr, metadata_scope, resolve_array_values, resolve_
 pub const NODE_KIND: &str = "n.table.query";
 pub const INPUT_PIN_IN: &str = "in";
 pub const OUTPUT_PIN_OUT: &str = "out";
+const MAX_INLINE_ROWS: usize = 10_000;
 
 pub fn definition() -> NodeDefinition {
     NodeDefinition {
@@ -82,6 +84,13 @@ pub fn definition() -> NodeDefinition {
                 flag: "--query".to_string(),
                 config_key: "query".to_string(),
                 description: "SQL query. Body SQL after -- also writes this field.".to_string(),
+                kind: DslFlagKind::Scalar,
+                required: false,
+            },
+            DslFlag {
+                flag: "--sql".to_string(),
+                config_key: "query".to_string(),
+                description: "Alias for --query.".to_string(),
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
@@ -423,6 +432,12 @@ impl NodeHandler for Node {
         )?;
         let sql = normalize_select_sql(&raw_sql)?;
         let params = resolve_params(&self.config, &self.language, &input)?;
+        if non_empty(self.config.to_path.as_deref()).is_none() && !self.config.to_json {
+            return Err(PipelineError::new(
+                "FW_NODE_TABLE_QUERY",
+                "set --to to write a ZebFS object or --to-json to emit rows downstream",
+            ));
+        }
         let (owner, project, ..) = metadata_scope(&input.metadata)?;
         let layout = self
             .platform
@@ -438,9 +453,9 @@ impl NodeHandler for Node {
             &sql,
             &params,
             &zebfs,
-            &layout.files_dir,
             &input,
             self.language.as_ref(),
+            self.config.limit.unwrap_or(MAX_INLINE_ROWS),
         )
         .await?;
         let mut rows = rows;
@@ -465,13 +480,6 @@ impl NodeHandler for Node {
             url = Some(format!("/fs/{owner}/{project}/{rel_path}"));
             to_path = Some(rel_path);
             to_format_value = Some(format.as_str().to_string());
-        }
-
-        if to_path.is_none() && !self.config.to_json {
-            return Err(PipelineError::new(
-                "FW_NODE_TABLE_QUERY",
-                "set --to to write a ZebFS object or --to-json to emit rows downstream",
-            ));
         }
 
         let preview_len = self.config.preview.unwrap_or(0).min(rows.len());
@@ -523,9 +531,9 @@ async fn execute_geodatafusion_engine(
     sql: &str,
     params: &[Value],
     zebfs: &LocalZebFs,
-    files_dir: &Path,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
+    max_inline_rows: usize,
 ) -> Result<QueryRows, PipelineError> {
     let ctx = SessionContext::new();
     geodatafusion::register(&ctx);
@@ -537,19 +545,25 @@ async fn execute_geodatafusion_engine(
             continue;
         }
         let binding = source_config.to_binding()?;
-        register_source(
-            &ctx, zebfs, files_dir, &binding, input, language, &mut temps,
-        )
-        .await?;
+        register_source(&ctx, zebfs, &binding, input, language, &mut temps).await?;
         source_labels.push(json!({
             "alias": binding.alias,
             "source": binding.source,
         }));
     }
 
-    let batches = execute_geodatafusion_query(&ctx, sql, params).await?;
+    let bounded_sql = bounded_select_sql(sql, max_inline_rows);
+    let batches = execute_geodatafusion_query(&ctx, &bounded_sql, params).await?;
     let mut rows = Vec::new();
     for batch in batches {
+        if rows.len().saturating_add(batch.num_rows()) > max_inline_rows {
+            return Err(PipelineError::new(
+                "FW_NODE_TABLE_QUERY_LIMIT",
+                format!(
+                    "query would materialize more than {max_inline_rows} rows in node JSON; add SQL LIMIT, set --limit, or write a smaller result"
+                ),
+            ));
+        }
         rows.extend(
             record_batch_to_rows(&batch)
                 .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?,
@@ -560,6 +574,15 @@ async fn execute_geodatafusion_engine(
         rows,
         source_labels,
     })
+}
+
+fn bounded_select_sql(sql: &str, max_inline_rows: usize) -> String {
+    let fetch = if max_inline_rows == 0 {
+        0
+    } else {
+        max_inline_rows.saturating_add(1)
+    };
+    format!("SELECT * FROM ({sql}) AS zf_table_query_limited LIMIT {fetch}")
 }
 
 #[derive(Debug, Clone)]
@@ -619,7 +642,6 @@ fn valid_alias(alias: &str) -> bool {
 async fn register_source(
     ctx: &SessionContext,
     zebfs: &LocalZebFs,
-    files_dir: &Path,
     binding: &SourceBinding,
     input: &NodeExecutionInput,
     language: &dyn LanguageEngine,
@@ -628,36 +650,7 @@ async fn register_source(
     if binding.source.trim_start().starts_with('$') {
         let value = eval_deno_expr(language, &binding.source, &input.payload, &input.metadata)?;
         if let Some(path) = file_ref_to_rel_path(&value) {
-            let rel = normalize_object_path(&path)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-            let _ = zebfs
-                .get(&rel)
-                .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-            let abs = files_dir.join(&rel);
-            let path = abs.to_string_lossy();
-            match source_format(&rel)? {
-                TableFormat::Csv => {
-                    ctx.register_csv(
-                        binding.alias.as_str(),
-                        path,
-                        CsvReadOptions::new().has_header(true),
-                    )
-                    .await
-                }
-                TableFormat::Json | TableFormat::Ndjson => {
-                    ctx.register_json(binding.alias.as_str(), path, JsonReadOptions::default())
-                        .await
-                }
-                TableFormat::Parquet => {
-                    ctx.register_parquet(
-                        binding.alias.as_str(),
-                        path,
-                        ParquetReadOptions::default(),
-                    )
-                    .await
-                }
-            }
-            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_REGISTER", err.to_string()))?;
+            register_table_path(ctx, zebfs, binding.alias.as_str(), &path).await?;
             return Ok(());
         }
         let rows = rows_from_json_value(value);
@@ -685,32 +678,61 @@ async fn register_source(
         return Ok(());
     }
 
-    let rel = normalize_object_path(&binding.source)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-    let _ = zebfs
-        .get(&rel)
-        .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
-    let abs = files_dir.join(&rel);
-    let path = abs.to_string_lossy();
-    match source_format(&rel)? {
+    register_table_path(ctx, zebfs, binding.alias.as_str(), &binding.source).await
+}
+
+async fn register_table_path(
+    ctx: &SessionContext,
+    zebfs: &LocalZebFs,
+    alias: &str,
+    source: &str,
+) -> Result<(), PipelineError> {
+    let (format_label, table_path) = if is_external_table_uri(source) {
+        (source.to_string(), source.trim().to_string())
+    } else {
+        let (rel, abs) = zebfs
+            .resolve_object_path(source)
+            .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY", err.to_string()))?;
+        ensure_local_table_file(&abs)?;
+        (rel, abs.to_string_lossy().into_owned())
+    };
+    match source_format(&format_label)? {
         TableFormat::Csv => {
-            ctx.register_csv(
-                binding.alias.as_str(),
-                path,
-                CsvReadOptions::new().has_header(true),
-            )
-            .await
+            ctx.register_csv(alias, table_path, CsvReadOptions::new().has_header(true))
+                .await
         }
         TableFormat::Json | TableFormat::Ndjson => {
-            ctx.register_json(binding.alias.as_str(), path, JsonReadOptions::default())
+            ctx.register_json(alias, table_path, JsonReadOptions::default())
                 .await
         }
         TableFormat::Parquet => {
-            ctx.register_parquet(binding.alias.as_str(), path, ParquetReadOptions::default())
+            ctx.register_parquet(alias, table_path, ParquetReadOptions::default())
                 .await
         }
     }
     .map_err(|err| PipelineError::new("FW_NODE_TABLE_QUERY_REGISTER", err.to_string()))
+}
+
+fn ensure_local_table_file(path: &Path) -> Result<(), PipelineError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(PipelineError::new(
+            "FW_NODE_TABLE_QUERY",
+            "table source path is not a file",
+        )),
+        Err(_) => Err(PipelineError::new(
+            "FW_NODE_TABLE_QUERY",
+            "table source object not found",
+        )),
+    }
+}
+
+fn is_external_table_uri(source: &str) -> bool {
+    let source = source.trim().to_ascii_lowercase();
+    source.starts_with("s3://")
+        || source.starts_with("s3a://")
+        || source.starts_with("http://")
+        || source.starts_with("https://")
 }
 
 async fn execute_geodatafusion_query(
@@ -846,4 +868,29 @@ fn option_string(value: Option<String>) -> Value {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_external_table_uris() {
+        assert!(is_external_table_uri("s3://bucket/path/data.parquet"));
+        assert!(is_external_table_uri("https://example.test/data.csv"));
+        assert!(!is_external_table_uri("datasets/local.parquet"));
+    }
+
+    #[test]
+    fn wraps_query_with_materialization_limit() {
+        let sql = bounded_select_sql("SELECT * FROM roads", 10);
+        assert_eq!(
+            sql,
+            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 11"
+        );
+        assert_eq!(
+            bounded_select_sql("SELECT * FROM roads", 0),
+            "SELECT * FROM (SELECT * FROM roads) AS zf_table_query_limited LIMIT 0"
+        );
+    }
 }
