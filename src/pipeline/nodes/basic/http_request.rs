@@ -21,6 +21,7 @@ use crate::language::LanguageEngine;
 use crate::pipeline::nodes::basic::file_ref::{
     FileRefInput, is_file_ref, read_file_ref_bytes, write_tmp_file_ref,
 };
+use crate::pipeline::security::OutboundHttpPolicy;
 use crate::pipeline::{
     NodeDefinition, PipelineError,
     nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandler},
@@ -239,6 +240,18 @@ struct SecureRequestTemplate {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+struct SecureRequestEgressPolicy {
+    #[serde(default)]
+    allow_private: bool,
+    #[serde(default)]
+    allowed_hosts: Vec<String>,
+    #[serde(default)]
+    allowed_methods: Vec<String>,
+    #[serde(default)]
+    allowed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 struct SecureRequestSecret {
     #[serde(default)]
     request: SecureRequestTemplate,
@@ -246,8 +259,11 @@ struct SecureRequestSecret {
     variables: Vec<SecureRequestVariableDef>,
     #[serde(default)]
     secrets: BTreeMap<String, String>,
+    #[serde(default)]
+    egress: SecureRequestEgressPolicy,
 }
 
+#[derive(Debug)]
 struct PreparedRequest {
     url: String,
     visible_url: String,
@@ -257,6 +273,7 @@ struct PreparedRequest {
     body: Option<Value>,
     redact_tokens: Vec<String>,
     credential_id: Option<String>,
+    egress_policy: Option<OutboundHttpPolicy>,
 }
 
 pub struct Node {
@@ -432,6 +449,7 @@ impl NodeHandler for Node {
                         body: body_value,
                         redact_tokens: vec![token],
                         credential_id: Some(credential_id.to_string()),
+                        egress_policy: None,
                     }
                 }
                 other => {
@@ -498,13 +516,22 @@ impl NodeHandler for Node {
                 body: body_value,
                 redact_tokens: Vec::new(),
                 credential_id: None,
+                egress_policy: None,
             }
         };
 
         let request_visible_url = prepared.visible_url.clone();
         let request_method = prepared.visible_method.clone();
         let request_credential_id = prepared.credential_id.clone();
-        crate::pipeline::security::validate_outbound_http_url(&prepared.url, NODE_KIND)?;
+        if let Some(policy) = &prepared.egress_policy {
+            crate::pipeline::security::validate_outbound_http_url_with_policy(
+                &prepared.url,
+                NODE_KIND,
+                policy,
+            )?;
+        } else {
+            crate::pipeline::security::validate_outbound_http_url(&prepared.url, NODE_KIND)?;
+        }
 
         // ── Build reqwest client + request ───────────────────────────────────────
         let client = reqwest::Client::builder()
@@ -884,6 +911,7 @@ fn build_request_from_secure_credential(
     }
 
     let method = render_secure_request_template(&secret.request.method, &tokens).to_uppercase();
+    let egress_policy = secure_request_egress_policy(&secret.egress, &url, &method)?;
     let headers = secret
         .request
         .headers
@@ -907,7 +935,75 @@ fn build_request_from_secure_credential(
         body,
         redact_tokens,
         credential_id: Some(credential_id.to_string()),
+        egress_policy,
     })
+}
+
+fn secure_request_egress_policy(
+    egress: &SecureRequestEgressPolicy,
+    url: &str,
+    method: &str,
+) -> Result<Option<OutboundHttpPolicy>, PipelineError> {
+    if egress.allow_private
+        && egress
+            .allowed_hosts
+            .iter()
+            .map(|host| host.trim())
+            .all(str::is_empty)
+    {
+        return Err(PipelineError::new(
+            "FW_NODE_HTTP_REQUEST_EGRESS",
+            "secure_request egress.allow_private requires at least one egress.allowed_hosts entry",
+        ));
+    }
+
+    if !egress.allowed_methods.is_empty() {
+        let method = method.trim().to_ascii_uppercase();
+        let allowed = egress.allowed_methods.iter().any(|allowed| {
+            let allowed = allowed.trim();
+            !allowed.is_empty() && allowed.eq_ignore_ascii_case(&method)
+        });
+        if !allowed {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_REQUEST_EGRESS",
+                format!("secure_request egress does not allow method {method}"),
+            ));
+        }
+    }
+
+    if !egress.allowed_paths.is_empty() {
+        let parsed = reqwest::Url::parse(url).map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_HTTP_REQUEST_EGRESS",
+                format!("secure_request resolved URL is invalid: {err}"),
+            )
+        })?;
+        let path = parsed.path();
+        let allowed = egress
+            .allowed_paths
+            .iter()
+            .map(|allowed| allowed.trim())
+            .any(|allowed| !allowed.is_empty() && allowed == path);
+        if !allowed {
+            return Err(PipelineError::new(
+                "FW_NODE_HTTP_REQUEST_EGRESS",
+                format!("secure_request egress does not allow path {path}"),
+            ));
+        }
+    }
+
+    if egress.allow_private {
+        return Ok(Some(OutboundHttpPolicy {
+            allow_private: true,
+            allowed_hosts: egress
+                .allowed_hosts
+                .iter()
+                .map(|host| host.trim().to_string())
+                .filter(|host| !host.is_empty())
+                .collect(),
+        }));
+    }
+    Ok(None)
 }
 
 fn resolve_secure_request_bindings(
@@ -1021,8 +1117,9 @@ mod tests {
 
     use crate::language::NoopLanguageEngine;
     use crate::pipeline::nodes::{NodeExecutionInput, NodeHandler};
+    use crate::pipeline::security::validate_outbound_http_url_with_policy;
 
-    use super::{Config, INPUT_PIN_IN, Node, build_request_from_secure_credential};
+    use super::{Config, INPUT_PIN_IN, NODE_KIND, Node, build_request_from_secure_credential};
 
     #[tokio::test(flavor = "current_thread")]
     async fn self_call_to_private_network_is_blocked_from_same_server_request_handler() {
@@ -1128,5 +1225,81 @@ mod tests {
             "https://api.uinsgd.ac.id/salam/v1/index.php/auth/login"
         );
         assert_eq!(prepared.method, "POST");
+    }
+
+    #[test]
+    fn secure_request_private_egress_allows_exact_host() {
+        let prepared = build_request_from_secure_credential(
+            "qwen-embedding-service",
+            &NoopLanguageEngine,
+            &Config::default(),
+            &json!({
+                "request": {
+                    "method": "POST",
+                    "url": "http://10.0.0.5/embed"
+                },
+                "egress": {
+                    "allow_private": true,
+                    "allowed_hosts": ["10.0.0.5"],
+                    "allowed_methods": ["POST"],
+                    "allowed_paths": ["/embed"]
+                }
+            }),
+            &json!({}),
+            &json!({}),
+        )
+        .expect("build prepared request");
+
+        let policy = prepared.egress_policy.expect("egress policy");
+        validate_outbound_http_url_with_policy(&prepared.url, NODE_KIND, &policy)
+            .expect("private host explicitly allowed by credential");
+    }
+
+    #[test]
+    fn secure_request_private_egress_requires_allowed_hosts() {
+        let err = build_request_from_secure_credential(
+            "bad-internal-service",
+            &NoopLanguageEngine,
+            &Config::default(),
+            &json!({
+                "request": {
+                    "method": "POST",
+                    "url": "http://10.0.0.5/embed"
+                },
+                "egress": {
+                    "allow_private": true
+                }
+            }),
+            &json!({}),
+            &json!({}),
+        )
+        .expect_err("missing allowed_hosts should fail");
+
+        assert_eq!(err.code, "FW_NODE_HTTP_REQUEST_EGRESS");
+    }
+
+    #[test]
+    fn secure_request_private_egress_enforces_allowed_path() {
+        let err = build_request_from_secure_credential(
+            "qwen-embedding-service",
+            &NoopLanguageEngine,
+            &Config::default(),
+            &json!({
+                "request": {
+                    "method": "POST",
+                    "url": "http://10.0.0.5/not-embed"
+                },
+                "egress": {
+                    "allow_private": true,
+                    "allowed_hosts": ["10.0.0.5"],
+                    "allowed_paths": ["/embed"]
+                }
+            }),
+            &json!({}),
+            &json!({}),
+        )
+        .expect_err("path outside allowlist should fail");
+
+        assert_eq!(err.code, "FW_NODE_HTTP_REQUEST_EGRESS");
     }
 }

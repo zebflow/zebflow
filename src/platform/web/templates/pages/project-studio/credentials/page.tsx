@@ -53,6 +53,14 @@ const FALLBACK_KINDS = [
 
 const REQUEST_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
+function listToText(value: any): string {
+  return Array.isArray(value) ? value.map((item) => String(item ?? "")).filter(Boolean).join("\n") : "";
+}
+
+function textToList(value: string): string[] {
+  return String(value || "").split(/[\n,]+/).map((item) => item.trim()).filter(Boolean);
+}
+
 function defaultSecretForKind(kind: string, types: any[]): Record<string, any> {
   // Complex types with interactive defaults
   if (kind === "oauth2") {
@@ -481,6 +489,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
     const request = secret.request && typeof secret.request === "object" ? secret.request : {};
     const variables = Array.isArray(secret.variables) ? secret.variables : [];
     const secrets = secret.secrets && typeof secret.secrets === "object" ? secret.secrets : {};
+    const egress = secret.egress && typeof secret.egress === "object" ? secret.egress : {};
     const requestMethod = String(request.method || "GET");
     const requestUrl = String(request.url || "");
     const requestBody = String(request.body || "");
@@ -489,6 +498,13 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
       ...secret,
       request: {
         ...request,
+        ...patch,
+      },
+    });
+    const updateEgress = (patch: Record<string, any>) => onChange("__json__", {
+      ...secret,
+      egress: {
+        ...egress,
         ...patch,
       },
     });
@@ -534,6 +550,49 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
             className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
           />
         </Field>
+
+        <div className="rounded-md border border-ui-border bg-surface-1 px-3 py-3">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-body">
+            <input
+              type="checkbox"
+              checked={!!egress.allow_private}
+              onChange={(e: any) => updateEgress({ allow_private: !!e.target.checked })}
+            />
+            Allow private/internal egress
+          </label>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="Allowed Hosts" className="col-span-2" description="Exact hosts allowed when private egress is enabled. One per line.">
+              <textarea
+                value={listToText(egress.allowed_hosts)}
+                onChange={(e) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
+                onInput={(e: any) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
+                rows={3}
+                placeholder={"goveyes-qwen3-embedding-8b\ngoveyes-qwen3-embedding-8b.main-app-cluster.svc.cluster.local"}
+                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+              />
+            </Field>
+            <Field label="Allowed Paths" description="Optional exact URL paths. Blank allows the template path.">
+              <textarea
+                value={listToText(egress.allowed_paths)}
+                onChange={(e) => updateEgress({ allowed_paths: textToList(e.target.value) })}
+                onInput={(e: any) => updateEgress({ allowed_paths: textToList(e.target.value) })}
+                rows={3}
+                placeholder="/embed"
+                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+              />
+            </Field>
+            <Field label="Allowed Methods" description="Optional methods. Blank allows the template method.">
+              <textarea
+                value={listToText(egress.allowed_methods)}
+                onChange={(e) => updateEgress({ allowed_methods: textToList(e.target.value).map((item) => item.toUpperCase()) })}
+                onInput={(e: any) => updateEgress({ allowed_methods: textToList(e.target.value).map((item) => item.toUpperCase()) })}
+                rows={3}
+                placeholder="POST"
+                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
+              />
+            </Field>
+          </div>
+        </div>
 
         <Field label="Secret Placeholders" description="These values stay in the credential and can be referenced as placeholders in the request template.">
           <KeyValueEditor
