@@ -1,11 +1,15 @@
 //! `n.logic.foreach` — explicit ordered multi-emission node.
 //!
 //! Evaluates `items_expr` to an array and emits one downstream
-//! run per item on the `item` pin. Emitted payloads preserve the original object payload and add:
+//! run per item on the `item` pin. Emitted payloads are item-only by default:
 //!
 //! - `item`
 //! - `index`
 //! - `count`
+//!
+//! This deliberately avoids cloning a large parent payload into every emitted
+//! item. Use `--keep-input` only when the downstream node truly needs the full
+//! upstream payload alongside each item.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -63,6 +67,13 @@ pub fn definition() -> NodeDefinition {
                 kind: DslFlagKind::Scalar,
                 required: false,
             },
+            DslFlag {
+                flag: "--keep-input".to_string(),
+                config_key: "keep_input".to_string(),
+                description: "Include the full upstream payload in every emitted item. Off by default to avoid fan-out amplification.".to_string(),
+                kind: DslFlagKind::Bool,
+                required: false,
+            },
         ],
         fields: {
             use crate::pipeline::model::{NodeFieldDef, NodeFieldType, SelectOptionDef};
@@ -94,12 +105,21 @@ pub fn definition() -> NodeDefinition {
                     help: Some("Optional chunk size for large collections.".to_string()),
                     ..Default::default()
                 },
+                NodeFieldDef {
+                    name: "keep_input".to_string(),
+                    label: "Keep Input".to_string(),
+                    field_type: NodeFieldType::Checkbox,
+                    help: Some("When enabled, each emitted payload includes the full upstream input. Leave off for large payloads.".to_string()),
+                    default_value: Some(json!(false)),
+                    ..Default::default()
+                },
             ]
         },
         layout: vec![
             LayoutItem::Field("dispatch".to_string()),
             LayoutItem::Field("items_expr".to_string()),
             LayoutItem::Field("chunk_size".to_string()),
+            LayoutItem::Field("keep_input".to_string()),
         ],
         ai_tool: Default::default(),
         ..Default::default()
@@ -113,6 +133,8 @@ pub struct Config {
     pub dispatch: String,
     #[serde(default)]
     pub chunk_size: Option<usize>,
+    #[serde(default)]
+    pub keep_input: bool,
 }
 
 fn default_dispatch() -> String {
@@ -186,7 +208,21 @@ fn compile_items_expr(
         .map_err(|err| PipelineError::new("FW_NODE_LOGIC_FOREACH_COMPILE", err.to_string()))
 }
 
-fn build_emission_payload(base: &Value, item: Value, index: usize, count: usize) -> Value {
+fn build_emission_payload(
+    base: &Value,
+    item: Value,
+    index: usize,
+    count: usize,
+    keep_input: bool,
+) -> Value {
+    if !keep_input {
+        return json!({
+            "item": item,
+            "index": index,
+            "count": count,
+        });
+    }
+
     match base {
         Value::Object(map) => {
             let mut next = map.clone();
@@ -299,10 +335,17 @@ impl NodeHandler for Node {
             .enumerate()
             .map(|(index, item)| NodeExecutionOutput {
                 output_pins: vec![OUTPUT_PIN_ITEM.to_string()],
-                payload: build_emission_payload(&input.payload, item, index, count),
+                payload: build_emission_payload(
+                    &input.payload,
+                    item,
+                    index,
+                    count,
+                    self.config.keep_input,
+                ),
                 trace: vec![
                     format!("node_kind={NODE_KIND}"),
                     format!("dispatch={}", self.config.dispatch),
+                    format!("keep_input={}", self.config.keep_input),
                     format!("index={index}"),
                     format!("count={count}"),
                 ],

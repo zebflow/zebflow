@@ -437,7 +437,6 @@ fn take_private_redact_tokens(payload: &mut Value) -> Vec<String> {
     take_private_tokens(payload, "__zf_private_redact")
 }
 
-#[cfg(test)]
 fn take_private_trace_redact_tokens(payload: &mut Value) -> Vec<String> {
     take_private_tokens(payload, "__zf_private_trace_redact")
 }
@@ -578,6 +577,123 @@ fn redact_json_value(
         ),
         other => other.clone(),
     }
+}
+
+const TRACE_SUMMARY_MAX_DEPTH: usize = 8;
+const TRACE_SUMMARY_MAX_OBJECT_KEYS: usize = 48;
+const TRACE_SUMMARY_MAX_ARRAY_ITEMS: usize = 16;
+const TRACE_SUMMARY_PREVIEW_ITEMS: usize = 6;
+const TRACE_SUMMARY_NUMERIC_ARRAY_THRESHOLD: usize = 64;
+const TRACE_SUMMARY_MAX_STRING_CHARS: usize = 8192;
+const TRACE_SUMMARY_STRING_PREVIEW_CHARS: usize = 512;
+
+fn summarize_trace_value(value: &Value) -> Value {
+    summarize_trace_value_inner(value, 0)
+}
+
+fn summarize_trace_value_inner(value: &Value, depth: usize) -> Value {
+    if depth >= TRACE_SUMMARY_MAX_DEPTH {
+        return match value {
+            Value::Object(map) => json!({
+                "__zf_trace_summary": "object",
+                "keys": map.len(),
+            }),
+            Value::Array(items) => json!({
+                "__zf_trace_summary": "array",
+                "len": items.len(),
+            }),
+            Value::String(text) => summarize_trace_string(text),
+            other => other.clone(),
+        };
+    }
+
+    match value {
+        Value::String(text) if text.chars().count() > TRACE_SUMMARY_MAX_STRING_CHARS => {
+            summarize_trace_string(text)
+        }
+        Value::Array(items)
+            if items.len() >= TRACE_SUMMARY_NUMERIC_ARRAY_THRESHOLD
+                && items.iter().all(Value::is_number) =>
+        {
+            let preview = items
+                .iter()
+                .take(TRACE_SUMMARY_PREVIEW_ITEMS)
+                .cloned()
+                .collect::<Vec<_>>();
+            let tail = items
+                .last()
+                .cloned()
+                .map(|item| vec![item])
+                .unwrap_or_default();
+            json!({
+                "__zf_trace_summary": "numeric_array",
+                "len": items.len(),
+                "preview": preview,
+                "tail": tail,
+            })
+        }
+        Value::Array(items) if items.len() > TRACE_SUMMARY_MAX_ARRAY_ITEMS => {
+            let preview = items
+                .iter()
+                .take(TRACE_SUMMARY_PREVIEW_ITEMS)
+                .map(|item| summarize_trace_value_inner(item, depth + 1))
+                .collect::<Vec<_>>();
+            json!({
+                "__zf_trace_summary": "array",
+                "len": items.len(),
+                "preview": preview,
+            })
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| summarize_trace_value_inner(item, depth + 1))
+                .collect(),
+        ),
+        Value::Object(map) if map.len() > TRACE_SUMMARY_MAX_OBJECT_KEYS => {
+            let preview = map
+                .iter()
+                .take(TRACE_SUMMARY_MAX_OBJECT_KEYS)
+                .map(|(key, item)| (key.clone(), summarize_trace_value_inner(item, depth + 1)))
+                .collect::<serde_json::Map<_, _>>();
+            json!({
+                "__zf_trace_summary": "object",
+                "keys": map.len(),
+                "preview": Value::Object(preview),
+            })
+        }
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, item)| (key.clone(), summarize_trace_value_inner(item, depth + 1)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn summarize_trace_string(text: &str) -> Value {
+    let preview = text
+        .chars()
+        .take(TRACE_SUMMARY_STRING_PREVIEW_CHARS)
+        .collect::<String>();
+    json!({
+        "__zf_trace_summary": "string",
+        "chars": text.chars().count(),
+        "preview": preview,
+    })
+}
+
+fn sanitized_trace_value(value: &Value) -> Value {
+    let mut payload = value.clone();
+    let mut tokens = take_private_trace_redact_tokens(&mut payload);
+    tokens.extend(take_private_redact_tokens(&mut payload));
+    let except_paths = take_private_redact_except_paths(&mut payload);
+    let redacted = if tokens.is_empty() {
+        payload
+    } else {
+        redact_json_value(&payload, &tokens, &except_paths, &[])
+    };
+    summarize_trace_value(&redacted)
 }
 
 /// Main framework engine used for real pipeline execution.
@@ -2317,7 +2433,7 @@ impl PipelineEngine for BasicPipelineEngine {
                 Ok(mut outs) => {
                     let mut processed_payloads: Vec<Value> = Vec::new();
                     let mut redacted_outputs: Vec<Value> = Vec::new();
-                    let redacted_input = input_snapshot.clone();
+                    let trace_input = sanitized_trace_value(&input_snapshot);
 
                     for out in &mut outs {
                         let mut output_payload = out.payload.clone();
@@ -2335,7 +2451,7 @@ impl PipelineEngine for BasicPipelineEngine {
                             )
                         };
                         processed_payloads.push(payload_output.clone());
-                        redacted_outputs.push(payload_output.clone());
+                        redacted_outputs.push(sanitized_trace_value(&payload_output));
                         out.payload = payload_output;
                     }
 
@@ -2361,7 +2477,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node_kind: trace_node_kind.clone(),
                         config: redacted_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: redacted_input,
+                        input: trace_input,
                         output: node_output_value,
                         error: None,
                     });
@@ -2373,7 +2489,7 @@ impl PipelineEngine for BasicPipelineEngine {
                         node_kind: trace_node_kind.clone(),
                         config: base_trace_config,
                         duration_ms: node_start.elapsed().as_millis() as u64,
-                        input: input_snapshot.clone(),
+                        input: sanitized_trace_value(&input_snapshot),
                         output: Value::Null,
                         error: Some(e.message.clone()),
                     });
@@ -2566,8 +2682,9 @@ mod tests {
 
     use super::{
         BasicPipelineEngine, NodesAccess, NodesAccessAccumulator, PipelineContext,
-        redact_json_value, scan_text_nodes_access, take_private_redact_except_paths,
-        take_private_redact_tokens, take_private_trace_redact_tokens, trace_config_snapshot,
+        redact_json_value, sanitized_trace_value, scan_text_nodes_access,
+        take_private_redact_except_paths, take_private_redact_tokens,
+        take_private_trace_redact_tokens, trace_config_snapshot,
     };
     use crate::pipeline::interface::PipelineEngine;
     use crate::pipeline::model::{PipelineEdge, PipelineGraph, PipelineNode};
@@ -2663,6 +2780,29 @@ mod tests {
         assert!(snapshot.get("ui").is_none());
         assert_eq!(snapshot["password"], "••••••");
         assert_eq!(snapshot["headers"]["authorization"], "••••••");
+    }
+
+    #[test]
+    fn trace_summary_summarizes_large_numeric_arrays_generically() {
+        let vector = (0..128).map(|i| json!(i as f64 / 10.0)).collect::<Vec<_>>();
+        let summary = sanitized_trace_value(&json!({
+            "id": "row-1",
+            "values": vector,
+            "nested": {
+                "items": [
+                    { "payload": (0..80).map(|i| json!(i)).collect::<Vec<_>>() }
+                ]
+            }
+        }));
+
+        assert_eq!(summary["id"], "row-1");
+        assert_eq!(summary["values"]["__zf_trace_summary"], "numeric_array");
+        assert_eq!(summary["values"]["len"], 128);
+        assert_eq!(
+            summary["nested"]["items"][0]["payload"]["__zf_trace_summary"],
+            "numeric_array"
+        );
+        assert_eq!(summary["nested"]["items"][0]["payload"]["len"], 80);
     }
 
     #[test]
@@ -3347,6 +3487,46 @@ mod tests {
         assert_eq!(out.value["item"]["id"], "r2");
         assert_eq!(out.value["index"], 1);
         assert_eq!(out.value["count"], 2);
+        assert!(out.value.get("rows").is_none());
+    }
+
+    #[tokio::test]
+    async fn logic_foreach_keep_input_preserves_parent_payload_when_requested() {
+        let dsl = r#"
+[a] trigger.manual
+[b] logic.foreach --items-expr "$input.rows" --keep-input
+
+[a] -> [b]
+"#;
+
+        let graph = build_pipeline_graph("logic-foreach-keep-input-test", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default();
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: "test".to_string(),
+                    project: "test".to_string(),
+                    pipeline: "logic-foreach-keep-input-test".to_string(),
+                    request_id: "req-foreach-keep-input".to_string(),
+                    route: String::new(),
+                    input: json!({
+                        "rows": [
+                            { "id": "r1" },
+                            { "id": "r2" }
+                        ],
+                        "batch_marker": "kept-only-when-requested"
+                    }),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(out.value["item"]["id"], "r2");
+        assert_eq!(out.value["batch_marker"], "kept-only-when-requested");
+        assert_eq!(out.value["rows"][0]["id"], "r1");
     }
 
     #[tokio::test]
