@@ -82,15 +82,16 @@ tempfile = "3"
 flate2 = "1"
 pdfwrangler = "0.1.4"
 hound = "3.5"
-geonative-core = "0.3.1"
-geonative-convert = "0.3.1"
-geonative-geoparquet = "0.3.1"
-geonative-geojson = "0.3.1"
-geonative-utils = "0.3.1"
-geonative-tile = "0.3.1"
+geonative-core = "0.4.0"
+geonative-convert = "0.4.0"
+geonative-geoparquet = "0.4.0"
+geonative-geojson = "0.4.0"
+geonative-utils = "0.4.0"
+geonative-tile = "0.4.0"
 geodatafusion = "0.4.0"
 datafusion = "53.1.0"
 parquet = "58.3.0"
+object_store = { version = "0.13", features = ["aws", "http"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 [dev-dependencies]

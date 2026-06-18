@@ -317,6 +317,7 @@ impl NodeHandler for Node {
                     batch_size,
                     add_bbox_columns: true,
                     hilbert_sort: hilbert,
+                    ..geonative_convert::SinkOptions::default()
                 },
                 to_crs,
                 progress: None,

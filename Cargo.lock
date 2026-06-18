@@ -894,6 +894,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "cfg_aliases"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
 name = "chacha20"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2355,7 +2361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2796,9 +2802,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-convert"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95245db9369277ea24cd02df128e26debbf032395de96e7470b76633fe3f287a"
+checksum = "d219dc0ef45dedeffe3a9d352074bef9ea78f0a1adc3fd78eff4fbb29894a4b6"
 dependencies = [
  "geonative-core",
  "geonative-filegdb",
@@ -2816,18 +2822,18 @@ dependencies = [
 
 [[package]]
 name = "geonative-core"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bfacdcd22fa4da31f65000ebe00ffbded5bde365cccab2dd2cebc0c331260e6"
+checksum = "bcdfb1e11d18b00dc2c2f4be17c2ef4397606f158fd4672a2d692205477fb764"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "geonative-filegdb"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "831f207e2dbf16cf18bf4fa82a89d55caf27ebaaa93e8e71c94316a760901bbb"
+checksum = "05d0c3ff1c8807b672dba725c15c4d2d445d6f21e2fab252f2d372807947271f"
 dependencies = [
  "geonative-core",
  "memmap2",
@@ -2836,9 +2842,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-geojson"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "566ceab176bc94c4b30986ee83fe68894fc988db0408c5d58ccdcf43c277de51"
+checksum = "32b0aad20b7b7cf9ff1841a2d8fc717425bb687c017c0e84fd876a4b193704e8"
 dependencies = [
  "geonative-core",
  "serde",
@@ -2848,9 +2854,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-geoparquet"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "693cffb61bead13711267b18ddf763d754d05e4407b2fb4c2cee69ba83dbd3d0"
+checksum = "d83ce791a31f05c3712994c673f486cab785b13141e257f70f8ac3a4bc8dfc0f"
 dependencies = [
  "arrow",
  "geonative-core",
@@ -2861,9 +2867,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-geotiff"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e0670826e4fd62cfea16345d432834a23b4a8860c9fd40c8d29e2c59a9a8e64"
+checksum = "c0b8deb2f641993b810ef54cf19b95d13e46621dc36d91a466bc8d1f91105946"
 dependencies = [
  "flate2",
  "geonative-core",
@@ -2874,9 +2880,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-image"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09c658979ffb1672381025f7a2d5c196e469ae4d5c98eab1f1132e7e4f2dd77"
+checksum = "88bb9718247a97d96db389b82558657960d4acdfa0bafc8291c78f08dc2f7f60"
 dependencies = [
  "geonative-core",
  "jpeg-decoder",
@@ -2886,9 +2892,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-processing"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b640346f8d40f7912e6070ccefba38ccc347d1499e29c209ea304a2cceaefc2a"
+checksum = "2cb5ca7fbdf4c1954b6b174e5bc40386c544e8dab13cc3a1376ee685d06a71dc"
 dependencies = [
  "geonative-core",
  "geonative-proj",
@@ -2897,9 +2903,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-proj"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef099999ba4c765161e6cbd52b7226a472aeb9afdd305fe9ba031fdb15f62dd"
+checksum = "2b5085b001c0cc1b6b1bfef4bc09aa36c6a9eb44e6b1b750a64251eb3b7b792f"
 dependencies = [
  "geonative-core",
  "thiserror 2.0.18",
@@ -2907,9 +2913,9 @@ dependencies = [
 
 [[package]]
 name = "geonative-shapefile"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c615e396e2d1053138e1e493219009b404879015025f4623e4ed68acdb3c9e85"
+checksum = "5c9e814065b8d91826155578a36112f5b900001385006d81858c4a557844dfe9"
 dependencies = [
  "geonative-core",
  "memmap2",
@@ -2918,18 +2924,18 @@ dependencies = [
 
 [[package]]
 name = "geonative-tile"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11ae9dc1a547a9c5f1e597c78da76c3a472bde17e2ea93f1383414847eea6046"
+checksum = "559ac2097cd9837fc868c3127ac79f5480b47e79dcf9b91386d59efc8bbf3a15"
 dependencies = [
  "geonative-core",
 ]
 
 [[package]]
 name = "geonative-utils"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44f127b13d5da252b12307f7153b1906569cd7644ab6c4a4e0ec53b67270c25c"
+checksum = "ab67244acd367a53caf47b8932ef291b0c13dee9b9f8201972ae5f505e3f7690"
 dependencies = [
  "geonative-core",
 ]
@@ -2963,9 +2969,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3266,6 +3274,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -3711,7 +3720,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4008,6 +4017,12 @@ dependencies = [
  "ttf-parser",
  "weezl",
 ]
+
+[[package]]
+name = "lru-slab"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lz4_flex"
@@ -4309,16 +4324,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "622acbc9100d3c10e2ee15804b0caa40e55c933d5aa53814cd520805b7958a49"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
+ "form_urlencoded",
  "futures-channel",
  "futures-core",
  "futures-util",
  "http",
+ "http-body-util",
  "humantime",
+ "hyper",
  "itertools 0.14.0",
+ "md-5",
  "parking_lot",
  "percent-encoding",
+ "quick-xml",
+ "rand 0.10.0",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -5214,6 +5241,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
+name = "quick-xml"
+version = "0.39.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quinn"
+version = "0.11.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash",
+ "rustls",
+ "socket2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-proto"
+version = "0.11.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+dependencies = [
+ "bytes",
+ "getrandom 0.3.4",
+ "lru-slab",
+ "rand 0.9.2",
+ "ring",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "slab",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.5.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "once_cell",
+ "socket2",
+ "tracing",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5466,6 +5558,9 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
+ "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -5473,12 +5568,15 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
+ "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -5691,7 +5789,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5710,11 +5808,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustls-native-certs"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+dependencies = [
+ "openssl-probe",
+ "rustls-pki-types",
+ "schannel",
+ "security-framework",
+]
+
+[[package]]
 name = "rustls-pki-types"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be040f8b0a225e40375822a563fa9524378b9d63112f53e19ffff34df5d33fdd"
 dependencies = [
+ "web-time",
  "zeroize",
 ]
 
@@ -6746,7 +6857,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7591,6 +7702,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wasm_dep_analyzer"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8159,6 +8283,7 @@ dependencies = [
  "infer",
  "jsonwebtoken",
  "multer",
+ "object_store",
  "oxc_allocator",
  "oxc_ast",
  "oxc_ast_visit",
