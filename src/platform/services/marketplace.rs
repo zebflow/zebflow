@@ -193,7 +193,7 @@ struct MarketplaceArtifact {
     files: Vec<MarketplaceExportEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct RemoteMarketplacePublishRequest {
     pub package_id: String,
     pub version: String,
