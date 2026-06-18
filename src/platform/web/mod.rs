@@ -1732,7 +1732,7 @@ struct DbTablePreviewQuery {
     limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default)]
 struct PrepareProjectAssetsRequest {
     library: String,
@@ -1750,7 +1750,7 @@ impl Default for PrepareProjectAssetsRequest {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default)]
 struct AssistantChatRequest {
     message: String,
@@ -1772,7 +1772,7 @@ impl Default for AssistantChatRequest {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
 struct AssistantChatMessage {
     role: String,
     content: String,
@@ -3892,6 +3892,40 @@ async fn forward_project_json_request_to_worker<T: serde::Serialize>(
     .await
 }
 
+async fn maybe_forward_project_api_to_worker(
+    state: &PlatformAppState,
+    uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    body: Bytes,
+    owner: &str,
+    project: &str,
+) -> Result<Option<Response>, PlatformError> {
+    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
+        return Ok(None);
+    };
+    forward_project_api_request_to_worker(state, uri, method, headers, body, &worker_id)
+        .await
+        .map(Some)
+}
+
+async fn maybe_forward_project_json_to_worker<T: serde::Serialize>(
+    state: &PlatformAppState,
+    uri: &Uri,
+    headers: &HeaderMap,
+    method: Method,
+    payload: &T,
+    owner: &str,
+    project: &str,
+) -> Result<Option<Response>, PlatformError> {
+    let Some(worker_id) = remote_project_worker_id(state, owner, project)? else {
+        return Ok(None);
+    };
+    forward_project_json_request_to_worker(state, uri, headers, method, payload, &worker_id)
+        .await
+        .map(Some)
+}
+
 async fn maybe_forward_project_page_to_worker(
     state: &PlatformAppState,
     headers: &HeaderMap,
@@ -3905,6 +3939,148 @@ async fn maybe_forward_project_page_to_worker(
     forward_project_page_request_to_worker(state, uri, headers, owner, project, &worker_id)
         .await
         .map(Some)
+}
+
+fn worker_websocket_url(worker_base_url: &str, uri: &Uri) -> String {
+    let base = worker_base_url.trim_end_matches('/');
+    let base = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        base.to_string()
+    };
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    format!("{base}{path_and_query}")
+}
+
+fn forwarded_websocket_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    fn skip_header(name: &HeaderName) -> bool {
+        matches!(
+            name.as_str().to_ascii_lowercase().as_str(),
+            "host"
+                | "connection"
+                | "upgrade"
+                | "sec-websocket-key"
+                | "sec-websocket-version"
+                | "sec-websocket-extensions"
+                | "sec-websocket-protocol"
+                | "content-length"
+        )
+    }
+
+    headers
+        .iter()
+        .filter(|(name, _)| !skip_header(name))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+async fn proxy_websocket_to_worker(
+    mut client_socket: WebSocket,
+    worker_url: String,
+    headers: Vec<(String, String)>,
+) {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message as WorkerMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut request = match worker_url.into_client_request() {
+        Ok(request) => request,
+        Err(_) => {
+            let _ = client_socket.send(Message::Close(None)).await;
+            return;
+        }
+    };
+    for (name, value) in headers {
+        let Ok(name) =
+            tokio_tungstenite::tungstenite::http::header::HeaderName::from_bytes(name.as_bytes())
+        else {
+            continue;
+        };
+        let Ok(value) = tokio_tungstenite::tungstenite::http::header::HeaderValue::from_str(&value)
+        else {
+            continue;
+        };
+        request.headers_mut().insert(name, value);
+    }
+
+    let (worker_socket, _) = match tokio_tungstenite::connect_async(request).await {
+        Ok(pair) => pair,
+        Err(_) => {
+            let _ = client_socket.send(Message::Close(None)).await;
+            return;
+        }
+    };
+
+    let (mut client_tx, mut client_rx) = client_socket.split();
+    let (mut worker_tx, mut worker_rx) = worker_socket.split();
+
+    let client_to_worker = async {
+        while let Some(message) = client_rx.next().await {
+            let Ok(message) = message else {
+                break;
+            };
+            let Some(message) = axum_ws_to_worker_ws(message) else {
+                continue;
+            };
+            let is_close = matches!(message, WorkerMessage::Close(_));
+            if worker_tx.send(message).await.is_err() || is_close {
+                break;
+            }
+        }
+    };
+
+    let worker_to_client = async {
+        while let Some(message) = worker_rx.next().await {
+            let Ok(message) = message else {
+                break;
+            };
+            let Some(message) = worker_ws_to_axum_ws(message) else {
+                continue;
+            };
+            let is_close = matches!(message, Message::Close(_));
+            if client_tx.send(message).await.is_err() || is_close {
+                break;
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = client_to_worker => {}
+        _ = worker_to_client => {}
+    }
+}
+
+fn axum_ws_to_worker_ws(message: Message) -> Option<tokio_tungstenite::tungstenite::Message> {
+    use tokio_tungstenite::tungstenite::Message as WorkerMessage;
+    match message {
+        Message::Text(text) => Some(WorkerMessage::Text(text.to_string())),
+        Message::Binary(bytes) => Some(WorkerMessage::Binary(bytes.to_vec())),
+        Message::Ping(bytes) => Some(WorkerMessage::Ping(bytes.to_vec())),
+        Message::Pong(bytes) => Some(WorkerMessage::Pong(bytes.to_vec())),
+        Message::Close(_) => Some(WorkerMessage::Close(None)),
+    }
+}
+
+fn worker_ws_to_axum_ws(message: tokio_tungstenite::tungstenite::Message) -> Option<Message> {
+    use tokio_tungstenite::tungstenite::Message as WorkerMessage;
+    match message {
+        WorkerMessage::Text(text) => Some(Message::Text(text.into())),
+        WorkerMessage::Binary(bytes) => Some(Message::Binary(bytes.into())),
+        WorkerMessage::Ping(bytes) => Some(Message::Ping(bytes.into())),
+        WorkerMessage::Pong(bytes) => Some(Message::Pong(bytes.into())),
+        WorkerMessage::Close(_) => Some(Message::Close(None)),
+        WorkerMessage::Frame(_) => None,
+    }
 }
 
 async fn forward_project_page_request_to_worker(
@@ -8490,6 +8666,7 @@ async fn api_list_node_definitions(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8499,6 +8676,21 @@ async fn api_list_node_definitions(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let defs = state
         .platform
@@ -8558,6 +8750,7 @@ async fn api_get_node_definition(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, kind)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8567,6 +8760,21 @@ async fn api_get_node_definition(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let merged = state
         .platform
@@ -8601,6 +8809,7 @@ async fn api_install_node_package(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(body): Json<NodePackageInstallRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -8611,6 +8820,21 @@ async fn api_install_node_package(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &body,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.node_registry.install_package(
         &owner,
@@ -8637,6 +8861,7 @@ async fn api_uninstall_node_package(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, kind)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8646,6 +8871,21 @@ async fn api_uninstall_node_package(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     // Reject uninstalling official nodes (native + embedded composites).
     if state.platform.node_registry.is_official(&kind) {
@@ -8673,6 +8913,7 @@ async fn api_node_icon(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, kind)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -8682,6 +8923,21 @@ async fn api_node_icon(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     // 1. Check installed + embedded composite node packages first.
     if let Some(svg_bytes) = state
@@ -8715,7 +8971,7 @@ async fn api_node_icon(
     StatusCode::NOT_FOUND.into_response()
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct NodePackageInstallRequest {
     manifest: crate::platform::model::NodePackageManifest,
     #[serde(default)]
@@ -10577,6 +10833,7 @@ async fn api_prepare_project_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<PrepareProjectAssetsRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -10587,6 +10844,21 @@ async fn api_prepare_project_assets(
         ProjectCapability::LibrariesInstall,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
@@ -14029,6 +14301,7 @@ async fn api_list_credential_types(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14038,6 +14311,21 @@ async fn api_list_credential_types(
         ProjectCapability::CredentialsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     // Built-in types + custom types from installed composite/WASM packages.
     let mut types = crate::platform::services::credential::builtin_credential_types();
@@ -14057,6 +14345,7 @@ async fn api_list_credentials(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14066,6 +14355,21 @@ async fn api_list_credentials(
         ProjectCapability::CredentialsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14081,6 +14385,7 @@ async fn api_get_credential(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14090,6 +14395,21 @@ async fn api_get_credential(
         ProjectCapability::CredentialsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14106,6 +14426,7 @@ async fn api_upsert_credential(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertProjectCredentialRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14116,6 +14437,21 @@ async fn api_upsert_credential(
         ProjectCapability::CredentialsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14131,16 +14467,49 @@ async fn api_upsert_credential_by_path(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
     Json(mut req): Json<UpsertProjectCredentialRequest>,
 ) -> Response {
     req.credential_id = credential_id;
-    api_upsert_credential(State(state), headers, Path((owner, project)), Json(req)).await
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::CredentialsWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::PUT,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    match state
+        .platform
+        .credentials
+        .upsert_project_credential(&owner, &project, &req)
+    {
+        Ok(credential) => Json(json!({"ok": true, "credential": credential})).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn api_delete_credential(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14150,6 +14519,21 @@ async fn api_delete_credential(
         ProjectCapability::CredentialsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14168,6 +14552,7 @@ async fn api_oauth2_authorize(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, credential_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14177,6 +14562,21 @@ async fn api_oauth2_authorize(
         ProjectCapability::CredentialsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let credential =
         match state
@@ -14264,6 +14664,7 @@ struct OAuthCallbackQuery {
 async fn oauth2_callback_handler(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
+    uri: Uri,
     axum::extract::Query(query): axum::extract::Query<OAuthCallbackQuery>,
 ) -> Response {
     // Provider error (user denied access)
@@ -14285,6 +14686,24 @@ async fn oauth2_callback_handler(
                 return axum::response::Redirect::to("/home?oauth=error").into_response();
             }
         };
+
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(_) => {
+            return axum::response::Redirect::to("/home?oauth=error").into_response();
+        }
+    }
 
     // Read redirect_uri from the credential's secret (per-credential, per-domain).
     let redirect_uri =
@@ -14405,6 +14824,7 @@ async fn api_get_project_assistant_config(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14414,6 +14834,21 @@ async fn api_get_project_assistant_config(
         ProjectCapability::SettingsRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14429,6 +14864,7 @@ async fn api_upsert_project_assistant_config(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertProjectAssistantConfigRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14439,6 +14875,21 @@ async fn api_upsert_project_assistant_config(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::PUT,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -14820,6 +15271,7 @@ async fn api_list_rwe_libraries(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -14829,6 +15281,21 @@ async fn api_list_rwe_libraries(
         ProjectCapability::LibrariesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let rwe_libs = state
         .platform
@@ -14856,7 +15323,7 @@ async fn api_list_rwe_libraries(
 }
 
 /// Request body for `POST /api/projects/{owner}/{project}/rwe/libraries/enable`.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct EnableRweLibraryRequest {
     name: String,
     version: String,
@@ -14868,6 +15335,7 @@ async fn api_enable_rwe_library(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<EnableRweLibraryRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14878,6 +15346,21 @@ async fn api_enable_rwe_library(
         ProjectCapability::LibrariesInstall,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if req.name.trim().is_empty() {
         return (
@@ -14951,6 +15434,7 @@ async fn api_disable_rwe_library(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(params): Query<DisableRweLibraryQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -14961,6 +15445,21 @@ async fn api_disable_rwe_library(
         ProjectCapability::LibrariesRemove,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if params.name.trim().is_empty() {
         return (
@@ -15003,6 +15502,7 @@ async fn api_rwe_cache_clear(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -15012,6 +15512,21 @@ async fn api_rwe_cache_clear(
         ProjectCapability::SettingsWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::POST,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     state
         .template_cache
@@ -15175,6 +15690,7 @@ async fn api_project_assistant_chat(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<AssistantChatRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -15185,6 +15701,21 @@ async fn api_project_assistant_chat(
         ProjectCapability::ProjectRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let message = req.message.trim().to_string();
@@ -15597,6 +16128,7 @@ async fn api_list_db_connections(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -15606,6 +16138,21 @@ async fn api_list_db_connections(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -15636,7 +16183,7 @@ async fn api_list_db_connections(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct PublishMarketplaceAssetRequest {
     source_type: String,
     source_ref: String,
@@ -15662,7 +16209,7 @@ struct MarketplacePublishQuery {
     source_ref: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct InstallMarketplaceAssetRequest {
     #[serde(default)]
     install_mode: String,
@@ -15675,7 +16222,7 @@ fn normalize_marketplace_install_mode(raw: &str) -> &'static str {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct UpsertMarketplaceRepositoryRequest {
     repository_id: String,
     title: String,
@@ -15708,7 +16255,7 @@ struct CreatePlatformMarketplaceTokenRequest {
     expires_at: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct UpsertMarketplacePublisherRequest {
     publisher_id: String,
     #[serde(default)]
@@ -15757,7 +16304,7 @@ struct ConfigurePlatformMarketplaceServiceRequest {
     enabled: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct SetMarketplaceProducerRequest {
     project_name: String,
     password: String,
@@ -15870,6 +16417,7 @@ async fn api_list_marketplace_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -15879,6 +16427,21 @@ async fn api_list_marketplace_assets(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let mut items = match marketplace_asset_rows(&state, &owner, &project, false) {
         Ok(items) => items,
@@ -15906,6 +16469,7 @@ async fn api_get_project_help(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -15915,6 +16479,21 @@ async fn api_get_project_help(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let ops =
         crate::platform::services::ops::PlatformOps::new(state.platform.clone(), &owner, &project);
@@ -15929,7 +16508,23 @@ async fn api_list_remote_marketplace_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
     if let Err(response) = require_marketplace_service_enabled(&state) {
         return response;
     }
@@ -15996,7 +16591,23 @@ async fn api_get_remote_marketplace_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+    uri: Uri,
 ) -> Response {
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
     if let Err(response) = require_marketplace_service_enabled(&state) {
         return response;
     }
@@ -16072,7 +16683,23 @@ async fn api_get_remote_marketplace_artifact(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+    uri: Uri,
 ) -> Response {
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
     if let Err(response) = require_marketplace_service_enabled(&state) {
         return response;
     }
@@ -16277,6 +16904,7 @@ async fn api_list_my_marketplace_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16286,6 +16914,21 @@ async fn api_list_my_marketplace_assets(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match marketplace_asset_rows(&state, &owner, &project, true) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
@@ -16385,6 +17028,7 @@ async fn api_publish_marketplace_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<PublishMarketplaceAssetRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16395,6 +17039,21 @@ async fn api_publish_marketplace_asset(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let token_value = req.publisher_token.trim().to_string();
     let token_value = if token_value.is_empty() {
@@ -16468,6 +17127,7 @@ async fn api_install_marketplace_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+    uri: Uri,
     body: Option<Json<InstallMarketplaceAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16478,6 +17138,25 @@ async fn api_install_marketplace_asset(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    let forward_body = body
+        .as_ref()
+        .map(|Json(req)| json!({"install_mode": req.install_mode}))
+        .unwrap_or_else(|| json!({}));
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &forward_body,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let install_mode = normalize_marketplace_install_mode(
         body.as_ref()
@@ -16499,8 +17178,24 @@ async fn api_remote_publish_marketplace_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<RemoteMarketplacePublishRequest>,
 ) -> Response {
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
     let Some(token_value) = bearer_token_from_headers(&headers) else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -16545,6 +17240,7 @@ async fn api_list_marketplace_tokens(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16554,6 +17250,21 @@ async fn api_list_marketplace_tokens(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16568,6 +17279,7 @@ async fn api_create_marketplace_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<CreateMarketplaceTokenRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16578,6 +17290,21 @@ async fn api_create_marketplace_token(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16599,6 +17326,7 @@ async fn api_delete_marketplace_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, token_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16608,6 +17336,21 @@ async fn api_delete_marketplace_token(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16626,6 +17369,7 @@ async fn api_list_marketplace_publishers(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16635,6 +17379,21 @@ async fn api_list_marketplace_publishers(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16653,6 +17412,7 @@ async fn api_upsert_marketplace_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertMarketplacePublisherRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16663,6 +17423,21 @@ async fn api_upsert_marketplace_publisher(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16697,6 +17472,7 @@ async fn api_delete_marketplace_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, publisher_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16706,6 +17482,21 @@ async fn api_delete_marketplace_publisher(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
         return response;
@@ -16724,9 +17515,17 @@ async fn api_set_marketplace_producer_mode(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<SetMarketplaceProducerRequest>,
 ) -> Response {
-    let Some(session_owner) = session_owner(&state, &headers) else {
+    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    let Some(session_owner) = session_owner(&state, &headers).or_else(|| {
+        if internal_cluster_call {
+            Some(owner.clone())
+        } else {
+            None
+        }
+    }) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"ok": false, "error": "Not authenticated"})),
@@ -16758,20 +17557,37 @@ async fn api_set_marketplace_producer_mode(
         )
             .into_response();
     }
-    match state
-        .platform
-        .users
-        .authenticate(&owner_slug, &req.password)
-    {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"ok": false, "error": "Incorrect password"})),
-            )
-                .into_response();
+    if !internal_cluster_call {
+        match state
+            .platform
+            .users
+            .authenticate(&owner_slug, &req.password)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": "Incorrect password"})),
+                )
+                    .into_response();
+            }
+            Err(err) => return internal_error(err),
         }
-        Err(err) => return internal_error(err),
+        match maybe_forward_project_json_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &req,
+            &owner,
+            &project,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
     }
     let mut cfg = state
         .platform
@@ -16800,6 +17616,7 @@ async fn api_list_marketplace_repositories(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16809,6 +17626,21 @@ async fn api_list_marketplace_repositories(
         ProjectCapability::PipelinesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     if let Err(err) = state
         .platform
@@ -16835,6 +17667,7 @@ async fn api_upsert_marketplace_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertMarketplaceRepositoryRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16845,6 +17678,21 @@ async fn api_upsert_marketplace_repository(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.marketplace.upsert_repository(
         &owner,
@@ -16870,6 +17718,7 @@ async fn api_delete_marketplace_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, repository_id)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -16879,6 +17728,21 @@ async fn api_delete_marketplace_repository(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -16900,6 +17764,7 @@ async fn api_install_remote_marketplace_pack(
         String,
         String,
     )>,
+    uri: Uri,
     body: Option<Json<InstallMarketplaceAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -16910,6 +17775,25 @@ async fn api_install_remote_marketplace_pack(
         ProjectCapability::PipelinesWrite,
     ) {
         return response;
+    }
+    let forward_body = body
+        .as_ref()
+        .map(|Json(req)| json!({"install_mode": req.install_mode}))
+        .unwrap_or_else(|| json!({}));
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &forward_body,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let install_mode = normalize_marketplace_install_mode(
         body.as_ref()
@@ -17120,6 +18004,7 @@ async fn api_update_simple_table(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, table)): Path<(String, String, String)>,
+    uri: Uri,
     Json(req): Json<UpdateSimpleTableRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17130,6 +18015,21 @@ async fn api_update_simple_table(
         ProjectCapability::TablesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::PUT,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match sekejap::update_table(
@@ -17158,6 +18058,7 @@ async fn api_delete_simple_table(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, table)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17167,6 +18068,21 @@ async fn api_delete_simple_table(
         ProjectCapability::TablesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     match sekejap::delete_table(&state.platform.config.data_root, &owner, &project, &table) {
@@ -17189,6 +18105,7 @@ async fn api_get_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_slug)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17198,6 +18115,21 @@ async fn api_get_db_connection(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -17218,6 +18150,7 @@ async fn api_upsert_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<UpsertProjectDbConnectionRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17228,6 +18161,21 @@ async fn api_upsert_db_connection(
         ProjectCapability::TablesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -17243,16 +18191,49 @@ async fn api_upsert_db_connection_by_path(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_slug)): Path<(String, String, String)>,
+    uri: Uri,
     Json(mut req): Json<UpsertProjectDbConnectionRequest>,
 ) -> Response {
     req.connection_slug = connection_slug;
-    api_upsert_db_connection(State(state), headers, Path((owner, project)), Json(req)).await
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::PUT,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    match state
+        .platform
+        .db_connections
+        .upsert_project_connection(&owner, &project, &req)
+    {
+        Ok(connection) => Json(json!({"ok": true, "connection": connection})).into_response(),
+        Err(err) => internal_error(err),
+    }
 }
 
 async fn api_delete_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_slug)): Path<(String, String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17262,6 +18243,21 @@ async fn api_delete_db_connection(
         ProjectCapability::TablesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.db_connections.delete_project_connection(
         &owner,
@@ -17277,6 +18273,7 @@ async fn api_test_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<TestProjectDbConnectionRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17287,6 +18284,21 @@ async fn api_test_db_connection(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -17303,6 +18315,7 @@ async fn api_describe_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Query(query): Query<DbDescribeQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17313,6 +18326,21 @@ async fn api_describe_db_connection(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let req = DescribeProjectDbConnectionRequest {
         scope: query.scope,
@@ -17335,6 +18363,7 @@ async fn api_list_db_connection_schemas(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Query(query): Query<DbObjectListQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17345,6 +18374,21 @@ async fn api_list_db_connection_schemas(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("schemas".to_string()),
@@ -17367,6 +18411,7 @@ async fn api_list_db_connection_tables(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Query(query): Query<DbObjectListQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17377,6 +18422,21 @@ async fn api_list_db_connection_tables(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("tables".to_string()),
@@ -17399,6 +18459,7 @@ async fn api_list_db_connection_functions(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Query(query): Query<DbObjectListQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17409,6 +18470,21 @@ async fn api_list_db_connection_functions(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let req = DescribeProjectDbConnectionRequest {
         scope: Some("functions".to_string()),
@@ -17431,6 +18507,7 @@ async fn api_preview_db_connection_table(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Query(query): Query<DbTablePreviewQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17441,6 +18518,21 @@ async fn api_preview_db_connection_table(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let table = query.table.unwrap_or_default();
     if table.trim().is_empty() {
@@ -17493,6 +18585,7 @@ async fn api_query_db_connection(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, connection_id)): Path<(String, String, String)>,
+    uri: Uri,
     Json(req): Json<QueryProjectDbConnectionRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17503,6 +18596,21 @@ async fn api_query_db_connection(
         ProjectCapability::TablesRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state
         .platform
@@ -17925,6 +19033,7 @@ async fn api_list_agent_docs(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17934,6 +19043,21 @@ async fn api_list_agent_docs(
         ProjectCapability::ProjectRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     match state.platform.projects.list_agent_docs(&owner, &project) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
@@ -17945,6 +19069,7 @@ async fn api_read_agent_doc(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<DocPathQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
@@ -17955,6 +19080,21 @@ async fn api_read_agent_doc(
         ProjectCapability::ProjectRead,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let Some(name) = query
         .path
@@ -17989,6 +19129,7 @@ async fn api_upsert_agent_doc_file(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(query): Query<DocPathQuery>,
     body: Bytes,
 ) -> Response {
@@ -18000,6 +19141,21 @@ async fn api_upsert_agent_doc_file(
         ProjectCapability::FilesWrite,
     ) {
         return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::PUT,
+        &headers,
+        body.clone(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let Some(name) = query
         .path
@@ -21726,7 +22882,33 @@ async fn ws_room_handler(
     Path((owner, project, room_id)): Path<(String, String, String)>,
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-) -> impl IntoResponse {
+    uri: Uri,
+) -> Response {
+    match remote_project_worker_id(&state, &owner, &project) {
+        Ok(Some(worker_id)) => {
+            let worker = match state.platform.cluster_registry.get_worker(&worker_id) {
+                Ok(Some(worker)) => worker,
+                Ok(None) => {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"ok": false, "error": "office not registered"})),
+                    )
+                        .into_response();
+                }
+                Err(err) => return internal_error(err),
+            };
+            let worker_url = worker_websocket_url(&worker.base_url, &uri);
+            let proxy_headers = forwarded_websocket_headers(&headers);
+            return ws
+                .on_upgrade(move |socket| {
+                    proxy_websocket_to_worker(socket, worker_url, proxy_headers)
+                })
+                .into_response();
+        }
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+
     let session_id = format!(
         "ws-{:016x}",
         std::time::SystemTime::now()
@@ -21738,6 +22920,7 @@ async fn ws_room_handler(
     ws.on_upgrade(move |socket| {
         handle_ws_room(socket, owner, project, room_id, session_id, headers, state)
     })
+    .into_response()
 }
 
 async fn handle_ws_room(
@@ -21961,6 +23144,7 @@ async fn api_list_ui_catalog(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
         &state,
@@ -21970,6 +23154,21 @@ async fn api_list_ui_catalog(
         ProjectCapability::PipelinesRead,
     ) {
         return r;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(l) => l,
@@ -21984,6 +23183,7 @@ async fn api_install_ui_components(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(req): Json<crate::platform::catalog::InstallUiRequest>,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
@@ -21994,6 +23194,21 @@ async fn api_install_ui_components(
         ProjectCapability::PipelinesWrite,
     ) {
         return r;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
     let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
         Ok(l) => l,
@@ -22019,6 +23234,7 @@ async fn api_reindex_project(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
 ) -> Response {
     if let Err(r) = require_project_api_capability(
         &state,
@@ -22028,6 +23244,21 @@ async fn api_reindex_project(
         ProjectCapability::PipelinesWrite,
     ) {
         return r;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::POST,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
     }
 
     let owner_slug = crate::platform::model::slug_segment(&owner);
@@ -22619,7 +23850,7 @@ struct PreviewQuery {
     file: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct PreviewToggleBody {
     active: bool,
     file: String,
@@ -22643,11 +23874,13 @@ async fn api_preview_toggle(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Json(body): Json<PreviewToggleBody>,
 ) -> Response {
-    let Some(_session) = session_owner(&state, &headers) else {
+    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, Json(json!({"ok": false}))).into_response();
-    };
+    }
     let file = match sanitize_preview_file(&body.file) {
         Some(f) => f,
         None => {
@@ -22658,6 +23891,23 @@ async fn api_preview_toggle(
                 .into_response();
         }
     };
+    if !internal_cluster_call {
+        match maybe_forward_project_json_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::POST,
+            &body,
+            &owner,
+            &project,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
+    }
     let key = preview_key(&owner, &project, &file);
     let mut reg = state
         .preview_registry
@@ -22676,11 +23926,30 @@ async fn api_preview_status(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let Some(_session) = session_owner(&state, &headers) else {
+    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, Json(json!({"active": false}))).into_response();
-    };
+    }
+    if !internal_cluster_call {
+        match maybe_forward_project_api_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &owner,
+            &project,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
+    }
     let file = q
         .file
         .as_deref()
@@ -22701,11 +23970,13 @@ async fn preview_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
     Query(q): Query<PreviewQuery>,
 ) -> Response {
-    let Some(_session) = session_owner(&state, &headers) else {
+    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return Redirect::to(LOGIN_PATH).into_response();
-    };
+    }
 
     let file = match q.file.as_deref().and_then(sanitize_preview_file) {
         Some(f) => f,
@@ -22717,6 +23988,14 @@ async fn preview_page(
                 .into_response();
         }
     };
+
+    if !internal_cluster_call {
+        match maybe_forward_project_page_to_worker(&state, &headers, &uri, &owner, &project).await {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
+    }
 
     let key = preview_key(&owner, &project, &file);
     let active = state
@@ -22882,10 +24161,43 @@ async fn ws_preview_handler(
     Path((owner, project)): Path<(String, String)>,
     Query(q): Query<PreviewQuery>,
     ws: WebSocketUpgrade,
+    uri: Uri,
 ) -> Response {
-    let Some(_session) = session_owner(&state, &headers) else {
+    let internal_cluster_call = has_valid_cluster_token(&state, &headers);
+    if !internal_cluster_call && session_owner(&state, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
-    };
+    }
+
+    if !internal_cluster_call {
+        match remote_project_worker_id(&state, &owner, &project) {
+            Ok(Some(worker_id)) => {
+                let worker = match state.platform.cluster_registry.get_worker(&worker_id) {
+                    Ok(Some(worker)) => worker,
+                    Ok(None) => {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(json!({"ok": false, "error": "office not registered"})),
+                        )
+                            .into_response();
+                    }
+                    Err(err) => return internal_error(err),
+                };
+                let token = match cluster_internal_token_value(&state) {
+                    Ok(token) => token.to_string(),
+                    Err(err) => return internal_error(err),
+                };
+                let worker_url = worker_websocket_url(&worker.base_url, &uri);
+                let proxy_headers = vec![(INTERNAL_CLUSTER_TOKEN_HEADER.to_string(), token)];
+                return ws
+                    .on_upgrade(move |socket| {
+                        proxy_websocket_to_worker(socket, worker_url, proxy_headers)
+                    })
+                    .into_response();
+            }
+            Ok(None) => {}
+            Err(err) => return internal_error(err),
+        }
+    }
 
     let file = match q.file.as_deref().and_then(sanitize_preview_file) {
         Some(f) => f,

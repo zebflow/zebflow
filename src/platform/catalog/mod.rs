@@ -30,7 +30,7 @@ pub struct CloneReport {
 }
 
 /// Request to install UI components.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InstallUiRequest {
     pub names: Vec<String>,
     #[serde(default)]
