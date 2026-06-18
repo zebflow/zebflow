@@ -187,7 +187,7 @@ function KeyValueEditor({
   return (
     <div className="flex flex-col gap-1.5">
       {entries.map(([key, item], index) => (
-        <div key={`${key}-${index}`} className="flex items-center gap-1.5">
+        <div key={index} className="flex items-center gap-1.5">
           <Input value={key} placeholder={keyPlaceholder} onInput={(e: any) => updateAt(index, e.target.value, item)} />
           <Input type={secretValue ? "password" : "text"} value={item} placeholder={valuePlaceholder} onInput={(e: any) => updateAt(index, key, e.target.value)} />
           <Button type="button" variant="ghost" size="xs" onClick={() => removeAt(index)}>×</Button>
@@ -238,7 +238,7 @@ function SecureRequestVariablesEditor({
         <p className="text-xs text-body-soft italic">No runtime variables declared yet.</p>
       ) : null}
       {items.map((item, index) => (
-        <div key={`${item?.name || "variable"}-${index}`} className="rounded-md border border-ui-border bg-ui-bg px-3 py-3">
+        <div key={index} className="rounded-md border border-ui-border bg-ui-bg px-3 py-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Variable Name">
               <Input value={String(item?.name || "")} onInput={(e: any) => updateAt(index, { name: e.target.value })} placeholder="USER_ID" />
@@ -567,7 +567,7 @@ function SecretFields({ kind, secret, onChange, credentialTypes }: { kind: strin
                 onChange={(e) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
                 onInput={(e: any) => updateEgress({ allowed_hosts: textToList(e.target.value) })}
                 rows={3}
-                placeholder={"goveyes-qwen3-embedding-8b\ngoveyes-qwen3-embedding-8b.main-app-cluster.svc.cluster.local"}
+                placeholder={"internal-service\ninternal-service.namespace.svc.cluster.local"}
                 className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40"
               />
             </Field>
@@ -741,53 +741,55 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-xl">
+      <DialogContent className="max-w-xl" style={{ overflow: "hidden" }}>
         <DialogHeader>
           <DialogTitle>{mode === "edit" ? `Edit — ${credentialId}` : "Create Credential"}</DialogTitle>
           <p className={cx("text-xs mt-0.5", statusTone === "error" ? "text-danger" : statusTone === "ok" ? "text-success" : "text-body-soft")}>{status}</p>
         </DialogHeader>
 
-        <form onSubmit={handleSave} className="flex flex-col gap-4 px-6 py-4">
-          {/* Identity */}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Credential ID">
-              <Input
-                value={credentialId}
-                onChange={(e) => setCredentialId(e.target.value)}
-                onInput={(e: any) => setCredentialId(e.target.value)}
-                placeholder="pg-main"
-                disabled={mode === "edit" || busy}
-                required
+        <form onSubmit={handleSave} className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
+            {/* Identity */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Credential ID">
+                <Input
+                  value={credentialId}
+                  onChange={(e) => setCredentialId(e.target.value)}
+                  onInput={(e: any) => setCredentialId(e.target.value)}
+                  placeholder="pg-main"
+                  disabled={mode === "edit" || busy}
+                  required
+                />
+              </Field>
+              <Field label="Kind">
+                <Select value={kind} onChange={(e) => { const nextKind = e.target.value; setKind(nextKind); setSecret(defaultSecretForKind(nextKind, credentialTypes)); }} disabled={busy}>
+                  {credentialTypes.length > 0
+                    ? credentialTypes.map((t) => <SelectOption key={t.kind} value={t.kind} label={t.title} />)
+                    : FALLBACK_KINDS.map((k) => <SelectOption key={k} value={k} label={k} />)
+                  }
+                </Select>
+              </Field>
+              <Field label="Title" className="col-span-2">
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} onInput={(e: any) => setTitle(e.target.value)} placeholder="Main Postgres" required disabled={busy} />
+              </Field>
+            </div>
+
+            {/* Dynamic secret fields */}
+            <SecretFields kind={kind} secret={secret} onChange={setSecretField} credentialTypes={credentialTypes} />
+
+            {/* Notes */}
+            <Field label="Notes">
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                onInput={(e: any) => setNotes(e.target.value)}
+                rows={2}
+                placeholder="Optional operational notes (no secrets here)"
+                disabled={busy}
+                className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 disabled:opacity-50"
               />
             </Field>
-            <Field label="Kind">
-              <Select value={kind} onChange={(e) => { const nextKind = e.target.value; setKind(nextKind); setSecret(defaultSecretForKind(nextKind, credentialTypes)); }} disabled={busy}>
-                {credentialTypes.length > 0
-                  ? credentialTypes.map((t) => <SelectOption key={t.kind} value={t.kind} label={t.title} />)
-                  : FALLBACK_KINDS.map((k) => <SelectOption key={k} value={k} label={k} />)
-                }
-              </Select>
-            </Field>
-            <Field label="Title" className="col-span-2">
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} onInput={(e: any) => setTitle(e.target.value)} placeholder="Main Postgres" required disabled={busy} />
-            </Field>
           </div>
-
-          {/* Dynamic secret fields */}
-          <SecretFields kind={kind} secret={secret} onChange={setSecretField} credentialTypes={credentialTypes} />
-
-          {/* Notes */}
-          <Field label="Notes">
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              onInput={(e: any) => setNotes(e.target.value)}
-              rows={2}
-              placeholder="Optional operational notes (no secrets here)"
-              disabled={busy}
-              className="flex w-full rounded-md border border-ui-border bg-ui-bg text-ui-text px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue/40 disabled:opacity-50"
-            />
-          </Field>
 
           <DialogFooter>
             {mode === "edit" && (

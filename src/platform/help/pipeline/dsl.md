@@ -860,7 +860,7 @@ The webhook trigger normalises all request bodies to a flat JSON object:
 | `logic.if` | `n.logic.if` | `true`, `false` | `--expr <js-expression>` |
 | `logic.match` | `n.logic.match` | named cases + default | `--expr <js-expression> --cases a,b,c --default <name>` or repeated `--cases a --cases b` |
 | `logic.collect` | `n.logic.collect` | `out` | none |
-| `logic.foreach` | `n.logic.foreach` | `item` | `--items-path <json-pointer> [--dispatch seq\|parallel] [--chunk-size N]` |
+| `logic.foreach` | `n.logic.foreach` | `item` | `--items-expr <js-expression> [--dispatch seq] [--chunk-size N] [--keep-input]` |
 | `logic.reduce` | `n.logic.reduce` | `out` | `--init-expr <expr> --step-expr <expr>` |
 | `logic.retry` | `n.logic.retry` | `retry`, `failed` | `--max-attempts <n> [--delay-ms <ms>]` |
 
@@ -1008,18 +1008,28 @@ register parallel-fetch --path /jobs \
 ```zf
 register emit-rows --path /jobs \
   [a] trigger.manual \
-  [b] logic.foreach --items-path /rows --dispatch seq \
+  [b] logic.foreach --items-expr "$input.rows" --dispatch seq \
   [c] script --lang js -- "return { id: input.item.id, index: input.index };" \
   [a] -> [b] \
   [b]:item -> [c]
 ```
+
+`logic.foreach` emits item-only payloads by default:
+
+```json
+{ "item": { "...": "..." }, "index": 0, "count": 10 }
+```
+
+Use `--keep-input` only when every emitted item must also carry the full upstream
+payload. The default avoids fan-out amplification for large tables, files, and
+numeric arrays.
 
 ### logic.reduce — ordered accumulation
 
 ```zf
 register sum-rows --path /jobs \
   [a] trigger.manual \
-  [b] logic.foreach --items-path /rows \
+  [b] logic.foreach --items-expr "$input.rows" \
   [c] logic.reduce --init-expr "{ total: 0 }" --step-expr "{ total: $acc.total + $input.item.amount }" \
   [a] -> [b] \
   [b]:item -> [c]
