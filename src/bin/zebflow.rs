@@ -275,7 +275,7 @@ async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>>
 
     println!("Zebflow v{APP_VERSION} listening on http://{addr}");
     if let Some((_, _, health_addr)) = &health {
-        println!("Dedicated liveness: http://{health_addr}/health/live");
+        println!("Dedicated liveness: http://{health_addr}/health/runtime");
     }
     println!("Mode: {}", display_mode(role));
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
@@ -658,7 +658,7 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
 
     println!("Zebflow app running for {owner}/{project}");
     if let Some((_, _, health_addr)) = &health {
-        println!("Dedicated liveness: http://{health_addr}/health/live");
+        println!("Dedicated liveness: http://{health_addr}/health/runtime");
     }
     println!("Public route: {app_url}");
     println!("Mode: standalone app runtime");
