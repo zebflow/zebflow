@@ -238,26 +238,32 @@ Use descriptive commit messages. Convention: `feat:`, `fix:`, `refactor:`, `docs
 
 ## Health and Readiness Probes
 
-Two unauthenticated endpoints for K8s liveness and readiness probes:
+Zebflow exposes the traditional app-router probes on the main platform port,
+and can also run a dedicated liveness listener when `ZEBFLOW_HEALTH_PORT` is set.
+Use the dedicated listener for Kubernetes liveness in production offices.
 
 | Endpoint | Purpose | Returns |
 |----------|---------|---------|
-| `GET /health` | Liveness — is the process alive? | `200 {"status":"ok","version":"..."}` always |
-| `GET /ready` | Readiness — can it serve traffic? | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
+| `GET :10611/health/live` | Dedicated liveness — is the process health thread alive? | `200 {"status":"ok","kind":"live","version":"..."}` |
+| `GET :10611/health/runtime` | Diagnostic — is the main runtime heartbeat fresh? | `200 {"status":"ok"}` or `503 {"status":"stale"}` |
+| `GET :10610/health` | Compatibility liveness on the main app router | `200 {"status":"ok","version":"..."}` |
+| `GET :10610/ready` | Readiness — can the main app serve traffic? | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
 
 `/ready` checks that at least one V8 SSR worker in the pool is alive. Use it as the K8s `readinessProbe` so traffic is held until the JS runtime is warm.
+The dedicated liveness listener runs on a separate OS thread and tiny Tokio runtime, so heavy pipeline or DB work should not make Kubernetes kill
+the process merely because the main router is busy.
 
 Suggested K8s probe config:
 ```yaml
 livenessProbe:
-  httpGet: { path: /health, port: 10610 }
+  httpGet: { path: /health/live, port: health }
+  initialDelaySeconds: 30
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /ready, port: http }
   initialDelaySeconds: 10
   periodSeconds: 5
-readinessProbe:
-  httpGet: { path: /ready, port: 10610 }
-  initialDelaySeconds: 5
-  periodSeconds: 3
-  failureThreshold: 2
+  failureThreshold: 6
 ```
 
 The server handles `SIGTERM` gracefully — it stops accepting new connections and waits for in-flight requests to finish before exiting with code 0.

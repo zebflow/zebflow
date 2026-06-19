@@ -40,6 +40,7 @@
 
 pub mod cluster;
 pub mod execution;
+pub mod health;
 pub mod io;
 pub mod mem;
 pub mod scheduler;
