@@ -66,8 +66,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: BUILD_VERSION=${{ needs.prepare.outputs.tag }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}-v2
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}-v2
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}-v3
+          cache-to: type=gha,mode=min,scope=${{ env.PLATFORM_PAIR }}-v3,ignore-error=true
 
       # Pass digest to merge job via artifact (matrix outputs can't be indexed directly)
       - name: Export digest
