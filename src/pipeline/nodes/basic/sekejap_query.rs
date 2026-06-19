@@ -314,15 +314,29 @@ impl NodeHandler for Node {
             resolve_array_values(&input.payload, self.config.params_path.as_deref())
         };
 
-        let result = sekejap::execute_sql(
-            &self.data_root,
-            owner,
-            project,
-            &query,
-            &param_values,
-            self.config.limit,
-            self.config.read_only,
-        )
+        let data_root = self.data_root.clone();
+        let owner = owner.to_string();
+        let project = project.to_string();
+        let limit = self.config.limit;
+        let read_only = self.config.read_only;
+        let result = tokio::task::spawn_blocking(move || {
+            sekejap::execute_sql(
+                &data_root,
+                &owner,
+                &project,
+                &query,
+                &param_values,
+                limit,
+                read_only,
+            )
+        })
+        .await
+        .map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_SEKEJAP_QUERY_JOIN",
+                format!("sekejap query task failed: {err}"),
+            )
+        })?
         .map_err(|err| PipelineError::new("FW_NODE_SEKEJAP_QUERY", err.to_string()))?;
 
         Ok(NodeExecutionOutput {
