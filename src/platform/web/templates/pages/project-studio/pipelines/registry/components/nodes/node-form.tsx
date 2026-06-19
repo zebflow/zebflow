@@ -141,7 +141,7 @@ function enrichFields(
     } else if (f.data_source === "credentials_open_ai") {
       options = buildCredentialOptions(dataState.openaiCredentials, value as string);
       if (options.length === 1 && (options[0] as SelectOptionDef).value === "") {
-        (options[0] as SelectOptionDef).label = "No OpenAI credential available";
+        (options[0] as SelectOptionDef).label = "No OpenAI/OpenRouter credential available";
       }
     } else if (f.data_source === "credentials_secure_request") {
       options = buildCredentialOptions(dataState.secureRequestCredentials, value as string);

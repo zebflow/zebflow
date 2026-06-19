@@ -369,7 +369,7 @@ pub enum NodeFieldDataSource {
     TemplatesPages,
     /// Live project browser credentials (kind prefix: browser_).
     CredentialsBrowser,
-    /// Live project OpenAI-compatible credentials (kind = "openai").
+    /// Live project OpenAI-family credentials (kind = "openai" or "openrouter").
     CredentialsOpenAi,
     /// Live `secure_request` credentials that declare request variable slots.
     CredentialsSecureRequest,

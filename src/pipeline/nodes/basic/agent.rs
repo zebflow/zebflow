@@ -29,7 +29,9 @@ use crate::automaton::agents::tool_caller::{ToolCallerAgent, ToolCallerConfig};
 use crate::automaton::agents::zebtune::{
     ChainStep, OutputMode as ZebtuneOutputMode, ZebtuneAgent, ZebtuneConfig,
 };
-use crate::automaton::infra::http_client::{client_from_env, client_from_secret_with_model};
+use crate::automaton::infra::http_client::{
+    client_from_env, client_from_provider_secret_with_model,
+};
 use crate::automaton::infra::llm_interface::{LlmCall, ToolDef};
 use crate::automaton::infra::shell_tools::default_registry;
 use crate::pipeline::model::{
@@ -185,7 +187,7 @@ pub fn definition() -> NodeDefinition {
                 label: "Credential".to_string(),
                 field_type: NodeFieldType::Select,
                 data_source: Some(NodeFieldDataSource::CredentialsOpenAi),
-                help: Some("OpenAI-compatible credential (api_key, base_url, model).".to_string()),
+                help: Some("OpenAI or OpenRouter credential. The credential response surface controls request and parsing format.".to_string()),
                 ..Default::default()
             },
             NodeFieldDef {
@@ -395,9 +397,11 @@ impl Node {
         if let (Some(cred_id), Some(creds)) = (&self.config.credential_id, &self.credentials) {
             if !cred_id.is_empty() {
                 if let Ok(Some(cred)) = creds.get_project_credential(owner, project, cred_id) {
-                    if let Some(client) =
-                        client_from_secret_with_model(&cred.secret, model_override)
-                    {
+                    if let Some(client) = client_from_provider_secret_with_model(
+                        &cred.kind,
+                        &cred.secret,
+                        model_override,
+                    ) {
                         return Some(client);
                     }
                 }

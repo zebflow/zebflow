@@ -124,7 +124,11 @@ fn build_llm_from_credential(
         ));
     }
 
-    Ok(Some(Arc::new(OpenAiHttpClient::new(
-        base_url, api_key, model,
-    ))))
+    Ok(
+        OpenAiHttpClient::from_provider_secret(&credential.kind, secret, Some(&model))
+            .map(|client| Arc::new(client) as Arc<dyn LlmCall>)
+            .or_else(|| {
+                Some(Arc::new(OpenAiHttpClient::new(base_url, api_key, model)) as Arc<dyn LlmCall>)
+            }),
+    )
 }

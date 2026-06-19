@@ -40,9 +40,30 @@ const SECRET_SCHEMAS = {
     { key: "password", label: "Password", type: "password", fullWidth: true, help: "Login password." },
   ],
   openai: [
-    { key: "api_key",  label: "API Key",       type: "password", fullWidth: true, help: "Provider API token." },
-    { key: "base_url", label: "Base URL",       placeholder: "https://api.openai.com/v1", help: "Custom endpoint if needed." },
-    { key: "model",    label: "Default Model",  help: "Fallback model id for requests." },
+    { key: "api_key",  label: "API Key", type: "password", fullWidth: true, help: "Provider API token." },
+    { key: "base_url", label: "Base URL", placeholder: "https://api.openai.com/v1", default: "https://api.openai.com/v1", fullWidth: true, help: "Provider API root. Paths below are joined to this URL." },
+    { key: "model", label: "Default Model", placeholder: "gpt-5.5", fullWidth: true, help: "Fallback model id for requests." },
+    { key: "response_surface", label: "Response Surface", type: "select", default: "responses", options: [
+      { value: "responses", label: "Responses API" },
+      { value: "chat_completions", label: "Chat Completions API" },
+    ], help: "Protocol shape used for request payloads, tool calls, and response parsing." },
+    { key: "response_path", label: "Response Path", placeholder: "/responses", default: "/responses", help: "Path appended to Base URL for text/tool responses." },
+    { key: "embedding_path", label: "Embedding Path", placeholder: "/embeddings", default: "/embeddings", help: "Path appended to Base URL for embeddings." },
+    { key: "store", label: "Provider Storage", type: "select", default: "false", options: [
+      { value: "false", label: "Do not store" },
+      { value: "true", label: "Allow provider storage" },
+    ], help: "Responses API store flag. Zebflow defaults to no provider-side response storage." },
+  ],
+  openrouter: [
+    { key: "api_key",  label: "API Key", type: "password", fullWidth: true, help: "OpenRouter API token." },
+    { key: "base_url", label: "Base URL", placeholder: "https://openrouter.ai/api/v1", default: "https://openrouter.ai/api/v1", fullWidth: true, help: "Provider API root. Paths below are joined to this URL." },
+    { key: "model", label: "Default Model", placeholder: "openai/gpt-4o-mini", fullWidth: true, help: "Fallback model id for requests." },
+    { key: "response_surface", label: "Response Surface", type: "select", default: "chat_completions", options: [
+      { value: "chat_completions", label: "Chat Completions API" },
+      { value: "responses", label: "Responses API" },
+    ], help: "Protocol shape used for request payloads, tool calls, and response parsing." },
+    { key: "response_path", label: "Response Path", placeholder: "/chat/completions", default: "/chat/completions", help: "Path appended to Base URL for text/tool responses." },
+    { key: "embedding_path", label: "Embedding Path", placeholder: "/embeddings", default: "/embeddings", help: "Path appended to Base URL for embeddings if the provider/model supports them." },
   ],
   http: [
     { key: "base_url", label: "Base URL", help: "Service root URL." },

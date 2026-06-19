@@ -22,9 +22,14 @@ impl Usage {
             None => return Usage::default(),
         };
         Usage {
-            prompt_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            prompt_tokens: u
+                .get("prompt_tokens")
+                .or_else(|| u.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             completion_tokens: u
                 .get("completion_tokens")
+                .or_else(|| u.get("output_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
         }
