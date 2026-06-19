@@ -20,6 +20,9 @@ use reqwest::Url;
 use serde_json::Value;
 use zebflow::infra::cluster::config::ClusterRole;
 use zebflow::infra::execution::sync::ProjectBootstrapPlan;
+use zebflow::infra::health::{
+    HealthState, spawn_main_runtime_heartbeat, start_dedicated_health_server,
+};
 use zebflow::platform::model::CreateProjectRequest;
 use zebflow::platform::services::PlatformService;
 use zebflow::platform::services::project::{
@@ -32,7 +35,7 @@ use zebflow::version::APP_VERSION;
 
 /// Resolves when SIGTERM or Ctrl-C arrives, allowing axum's graceful shutdown
 /// to drain in-flight requests.
-async fn shutdown_signal() {
+async fn shutdown_signal(health_state: Option<Arc<HealthState>>) {
     use tokio::signal;
 
     let ctrl_c = async {
@@ -57,6 +60,9 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
+    if let Some(state) = health_state {
+        state.mark_shutdown_requested();
+    }
     eprintln!("Zebflow: graceful shutdown initiated; draining in-flight requests...");
 }
 
@@ -69,6 +75,44 @@ fn configured_port() -> u16 {
         .ok()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(10610)
+}
+
+fn configured_health_addr(default_host: &str) -> Result<Option<SocketAddr>, io::Error> {
+    let Some(raw_port) = std::env::var("ZEBFLOW_HEALTH_PORT").ok() else {
+        return Ok(None);
+    };
+    let trimmed = raw_port.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        return Ok(None);
+    }
+    let port = trimmed.parse::<u16>().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid ZEBFLOW_HEALTH_PORT '{trimmed}': {err}"),
+        )
+    })?;
+    let host = std::env::var("ZEBFLOW_HEALTH_HOST").unwrap_or_else(|_| default_host.to_string());
+    let addr = format!("{host}:{port}")
+        .parse::<SocketAddr>()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid health listen address {host}:{port}: {err}"),
+            )
+        })?;
+    Ok(Some(addr))
+}
+
+fn maybe_start_dedicated_health_server(
+    host: &str,
+) -> Result<Option<(Arc<HealthState>, std::thread::JoinHandle<()>, SocketAddr)>, io::Error> {
+    let Some(addr) = configured_health_addr(host)? else {
+        return Ok(None);
+    };
+    let state = HealthState::new();
+    let handle = start_dedicated_health_server(addr, state.clone())?;
+    spawn_main_runtime_heartbeat(state.clone());
+    Ok(Some((state, handle, addr)))
 }
 
 fn default_advertise_url(host: &str, port: u16) -> String {
@@ -125,6 +169,8 @@ Environment:
   ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Required for standalone/controller bootstrap
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
+  ZEBFLOW_HEALTH_PORT                Optional dedicated liveness port, e.g. 10611
+  ZEBFLOW_HEALTH_HOST                Dedicated liveness host (default: ZEBFLOW_PLATFORM_HOST)
   ZEBFLOW_PLATFORM_DATA_DIR          Data root override
   ZEBFLOW_SECRET_ROTATION_EPOCH      Unix timestamp; invalidate older platform-issued tokens
   ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL  Default platform marketplace API URL
@@ -217,21 +263,27 @@ fn load_platform_config(role: ClusterRole) -> Result<PlatformConfig, io::Error> 
 
 /// Run the requested Zebflow server role.
 async fn run_server(role: ClusterRole) -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_platform_config(role)?;
-    let app = build_router(config).await.map_err(io::Error::other)?;
-
     let host = configured_host();
     let port = configured_port();
+    let health = maybe_start_dedicated_health_server(&host)?;
+
+    let config = load_platform_config(role)?;
+    let app = build_router(config).await.map_err(io::Error::other)?;
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     println!("Zebflow v{APP_VERSION} listening on http://{addr}");
+    if let Some((_, _, health_addr)) = &health {
+        println!("Dedicated liveness: http://{health_addr}/health/live");
+    }
     println!("Mode: {}", display_mode(role));
     println!("Flow: /login -> /home -> /projects/{{owner}}/{{project}}");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(
+            health.as_ref().map(|(state, _, _)| state.clone()),
+        ))
         .await?;
 
     eprintln!("Zebflow: shutdown complete.");
@@ -544,6 +596,9 @@ async fn install_remote_project_asset(
 
 async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_platform_config(ClusterRole::Standalone)?;
+    let host = configured_host();
+    let port = configured_port();
+    let health = maybe_start_dedicated_health_server(&host)?;
 
     let remote = parse_remote_asset_ref(&req.target);
     let owner = req
@@ -586,8 +641,6 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     }
 
     let public_path = choose_public_app_path(platform.as_ref(), &owner, &project)?;
-    let host = configured_host();
-    let port = configured_port();
     let app_url = format!(
         "http://{}:{}/wh/{owner}/{project}{}",
         if host == "0.0.0.0" {
@@ -604,11 +657,16 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     println!("Zebflow app running for {owner}/{project}");
+    if let Some((_, _, health_addr)) = &health {
+        println!("Dedicated liveness: http://{health_addr}/health/live");
+    }
     println!("Public route: {app_url}");
     println!("Mode: standalone app runtime");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(
+            health.as_ref().map(|(state, _, _)| state.clone()),
+        ))
         .await?;
 
     eprintln!("Zebflow: shutdown complete.");
