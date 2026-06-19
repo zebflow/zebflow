@@ -72,7 +72,7 @@ dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.8.16"
+sekejap = "0.8.17"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
