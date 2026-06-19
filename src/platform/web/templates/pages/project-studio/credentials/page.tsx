@@ -47,7 +47,7 @@ async function requestJson(url, options: any = {}) {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const FALLBACK_KINDS = [
-  "postgres", "mysql", "openai", "http", "github", "gitlab",
+  "postgres", "mysql", "openai", "openrouter", "http", "github", "gitlab",
   "jwt_signing_key", "browser_browserless", "oauth2", "hmac", "api_key", "tts", "secure_request", "custom",
 ];
 
@@ -741,14 +741,17 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent className="max-w-xl" style={{ overflow: "hidden" }}>
-        <DialogHeader>
+      <DialogContent
+        className="max-w-2xl"
+        style={{ overflow: "hidden", maxHeight: "calc(100dvh - 2rem)" }}
+      >
+        <DialogHeader className="shrink-0">
           <DialogTitle>{mode === "edit" ? `Edit — ${credentialId}` : "Create Credential"}</DialogTitle>
           <p className={cx("text-xs mt-0.5", statusTone === "error" ? "text-danger" : statusTone === "ok" ? "text-success" : "text-body-soft")}>{status}</p>
         </DialogHeader>
 
-        <form onSubmit={handleSave} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
+        <form onSubmit={handleSave} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-6 py-4">
             {/* Identity */}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Credential ID">
@@ -791,7 +794,7 @@ function CredentialDialog({ open, onClose, mode, editItem, apiList, apiItemBase,
             </Field>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             {mode === "edit" && (
               <Button type="button" variant="destructive" size="sm" onClick={handleDelete} disabled={busy}>Delete</Button>
             )}

@@ -347,7 +347,10 @@ export default function PipelineEditor({
             pgCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "postgres"),
             jwtCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "jwt_signing_key"),
             browserCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase().startsWith("browser_")),
-            openaiCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "openai"),
+            openaiCredentials: items.filter((i: any) => {
+              const k = String(i?.kind || "").toLowerCase();
+              return k === "openai" || k === "openrouter";
+            }),
             secureRequestCredentials: items.filter((i: any) => String(i?.kind || "").toLowerCase() === "secure_request"),
             httpAuthCredentials: items.filter((i: any) => { const k = String(i?.kind || "").toLowerCase(); return k === "secure_request" || k === "oauth2"; }),
             webhookAuthCredentials: items.filter((i: any) => { const k = String(i?.kind || "").toLowerCase(); return k === "jwt_signing_key" || k === "hmac" || k === "api_key"; }),

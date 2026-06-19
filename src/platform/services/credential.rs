@@ -565,12 +565,57 @@ pub fn builtin_credential_types() -> Vec<CredentialTypeDef> {
         },
         CredentialTypeDef {
             kind: "openai".into(),
-            title: "OpenAI / LLM".into(),
-            description: "OpenAI-compatible LLM provider.".into(),
+            title: "OpenAI".into(),
+            description: "OpenAI API credential. Defaults to the Responses API.".into(),
             fields: vec![
                 F { full_width: true, help: Some("Provider API token.".into()), ..fp("api_key", "API Key") },
-                F { full_width: true, placeholder: Some("https://api.openai.com/v1".into()), help: Some("Custom endpoint if needed.".into()), ..f("base_url", "Base URL") },
-                F { full_width: true, help: Some("Fallback model id for requests.".into()), ..f("model", "Default Model") },
+                F { full_width: true, placeholder: Some("https://api.openai.com/v1".into()), default: Some("https://api.openai.com/v1".into()), help: Some("Provider API root. Paths below are joined to this URL.".into()), ..f("base_url", "Base URL") },
+                F { full_width: true, placeholder: Some("gpt-5.5".into()), help: Some("Fallback model id for requests.".into()), ..f("model", "Default Model") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("responses".into()),
+                    options: vec![
+                        O { value: "responses".into(), label: "Responses API".into() },
+                        O { value: "chat_completions".into(), label: "Chat Completions API".into() },
+                    ],
+                    help: Some("Protocol shape used for request payloads, tool calls, and response parsing.".into()),
+                    ..f("response_surface", "Response Surface")
+                },
+                F { placeholder: Some("/responses".into()), default: Some("/responses".into()), help: Some("Path appended to Base URL for text/tool responses.".into()), ..f("response_path", "Response Path") },
+                F { placeholder: Some("/embeddings".into()), default: Some("/embeddings".into()), help: Some("Path appended to Base URL for embeddings.".into()), ..f("embedding_path", "Embedding Path") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("false".into()),
+                    options: vec![
+                        O { value: "false".into(), label: "Do not store".into() },
+                        O { value: "true".into(), label: "Allow provider storage".into() },
+                    ],
+                    help: Some("Responses API store flag. Zebflow defaults to no provider-side response storage.".into()),
+                    ..f("store", "Provider Storage")
+                },
+            ],
+            ..Default::default()
+        },
+        CredentialTypeDef {
+            kind: "openrouter".into(),
+            title: "OpenRouter".into(),
+            description: "OpenRouter credential. Defaults to Chat Completions compatibility.".into(),
+            fields: vec![
+                F { full_width: true, help: Some("OpenRouter API token.".into()), ..fp("api_key", "API Key") },
+                F { full_width: true, placeholder: Some("https://openrouter.ai/api/v1".into()), default: Some("https://openrouter.ai/api/v1".into()), help: Some("Provider API root. Paths below are joined to this URL.".into()), ..f("base_url", "Base URL") },
+                F { full_width: true, placeholder: Some("openai/gpt-4o-mini".into()), help: Some("Fallback model id for requests.".into()), ..f("model", "Default Model") },
+                F {
+                    field_type: "select".into(),
+                    default: Some("chat_completions".into()),
+                    options: vec![
+                        O { value: "chat_completions".into(), label: "Chat Completions API".into() },
+                        O { value: "responses".into(), label: "Responses API".into() },
+                    ],
+                    help: Some("Protocol shape used for request payloads, tool calls, and response parsing.".into()),
+                    ..f("response_surface", "Response Surface")
+                },
+                F { placeholder: Some("/chat/completions".into()), default: Some("/chat/completions".into()), help: Some("Path appended to Base URL for text/tool responses.".into()), ..f("response_path", "Response Path") },
+                F { placeholder: Some("/embeddings".into()), default: Some("/embeddings".into()), help: Some("Path appended to Base URL for embeddings if the provider/model supports them.".into()), ..f("embedding_path", "Embedding Path") },
             ],
             ..Default::default()
         },

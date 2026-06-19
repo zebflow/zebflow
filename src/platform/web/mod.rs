@@ -6514,7 +6514,7 @@ async fn render_settings_tab_page(
             {
                 Ok(items) => items
                     .into_iter()
-                    .filter(|item| item.kind == "openai")
+                    .filter(|item| item.kind == "openai" || item.kind == "openrouter")
                     .map(|item| {
                         json!({
                             "credential_id": item.credential_id,
