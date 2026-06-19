@@ -389,9 +389,11 @@ pub fn render_ssr(
 /// Used by the /ready health endpoint.
 pub fn is_pool_ready() -> bool {
     let pool = &*WORKER_POOL;
-    pool.workers
-        .iter()
-        .any(|slot| !slot.lock().unwrap_or_else(|e| e.into_inner()).is_closed())
+    pool.workers.iter().any(|slot| match slot.try_lock() {
+        Ok(guard) => !guard.is_closed(),
+        Err(std::sync::TryLockError::Poisoned(err)) => !err.into_inner().is_closed(),
+        Err(std::sync::TryLockError::WouldBlock) => false,
+    })
 }
 
 /// Transpile a TSX/TSX source to plain browser JS (no JsRuntime needed).

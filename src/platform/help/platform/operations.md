@@ -244,19 +244,18 @@ Use the dedicated listener for Kubernetes liveness in production offices.
 
 | Endpoint | Purpose | Returns |
 |----------|---------|---------|
-| `GET :10611/health/live` | Dedicated liveness — is the process health thread alive? | `200 {"status":"ok","kind":"live","version":"..."}` |
-| `GET :10611/health/runtime` | Diagnostic — is the main runtime heartbeat fresh? | `200 {"status":"ok"}` or `503 {"status":"stale"}` |
+| `GET :10611/health/live` | Raw process liveness — is the dedicated health thread alive? | `200 {"status":"ok","kind":"live","version":"..."}` |
+| `GET :10611/health/runtime` | Production liveness — is the main runtime heartbeat fresh? | `200 {"status":"ok"}` or `503 {"status":"stale"}` |
 | `GET :10610/health` | Compatibility liveness on the main app router | `200 {"status":"ok","version":"..."}` |
 | `GET :10610/ready` | Readiness — can the main app serve traffic? | `200 {"status":"ready"}` or `503 {"status":"not_ready"}` |
 
 `/ready` checks that at least one V8 SSR worker in the pool is alive. Use it as the K8s `readinessProbe` so traffic is held until the JS runtime is warm.
-The dedicated liveness listener runs on a separate OS thread and tiny Tokio runtime, so heavy pipeline or DB work should not make Kubernetes kill
-the process merely because the main router is busy.
+The dedicated liveness listener runs on a separate OS thread and tiny Tokio runtime. Use `/health/runtime` for Kubernetes liveness on office pods: it stays reachable when the main app router is wedged, but returns `503` if the main Tokio runtime stops ticking.
 
 Suggested K8s probe config:
 ```yaml
 livenessProbe:
-  httpGet: { path: /health/live, port: health }
+  httpGet: { path: /health/runtime, port: health }
   initialDelaySeconds: 30
   periodSeconds: 10
 readinessProbe:
