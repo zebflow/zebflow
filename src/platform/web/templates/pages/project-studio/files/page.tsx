@@ -1,3 +1,4 @@
+import { useRef, useState } from "zeb";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Badge from "@/components/ui/badge";
@@ -5,12 +6,17 @@ import Button from "@/components/ui/button";
 import Input from "@/components/ui/input";
 import Card from "@/components/ui/card";
 import CardContent from "@/components/ui/card-content";
-import { initFilesBehavior } from "@/pages/project-studio/files/files-behavior";
+import ConfirmDialog from "@/components/ui/confirm-dialog";
+import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 
 export const page = {
   html: { lang: "en" },
   body: { className: "font-sans" },
   navigation: "history",
+};
+
+export const app = {
+  hydration: "reactive",
 };
 
 export function getPage(input) {
@@ -23,27 +29,222 @@ export function getPage(input) {
 }
 
 export default function Page(input) {
-  initFilesBehavior();
-
   const activeTab = input?.active_tab ?? "storages";
   const selectedStorage = input?.selected_storage ?? "default";
   const base = `/projects/${input.owner}/${input.project}/files`;
   const api = input?.api ?? {};
   const storages = Array.isArray(input?.storages) ? input.storages : [];
-
   const browser = input?.browser ?? { path: "", folders: [], files: [] };
-  const folders = Array.isArray(browser?.folders) ? browser.folders : [];
-  const files   = Array.isArray(browser?.files)   ? browser.files   : [];
-  const currentPath: string = browser?.path ?? "";
+  const fileInputRef = useRef(null);
 
-  // Build breadcrumb segments from current path
-  const crumbs: Array<{ label: string; path: string }> = [];
-  if (currentPath) {
-    const parts = currentPath.split("/");
-    let acc = "";
-    for (const p of parts) {
-      acc = acc ? `${acc}/${p}` : p;
-      crumbs.push({ label: p, path: acc });
+  const [currentPath, setCurrentPath] = useState(browser?.path ?? "");
+  const [folders, setFolders] = useState(Array.isArray(browser?.folders) ? browser.folders : []);
+  const [files, setFiles] = useState(Array.isArray(browser?.files) ? browser.files : []);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState("muted");
+  const [pendingDelete, setPendingDelete] = useState(null);
+
+  const crumbs = buildCrumbs(currentPath);
+
+  async function requestJson(url: string, options: any = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(options.headers ?? {}),
+      },
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(
+        payload?.error?.message ||
+          payload?.message ||
+          payload?.error ||
+          `${response.status} ${response.statusText}`,
+      );
+    }
+    return payload;
+  }
+
+  async function refresh(path = currentPath) {
+    if (!api.list) return;
+    const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
+    const payload = await requestJson(`${api.list}${suffix}`);
+    setCurrentPath(payload?.path ?? path ?? "");
+    setFolders(Array.isArray(payload?.folders) ? payload.folders : []);
+    setFiles(Array.isArray(payload?.files) ? payload.files : []);
+  }
+
+  async function navigate(path: string) {
+    setBusy("list");
+    setMessage("");
+    try {
+      await refresh(path);
+    } catch (err) {
+      setMessage(`Load failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function createFolder() {
+    const name = folderName.trim();
+    if (!name || !api.mkdir) return;
+    const fullPath = currentPath ? `${currentPath}/${name}` : name;
+    setBusy("mkdir");
+    setMessage("");
+    try {
+      await requestJson(api.mkdir, {
+        method: "POST",
+        body: JSON.stringify({ path: fullPath }),
+      });
+      setFolderName("");
+      setNewFolderOpen(false);
+      await refresh(currentPath);
+      setMessage("Folder created.");
+      setMessageTone("ok");
+    } catch (err) {
+      setMessage(`Create failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function uploadFiles(rawFiles: any) {
+    const picked = Array.from(rawFiles ?? []).filter(Boolean);
+    if (picked.length === 0 || !api.upload) return;
+    const targetPath = currentPath || "uploads";
+    setBusy("upload");
+    setMessage(`Uploading ${picked.length} file${picked.length === 1 ? "" : "s"}...`);
+    setMessageTone("muted");
+    try {
+      for (const file of picked) {
+        const form = new FormData();
+        form.append("file", file);
+        const url = `${api.upload}?path=${encodeURIComponent(targetPath)}`;
+        const response = await fetch(url, {
+          method: "POST",
+          body: form,
+          credentials: "same-origin",
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          throw new Error(
+            payload?.error?.message ||
+              payload?.message ||
+              payload?.error ||
+              `${response.status} ${response.statusText}`,
+          );
+        }
+      }
+      await refresh(targetPath);
+      setMessage(`Uploaded ${picked.length} file${picked.length === 1 ? "" : "s"}.`);
+      setMessageTone("ok");
+    } catch (err) {
+      setMessage(`Upload failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function uploadClipboardItems(items: any) {
+    const files = [];
+    for (const item of Array.from(items ?? []) as any[]) {
+      if (item?.kind === "file") {
+        const file = item.getAsFile?.();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      await uploadFiles(files);
+    }
+  }
+
+  async function handlePaste(event: any) {
+    const items = event?.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    await uploadClipboardItems(items);
+  }
+
+  async function pasteFromClipboard() {
+    if (!navigator?.clipboard?.read) {
+      setMessage("Focus the files panel and paste a screenshot.");
+      setMessageTone("muted");
+      return;
+    }
+    setBusy("paste");
+    setMessage("");
+    try {
+      const files = [];
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        for (const type of item.types ?? []) {
+          if (!String(type).startsWith("image/")) continue;
+          const blob = await item.getType(type);
+          const ext = extensionForMime(type);
+          files.push(new globalThis.File([blob], `screenshot-${Date.now()}.${ext}`, { type }));
+        }
+      }
+      if (files.length === 0) {
+        setMessage("Clipboard has no image file.");
+        setMessageTone("muted");
+        return;
+      }
+      await uploadFiles(files);
+    } catch (err) {
+      setMessage(`Paste failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function toggleAccess(item: any, scope: "object" | "prefix") {
+    if (!api.access || !item?.path) return;
+    const nextAccess = item.public ? "private" : "public_read";
+    setBusy(`access:${item.path}`);
+    setMessage("");
+    try {
+      await requestJson(api.access, {
+        method: "PUT",
+        body: JSON.stringify({ path: item.path, access: nextAccess, scope }),
+      });
+      await refresh(currentPath);
+      setMessage(nextAccess === "public_read" ? "Public read enabled." : "Path is private.");
+      setMessageTone("ok");
+    } catch (err) {
+      setMessage(`Access update failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function deletePath(item: any) {
+    if (!api.rm || !item?.path) return;
+    setBusy(`delete:${item.path}`);
+    setMessage("");
+    try {
+      await requestJson(api.rm, {
+        method: "POST",
+        body: JSON.stringify({ path: item.path }),
+      });
+      await refresh(currentPath);
+      setMessage("Deleted.");
+      setMessageTone("ok");
+    } catch (err) {
+      setMessage(`Delete failed: ${err?.message || String(err)}`);
+      setMessageTone("error");
+    } finally {
+      setBusy("");
     }
   }
 
@@ -101,25 +302,10 @@ export default function Page(input) {
           ) : null}
 
           {activeTab === "explorer" ? (
-            <div
-              className="flex flex-col flex-1 min-h-0"
-              data-files-browser="true"
-              data-owner={input.owner ?? ""}
-              data-project={input.project ?? ""}
-              data-api-list={api.list ?? ""}
-              data-api-mkdir={api.mkdir ?? ""}
-              data-api-upload={api.upload ?? ""}
-              data-api-rm={api.rm ?? ""}
-              data-current-path={currentPath}
-            >
-              {/* Toolbar */}
+            <div className="flex flex-col flex-1 min-h-0" onPaste={handlePaste}>
               <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-border bg-surface">
-                {/* Breadcrumbs */}
                 <div className="flex flex-1 min-w-0 flex-wrap items-center gap-1 text-[0.78rem]">
-                  <a
-                    href={base}
-                    className="text-body-soft hover:text-body transition-colors"
-                  >
+                  <a href={base} className="text-body-soft hover:text-body transition-colors">
                     storages
                   </a>
                   <span className="text-border">/</span>
@@ -128,7 +314,7 @@ export default function Page(input) {
                   <button
                     type="button"
                     className="text-body-soft hover:text-body transition-colors bg-transparent border-0 p-0 cursor-pointer"
-                    data-crumb-path=""
+                    onClick={() => navigate("")}
                   >
                     files/
                   </button>
@@ -138,7 +324,7 @@ export default function Page(input) {
                       <button
                         type="button"
                         className="text-body-soft hover:text-body transition-colors bg-transparent border-0 p-0 cursor-pointer"
-                        data-crumb-path={crumb.path}
+                        onClick={() => navigate(crumb.path)}
                       >
                         {crumb.label}
                       </button>
@@ -146,30 +332,55 @@ export default function Page(input) {
                   ))}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <input type="file" hidden data-file-upload-input="true" />
-                  <Button variant="outline" size="xs" data-file-upload-trigger="true">Upload</Button>
-                  <Button variant="outline" size="xs" data-new-folder-toggle="true">+ Folder</Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(event) => uploadFiles(event.currentTarget.files)}
+                  />
+                  <Button variant="outline" size="xs" onClick={pasteFromClipboard} disabled={busy === "paste"}>
+                    Paste
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => fileInputRef.current?.click?.()} disabled={busy === "upload"}>
+                    Upload
+                  </Button>
+                  <Button variant="outline" size="xs" onClick={() => setNewFolderOpen(true)}>
+                    + Folder
+                  </Button>
                 </div>
               </div>
 
-              {/* New folder inline form */}
-              <div
-                hidden
-                data-new-folder-form="true"
-                className="flex items-center gap-2 px-3 py-2 border-b border-border-soft flex-wrap"
-              >
-                <Input
-                  name="folder_name"
-                  type="text"
-                  placeholder="folder-name"
-                  className="pipeline-registry-inline-input"
-                  data-new-folder-input="true"
-                />
-                <Button size="xs" data-new-folder-submit="true">Create Folder</Button>
-                <Button variant="outline" size="xs" data-new-folder-cancel="true">Cancel</Button>
-              </div>
+              {newFolderOpen ? (
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft flex-wrap">
+                  <Input
+                    name="folder_name"
+                    type="text"
+                    placeholder="folder-name"
+                    className="pipeline-registry-inline-input"
+                    value={folderName}
+                    onInput={(event) => setFolderName(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") createFolder();
+                      if (event.key === "Escape") setNewFolderOpen(false);
+                    }}
+                  />
+                  <Button size="xs" onClick={createFolder} disabled={busy === "mkdir"}>Create Folder</Button>
+                  <Button variant="outline" size="xs" onClick={() => { setNewFolderOpen(false); setFolderName(""); }}>Cancel</Button>
+                </div>
+              ) : null}
 
-              {/* File + folder list */}
+              {message ? (
+                <div className={cx(
+                  "mx-3 mt-2 rounded border px-3 py-2 text-[0.76rem]",
+                  messageTone === "error" && "border-red-500/40 bg-red-500/10 text-red-300",
+                  messageTone === "ok" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+                  messageTone === "muted" && "border-border bg-surface-2 text-body-soft",
+                )}>
+                  {message}
+                </div>
+              ) : null}
+
               <div className="flex flex-col py-2 px-3 gap-0.5">
                 {folders.length === 0 && files.length === 0 ? (
                   <p className="px-2 py-6 text-[0.78rem] text-body-muted">
@@ -181,22 +392,43 @@ export default function Page(input) {
                 ) : null}
 
                 {folders.map((folder) => (
-                  <FolderRow key={folder.path} folder={folder} />
+                  <FolderRow
+                    key={folder.path}
+                    folder={folder}
+                    busy={busy}
+                    onOpen={() => navigate(folder.path)}
+                    onToggleAccess={() => toggleAccess(folder, "prefix")}
+                    onDelete={() => setPendingDelete({ ...folder, kind: "folder" })}
+                  />
                 ))}
 
                 {files.map((file) => (
-                  <FileRow key={file.path} file={file} />
+                  <FileRow
+                    key={file.path}
+                    file={file}
+                    busy={busy}
+                    onToggleAccess={() => toggleAccess(file, "object")}
+                    onDelete={() => setPendingDelete({ ...file, kind: "file" })}
+                  />
                 ))}
               </div>
             </div>
           ) : null}
         </section>
       </div>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        onClose={() => setPendingDelete(null)}
+        onConfirm={() => deletePath(pendingDelete)}
+        title={pendingDelete?.kind === "folder" ? "Delete Folder" : "Delete File"}
+        message={pendingDelete ? `Delete "${pendingDelete.name}"? This cannot be undone.` : ""}
+        confirmLabel="Delete"
+        variant="destructive"
+      />
     </ProjectStudioShell>
   );
 }
-
-// ── Sub-components ────────────────────────────────────────────────────────────
 
 function StorageRow({ storage }) {
   const tags = Array.isArray(storage.tags) ? storage.tags : [];
@@ -224,35 +456,45 @@ function StorageRow({ storage }) {
   );
 }
 
-function FolderRow({ folder }) {
+function FolderRow({ folder, busy, onOpen, onToggleAccess, onDelete }) {
+  const isPublic = !!folder.public;
+  const accessBusy = busy === `access:${folder.path}`;
   return (
-    <div
-      className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-dashed border-border-soft text-body-soft text-[0.8rem] cursor-pointer hover:bg-surface-2 hover:text-body hover:border-border transition-colors"
-      data-folder-path={folder.path}
-    >
+    <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-dashed border-border-soft text-body-soft text-[0.8rem] hover:bg-surface-2 hover:text-body hover:border-border transition-colors">
       <FolderIcon />
-      <span className="flex-1 min-w-0 truncate font-medium text-[0.78rem] text-body">{folder.name}</span>
-      {folder.protected
-        ? <Badge variant="outline" className="text-[0.65rem] shrink-0">protected</Badge>
-        : (
-          <button
-            type="button"
-            className="hidden group-hover:flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
-            data-delete-btn
-            data-delete-path={folder.path}
-            title="Delete folder"
-          >
-            <TrashIcon />
-          </button>
-        )
-      }
+      <button
+        type="button"
+        className="flex-1 min-w-0 truncate text-left font-medium text-[0.78rem] text-body bg-transparent border-0 p-0 cursor-pointer"
+        onClick={onOpen}
+      >
+        {folder.name}
+      </button>
+      <Badge variant={isPublic ? "secondary" : "outline"} className="text-[0.65rem] shrink-0">
+        {isPublic ? "public" : "private"}
+      </Badge>
+      <IconButton
+        title={isPublic ? "Make folder private" : "Make folder public"}
+        onClick={onToggleAccess}
+        disabled={accessBusy}
+      >
+        {isPublic ? <LockOpenIcon className="w-3.5 h-3.5" /> : <LockIcon className="w-3.5 h-3.5" />}
+      </IconButton>
+      {folder.protected ? (
+        <Badge variant="outline" className="text-[0.65rem] shrink-0">protected</Badge>
+      ) : (
+        <IconButton title="Delete folder" tone="danger" onClick={onDelete}>
+          <TrashIcon />
+        </IconButton>
+      )}
     </div>
   );
 }
 
-function FileRow({ file }) {
+function FileRow({ file, busy, onToggleAccess, onDelete }) {
   const ext = (file.name?.split(".").pop() ?? "").toLowerCase();
-  const isImage = ["jpg","jpeg","png","gif","webp","svg","avif","bmp"].includes(ext);
+  const isImage = ["jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp"].includes(ext);
+  const isPublic = !!file.public;
+  const accessBusy = busy === `access:${file.path}`;
 
   return (
     <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-border-soft bg-surface-2 hover:border-border transition-colors">
@@ -269,16 +511,44 @@ function FileRow({ file }) {
         {formatBytes(file.size)}
         {file.modified ? ` · ${new Date(file.modified * 1000).toLocaleDateString()}` : ""}
       </span>
-      <button
-        type="button"
-        className="hidden group-hover:flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted hover:text-red-400 hover:bg-red-400/10 transition-colors"
-        data-delete-btn
-        data-delete-path={file.path}
-        title="Delete file"
+      <Badge variant={isPublic ? "secondary" : "outline"} className="text-[0.65rem] shrink-0">
+        {isPublic ? "public" : "private"}
+      </Badge>
+      <IconButton
+        title={isPublic ? "Make file private" : "Make file public"}
+        onClick={onToggleAccess}
+        disabled={accessBusy}
       >
+        {isPublic ? <LockOpenIcon className="w-3.5 h-3.5" /> : <LockIcon className="w-3.5 h-3.5" />}
+      </IconButton>
+      <IconButton title="Delete file" tone="danger" onClick={onDelete}>
         <TrashIcon />
-      </button>
+      </IconButton>
     </div>
+  );
+}
+
+function IconButton({ children, title, tone = "default", onClick, disabled = false }) {
+  return (
+    <button
+      type="button"
+      className={cx(
+        "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors",
+        tone === "danger" && "hover:text-red-400 hover:bg-red-400/10",
+        tone !== "danger" && "hover:text-accent hover:bg-accent/10",
+        disabled && "opacity-50 pointer-events-none",
+      )}
+      title={title}
+      aria-label={title}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onClick?.();
+      }}
+      disabled={disabled}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -322,6 +592,24 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildCrumbs(currentPath: string): Array<{ label: string; path: string }> {
+  if (!currentPath) return [];
+  const out: Array<{ label: string; path: string }> = [];
+  let acc = "";
+  for (const part of currentPath.split("/")) {
+    acc = acc ? `${acc}/${part}` : part;
+    out.push({ label: part, path: acc });
+  }
+  return out;
+}
+
+function extensionForMime(type: string): string {
+  if (type === "image/jpeg") return "jpg";
+  if (type === "image/webp") return "webp";
+  if (type === "image/gif") return "gif";
+  return "png";
 }
 
 function S3Panel() {
