@@ -19,11 +19,25 @@ use crate::platform::model::{
 // and exclusive writers.  The outer `Mutex` protects the pool map itself.
 
 type DbPool = HashMap<PathBuf, Arc<RwLock<sekejap::CoreDB>>>;
+type MaintenancePool = HashMap<PathBuf, SekejapAutoMaintenanceState>;
 
 static POOL: OnceLock<Mutex<DbPool>> = OnceLock::new();
+static MAINTENANCE: OnceLock<Mutex<MaintenancePool>> = OnceLock::new();
+
+const AUTO_COMPACT_WRITE_UNITS: usize = 10_000;
+const AUTO_COMPACT_WAL_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+struct SekejapAutoMaintenanceState {
+    write_units_since_compact: usize,
+}
 
 fn pool() -> &'static Mutex<DbPool> {
     POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn maintenance_pool() -> &'static Mutex<MaintenancePool> {
+    MAINTENANCE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn get_db(
@@ -45,6 +59,153 @@ fn get_db(
     let arc = Arc::new(RwLock::new(db));
     map.insert(dir, Arc::clone(&arc));
     Ok(arc)
+}
+
+/// Record project write pressure and checkpoint the WAL when it is large enough.
+///
+/// This is deliberately best-effort. The write already succeeded by the time
+/// this function runs, so automatic maintenance must not turn an accepted
+/// mutation into a failed pipeline result. Explicit `compact_project` calls
+/// still report failures to the caller.
+fn record_project_write(data_root: &Path, owner: &str, project: &str, write_units: usize) {
+    if write_units == 0 {
+        return;
+    }
+    let Ok(dir) = ensure_project_dir(data_root, owner, project) else {
+        return;
+    };
+    let wal_bytes = file_len_or_zero(&dir.join("wal.log"));
+    let should_compact = {
+        let mut map = maintenance_pool().lock().unwrap();
+        let state = map.entry(dir.clone()).or_default();
+        state.write_units_since_compact =
+            state.write_units_since_compact.saturating_add(write_units);
+        state.write_units_since_compact >= AUTO_COMPACT_WRITE_UNITS
+            || wal_bytes >= AUTO_COMPACT_WAL_BYTES
+    };
+    if !should_compact {
+        return;
+    }
+    if compact_project(data_root, owner, project).is_ok() {
+        let mut map = maintenance_pool().lock().unwrap();
+        let state = map.entry(dir).or_default();
+        state.write_units_since_compact = 0;
+    }
+}
+
+/// Return cheap project-scoped Sekejap health and persistence stats.
+///
+/// This is intentionally small and side-effect free so settings pages, health
+/// checks, and maintenance jobs can call it without touching pipeline runtime
+/// state. Reads use the project DB `RwLock` read guard; compaction/sync use the
+/// write guard below.
+pub fn project_health(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<SekejapProjectHealth, PlatformError> {
+    let dir = ensure_project_dir(data_root, owner, project)?;
+    let started = Instant::now();
+    let db_arc = get_db(data_root, owner, project)?;
+    let db = db_arc.read().unwrap();
+    let node_count = db.node_count();
+    let edge_count = db.edge_count();
+    drop(db);
+
+    Ok(SekejapProjectHealth {
+        owner: owner.to_string(),
+        project: project.to_string(),
+        root: dir.to_string_lossy().to_string(),
+        node_count,
+        edge_count,
+        wal_bytes: file_len_or_zero(&dir.join("wal.log")),
+        snapshot_bytes: file_len_or_zero(&dir.join("snapshot.json")),
+        payload_bytes: file_len_or_zero(&dir.join("payloads.bin")),
+        sidecar_bytes: sekejap_sidecar_bytes(&dir),
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// Force the project's open Sekejap WAL to disk.
+///
+/// Use after critical single-write batches that are not wrapped in SQL
+/// transactions. SQL `COMMIT` already calls Sekejap's `sync()` internally.
+pub fn sync_project(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<SekejapMaintenanceReport, PlatformError> {
+    let started = Instant::now();
+    let before = project_health(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    db.sync().map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_SYNC",
+            format!("failed to sync sekejap WAL: {err}"),
+        )
+    })?;
+    drop(db);
+    let after = project_health(data_root, owner, project)?;
+    Ok(SekejapMaintenanceReport {
+        operation: "sync".to_string(),
+        before,
+        after,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+/// Compact the project's open Sekejap DB: snapshot current state and truncate WAL.
+///
+/// This is the foundational WAL checkpoint primitive. It should be called by
+/// explicit admin actions, low-traffic scheduled maintenance, and graceful
+/// shutdown hooks for projects that have been opened in-process.
+pub fn compact_project(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<SekejapMaintenanceReport, PlatformError> {
+    let started = Instant::now();
+    let before = project_health(data_root, owner, project)?;
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    db.compact().map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_COMPACT",
+            format!("failed to compact sekejap store: {err}"),
+        )
+    })?;
+    drop(db);
+    let after = project_health(data_root, owner, project)?;
+    Ok(SekejapMaintenanceReport {
+        operation: "compact".to_string(),
+        before,
+        after,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+fn file_len_or_zero(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+}
+
+fn sekejap_sidecar_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            name == "gin.bin"
+                || name == "edge_meta.bin"
+                || name.starts_with("vectors_") && name.ends_with(".bin")
+        })
+        .map(|path| file_len_or_zero(&path))
+        .sum()
 }
 
 pub const BUILTIN_CONNECTION_SLUG: &str = "default-multimodel";
@@ -86,6 +247,28 @@ pub struct SekejapSchemaSyncReport {
     pub files_written: Vec<String>,
     pub files_removed: Vec<String>,
     pub table_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapProjectHealth {
+    pub owner: String,
+    pub project: String,
+    pub root: String,
+    pub node_count: usize,
+    pub edge_count: usize,
+    pub wal_bytes: u64,
+    pub snapshot_bytes: u64,
+    pub payload_bytes: u64,
+    pub sidecar_bytes: u64,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapMaintenanceReport {
+    pub operation: String,
+    pub before: SekejapProjectHealth,
+    pub after: SekejapProjectHealth,
+    pub duration_ms: u64,
 }
 
 pub fn project_dir(data_root: &Path, owner: &str, project: &str) -> PathBuf {
@@ -1035,6 +1218,39 @@ pub struct QueryPayload {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct StructuredInsertRecord {
+    pub key: String,
+    pub fields: Map<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructuredInsertEdge {
+    pub from_target: String,
+    pub from_key: String,
+    pub edge_type: String,
+    pub to_target: String,
+    pub to_key: String,
+    pub fields: Map<String, Value>,
+    pub strength: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuredWriteMode {
+    Upsert,
+    Insert,
+    Update,
+    Merge,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructuredWritePayload {
+    pub affected_rows: usize,
+    pub optimized_fields: Vec<String>,
+    pub field_dimensions: BTreeMap<String, usize>,
+    pub duration_ms: u64,
+}
+
 fn statement_is_write(sql: &str) -> bool {
     let first = sql
         .trim_start()
@@ -1293,6 +1509,7 @@ pub fn execute_sql(
         if should_sync_schema {
             sync_schema_to_repo(data_root, owner, project)?;
         }
+        record_project_write(data_root, owner, project, affected_rows.max(1));
         return Ok(QueryPayload {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -1908,5 +2125,409 @@ mod tests {
         assert_eq!(read.row_count, 1);
         assert_eq!(read.rows[0][0], Value::String("first".to_string()));
         assert_eq!(read.rows[0][1], Value::String("Hello".to_string()));
+    }
+
+    #[test]
+    fn bulk_write_records_uses_schema_for_native_fields_and_merge_preserves_fields() {
+        let tmp = tmp_root();
+        execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "CREATE TABLE docs (_key TEXT PRIMARY KEY, title TEXT, category TEXT, embedding VECTOR)",
+            &[],
+            100,
+            false,
+        )
+        .expect("create docs table");
+
+        let first = bulk_write_records(
+            tmp.path(),
+            "alice",
+            "demo",
+            "docs",
+            vec![StructuredInsertRecord {
+                key: "d1".to_string(),
+                fields: Map::from_iter([
+                    ("title".to_string(), json!("First")),
+                    ("category".to_string(), json!("alpha")),
+                    ("embedding".to_string(), json!([0.1, 0.2, 0.3])),
+                ]),
+            }],
+            StructuredWriteMode::Upsert,
+        )
+        .expect("first insert");
+        assert_eq!(first.affected_rows, 1);
+        assert_eq!(first.field_dimensions.get("embedding"), Some(&3));
+
+        let merged = bulk_write_records(
+            tmp.path(),
+            "alice",
+            "demo",
+            "docs",
+            vec![StructuredInsertRecord {
+                key: "d1".to_string(),
+                fields: Map::from_iter([
+                    ("title".to_string(), json!("Updated")),
+                    ("embedding".to_string(), json!([0.4, 0.5, 0.6])),
+                ]),
+            }],
+            StructuredWriteMode::Merge,
+        )
+        .expect("merge insert");
+        assert_eq!(merged.affected_rows, 1);
+
+        let db_arc = get_db(tmp.path(), "alice", "demo").expect("db");
+        let db = db_arc.read().unwrap();
+        let payload: Value =
+            serde_json::from_str(&db.get("docs/d1").expect("payload")).expect("payload json");
+        assert_eq!(payload["title"], json!("Updated"));
+        assert_eq!(payload["category"], json!("alpha"));
+        assert!(payload.get("embedding").is_none());
+        assert_eq!(
+            db.get_vector("docs/d1", "embedding").expect("vector"),
+            &[0.4, 0.5, 0.6]
+        );
+        drop(db);
+
+        let invalid = bulk_write_records(
+            tmp.path(),
+            "alice",
+            "demo",
+            "docs",
+            vec![StructuredInsertRecord {
+                key: "d2".to_string(),
+                fields: Map::from_iter([("title".to_string(), json!([4, 5]))]),
+            }],
+            StructuredWriteMode::Upsert,
+        );
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn project_health_and_compact_report_wal_checkpoint() {
+        let tmp = tmp_root();
+        execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "CREATE TABLE docs (_key TEXT PRIMARY KEY, title TEXT)",
+            &[],
+            100,
+            false,
+        )
+        .expect("create table");
+        execute_sql(
+            tmp.path(),
+            "alice",
+            "demo",
+            "INSERT INTO docs (_key, title) VALUES ('d1', 'First')",
+            &[],
+            100,
+            false,
+        )
+        .expect("insert");
+
+        let before = project_health(tmp.path(), "alice", "demo").expect("health");
+        assert_eq!(before.node_count, 1);
+        assert!(before.wal_bytes > 0);
+
+        let report = compact_project(tmp.path(), "alice", "demo").expect("compact");
+        assert_eq!(report.operation, "compact");
+        assert_eq!(report.after.node_count, 1);
+        assert_eq!(report.after.wal_bytes, 0);
+        assert!(report.after.snapshot_bytes > 0);
+    }
+}
+
+pub fn bulk_write_records(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    collection: &str,
+    rows: Vec<StructuredInsertRecord>,
+    mode: StructuredWriteMode,
+) -> Result<StructuredWritePayload, PlatformError> {
+    let collection = collection.trim();
+    if collection.is_empty() {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_INSERT_INVALID",
+            "collection must not be empty",
+        ));
+    }
+
+    let started = Instant::now();
+    for row in &rows {
+        let key = row.key.trim();
+        if key.is_empty() {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_INVALID",
+                "row key must not be empty",
+            ));
+        }
+    }
+
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    let schema = db.table_schema(collection).cloned();
+    let schema_fields = schema
+        .as_ref()
+        .map(|schema| {
+            schema
+                .fields
+                .iter()
+                .map(|field| (field.name.clone(), field.ty.clone()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut field_dimensions = BTreeMap::<String, usize>::new();
+    let mut prepared = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key = row.key.trim().to_string();
+        let slug = format!("{collection}/{key}");
+        let exists = db.contains(&slug);
+        match mode {
+            StructuredWriteMode::Insert if exists => {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_INSERT_EXISTS",
+                    format!("row '{slug}' already exists"),
+                ));
+            }
+            StructuredWriteMode::Update if !exists => {
+                return Err(PlatformError::new(
+                    "PLATFORM_SEKEJAP_INSERT_MISSING",
+                    format!("row '{slug}' does not exist"),
+                ));
+            }
+            _ => {}
+        }
+
+        let mut payload = if mode == StructuredWriteMode::Merge && exists {
+            db.get(&slug)
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|value| value.as_object().cloned())
+                .unwrap_or_default()
+        } else {
+            Map::new()
+        };
+        let mut native_values = BTreeMap::<String, Vec<f32>>::new();
+        for (field, value) in row.fields {
+            if matches!(field.as_str(), "_id" | "_key" | "_collection") {
+                continue;
+            }
+            let Some(field_type) = schema_fields.get(&field) else {
+                if schema.is_some() {
+                    return Err(PlatformError::new(
+                        "PLATFORM_SEKEJAP_INSERT_UNKNOWN_FIELD",
+                        format!("field '{field}' is not declared in collection '{collection}'"),
+                    ));
+                }
+                payload.insert(field, value);
+                continue;
+            };
+            match classify_schema_value(collection, &field, field_type, value)? {
+                SchemaWriteValue::Payload(value) => {
+                    payload.insert(field, value);
+                }
+                SchemaWriteValue::NativeVector(vector) => {
+                    let dimensions = vector.len();
+                    match field_dimensions.get(&field) {
+                        Some(expected) if *expected != dimensions => {
+                            return Err(PlatformError::new(
+                                "PLATFORM_SEKEJAP_INSERT_INVALID",
+                                format!(
+                                    "field '{field}' dimensions mismatch: expected {expected}, got {dimensions}"
+                                ),
+                            ));
+                        }
+                        Some(_) => {}
+                        None => {
+                            field_dimensions.insert(field.clone(), dimensions);
+                        }
+                    }
+                    payload.remove(&field);
+                    native_values.insert(field, vector);
+                }
+            }
+        }
+        payload.insert(
+            "_collection".to_string(),
+            Value::String(collection.to_string()),
+        );
+        payload.insert("_key".to_string(), Value::String(key));
+        payload.insert("_id".to_string(), Value::String(slug.clone()));
+        let payload_json = Value::Object(payload).to_string();
+        prepared.push((slug, payload_json, native_values));
+    }
+
+    let affected_rows = prepared.len();
+    for (slug, payload_json, native_values) in prepared {
+        db.put(&slug, &payload_json)
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
+        for (field, vector) in native_values {
+            db.put_vector(&slug, &field, &vector).map_err(|err| {
+                PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string())
+            })?;
+        }
+    }
+    drop(db);
+    record_project_write(data_root, owner, project, affected_rows);
+
+    Ok(StructuredWritePayload {
+        affected_rows,
+        optimized_fields: field_dimensions.keys().cloned().collect(),
+        field_dimensions,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+pub fn bulk_insert(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    collection: &str,
+    rows: Vec<StructuredInsertRecord>,
+    edges: Vec<StructuredInsertEdge>,
+    mode: StructuredWriteMode,
+) -> Result<StructuredWritePayload, PlatformError> {
+    let started = Instant::now();
+    let mut payload = bulk_write_records(data_root, owner, project, collection, rows, mode)?;
+    if edges.is_empty() {
+        payload.duration_ms = started.elapsed().as_millis() as u64;
+        return Ok(payload);
+    }
+
+    for edge in &edges {
+        if edge.from_target.trim().is_empty()
+            || edge.from_key.trim().is_empty()
+            || edge.edge_type.trim().is_empty()
+            || edge.to_target.trim().is_empty()
+            || edge.to_key.trim().is_empty()
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_SEKEJAP_INSERT_EDGE_INVALID",
+                "edge from.target, from.key, type, to.target, and to.key must be non-empty",
+            ));
+        }
+    }
+
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+    let edge_count = edges.len();
+    for edge in edges {
+        let from_slug = format!("{}/{}", edge.from_target.trim(), edge.from_key.trim());
+        let to_slug = format!("{}/{}", edge.to_target.trim(), edge.to_key.trim());
+        let meta_json = Value::Object(edge.fields).to_string();
+        db.link_meta(
+            &from_slug,
+            &to_slug,
+            edge.edge_type.trim(),
+            edge.strength,
+            &meta_json,
+        )
+        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
+    }
+    drop(db);
+    record_project_write(data_root, owner, project, edge_count);
+
+    payload.affected_rows += edge_count;
+    payload.duration_ms = started.elapsed().as_millis() as u64;
+    Ok(payload)
+}
+
+enum SchemaWriteValue {
+    Payload(Value),
+    NativeVector(Vec<f32>),
+}
+
+fn classify_schema_value(
+    collection: &str,
+    field: &str,
+    field_type: &sekejap::FieldType,
+    value: Value,
+) -> Result<SchemaWriteValue, PlatformError> {
+    if value.is_null() {
+        return Ok(SchemaWriteValue::Payload(Value::Null));
+    }
+    match field_type {
+        sekejap::FieldType::Text => {
+            if value.is_string() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "TEXT", &value))
+            }
+        }
+        sekejap::FieldType::Integer => {
+            if value.as_i64().is_some() || value.as_u64().is_some() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "INTEGER", &value))
+            }
+        }
+        sekejap::FieldType::Real => {
+            if value.as_f64().is_some() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "REAL", &value))
+            }
+        }
+        sekejap::FieldType::Timestamptz => {
+            if value.is_string() || value.as_f64().is_some() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "TIMESTAMPTZ", &value))
+            }
+        }
+        sekejap::FieldType::Geo => {
+            if value.is_object() || value.is_array() || value.is_string() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "GEO", &value))
+            }
+        }
+        sekejap::FieldType::Vector => {
+            let vector = value_as_f32_vec(&value)
+                .ok_or_else(|| schema_type_error(collection, field, "VECTOR", &value))?;
+            Ok(SchemaWriteValue::NativeVector(vector))
+        }
+        sekejap::FieldType::Json => Ok(SchemaWriteValue::Payload(value)),
+    }
+}
+
+fn value_as_f32_vec(value: &Value) -> Option<Vec<f32>> {
+    let arr = value.as_array()?;
+    if arr.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(item.as_f64()? as f32);
+    }
+    Some(out)
+}
+
+fn schema_type_error(
+    collection: &str,
+    field: &str,
+    expected: &str,
+    value: &Value,
+) -> PlatformError {
+    PlatformError::new(
+        "PLATFORM_SEKEJAP_INSERT_TYPE",
+        format!(
+            "field '{field}' in collection '{collection}' expects {expected}, got {}",
+            json_type_name(value)
+        ),
+    )
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
