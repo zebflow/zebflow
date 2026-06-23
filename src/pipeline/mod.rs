@@ -14,6 +14,7 @@ pub mod interface;
 pub mod layout;
 pub mod model;
 pub mod nodes;
+pub mod prototypes;
 pub mod registry;
 pub mod security;
 
