@@ -1,6 +1,6 @@
 [package]
 name = "zebflow"
-version = "0.7.7"
+version = "0.7.8"
 edition = "2024"
 description = "Reactive web automation platform — pipelines, templates, and real-time collaboration in a single binary."
 license = "MIT"
@@ -72,7 +72,7 @@ dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.8.17"
+sekejap = "0.9.1"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
