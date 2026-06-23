@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use super::acl::{
+    ACL_MANIFEST_PATH, ZebFsAccess, ZebFsAclManifest, ZebFsAclScope, is_reserved_acl_path,
+};
 use super::error::ZebFsError;
 use super::model::{ZebFsEntry, ZebFsEntryKind, ZebFsObject, ZebFsStat};
 
@@ -29,6 +32,7 @@ impl LocalZebFs {
     /// when existence is required.
     pub fn resolve_object_path(&self, path: &str) -> Result<(String, PathBuf), ZebFsError> {
         let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         Ok((rel, abs))
     }
@@ -36,6 +40,7 @@ impl LocalZebFs {
     /// Writes one object, creating parent directories as needed.
     pub fn put(&self, path: &str, bytes: &[u8]) -> Result<ZebFsStat, ZebFsError> {
         let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         if let Some(parent) = abs.parent() {
             fs::create_dir_all(parent)?;
@@ -58,6 +63,7 @@ impl LocalZebFs {
     /// Reads one object into memory.
     pub fn get(&self, path: &str) -> Result<ZebFsObject, ZebFsError> {
         let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         if !abs.is_file() {
             return Err(ZebFsError::new("ZEBFS_NOT_FOUND", "object not found"));
@@ -74,6 +80,7 @@ impl LocalZebFs {
     /// Reads metadata for one object or prefix.
     pub fn head(&self, path: &str) -> Result<ZebFsStat, ZebFsError> {
         let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         let metadata = fs::metadata(&abs)
             .map_err(|_| ZebFsError::new("ZEBFS_NOT_FOUND", "object not found"))?;
@@ -93,6 +100,9 @@ impl LocalZebFs {
     /// Lists immediate children under a prefix.
     pub fn list(&self, prefix: &str) -> Result<Vec<ZebFsEntry>, ZebFsError> {
         let rel = normalize_optional_prefix(prefix)?;
+        if !rel.is_empty() {
+            ensure_user_object_path(&rel)?;
+        }
         let dir = if rel.is_empty() {
             self.root.clone()
         } else {
@@ -111,6 +121,9 @@ impl LocalZebFs {
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let name = entry.file_name().to_string_lossy().into_owned();
+            if rel.is_empty() && is_reserved_acl_path(&name) {
+                continue;
+            }
             let entry_rel = if rel.is_empty() {
                 name.clone()
             } else {
@@ -138,6 +151,7 @@ impl LocalZebFs {
     /// Creates one prefix directory.
     pub fn create_prefix(&self, prefix: &str) -> Result<ZebFsStat, ZebFsError> {
         let rel = normalize_object_path(prefix)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         fs::create_dir_all(abs)?;
         self.head(&rel)
@@ -146,6 +160,7 @@ impl LocalZebFs {
     /// Deletes one object or prefix tree.
     pub fn delete(&self, path: &str) -> Result<(), ZebFsError> {
         let rel = normalize_object_path(path)?;
+        ensure_user_object_path(&rel)?;
         let abs = self.abs_path(&rel)?;
         if !abs.exists() {
             return Ok(());
@@ -162,6 +177,8 @@ impl LocalZebFs {
     pub fn copy(&self, from: &str, to: &str) -> Result<ZebFsStat, ZebFsError> {
         let from_rel = normalize_object_path(from)?;
         let to_rel = normalize_object_path(to)?;
+        ensure_user_object_path(&from_rel)?;
+        ensure_user_object_path(&to_rel)?;
         let from_abs = self.abs_path(&from_rel)?;
         let to_abs = self.abs_path(&to_rel)?;
         if !from_abs.is_file() {
@@ -175,6 +192,54 @@ impl LocalZebFs {
         }
         fs::copy(from_abs, to_abs)?;
         self.head(&to_rel)
+    }
+
+    /// Returns the access rule that applies to one object or prefix.
+    pub fn effective_access(&self, path: &str) -> Result<ZebFsAccess, ZebFsError> {
+        self.read_acl()?.effective_access(path)
+    }
+
+    /// Convenience check for anonymous GET permission.
+    pub fn is_public_read(&self, path: &str) -> Result<bool, ZebFsError> {
+        Ok(matches!(
+            self.effective_access(path)?,
+            ZebFsAccess::PublicRead
+        ))
+    }
+
+    /// Writes or replaces the ACL rule for one object or folder prefix.
+    pub fn set_access(
+        &self,
+        path: &str,
+        access: ZebFsAccess,
+        scope: ZebFsAclScope,
+    ) -> Result<String, ZebFsError> {
+        let mut manifest = self.read_acl()?;
+        let normalized = manifest.set_rule(path, access, scope)?;
+        self.write_acl(&manifest)?;
+        Ok(normalized)
+    }
+
+    fn read_acl(&self) -> Result<ZebFsAclManifest, ZebFsError> {
+        let path = self.root.join(ACL_MANIFEST_PATH);
+        if !path.exists() {
+            return Ok(ZebFsAclManifest::default());
+        }
+        let bytes = fs::read(&path)?;
+        serde_json::from_slice(&bytes).map_err(|err| {
+            ZebFsError::new("ZEBFS_ACL_READ", format!("invalid ACL manifest: {err}"))
+        })
+    }
+
+    fn write_acl(&self, manifest: &ZebFsAclManifest) -> Result<(), ZebFsError> {
+        let path = self.root.join(ACL_MANIFEST_PATH);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(manifest)
+            .map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", err.to_string()))?;
+        fs::write(path, bytes)?;
+        Ok(())
     }
 
     fn abs_path(&self, normalized_rel: &str) -> Result<PathBuf, ZebFsError> {
@@ -228,4 +293,14 @@ fn normalize_path(path: &str) -> Result<String, ZebFsError> {
         }
     }
     Ok(parts.join("/"))
+}
+
+fn ensure_user_object_path(path: &str) -> Result<(), ZebFsError> {
+    if is_reserved_acl_path(path) {
+        return Err(ZebFsError::new(
+            "ZEBFS_RESERVED_PATH",
+            "path is reserved for ZebFS metadata",
+        ));
+    }
+    Ok(())
 }
