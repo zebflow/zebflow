@@ -53,6 +53,7 @@ pub mod logic;
 pub mod mapserver_crud;
 pub mod pg_query;
 pub mod script;
+pub mod sekejap_insert;
 pub mod sekejap_query;
 pub mod sqlite_mutate;
 pub mod sqlite_query;
@@ -112,6 +113,7 @@ pub fn builtin_node_definitions() -> Vec<NodeDefinition> {
         ws_trigger::definition(),
         script::definition(),
         http_request::definition(),
+        sekejap_insert::definition(),
         sekejap_query::definition(),
         sqlite_mutate::definition(),
         sqlite_query::definition(),

@@ -34,7 +34,8 @@ use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
     kv_del, kv_exists, kv_expire, kv_get, kv_incr, kv_publish, kv_set, logic, mapserver_crud,
-    pg_query, script, sekejap_query, sqlite_mutate, sqlite_query, table_convert, table_query,
+    pg_query, script, sekejap_insert, sekejap_query, sqlite_mutate, sqlite_query, table_convert,
+    table_query,
     trigger::{
         function as trigger_function, kv_subscribe, manual, mcp_trigger, schedule, weberror,
         webhook, ws_client as trigger_ws_client,
@@ -861,6 +862,20 @@ impl BasicPipelineEngine {
                     self.language.clone(),
                 )?))
             }
+            sekejap_insert::NODE_KIND => {
+                let Some(data_root) = &self.data_root else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_SEKEJAP_UNAVAILABLE",
+                        "data_root is not configured on this pipeline engine",
+                    ));
+                };
+                Ok(NodeDispatch::SekejapInsert(sekejap_insert::Node::new(
+                    serde_json::from_value(node.config.clone()).map_err(|err| {
+                        PipelineError::new("FW_NODE_SEKEJAP_INSERT_CONFIG", err.to_string())
+                    })?,
+                    data_root.clone(),
+                )?))
+            }
             sqlite_mutate::NODE_KIND => {
                 let Some(data_root) = &self.data_root else {
                     return Err(PipelineError::new(
@@ -1638,6 +1653,9 @@ impl PipelineEngine for BasicPipelineEngine {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::SekejapQuery(node) => {
+                        node.execute_many_async(input_for_exec).await
+                    }
+                    NodeDispatch::SekejapInsert(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
                     NodeDispatch::SqliteMutate(node) => {
@@ -3659,6 +3677,7 @@ enum NodeDispatch {
     BrowserRun(browser_run::Node),
     SqliteQuery(sqlite_query::Node),
     SekejapQuery(sekejap_query::Node),
+    SekejapInsert(sekejap_insert::Node),
     SqliteMutate(sqlite_mutate::Node),
     Postgres(pg_query::Node),
     InlineWebResponse {

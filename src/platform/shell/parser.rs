@@ -197,6 +197,7 @@ pub fn expand_kind(short: &str) -> Option<&'static str> {
         "trigger.schedule" | "n.trigger.schedule" => Some("n.trigger.schedule"),
         "trigger.manual" | "n.trigger.manual" => Some("n.trigger.manual"),
         "pg.query" | "n.pg.query" => Some("n.pg.query"),
+        "sekejap.insert" | "n.sekejap.insert" => Some("n.sekejap.insert"),
         "sekejap.query" | "n.sekejap.query" => Some("n.sekejap.query"),
         "sqlite.query" | "n.sqlite.query" => Some("n.sqlite.query"),
         "sqlite.mutate" | "n.sqlite.mutate" => Some("n.sqlite.mutate"),
@@ -264,10 +265,9 @@ pub fn default_pins(kind: &str) -> (Vec<String>, Vec<String>) {
         "n.trigger.webhook" | "n.trigger.schedule" | "n.trigger.manual" | "n.trigger.function" => {
             (vec![], vec!["out".to_string()])
         }
-        "n.pg.query" | "n.sekejap.query" | "n.sqlite.query" | "n.table.convert"
-        | "n.table.query" | "n.script" | "n.http.request" | "n.logic.collect" | "n.ai.tts" => {
-            (vec!["in".to_string()], vec!["out".to_string()])
-        }
+        "n.pg.query" | "n.sekejap.query" | "n.sekejap.insert" | "n.sqlite.query"
+        | "n.table.convert" | "n.table.query" | "n.script" | "n.http.request"
+        | "n.logic.collect" | "n.ai.tts" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.foreach" => (vec!["in".to_string()], vec!["item".to_string()]),
         "n.logic.reduce" => (vec!["in".to_string()], vec!["out".to_string()]),
         "n.logic.retry" => (
