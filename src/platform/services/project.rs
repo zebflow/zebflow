@@ -147,8 +147,14 @@ pub fn first_webhook_trigger_from_source(source: &str) -> Option<(String, String
         .map(|trigger| (trigger.path, trigger.method))
 }
 
-fn validate_pipeline_graph_structure(graph: &PipelineGraph) -> Result<(), PlatformError> {
+fn validate_pipeline_graph_structure(
+    graph: &PipelineGraph,
+    allow_empty: bool,
+) -> Result<(), PlatformError> {
     if graph.nodes.is_empty() {
+        if allow_empty && graph.entry_nodes.is_empty() && graph.edges.is_empty() {
+            return Ok(());
+        }
         return Err(PlatformError::new(
             "FW_EMPTY_GRAPH",
             format!("pipeline '{}' has no nodes", graph.id),
@@ -204,13 +210,26 @@ fn validate_pipeline_graph_structure(graph: &PipelineGraph) -> Result<(), Platfo
 }
 
 fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
+    parse_and_validate_pipeline_source_with_options(source, false)
+}
+
+fn parse_and_validate_pipeline_source_for_save(
+    source: &str,
+) -> Result<PipelineGraph, PlatformError> {
+    parse_and_validate_pipeline_source_with_options(source, true)
+}
+
+fn parse_and_validate_pipeline_source_with_options(
+    source: &str,
+    allow_empty: bool,
+) -> Result<PipelineGraph, PlatformError> {
     let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
         PlatformError::new(
             "PLATFORM_PIPELINE_PARSE",
             format!("failed parsing pipeline source: {err}"),
         )
     })?;
-    validate_pipeline_graph_structure(&graph)?;
+    validate_pipeline_graph_structure(&graph, allow_empty)?;
     Ok(graph)
 }
 
@@ -586,7 +605,7 @@ impl ProjectService {
             ));
         }
         self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
-        parse_and_validate_pipeline_source(source)?;
+        parse_and_validate_pipeline_source_for_save(source)?;
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;

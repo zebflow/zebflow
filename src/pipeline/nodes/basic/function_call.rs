@@ -142,14 +142,11 @@ pub fn definition() -> NodeDefinition {
     }
 }
 
-fn extract_payload_input(input_path: &str, payload: &serde_json::Value) -> serde_json::Value {
+fn extract_payload_input(input_path: &str, payload: serde_json::Value) -> serde_json::Value {
     if input_path.is_empty() {
-        payload.clone()
-    } else {
         payload
-            .pointer(input_path)
-            .cloned()
-            .unwrap_or_else(|| payload.clone())
+    } else {
+        payload.pointer(input_path).cloned().unwrap_or(payload)
     }
 }
 
@@ -206,15 +203,16 @@ impl NodeHandler for Node {
             .to_string();
 
         // Resolve function input: static input > input_path > full payload.
-        let call_input = if let Some(ref raw) = self.config.input {
+        let payload = input.payload;
+        let call_input = if let Some(raw) = self.config.input.as_deref() {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
-                extract_payload_input(&self.config.input_path, &input.payload)
+                extract_payload_input(&self.config.input_path, payload)
             } else {
-                serde_json::from_str(trimmed).unwrap_or_else(|_| input.payload.clone())
+                serde_json::from_str(trimmed).unwrap_or(payload)
             }
         } else {
-            extract_payload_input(&self.config.input_path, &input.payload)
+            extract_payload_input(&self.config.input_path, payload)
         };
 
         match platform
