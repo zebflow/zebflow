@@ -29,7 +29,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use rand::RngExt as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
@@ -80,6 +80,7 @@ const SESSION_COOKIE_NAME: &str = "zebflow_session";
 const SESSION_TTL_SECS: i64 = 86_400;
 /// Shared internal auth header for the first controller/office control-plane slice.
 const INTERNAL_CLUSTER_TOKEN_HEADER: &str = "x-zebflow-cluster-token";
+const PUBLIC_FS_PROXY_HEADER: &str = "x-zebflow-public-fs-proxy";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
@@ -376,6 +377,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/p/{owner}/{project}/assets/{*path}",
             get(project_static_asset),
+        )
+        .route(
+            "/files/{owner}/{project}/{*path}",
+            get(project_legacy_file_serve),
         )
         .route("/fs/{owner}/{project}/{*path}", get(project_fs_serve))
         .route("/login", get(login_page).post(login_submit))
@@ -702,6 +707,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_files_rm),
         )
         .route(
+            "/api/projects/{owner}/{project}/files/access",
+            put(api_files_access).post(api_files_access_form),
+        )
+        .route(
             "/api/projects/{owner}/{project}/credential-types",
             get(api_list_credential_types),
         )
@@ -766,6 +775,18 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/tables/schema/sync",
             post(api_sync_sekejap_schema),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/db/sekejap/maintenance/health",
+            get(api_sekejap_project_health),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/db/sekejap/maintenance/sync",
+            post(api_sekejap_project_sync),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/db/sekejap/maintenance/compact",
+            post(api_sekejap_project_compact),
         )
         .route(
             "/api/projects/{owner}/{project}/tables/{table}",
@@ -2143,12 +2164,16 @@ async fn project_static_asset(
     resp
 }
 
-/// Route: GET /fs/{owner}/{project}/{*path}
-/// Serves one object from the project default ZebFS namespace.
-async fn project_fs_serve(
+/// Legacy route: GET /files/{owner}/{project}/{*path}
+///
+/// Keeps the older public/private convention:
+/// - `public/*` can be read anonymously;
+/// - every other path requires project `FilesRead`.
+///
+/// The newer `/fs/{owner}/{project}/{*path}` route remains private-by-default.
+async fn project_legacy_file_serve(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Query(params): Query<std::collections::HashMap<String, String>>,
     Path((owner, project, path)): Path<(String, String, String)>,
     uri: Uri,
 ) -> Response {
@@ -2161,16 +2186,23 @@ async fn project_fs_serve(
         return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
     }
 
-    // First slice is private-by-default: all /fs reads require project file-read.
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::FilesRead,
-    ) {
+    let normalized = path.trim_start_matches('/').replace('\\', "/");
+    if normalized.is_empty() || normalized.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
+    }
+
+    if !normalized.starts_with("public/")
+        && let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::FilesRead,
+        )
+    {
         return response;
     }
+
     if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
         return match forward_project_api_request_to_worker(
             &state,
@@ -2191,7 +2223,158 @@ async fn project_fs_serve(
         Ok(layout) => layout,
         Err(err) => return internal_error(err),
     };
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir.clone());
+    let (_, abs_path) = match zebfs.resolve_object_path(&normalized) {
+        Ok(resolved) => resolved,
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
+            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
+        }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
+    if let Ok(abs_canonical) = std::fs::canonicalize(&abs_path) {
+        let root_canonical =
+            std::fs::canonicalize(&layout.files_dir).unwrap_or_else(|_| layout.files_dir.clone());
+        if !abs_canonical.starts_with(&root_canonical) {
+            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
+        }
+    }
+    let object = match zebfs.get(&normalized) {
+        Ok(object) => object,
+        Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
+            return (StatusCode::NOT_FOUND, "object not found").into_response();
+        }
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" => {
+            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
+        }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
+
+    let mut resp = Response::new(Body::from(object.bytes));
+    *resp.status_mut() = StatusCode::OK;
+    let content_type = content_type_for_path(FsPath::new(&object.path));
+    if let Ok(v) = HeaderValue::from_str(content_type) {
+        resp.headers_mut().insert(CONTENT_TYPE, v);
+    }
+    if normalized.starts_with("public/") {
+        resp.headers_mut().insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
+    } else if let Ok(v) = HeaderValue::from_str("no-cache") {
+        resp.headers_mut().insert(CACHE_CONTROL, v);
+    }
+    resp
+}
+
+/// Route: GET /fs/{owner}/{project}/{*path}
+/// Serves one object from the project default ZebFS namespace.
+async fn project_fs_serve(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    Path((owner, project, path)): Path<(String, String, String)>,
+    uri: Uri,
+) -> Response {
+    let valid_segment = |value: &str| {
+        value
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-' || ch == b'_')
+    };
+    if !valid_segment(&owner) || !valid_segment(&project) {
+        return (StatusCode::BAD_REQUEST, "invalid project scope").into_response();
+    }
+
+    let public_proxy_request = has_valid_cluster_token(&state, &headers)
+        && headers
+            .get(PUBLIC_FS_PROXY_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value == "1")
+            .unwrap_or(false);
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        match require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::FilesRead,
+        ) {
+            Ok(_) => {
+                return match forward_project_api_request_to_worker(
+                    &state,
+                    &uri,
+                    &Method::GET,
+                    &headers,
+                    Bytes::new(),
+                    &worker_id,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+            Err(_) => {
+                let mut public_headers = headers.clone();
+                public_headers.insert(PUBLIC_FS_PROXY_HEADER, HeaderValue::from_static("1"));
+                return match forward_project_api_request_to_worker(
+                    &state,
+                    &uri,
+                    &Method::GET,
+                    &public_headers,
+                    Bytes::new(),
+                    &worker_id,
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => internal_error(err),
+                };
+            }
+        }
+    }
+
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(layout) => layout,
+        Err(err) => return internal_error(err),
+    };
     let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let is_public = match zebfs.is_public_read(&path) {
+        Ok(value) => value,
+        Err(err) if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" => {
+            return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
+        }
+        Err(err) => return internal_error(PlatformError::new(err.code, err.message)),
+    };
+    if !is_public {
+        if public_proxy_request {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        if let Err(response) = require_project_api_capability(
+            &state,
+            &headers,
+            &owner,
+            &project,
+            ProjectCapability::FilesRead,
+        ) {
+            return response;
+        }
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
     let object = match zebfs.get(&path) {
         Ok(object) => object,
         Err(err) if err.code == "ZEBFS_NOT_FOUND" => {
@@ -2215,7 +2398,12 @@ async fn project_fs_serve(
     {
         resp.headers_mut().insert(CONTENT_DISPOSITION, disposition);
     }
-    if let Ok(v) = HeaderValue::from_str("no-cache") {
+    if is_public {
+        resp.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
+    } else if let Ok(v) = HeaderValue::from_str("no-cache") {
         resp.headers_mut()
             .insert(axum::http::header::CACHE_CONTROL, v);
     }
@@ -6256,10 +6444,16 @@ async fn render_files_page(
                                 for entry in entries {
                                     let name = entry.name;
                                     let path = entry.path;
+                                    let access = zebfs
+                                        .effective_access(&path)
+                                        .map(|value| value.as_str())
+                                        .unwrap_or("private");
                                     if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
                                         fds.push(json!({
                                             "name": name,
                                             "path": path,
+                                            "access": access,
+                                            "public": access == "public_read",
                                             "protected": false,
                                         }));
                                     } else {
@@ -6275,6 +6469,8 @@ async fn render_files_page(
                                             "path": path.clone(),
                                             "size": entry.size,
                                             "modified": modified,
+                                            "access": access,
+                                            "public": access == "public_read",
                                             "url": format!("/fs/{owner}/{project}/{path}"),
                                         }));
                                     }
@@ -6317,6 +6513,7 @@ async fn render_files_page(
                     "mkdir": format!("/api/projects/{owner}/{project}/files/mkdir"),
                     "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "rm":    format!("/api/projects/{owner}/{project}/files/rm"),
+                    "access": format!("/api/projects/{owner}/{project}/files/access"),
                 },
                 "browser": {
                     "path": rel_path,
@@ -13618,10 +13815,16 @@ async fn api_files_list(
     for entry in entries {
         let name = entry.name;
         let path = entry.path;
+        let access = zebfs
+            .effective_access(&path)
+            .map(|value| value.as_str())
+            .unwrap_or("private");
         if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
             folders.push(json!({
                 "name": name,
                 "path": path,
+                "access": access,
+                "public": access == "public_read",
                 "protected": false,
             }));
         } else {
@@ -13635,6 +13838,8 @@ async fn api_files_list(
                 "path": path.clone(),
                 "size": entry.size,
                 "modified": modified,
+                "access": access,
+                "public": access == "public_read",
                 "url": format!("/fs/{owner}/{project}/{}", path),
             }));
         }
@@ -13979,6 +14184,185 @@ async fn api_files_rm(
             Json(json!({"error": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct FileAccessRequest {
+    path: String,
+    access: String,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FileAccessFormRequest {
+    path: String,
+    access: String,
+    #[serde(default)]
+    scope: Option<String>,
+    #[serde(default)]
+    return_to: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FileAccessResponse {
+    ok: bool,
+    path: String,
+    access: String,
+    public: bool,
+    scope: String,
+    url: String,
+}
+
+fn safe_files_return_to(owner: &str, project: &str, return_to: Option<&str>) -> String {
+    let prefix = format!("/projects/{owner}/{project}/files");
+    match return_to {
+        Some(value) if value.starts_with(&prefix) => value.to_string(),
+        _ => format!("{prefix}/default"),
+    }
+}
+
+fn set_project_file_access(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    req: &FileAccessRequest,
+) -> Result<FileAccessResponse, Response> {
+    let access = crate::zebfs::ZebFsAccess::parse(&req.access).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "access must be private or public_read"})),
+        )
+            .into_response()
+    })?;
+    let scope = match req.scope.as_deref() {
+        Some(value) => crate::zebfs::ZebFsAclScope::parse(value).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "scope must be object or prefix"})),
+            )
+                .into_response()
+        })?,
+        None => crate::zebfs::ZebFsAclScope::Object,
+    };
+    let layout = state
+        .platform
+        .file
+        .ensure_project_layout(owner, project)
+        .map_err(internal_error)?;
+    let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
+    let path = zebfs.set_access(&req.path, access, scope).map_err(|err| {
+        if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"ok": false, "error": "invalid path"})),
+            )
+                .into_response()
+        } else {
+            internal_error(PlatformError::new(err.code, err.message))
+        }
+    })?;
+    Ok(FileAccessResponse {
+        ok: true,
+        path: path.clone(),
+        access: access.as_str().to_string(),
+        public: access == crate::zebfs::ZebFsAccess::PublicRead,
+        scope: scope.as_str().to_string(),
+        url: format!("/fs/{owner}/{project}/{path}"),
+    })
+}
+
+/// PUT /api/projects/{owner}/{project}/files/access
+/// Body: { "path": "uploads/image.png", "access": "public_read", "scope": "object|prefix" }
+async fn api_files_access(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<FileAccessRequest>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &headers,
+            Method::PUT,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    match set_project_file_access(&state, &owner, &project, &req) {
+        Ok(response) => Json(response).into_response(),
+        Err(response) => response,
+    }
+}
+
+/// POST /api/projects/{owner}/{project}/files/access
+/// Form fallback for file browser controls when client hydration is unavailable.
+async fn api_files_access_form(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Form(form): Form<FileAccessFormRequest>,
+) -> Response {
+    let return_to = safe_files_return_to(&owner, &project, form.return_to.as_deref());
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::FilesWrite,
+    ) {
+        return r;
+    }
+
+    let req = FileAccessRequest {
+        path: form.path,
+        access: form.access,
+        scope: form.scope,
+    };
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        let mut worker_headers = headers.clone();
+        worker_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let response = match forward_project_json_request_to_worker(
+            &state,
+            &uri,
+            &worker_headers,
+            Method::PUT,
+            &req,
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => return internal_error(err),
+        };
+        if response.status().is_success() {
+            return Redirect::to(&return_to).into_response();
+        }
+        return response;
+    }
+
+    match set_project_file_access(&state, &owner, &project, &req) {
+        Ok(_) => Redirect::to(&return_to).into_response(),
+        Err(response) => response,
     }
 }
 
@@ -17850,7 +18234,8 @@ async fn api_list_simple_tables(
         };
     }
 
-    match sekejap::list_tables(&state.platform.config.data_root, &owner, &project) {
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::list_tables(&data_root, &owner, &project)).await {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
     }
@@ -17888,7 +18273,10 @@ async fn api_create_simple_table(
         };
     }
 
-    match sekejap::create_table(&state.platform.config.data_root, &owner, &project, &req) {
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::create_table(&data_root, &owner, &project, &req))
+        .await
+    {
         Ok(table) => Json(json!({"ok": true, "table": table})).into_response(),
         Err(err)
             if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
@@ -17935,17 +18323,21 @@ async fn api_export_sekejap_schema(
         };
     }
 
-    let export = match sekejap::export_schema(&state.platform.config.data_root, &owner, &project) {
-        Ok(export) => export,
-        Err(err) => return internal_error(err),
-    };
+    let filename = format!("{project}-sekejap-schema.json");
+    let data_root = state.platform.config.data_root.clone();
+    let export =
+        match run_platform_blocking(move || sekejap::export_schema(&data_root, &owner, &project))
+            .await
+        {
+            Ok(export) => export,
+            Err(err) => return internal_error(err),
+        };
     let body = match serde_json::to_string_pretty(&export) {
         Ok(value) => value + "\n",
         Err(err) => {
             return internal_error(PlatformError::new("SEKEJAP_SCHEMA_EXPORT", err.to_string()));
         }
     };
-    let filename = format!("{project}-sekejap-schema.json");
     (
         [
             (
@@ -17994,8 +18386,128 @@ async fn api_sync_sekejap_schema(
         };
     }
 
-    match sekejap::sync_schema_to_repo(&state.platform.config.data_root, &owner, &project) {
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::sync_schema_to_repo(&data_root, &owner, &project))
+        .await
+    {
         Ok(report) => Json(json!({"ok": true, "sync": report})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_sekejap_project_health(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesRead,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::GET,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::project_health(&data_root, &owner, &project)).await
+    {
+        Ok(health) => Json(json!({"ok": true, "health": health})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_sekejap_project_sync(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::POST,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::sync_project(&data_root, &owner, &project)).await {
+        Ok(sync) => Json(json!({"ok": true, "sync": sync})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_sekejap_project_compact(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::TablesWrite,
+    ) {
+        return response;
+    }
+    if let Ok(Some(worker_id)) = remote_project_worker_id(&state, &owner, &project) {
+        return match forward_project_api_request_to_worker(
+            &state,
+            &uri,
+            &Method::POST,
+            &headers,
+            Bytes::new(),
+            &worker_id,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(err) => internal_error(err),
+        };
+    }
+
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::compact_project(&data_root, &owner, &project))
+        .await
+    {
+        Ok(compact) => Json(json!({"ok": true, "compact": compact})).into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -18032,13 +18544,12 @@ async fn api_update_simple_table(
         Err(err) => return internal_error(err),
     }
 
-    match sekejap::update_table(
-        &state.platform.config.data_root,
-        &owner,
-        &project,
-        &table,
-        &req,
-    ) {
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || {
+        sekejap::update_table(&data_root, &owner, &project, &table, &req)
+    })
+    .await
+    {
         Ok(updated) => Json(json!({"ok": true, "table": updated})).into_response(),
         Err(err)
             if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
@@ -18085,7 +18596,10 @@ async fn api_delete_simple_table(
         Err(err) => return internal_error(err),
     }
 
-    match sekejap::delete_table(&state.platform.config.data_root, &owner, &project, &table) {
+    let data_root = state.platform.config.data_root.clone();
+    match run_platform_blocking(move || sekejap::delete_table(&data_root, &owner, &project, &table))
+        .await
+    {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err)
             if err.code == "PLATFORM_SEKEJAP_TABLE_INVALID"
@@ -22831,6 +23345,19 @@ async fn api_revoke_mcp_session(
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
+}
+
+async fn run_platform_blocking<T, F>(f: F) -> Result<T, PlatformError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, PlatformError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_BLOCKING_TASK_JOIN",
+            format!("blocking platform task failed: {err}"),
+        )
+    })?
 }
 
 fn internal_error(err: PlatformError) -> Response {
