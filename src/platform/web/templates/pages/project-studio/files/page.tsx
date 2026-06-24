@@ -48,6 +48,7 @@ export default function Page(input) {
   const [pendingDelete, setPendingDelete] = useState(null);
 
   const crumbs = buildCrumbs(currentPath);
+  const fallbackReturnTo = `${base}/${selectedStorage}${currentPath ? `?path=${encodeURIComponent(currentPath)}` : ""}`;
 
   async function requestJson(url: string, options: any = {}) {
     const response = await fetch(url, {
@@ -208,15 +209,39 @@ export default function Page(input) {
   }
 
   async function toggleAccess(item: any, scope: "object" | "prefix") {
-    if (!api.access || !item?.path) return;
+    if (!item?.path) return;
+    if (!api.access) {
+      setMessage("Access control API is not available in this build.");
+      setMessageTone("error");
+      return;
+    }
     const nextAccess = item.public ? "private" : "public_read";
     setBusy(`access:${item.path}`);
     setMessage("");
     try {
-      await requestJson(api.access, {
+      const payload = await requestJson(api.access, {
         method: "PUT",
         body: JSON.stringify({ path: item.path, access: nextAccess, scope }),
       });
+      const nextPublic = !!payload?.public;
+      const nextAccessLabel = payload?.access || nextAccess;
+      if (scope === "prefix") {
+        setFolders((prev) =>
+          prev.map((entry) =>
+            entry.path === item.path
+              ? { ...entry, public: nextPublic, access: nextAccessLabel }
+              : entry,
+          ),
+        );
+      } else {
+        setFiles((prev) =>
+          prev.map((entry) =>
+            entry.path === item.path
+              ? { ...entry, public: nextPublic, access: nextAccessLabel }
+              : entry,
+          ),
+        );
+      }
       await refresh(currentPath);
       setMessage(nextAccess === "public_read" ? "Public read enabled." : "Path is private.");
       setMessageTone("ok");
@@ -396,6 +421,8 @@ export default function Page(input) {
                     key={folder.path}
                     folder={folder}
                     busy={busy}
+                    accessAction={api.access}
+                    returnTo={fallbackReturnTo}
                     onOpen={() => navigate(folder.path)}
                     onToggleAccess={() => toggleAccess(folder, "prefix")}
                     onDelete={() => setPendingDelete({ ...folder, kind: "folder" })}
@@ -407,6 +434,8 @@ export default function Page(input) {
                     key={file.path}
                     file={file}
                     busy={busy}
+                    accessAction={api.access}
+                    returnTo={fallbackReturnTo}
                     onToggleAccess={() => toggleAccess(file, "object")}
                     onDelete={() => setPendingDelete({ ...file, kind: "file" })}
                   />
@@ -456,9 +485,10 @@ function StorageRow({ storage }) {
   );
 }
 
-function FolderRow({ folder, busy, onOpen, onToggleAccess, onDelete }) {
+function FolderRow({ folder, busy, accessAction, returnTo, onOpen, onToggleAccess, onDelete }) {
   const isPublic = !!folder.public;
   const accessBusy = busy === `access:${folder.path}`;
+  const accessTitle = isPublic ? "Make folder private" : "Make folder public";
   return (
     <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-dashed border-border-soft text-body-soft text-[0.8rem] hover:bg-surface-2 hover:text-body hover:border-border transition-colors">
       <FolderIcon />
@@ -470,15 +500,34 @@ function FolderRow({ folder, busy, onOpen, onToggleAccess, onDelete }) {
         {folder.name}
       </button>
       <Badge variant={isPublic ? "secondary" : "outline"} className="text-[0.65rem] shrink-0">
-        {isPublic ? "public" : "private"}
+        <AccessToggleButton
+          item={folder}
+          scope="prefix"
+          action={accessAction}
+          returnTo={returnTo}
+          title={accessTitle}
+          busy={accessBusy}
+          className="bg-transparent border-0 p-0 m-0 text-inherit font-inherit cursor-pointer disabled:cursor-not-allowed"
+          onToggleAccess={onToggleAccess}
+        >
+          {isPublic ? "public" : "private"}
+        </AccessToggleButton>
       </Badge>
-      <IconButton
-        title={isPublic ? "Make folder private" : "Make folder public"}
-        onClick={onToggleAccess}
-        disabled={accessBusy}
+      <AccessToggleButton
+        item={folder}
+        scope="prefix"
+        action={accessAction}
+        returnTo={returnTo}
+        title={accessTitle}
+        busy={accessBusy}
+        className={cx(
+          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors hover:text-accent hover:bg-accent/10",
+          accessBusy && "opacity-50 pointer-events-none",
+        )}
+        onToggleAccess={onToggleAccess}
       >
         {isPublic ? <LockOpenIcon className="w-3.5 h-3.5" /> : <LockIcon className="w-3.5 h-3.5" />}
-      </IconButton>
+      </AccessToggleButton>
       {folder.protected ? (
         <Badge variant="outline" className="text-[0.65rem] shrink-0">protected</Badge>
       ) : (
@@ -490,11 +539,12 @@ function FolderRow({ folder, busy, onOpen, onToggleAccess, onDelete }) {
   );
 }
 
-function FileRow({ file, busy, onToggleAccess, onDelete }) {
+function FileRow({ file, busy, accessAction, returnTo, onToggleAccess, onDelete }) {
   const ext = (file.name?.split(".").pop() ?? "").toLowerCase();
   const isImage = ["jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp"].includes(ext);
   const isPublic = !!file.public;
   const accessBusy = busy === `access:${file.path}`;
+  const accessTitle = isPublic ? "Make file private" : "Make file public";
 
   return (
     <div className="group flex items-center gap-2 min-h-[2.1rem] px-2 py-1.5 rounded-md border border-border-soft bg-surface-2 hover:border-border transition-colors">
@@ -512,19 +562,74 @@ function FileRow({ file, busy, onToggleAccess, onDelete }) {
         {file.modified ? ` · ${new Date(file.modified * 1000).toLocaleDateString()}` : ""}
       </span>
       <Badge variant={isPublic ? "secondary" : "outline"} className="text-[0.65rem] shrink-0">
-        {isPublic ? "public" : "private"}
+        <AccessToggleButton
+          item={file}
+          scope="object"
+          action={accessAction}
+          returnTo={returnTo}
+          title={accessTitle}
+          busy={accessBusy}
+          className="bg-transparent border-0 p-0 m-0 text-inherit font-inherit cursor-pointer disabled:cursor-not-allowed"
+          onToggleAccess={onToggleAccess}
+        >
+          {isPublic ? "public" : "private"}
+        </AccessToggleButton>
       </Badge>
-      <IconButton
-        title={isPublic ? "Make file private" : "Make file public"}
-        onClick={onToggleAccess}
-        disabled={accessBusy}
+      <AccessToggleButton
+        item={file}
+        scope="object"
+        action={accessAction}
+        returnTo={returnTo}
+        title={accessTitle}
+        busy={accessBusy}
+        className={cx(
+          "flex items-center justify-center w-6 h-6 rounded shrink-0 text-body-muted transition-colors hover:text-accent hover:bg-accent/10",
+          accessBusy && "opacity-50 pointer-events-none",
+        )}
+        onToggleAccess={onToggleAccess}
       >
         {isPublic ? <LockOpenIcon className="w-3.5 h-3.5" /> : <LockIcon className="w-3.5 h-3.5" />}
-      </IconButton>
+      </AccessToggleButton>
       <IconButton title="Delete file" tone="danger" onClick={onDelete}>
         <TrashIcon />
       </IconButton>
     </div>
+  );
+}
+
+function AccessToggleButton({
+  item,
+  scope,
+  action,
+  returnTo,
+  title,
+  busy,
+  className,
+  onToggleAccess,
+  children,
+}) {
+  const nextAccess = item?.public ? "private" : "public_read";
+  return (
+    <form method="post" action={action || ""} className="contents">
+      <input type="hidden" name="path" value={item?.path ?? ""} />
+      <input type="hidden" name="access" value={nextAccess} />
+      <input type="hidden" name="scope" value={scope} />
+      <input type="hidden" name="return_to" value={returnTo ?? ""} />
+      <button
+        type="submit"
+        className={className}
+        title={title}
+        aria-label={title}
+        disabled={busy}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleAccess?.();
+        }}
+      >
+        {children}
+      </button>
+    </form>
   );
 }
 
