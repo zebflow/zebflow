@@ -1,4 +1,4 @@
-import { useRef, useState } from "zeb";
+import { cx, useEffect, useRef, useState } from "zeb";
 import ProjectStudioShell from "@/pages/project-studio/components/shell";
 import { StudioTabNav, StudioTabLink } from "@/components/ui/studio-tab-nav";
 import Badge from "@/components/ui/badge";
@@ -7,6 +7,11 @@ import Input from "@/components/ui/input";
 import Card from "@/components/ui/card";
 import CardContent from "@/components/ui/card-content";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
+import { Dialog } from "@/components/ui/dialog";
+import DialogContent from "@/components/ui/dialog-content";
+import DialogHeader from "@/components/ui/dialog-header";
+import DialogTitle from "@/components/ui/dialog-title";
+import DialogFooter from "@/components/ui/dialog-footer";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 
 export const page = {
@@ -46,9 +51,13 @@ export default function Page(input) {
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState("muted");
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadDragActive, setUploadDragActive] = useState(false);
+  const [uploadItems, setUploadItems] = useState([]);
 
   const crumbs = buildCrumbs(currentPath);
   const fallbackReturnTo = `${base}/${selectedStorage}${currentPath ? `?path=${encodeURIComponent(currentPath)}` : ""}`;
+  const uploadTargetPath = currentPath || "uploads";
 
   async function requestJson(url: string, options: any = {}) {
     const response = await fetch(url, {
@@ -117,17 +126,74 @@ export default function Page(input) {
     }
   }
 
-  async function uploadFiles(rawFiles: any) {
-    const picked = Array.from(rawFiles ?? []).filter(Boolean);
+  function stageUploadFiles(rawFiles: any, source = "file") {
+    const picked = Array.from(rawFiles ?? []).filter(Boolean) as any[];
+    if (picked.length === 0) return;
+    setUploadItems((prev) => {
+      const used = new Set(
+        [...files.map((file) => file?.name), ...prev.map((item) => item?.name)]
+          .filter(Boolean)
+          .map((name) => String(name).toLowerCase()),
+      );
+      const now = Date.now();
+      const staged = picked.map((file, index) => {
+        const ext = extensionForUploadFile(file);
+        const fallback = source === "paste"
+          ? `pasted-content.${ext}`
+          : `upload-${now}-${index}.${ext}`;
+        const candidate = source === "paste" ? fallback : (file?.name || fallback);
+        const name = uniqueUploadName(sanitizeUploadName(candidate, fallback), used);
+        used.add(name.toLowerCase());
+        return {
+          id: `${now}-${index}-${Math.random().toString(36).slice(2)}`,
+          file,
+          name,
+          originalName: file?.name || name,
+          size: file?.size || 0,
+          type: file?.type || "",
+          source,
+        };
+      });
+      return [...prev, ...staged];
+    });
+    setUploadDialogOpen(true);
+    setMessage(`${picked.length} file${picked.length === 1 ? "" : "s"} ready. Review the filename${picked.length === 1 ? "" : "s"} before uploading.`);
+    setMessageTone("muted");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function updateUploadItemName(id: string, name: string) {
+    setUploadItems((prev) => prev.map((item) => item.id === id ? { ...item, name } : item));
+  }
+
+  function removeUploadItem(id: string) {
+    setUploadItems((prev) => prev.filter((item) => item.id !== id));
+  }
+
+  async function uploadFiles() {
+    const picked = uploadItems;
     if (picked.length === 0 || !api.upload) return;
     const targetPath = currentPath || "uploads";
+    const normalized = [];
+    const used = new Set();
+    for (const item of picked) {
+      const name = sanitizeUploadName(item.name, item.originalName || "upload.bin");
+      const key = name.toLowerCase();
+      if (!name || used.has(key)) {
+        setMessage("Upload needs unique filenames before saving.");
+        setMessageTone("error");
+        return;
+      }
+      used.add(key);
+      normalized.push({ ...item, name });
+    }
     setBusy("upload");
     setMessage(`Uploading ${picked.length} file${picked.length === 1 ? "" : "s"}...`);
     setMessageTone("muted");
     try {
-      for (const file of picked) {
+      for (const item of normalized) {
         const form = new FormData();
-        form.append("file", file);
+        form.append("file", item.file, item.name);
         const url = `${api.upload}?path=${encodeURIComponent(targetPath)}`;
         const response = await fetch(url, {
           method: "POST",
@@ -147,6 +213,8 @@ export default function Page(input) {
       await refresh(targetPath);
       setMessage(`Uploaded ${picked.length} file${picked.length === 1 ? "" : "s"}.`);
       setMessageTone("ok");
+      setUploadItems([]);
+      setUploadDialogOpen(false);
     } catch (err) {
       setMessage(`Upload failed: ${err?.message || String(err)}`);
       setMessageTone("error");
@@ -165,14 +233,36 @@ export default function Page(input) {
       }
     }
     if (files.length > 0) {
-      await uploadFiles(files);
+      stageUploadFiles(files, "paste");
     }
   }
 
   async function handlePaste(event: any) {
     const items = event?.clipboardData?.items;
     if (!items || items.length === 0) return;
+    event?.preventDefault?.();
     await uploadClipboardItems(items);
+  }
+
+  useEffect(() => {
+    if (!uploadDialogOpen) return;
+    const listener = (event: any) => {
+      const items = event?.clipboardData?.items;
+      if (!items || items.length === 0) return;
+      event.preventDefault?.();
+      uploadClipboardItems(items);
+    };
+    window.addEventListener("paste", listener);
+    return () => window.removeEventListener("paste", listener);
+  }, [uploadDialogOpen, currentPath]);
+
+  async function handleUploadDrop(event: any) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setUploadDragActive(false);
+    const dropped = event?.dataTransfer?.files;
+    if (!dropped || dropped.length === 0) return;
+    stageUploadFiles(dropped, "drop");
   }
 
   async function pasteFromClipboard() {
@@ -199,10 +289,16 @@ export default function Page(input) {
         setMessageTone("muted");
         return;
       }
-      await uploadFiles(files);
+      stageUploadFiles(files, "paste");
     } catch (err) {
-      setMessage(`Paste failed: ${err?.message || String(err)}`);
-      setMessageTone("error");
+      const detail = err?.message || String(err);
+      if (/not allowed|denied|permission/i.test(detail)) {
+        setMessage("Clipboard permission is blocked here. Press Cmd+V or Ctrl+V while this dialog is open.");
+        setMessageTone("muted");
+      } else {
+        setMessage(`Paste failed: ${detail}`);
+        setMessageTone("error");
+      }
     } finally {
       setBusy("");
     }
@@ -362,12 +458,9 @@ export default function Page(input) {
                     type="file"
                     multiple
                     hidden
-                    onChange={(event) => uploadFiles(event.currentTarget.files)}
+                    onChange={(event) => stageUploadFiles(event.currentTarget.files, "file")}
                   />
-                  <Button variant="outline" size="xs" onClick={pasteFromClipboard} disabled={busy === "paste"}>
-                    Paste
-                  </Button>
-                  <Button variant="outline" size="xs" onClick={() => fileInputRef.current?.click?.()} disabled={busy === "upload"}>
+                  <Button variant="outline" size="xs" onClick={() => setUploadDialogOpen(true)} disabled={busy === "upload"}>
                     Upload
                   </Button>
                   <Button variant="outline" size="xs" onClick={() => setNewFolderOpen(true)}>
@@ -455,7 +548,178 @@ export default function Page(input) {
         confirmLabel="Delete"
         variant="destructive"
       />
+
+      <UploadDialog
+        open={uploadDialogOpen}
+        onClose={() => {
+          setUploadDialogOpen(false);
+          setUploadDragActive(false);
+        }}
+        targetPath={uploadTargetPath}
+        busy={busy}
+        message={message}
+        messageTone={messageTone}
+        dragActive={uploadDragActive}
+        items={uploadItems}
+        onChoose={() => fileInputRef.current?.click?.()}
+        onPaste={pasteFromClipboard}
+        onDrop={handleUploadDrop}
+        onPasteEvent={handlePaste}
+        onDragActiveChange={setUploadDragActive}
+        onRename={updateUploadItemName}
+        onRemove={removeUploadItem}
+        onClear={() => setUploadItems([])}
+        onUpload={uploadFiles}
+      />
     </ProjectStudioShell>
+  );
+}
+
+function UploadDialog({
+  open,
+  onClose,
+  targetPath,
+  busy,
+  message,
+  messageTone,
+  dragActive,
+  items,
+  onChoose,
+  onPaste,
+  onDrop,
+  onPasteEvent,
+  onDragActiveChange,
+  onRename,
+  onRemove,
+  onClear,
+  onUpload,
+}) {
+  const uploading = busy === "upload";
+  const pasting = busy === "paste";
+  const hasItems = Array.isArray(items) && items.length > 0;
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent
+        className="max-w-xl"
+        style={{ overflow: "hidden", maxHeight: "calc(100dvh - 2rem)" }}
+        onPaste={onPasteEvent}
+      >
+        <DialogHeader className="shrink-0">
+          <DialogTitle>Upload Files</DialogTitle>
+          <p className="text-xs text-body-soft mt-0.5">
+            Destination: <span className="font-mono text-body">{targetPath}/</span>
+          </p>
+        </DialogHeader>
+
+        <div className="px-6 py-5">
+          <div
+            className={cx(
+              "flex min-h-[15rem] flex-col items-center justify-center rounded-md border border-dashed px-6 py-8 text-center transition-colors",
+              dragActive
+                ? "border-accent bg-accent/10 text-body"
+                : "border-border bg-surface-2 text-body-soft",
+            )}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDragActiveChange(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDragActiveChange(true);
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onDragActiveChange(false);
+            }}
+            onDrop={onDrop}
+          >
+            <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-md border border-border bg-surface text-body">
+              <UploadIcon />
+            </div>
+            <p className="text-[0.9rem] font-semibold text-body">
+              {uploading ? "Uploading..." : dragActive ? "Drop to upload" : "Drop files here"}
+            </p>
+            <p className="mt-1 max-w-sm text-[0.76rem] text-body-muted">
+              Choose files, drag them into this panel, or paste an image from the clipboard. Files are not uploaded until you confirm.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+              <Button size="sm" onClick={onChoose} disabled={uploading || pasting}>
+                Choose Files
+              </Button>
+              <Button variant="outline" size="sm" onClick={onPaste} disabled={uploading || pasting}>
+                {pasting ? "Reading..." : "Paste Image"}
+              </Button>
+            </div>
+          </div>
+
+          {hasItems ? (
+            <div className="mt-4 rounded-md border border-border bg-surface">
+              <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
+                <p className="text-[0.78rem] font-semibold text-body">
+                  Pending upload
+                </p>
+                <Badge variant="outline" className="text-[0.68rem]">
+                  {items.length} file{items.length === 1 ? "" : "s"}
+                </Badge>
+              </div>
+              <div className="max-h-[13rem] overflow-y-auto">
+                {items.map((item) => (
+                  <div key={item.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-border-soft px-3 py-2 last:border-b-0">
+                    <Input
+                      value={item.name}
+                      onInput={(event) => onRename(item.id, event.currentTarget.value)}
+                      disabled={uploading}
+                      className="min-w-0"
+                    />
+                    <span className="whitespace-nowrap text-[0.7rem] text-body-muted">
+                      {formatBytes(item.size)}
+                    </span>
+                    <button
+                      type="button"
+                      className="flex h-7 w-7 items-center justify-center rounded text-body-muted transition-colors hover:bg-red-400/10 hover:text-red-400 disabled:opacity-50"
+                      onClick={() => onRemove(item.id)}
+                      disabled={uploading}
+                      aria-label={`Remove ${item.name}`}
+                      title="Remove"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {message ? (
+            <div className={cx(
+              "mt-3 rounded border px-3 py-2 text-[0.76rem]",
+              messageTone === "error" && "border-red-500/40 bg-red-500/10 text-red-300",
+              messageTone === "ok" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+              messageTone === "muted" && "border-border bg-surface-2 text-body-soft",
+            )}>
+              {message}
+            </div>
+          ) : null}
+        </div>
+
+        <DialogFooter className="shrink-0">
+          {hasItems ? (
+            <Button variant="ghost" size="sm" onClick={onClear} disabled={uploading || pasting}>
+              Clear
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={uploading || pasting}>
+            Close
+          </Button>
+          <Button size="sm" onClick={onUpload} disabled={!hasItems || uploading || pasting}>
+            {uploading ? "Uploading..." : "Upload"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -684,6 +948,16 @@ function GenericFileIcon() {
   );
 }
 
+function UploadIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-5 w-5" aria-hidden="true">
+      <path d="M12 16V5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M7.5 9.5L12 5l4.5 4.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5 16v3h14v-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-3.5 h-3.5" aria-hidden="true">
@@ -715,6 +989,42 @@ function extensionForMime(type: string): string {
   if (type === "image/webp") return "webp";
   if (type === "image/gif") return "gif";
   return "png";
+}
+
+function extensionForUploadFile(file: any): string {
+  const name = String(file?.name || "");
+  const match = name.match(/\.([A-Za-z0-9]{1,12})$/);
+  if (match) return match[1].toLowerCase();
+  return extensionForMime(String(file?.type || ""));
+}
+
+function sanitizeUploadName(name: string, fallback: string): string {
+  const cleaned = String(name || "")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\.+/, "");
+  return cleaned || fallback;
+}
+
+function splitFileName(name: string): { stem: string; ext: string } {
+  const match = String(name).match(/^(.*?)(\.[^.]*)?$/);
+  return {
+    stem: match?.[1] || "file",
+    ext: match?.[2] || "",
+  };
+}
+
+function uniqueUploadName(name: string, used: Set<string>): string {
+  const clean = sanitizeUploadName(name, "upload.bin");
+  if (!used.has(clean.toLowerCase())) return clean;
+  const { stem, ext } = splitFileName(clean);
+  let index = 1;
+  while (true) {
+    const next = `${stem}-${index}${ext}`;
+    if (!used.has(next.toLowerCase())) return next;
+    index += 1;
+  }
 }
 
 function S3Panel() {
