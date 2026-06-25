@@ -844,7 +844,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         )
         .route(
             "/api/hub/remote/assets",
-            get(api_list_public_hub_assets),
+            get(api_list_public_hub_assets).post(api_public_remote_publish_hub_asset),
         )
         .route(
             "/api/hub/remote/assets/{package_id}/{version}",
@@ -17573,6 +17573,44 @@ async fn api_remote_publish_hub_asset(
         .platform
         .hub
         .import_remote_asset(&owner, &project, &token, &req)
+    {
+        Ok((package, version)) => {
+            Json(json!({"ok": true, "package": package, "version": version})).into_response()
+        }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_public_remote_publish_hub_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<RemoteHubPublishRequest>,
+) -> Response {
+    let Some(token_value) = bearer_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "missing bearer token"})),
+        )
+            .into_response();
+    };
+    let token = match state
+        .platform
+        .hub
+        .authenticate_token(&token_value, "hub:publish")
+    {
+        Ok(token) => token,
+        Err(err) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": err.message, "code": err.code})),
+            )
+                .into_response();
+        }
+    };
+    match state
+        .platform
+        .hub
+        .import_remote_asset(&token.owner, &token.project, &token, &req)
     {
         Ok((package, version)) => {
             Json(json!({"ok": true, "package": package, "version": version})).into_response()
