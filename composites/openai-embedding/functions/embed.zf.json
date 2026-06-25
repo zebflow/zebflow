@@ -29,7 +29,7 @@
       "title": "Call Embeddings API",
       "config": {
         "method": "POST",
-        "url": "{{ $placeholder.BASE_URL || 'https://api.openai.com/v1' }}/embeddings",
+        "url": "{{ ($placeholder.BASE_URL || 'https://api.openai.com/v1').replace(/\\/$/, '') }}{{ $placeholder.EMBEDDING_PATH || '/embeddings' }}",
         "headers": {
           "Authorization": "Bearer {{ $placeholder.API_KEY }}",
           "Content-Type": "application/json"

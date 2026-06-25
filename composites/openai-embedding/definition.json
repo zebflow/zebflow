@@ -9,13 +9,27 @@
   "credentials": [
     {
       "kind": "openai",
-      "title": "OpenAI / LLM",
-      "description": "OpenAI-compatible provider credential.",
+      "title": "OpenAI",
+      "description": "OpenAI provider credential.",
       "fields": [],
       "placeholders": {
         "API_KEY": "api_key",
         "BASE_URL": "base_url",
-        "MODEL": "model"
+        "MODEL": "model",
+        "EMBEDDING_PATH": "embedding_path"
+      },
+      "config_key": "credential_id"
+    },
+    {
+      "kind": "openrouter",
+      "title": "OpenRouter",
+      "description": "OpenRouter provider credential.",
+      "fields": [],
+      "placeholders": {
+        "API_KEY": "api_key",
+        "BASE_URL": "base_url",
+        "MODEL": "model",
+        "EMBEDDING_PATH": "embedding_path"
       },
       "config_key": "credential_id"
     }
@@ -46,12 +60,12 @@
           }
         },
         "dsl_flags": [
-          { "flag": "--credential", "config_key": "credential_id", "kind": "scalar", "required": true, "description": "OpenAI-compatible credential." },
+          { "flag": "--credential", "config_key": "credential_id", "kind": "scalar", "required": true, "description": "OpenAI or OpenRouter credential." },
           { "flag": "--model", "config_key": "model", "kind": "scalar", "required": false, "description": "Embedding model override (e.g. text-embedding-3-small)." },
           { "flag": "--input-expr", "config_key": "input_expr", "kind": "scalar", "required": false, "description": "JS expression to extract text from input. Default: input.text || input.input" }
         ],
         "fields": [
-          { "name": "credential_id", "label": "Credential", "type": "select", "data_source": "credentials:openai", "help": "Select your OpenAI / LLM credential." },
+          { "name": "credential_id", "label": "Credential", "type": "select", "data_source": "credentials_open_ai", "help": "Select an OpenAI or OpenRouter credential." },
           { "name": "model", "label": "Model", "type": "text", "help": "Embedding model id. Leave empty to use credential default." },
           { "name": "input_expr", "label": "Input Expression", "type": "textarea", "rows": 3, "help": "JS expression to extract text to embed from the upstream payload. Examples: input.text, input.description, [input.title, input.body]. Default: input.text || input.input" }
         ],
