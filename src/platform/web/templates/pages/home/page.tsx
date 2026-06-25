@@ -113,8 +113,8 @@ export default function Page(input) {
               <Button type="button" variant="outline" onClick={openCloneDialog}>
                 Clone project
               </Button>
-              <Button as="a" href="/marketplace" variant="outline">
-                Marketplace
+              <Button as="a" href="/hub" variant="outline">
+                Hub
               </Button>
             </div>
           </header>

@@ -3,7 +3,7 @@ import Button from "@/components/ui/button";
 
 /**
  * Fixed top bar for authenticated platform pages outside the project studio.
- * Home uses the marketplace dialog directly on `/home`.
+ * Home uses the hub dialog directly on `/home`.
  *
  * Why “chrome”: in UI jargon, *chrome* is the framing around the content window
  * (nav, toolbars, system trim) — the same sense as in “browser chrome”, not “Google Chrome”.

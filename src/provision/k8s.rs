@@ -819,7 +819,7 @@ fn render_management_config_block(cfg: &ClusterConfig) -> String {
         "  MANAGED_WORKLOADS: \"{}\"",
         cfg.managed_workloads.join(",")
     ));
-    lines.push("  MARKETPLACE_DEFAULT_BASE_URL: \"https://market.zebflow.com/api\"".to_string());
+    lines.push("  HUB_DEFAULT_BASE_URL: \"https://hub.zebflow.com/api\"".to_string());
     lines.push(format!(
         "  AUTO_UPDATE_ENABLED: \"{}\"",
         if cfg.auto_update_enabled {
@@ -932,11 +932,11 @@ fn render_office_container_block(cfg: &ClusterConfig, office_id: &str) -> String
         "              value: \"10611\"".to_string(),
         "            - name: ZEBFLOW_PLATFORM_DATA_DIR".to_string(),
         "              value: /var/lib/zebflow/data".to_string(),
-        "            - name: ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL".to_string(),
+        "            - name: ZEBFLOW_HUB_DEFAULT_BASE_URL".to_string(),
         "              valueFrom:".to_string(),
         "                configMapKeyRef:".to_string(),
         format!("                  name: {}", management_configmap_name(cfg)),
-        "                  key: MARKETPLACE_DEFAULT_BASE_URL".to_string(),
+        "                  key: HUB_DEFAULT_BASE_URL".to_string(),
         "            - name: ZEBFLOW_PLATFORM_DEFAULT_PASSWORD".to_string(),
         "              valueFrom:".to_string(),
         "                secretKeyRef:".to_string(),

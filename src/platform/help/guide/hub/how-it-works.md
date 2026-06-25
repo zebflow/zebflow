@@ -1,6 +1,6 @@
-# How Marketplace Works
+# How Hub Works
 
-Every Zebflow instance can act as a marketplace source.
+Every Zebflow instance can act as a hub source.
 
 ## Core ideas
 
@@ -17,6 +17,6 @@ This lets Zebflow share project material natively, without forcing everything th
 ## Common flow
 
 1. publish pack from one Zebflow instance
-2. add that marketplace base URL as a repository in another instance
-3. browse packs in Marketplace or `Add+`
+2. add that hub base URL as a repository in another instance
+3. browse packs in Hub or `Add+`
 4. add the pack into the local project workspace

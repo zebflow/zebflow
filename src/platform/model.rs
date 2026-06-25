@@ -334,9 +334,9 @@ pub struct ProjectDbConnectionListItem {
     pub updated_at: i64,
 }
 
-/// One project-scoped marketplace repository source.
+/// One project-scoped hub repository source.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProjectMarketplaceRepository {
+pub struct ProjectHubRepository {
     /// Owner identifier.
     pub owner: String,
     /// Project slug.
@@ -345,11 +345,11 @@ pub struct ProjectMarketplaceRepository {
     pub repository_id: String,
     /// Display title.
     pub title: String,
-    /// Base URL of the remote marketplace, e.g. `http://127.0.0.1:10612`.
+    /// Base URL of the remote hub, e.g. `http://127.0.0.1:10612`.
     pub base_url: String,
-    /// Remote owner slug on the target marketplace.
+    /// Remote owner slug on the target hub.
     pub remote_owner: String,
-    /// Remote project slug on the target marketplace.
+    /// Remote project slug on the target hub.
     pub remote_project: String,
     /// Optional bearer token for read access.
     pub read_token: String,
@@ -361,9 +361,9 @@ pub struct ProjectMarketplaceRepository {
     pub updated_at: i64,
 }
 
-/// One platform-scoped marketplace repository source used from Home.
+/// One platform-scoped hub repository source used from Home.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PlatformMarketplaceRepository {
+pub struct PlatformHubRepository {
     /// Stable internal source id.
     #[serde(default)]
     pub source_id: String,
@@ -376,18 +376,18 @@ pub struct PlatformMarketplaceRepository {
     pub repository_id: String,
     /// Display title.
     pub title: String,
-    /// Base URL of the remote marketplace, e.g. `http://127.0.0.1:10612/api/projects/superadmin/default/marketplace`.
+    /// Base URL of the remote hub, e.g. `http://127.0.0.1:10612/api/projects/superadmin/default/hub`.
     pub base_url: String,
-    /// Remote owner slug on the target marketplace when using a proxy base.
+    /// Remote owner slug on the target hub when using a proxy base.
     pub remote_owner: String,
-    /// Remote project slug on the target marketplace when using a proxy base.
+    /// Remote project slug on the target hub when using a proxy base.
     pub remote_project: String,
     /// Optional bearer token for read access.
     pub read_token: String,
-    /// Source visibility in Platform Home marketplace explorer: public or private.
+    /// Source visibility in Platform Home hub explorer: public or private.
     #[serde(default)]
     pub visibility: String,
-    /// Whether this repository should be queried in Home marketplace.
+    /// Whether this repository should be queried in Home hub.
     pub enabled: bool,
     /// Unix timestamp seconds.
     pub created_at: i64,
@@ -395,20 +395,20 @@ pub struct PlatformMarketplaceRepository {
     pub updated_at: i64,
 }
 
-/// One explicit marketplace authority row.
+/// One explicit hub authority row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MarketplaceAuthority {
+pub struct HubAuthority {
     /// Stable authority id.
     pub authority_id: String,
     /// Host project id.
     pub host_project_id: String,
-    /// Marketplace authority owner slug.
+    /// Hub authority owner slug.
     pub owner: String,
-    /// Marketplace authority project slug.
+    /// Hub authority project slug.
     pub project: String,
     /// Whether producer mode is currently enabled.
     pub enabled: bool,
-    /// Public marketplace API base URL when exposed.
+    /// Public hub API base URL when exposed.
     pub public_base_url: String,
     /// Unix timestamp seconds.
     pub created_at: i64,
@@ -440,9 +440,9 @@ pub struct PlatformOffice {
 /// One platform-level service instance hosted by an office.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformServiceInstance {
-    /// Stable service instance id, e.g. `marketplace-default`.
+    /// Stable service instance id, e.g. `hub-default`.
     pub service_instance_id: String,
-    /// Service kind, e.g. `marketplace`.
+    /// Service kind, e.g. `hub`.
     pub service_kind: String,
     /// Display label.
     pub display_label: String,
@@ -486,18 +486,18 @@ pub struct PlatformOfficeNode {
     pub last_heartbeat_at: i64,
 }
 
-/// One stable publisher identity inside one marketplace service authority.
+/// One stable publisher identity inside one hub service authority.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MarketplacePublisher {
+pub struct HubPublisher {
     /// Stable authority id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub authority_id: String,
     /// Stable publisher row id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher_pk: String,
-    /// Internal marketplace scope owner.
+    /// Internal hub scope owner.
     pub owner: String,
-    /// Internal marketplace scope project.
+    /// Internal hub scope project.
     pub project: String,
     /// Stable immutable public publisher identity.
     pub publisher_id: String,
@@ -515,7 +515,7 @@ pub struct MarketplacePublisher {
     pub website_url: String,
     /// Whether the publisher is active.
     pub enabled: bool,
-    /// Whether this publisher may read private marketplace artifacts.
+    /// Whether this publisher may read private hub artifacts.
     #[serde(default = "default_true")]
     pub can_read: bool,
     /// Whether this publisher may publish package versions.
@@ -542,9 +542,9 @@ pub struct MarketplacePublisher {
     pub updated_at: i64,
 }
 
-/// One published marketplace asset package stored by the marketplace service.
+/// One published hub asset package stored by the hub service.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MarketplaceAssetPackage {
+pub struct HubAssetPackage {
     /// Stable package row id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package_pk: String,
@@ -554,15 +554,15 @@ pub struct MarketplaceAssetPackage {
     /// Stable publisher row id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub publisher_pk: String,
-    /// Stable package id, unique inside one marketplace instance.
+    /// Stable package id, unique inside one hub instance.
     pub package_id: String,
-    /// Internal marketplace authority owner. Public APIs must not expose this.
+    /// Internal hub authority owner. Public APIs must not expose this.
     pub authority_owner: String,
-    /// Internal marketplace authority project. Public APIs must not expose this.
+    /// Internal hub authority project. Public APIs must not expose this.
     pub authority_project: String,
     /// Publisher owner id.
     pub publisher_owner: String,
-    /// Stable public publisher identity inside this marketplace authority.
+    /// Stable public publisher identity inside this hub authority.
     pub publisher_id: String,
     /// Human-facing publisher name.
     pub publisher_display_name: String,
@@ -586,9 +586,9 @@ pub struct MarketplaceAssetPackage {
     pub updated_at: i64,
 }
 
-/// One immutable version of a marketplace asset package.
+/// One immutable version of a hub asset package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MarketplaceAssetVersion {
+pub struct HubAssetVersion {
     /// Stable package row id.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub package_pk: String,
@@ -596,9 +596,9 @@ pub struct MarketplaceAssetVersion {
     pub package_id: String,
     /// Version string.
     pub version: String,
-    /// Internal marketplace authority owner. Public APIs must not expose this.
+    /// Internal hub authority owner. Public APIs must not expose this.
     pub authority_owner: String,
-    /// Internal marketplace authority project. Public APIs must not expose this.
+    /// Internal hub authority project. Public APIs must not expose this.
     pub authority_project: String,
     /// Publisher owner id.
     pub publisher_owner: String,
@@ -622,9 +622,9 @@ pub struct MarketplaceAssetVersion {
     pub created_at: i64,
 }
 
-/// One marketplace access token used for publish/read/manage operations.
+/// One hub access token used for publish/read/manage operations.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MarketplaceToken {
+pub struct HubToken {
     /// Stable token id.
     pub token_id: String,
     /// Stable authority id.
@@ -651,13 +651,13 @@ pub struct MarketplaceToken {
     pub secret_hash: String,
     /// Granted scopes.
     pub scopes: Vec<String>,
-    /// Whether this token grants marketplace read access.
+    /// Whether this token grants hub read access.
     #[serde(default, skip_serializing)]
     pub scope_read: bool,
-    /// Whether this token grants marketplace publish access.
+    /// Whether this token grants hub publish access.
     #[serde(default, skip_serializing)]
     pub scope_publish: bool,
-    /// Whether this token grants marketplace manage access.
+    /// Whether this token grants hub manage access.
     #[serde(default, skip_serializing)]
     pub scope_manage: bool,
     /// Optional unix timestamp seconds.
@@ -672,21 +672,21 @@ pub struct MarketplaceToken {
     pub updated_at: i64,
 }
 
-impl MarketplaceToken {
-    /// Returns whether the token grants the required marketplace scope.
+impl HubToken {
+    /// Returns whether the token grants the required hub scope.
     pub fn grants_scope(&self, required_scope: &str) -> bool {
         match required_scope.trim() {
-            "marketplace:read" => self.scope_read,
-            "marketplace:publish" => self.scope_publish,
-            "marketplace:manage" => self.scope_manage,
+            "hub:read" => self.scope_read,
+            "hub:publish" => self.scope_publish,
+            "hub:manage" => self.scope_manage,
             _ => false,
         }
     }
 }
 
-/// Request to create one marketplace token.
+/// Request to create one hub token.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CreateMarketplaceTokenRequest {
+pub struct CreateHubTokenRequest {
     /// Stable public publisher identity.
     pub publisher_id: String,
     /// Display title.
@@ -2212,11 +2212,11 @@ impl ZebflowJsonPipelines {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZebflowJsonDistribution {
     #[serde(default)]
-    pub marketplace: ZebflowJsonDistributionMarketplace,
+    pub hub: ZebflowJsonDistributionHub,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ZebflowJsonDistributionMarketplace {
+pub struct ZebflowJsonDistributionHub {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub entry_url: String,
     #[serde(default)]

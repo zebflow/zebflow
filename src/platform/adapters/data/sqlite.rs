@@ -17,14 +17,14 @@ use crate::infra::execution::placement::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority, MarketplacePublisher,
-    MarketplaceToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogPipelineStats,
-    PipelineInvocationLogStats, PipelineMeta, PlatformMarketplaceRepository, PlatformOffice,
-    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser,
-    PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
-    ProjectDbConnection, ProjectInvite, ProjectInviteStatus, ProjectMarketplaceRepository,
-    ProjectMember, ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus,
-    ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser, now_ts, slug_segment,
+    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpSession,
+    PipelineInvocationEntry, PipelineInvocationLogPipelineStats, PipelineInvocationLogStats,
+    PipelineMeta, PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
+    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
+    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
+    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
+    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
+    now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS project_db_connections (
     updated_at       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, connection_id)
 );
-CREATE TABLE IF NOT EXISTS project_marketplace_repositories (
+CREATE TABLE IF NOT EXISTS project_hub_repositories (
     owner         TEXT NOT NULL,
     project       TEXT NOT NULL,
     repository_id TEXT NOT NULL,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS project_marketplace_repositories (
     updated_at    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, repository_id)
 );
-CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
+CREATE TABLE IF NOT EXISTS platform_hub_repositories (
     source_id     TEXT NOT NULL UNIQUE DEFAULT '',
     owner_user_id TEXT NOT NULL DEFAULT '',
     owner         TEXT NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS platform_marketplace_repositories (
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS marketplace_authorities (
+CREATE TABLE IF NOT EXISTS hub_authorities (
     authority_id     TEXT PRIMARY KEY,
     host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
     owner            TEXT NOT NULL DEFAULT '',
@@ -130,7 +130,7 @@ CREATE TABLE IF NOT EXISTS marketplace_authorities (
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS marketplace_publishers (
+CREATE TABLE IF NOT EXISTS hub_publishers (
     authority_id    TEXT NOT NULL DEFAULT '',
     publisher_pk    TEXT NOT NULL UNIQUE DEFAULT '',
     owner          TEXT NOT NULL,
@@ -153,11 +153,11 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, publisher_id),
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS marketplace_asset_packages (
+CREATE TABLE IF NOT EXISTS hub_asset_packages (
     package_pk       TEXT NOT NULL UNIQUE DEFAULT '',
     authority_id     TEXT NOT NULL DEFAULT '',
     publisher_pk     TEXT NOT NULL DEFAULT '',
@@ -176,14 +176,14 @@ CREATE TABLE IF NOT EXISTS marketplace_asset_packages (
     tags_json        TEXT NOT NULL DEFAULT '[]',
     created_at       INTEGER NOT NULL DEFAULT 0,
     updated_at       INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+    FOREIGN KEY (publisher_pk) REFERENCES hub_publishers(publisher_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS marketplace_asset_versions (
+CREATE TABLE IF NOT EXISTS hub_asset_versions (
     package_pk        TEXT NOT NULL DEFAULT '',
     package_id        TEXT NOT NULL,
     version           TEXT NOT NULL,
@@ -200,11 +200,11 @@ CREATE TABLE IF NOT EXISTS marketplace_asset_versions (
     manifest_json     TEXT NOT NULL DEFAULT 'null',
     created_at        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (package_id, version),
-    FOREIGN KEY (package_pk) REFERENCES marketplace_asset_packages(package_pk)
+    FOREIGN KEY (package_pk) REFERENCES hub_asset_packages(package_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
-CREATE TABLE IF NOT EXISTS marketplace_tokens (
+CREATE TABLE IF NOT EXISTS hub_tokens (
     token_id       TEXT PRIMARY KEY,
     authority_id   TEXT NOT NULL DEFAULT '',
     publisher_pk   TEXT NOT NULL DEFAULT '',
@@ -222,10 +222,10 @@ CREATE TABLE IF NOT EXISTS marketplace_tokens (
     revoked_at     INTEGER,
     created_at     INTEGER NOT NULL DEFAULT 0,
     updated_at     INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+    FOREIGN KEY (publisher_pk) REFERENCES hub_publishers(publisher_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
@@ -589,20 +589,16 @@ impl SqliteDataAdapter {
         digest.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    fn marketplace_token_scopes(
-        scope_read: bool,
-        scope_publish: bool,
-        scope_manage: bool,
-    ) -> Vec<String> {
+    fn hub_token_scopes(scope_read: bool, scope_publish: bool, scope_manage: bool) -> Vec<String> {
         let mut scopes = Vec::new();
         if scope_read {
-            scopes.push("marketplace:read".to_string());
+            scopes.push("hub:read".to_string());
         }
         if scope_publish {
-            scopes.push("marketplace:publish".to_string());
+            scopes.push("hub:publish".to_string());
         }
         if scope_manage {
-            scopes.push("marketplace:manage".to_string());
+            scopes.push("hub:manage".to_string());
         }
         scopes
     }
@@ -635,8 +631,8 @@ impl SqliteDataAdapter {
             },
             MigrationDef {
                 version: 3,
-                name: "marketplace_columns_and_publishers",
-                apply: Self::apply_migration_0003_marketplace_columns_and_publishers,
+                name: "hub_columns_and_publishers",
+                apply: Self::apply_migration_0003_hub_columns_and_publishers,
             },
             MigrationDef {
                 version: 4,
@@ -650,8 +646,8 @@ impl SqliteDataAdapter {
             },
             MigrationDef {
                 version: 6,
-                name: "marketplace_and_operations_internal_ids",
-                apply: Self::apply_migration_0006_marketplace_and_operations_internal_ids,
+                name: "hub_and_operations_internal_ids",
+                apply: Self::apply_migration_0006_hub_and_operations_internal_ids,
             },
             MigrationDef {
                 version: 7,
@@ -675,8 +671,8 @@ impl SqliteDataAdapter {
             },
             MigrationDef {
                 version: 11,
-                name: "marketplace_token_scope_flags",
-                apply: Self::apply_migration_0011_marketplace_token_scope_flags,
+                name: "hub_token_scope_flags",
+                apply: Self::apply_migration_0011_hub_token_scope_flags,
             },
             MigrationDef {
                 version: 12,
@@ -685,13 +681,13 @@ impl SqliteDataAdapter {
             },
             MigrationDef {
                 version: 13,
-                name: "marketplace_publisher_limits",
-                apply: Self::apply_migration_0013_marketplace_publisher_limits,
+                name: "hub_publisher_limits",
+                apply: Self::apply_migration_0013_hub_publisher_limits,
             },
             MigrationDef {
                 version: 14,
-                name: "reserved_post_stable_marketplace_schema",
-                apply: Self::apply_migration_0014_reserved_post_stable_marketplace_schema,
+                name: "reserved_post_stable_hub_schema",
+                apply: Self::apply_migration_0014_reserved_post_stable_hub_schema,
             },
         ]
     }
@@ -742,10 +738,10 @@ impl SqliteDataAdapter {
         )
     }
 
-    fn apply_migration_0003_marketplace_columns_and_publishers(
+    fn apply_migration_0003_hub_columns_and_publishers(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
-        Self::ensure_marketplace_schema(tx)
+        Self::ensure_hub_schema(tx)
     }
 
     fn apply_migration_0004_stable_ids_and_user_local_auth(
@@ -872,7 +868,7 @@ CREATE TABLE IF NOT EXISTS user_local_auth (
     ) -> Result<(), PlatformError> {
         tx.execute_batch(
             "
-CREATE TABLE IF NOT EXISTS marketplace_authorities (
+CREATE TABLE IF NOT EXISTS hub_authorities (
     authority_id     TEXT PRIMARY KEY,
     host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
     owner            TEXT NOT NULL DEFAULT '',
@@ -1032,7 +1028,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "INSERT OR IGNORE INTO marketplace_authorities
+            "INSERT OR IGNORE INTO hub_authorities
              (authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at)
              SELECT 'mka_' || project_id,
                     project_id,
@@ -1048,8 +1044,8 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_authorities_host_project_id
-             ON marketplace_authorities(host_project_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_authorities_host_project_id
+             ON hub_authorities(host_project_id)",
             [],
         )
         .map_err(Self::qe)?;
@@ -1068,54 +1064,44 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         Ok(())
     }
 
-    fn apply_migration_0006_marketplace_and_operations_internal_ids(
+    fn apply_migration_0006_hub_and_operations_internal_ids(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "authority_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "publisher_pk",
             "TEXT NOT NULL DEFAULT ''",
         )?;
+        Self::ensure_table_column(tx, "hub_tokens", "authority_id", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(tx, "hub_tokens", "publisher_pk", "TEXT NOT NULL DEFAULT ''")?;
         Self::ensure_table_column(
             tx,
-            "marketplace_tokens",
-            "authority_id",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        Self::ensure_table_column(
-            tx,
-            "marketplace_tokens",
-            "publisher_pk",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        Self::ensure_table_column(
-            tx,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "package_pk",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "authority_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "publisher_pk",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_asset_versions",
+            "hub_asset_versions",
             "package_pk",
             "TEXT NOT NULL DEFAULT ''",
         )?;
@@ -1127,12 +1113,12 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         )?;
 
         tx.execute(
-            "UPDATE marketplace_publishers
+            "UPDATE hub_publishers
              SET authority_id = (
                  SELECT authority_id
-                 FROM marketplace_authorities
-                 WHERE marketplace_authorities.owner = marketplace_publishers.owner
-                   AND marketplace_authorities.project = marketplace_publishers.project
+                 FROM hub_authorities
+                 WHERE hub_authorities.owner = hub_publishers.owner
+                   AND hub_authorities.project = hub_publishers.project
              )
              WHERE COALESCE(authority_id, '') = ''",
             [],
@@ -1143,7 +1129,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             let mut stmt = tx
                 .prepare(
                     "SELECT owner, project, publisher_id
-                     FROM marketplace_publishers
+                     FROM hub_publishers
                      WHERE COALESCE(publisher_pk, '') = ''
                      ORDER BY owner ASC, project ASC, publisher_id ASC",
                 )
@@ -1163,7 +1149,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             for (owner, project, publisher_id) in items {
                 let publisher_pk = format!("mpub_{}", uuid::Uuid::new_v4().simple());
                 tx.execute(
-                    "UPDATE marketplace_publishers
+                    "UPDATE hub_publishers
                      SET publisher_pk = ?1
                      WHERE owner = ?2 AND project = ?3 AND publisher_id = ?4",
                     params![publisher_pk, owner, project, publisher_id],
@@ -1173,25 +1159,25 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         }
 
         tx.execute(
-            "UPDATE marketplace_tokens
+            "UPDATE hub_tokens
              SET authority_id = (
                  SELECT authority_id
-                 FROM marketplace_authorities
-                 WHERE marketplace_authorities.owner = marketplace_tokens.owner
-                   AND marketplace_authorities.project = marketplace_tokens.project
+                 FROM hub_authorities
+                 WHERE hub_authorities.owner = hub_tokens.owner
+                   AND hub_authorities.project = hub_tokens.project
              )
              WHERE COALESCE(authority_id, '') = ''",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "UPDATE marketplace_tokens
+            "UPDATE hub_tokens
              SET publisher_pk = (
                  SELECT publisher_pk
-                 FROM marketplace_publishers
-                 WHERE marketplace_publishers.owner = marketplace_tokens.owner
-                   AND marketplace_publishers.project = marketplace_tokens.project
-                   AND marketplace_publishers.publisher_id = marketplace_tokens.publisher_id
+                 FROM hub_publishers
+                 WHERE hub_publishers.owner = hub_tokens.owner
+                   AND hub_publishers.project = hub_tokens.project
+                   AND hub_publishers.publisher_id = hub_tokens.publisher_id
              )
              WHERE COALESCE(publisher_pk, '') = ''",
             [],
@@ -1202,7 +1188,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             let mut stmt = tx
                 .prepare(
                     "SELECT package_id
-                     FROM marketplace_asset_packages
+                     FROM hub_asset_packages
                      WHERE COALESCE(package_pk, '') = ''
                      ORDER BY package_id ASC",
                 )
@@ -1216,7 +1202,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             for package_id in items {
                 let package_pk = format!("mpkg_{}", uuid::Uuid::new_v4().simple());
                 tx.execute(
-                    "UPDATE marketplace_asset_packages SET package_pk = ?1 WHERE package_id = ?2",
+                    "UPDATE hub_asset_packages SET package_pk = ?1 WHERE package_id = ?2",
                     params![package_pk, package_id],
                 )
                 .map_err(Self::qe)?;
@@ -1224,36 +1210,36 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         }
 
         tx.execute(
-            "UPDATE marketplace_asset_packages
+            "UPDATE hub_asset_packages
              SET authority_id = (
                  SELECT authority_id
-                 FROM marketplace_authorities
-                 WHERE marketplace_authorities.owner = marketplace_asset_packages.authority_owner
-                   AND marketplace_authorities.project = marketplace_asset_packages.authority_project
+                 FROM hub_authorities
+                 WHERE hub_authorities.owner = hub_asset_packages.authority_owner
+                   AND hub_authorities.project = hub_asset_packages.authority_project
              )
              WHERE COALESCE(authority_id, '') = ''",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "UPDATE marketplace_asset_packages
+            "UPDATE hub_asset_packages
              SET publisher_pk = (
                  SELECT publisher_pk
-                 FROM marketplace_publishers
-                 WHERE marketplace_publishers.owner = marketplace_asset_packages.authority_owner
-                   AND marketplace_publishers.project = marketplace_asset_packages.authority_project
-                   AND marketplace_publishers.publisher_id = marketplace_asset_packages.publisher_id
+                 FROM hub_publishers
+                 WHERE hub_publishers.owner = hub_asset_packages.authority_owner
+                   AND hub_publishers.project = hub_asset_packages.authority_project
+                   AND hub_publishers.publisher_id = hub_asset_packages.publisher_id
              )
              WHERE COALESCE(publisher_pk, '') = ''",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "UPDATE marketplace_asset_versions
+            "UPDATE hub_asset_versions
              SET package_pk = (
                  SELECT package_pk
-                 FROM marketplace_asset_packages
-                 WHERE marketplace_asset_packages.package_id = marketplace_asset_versions.package_id
+                 FROM hub_asset_packages
+                 WHERE hub_asset_packages.package_id = hub_asset_versions.package_id
              )
              WHERE COALESCE(package_pk, '') = ''",
             [],
@@ -1273,26 +1259,26 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         .map_err(Self::qe)?;
 
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_publisher_pk
-             ON marketplace_publishers(publisher_pk)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_publishers_publisher_pk
+             ON hub_publishers(publisher_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_package_pk
-             ON marketplace_asset_packages(package_pk)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_asset_packages_package_pk
+             ON hub_asset_packages(package_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
-             ON marketplace_tokens(publisher_pk)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_tokens_publisher_pk
+             ON hub_tokens(publisher_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_asset_versions_package_pk
-             ON marketplace_asset_versions(package_pk)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_asset_versions_package_pk
+             ON hub_asset_versions(package_pk)",
             [],
         )
         .map_err(Self::qe)?;
@@ -1311,13 +1297,13 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         Self::ensure_table_column(tx, "projects", "owner_user_id", "TEXT NOT NULL DEFAULT ''")?;
         Self::ensure_table_column(
             tx,
-            "platform_marketplace_repositories",
+            "platform_hub_repositories",
             "source_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             tx,
-            "platform_marketplace_repositories",
+            "platform_hub_repositories",
             "owner_user_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
@@ -1360,7 +1346,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             let mut stmt = tx
                 .prepare(
                     "SELECT owner, repository_id
-                     FROM platform_marketplace_repositories
+                     FROM platform_hub_repositories
                      WHERE COALESCE(source_id, '') = ''
                      ORDER BY owner ASC, repository_id ASC",
                 )
@@ -1376,7 +1362,7 @@ CREATE TABLE IF NOT EXISTS office_nodes (
             for (owner, repository_id) in items {
                 let source_id = format!("pmr_{}", uuid::Uuid::new_v4().simple());
                 tx.execute(
-                    "UPDATE platform_marketplace_repositories
+                    "UPDATE platform_hub_repositories
                      SET source_id = ?1
                      WHERE owner = ?2 AND repository_id = ?3",
                     params![source_id, owner, repository_id],
@@ -1386,9 +1372,9 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         }
 
         tx.execute(
-            "UPDATE platform_marketplace_repositories
+            "UPDATE platform_hub_repositories
              SET owner_user_id = (
-                 SELECT users.user_id FROM users WHERE users.owner = platform_marketplace_repositories.owner
+                 SELECT users.user_id FROM users WHERE users.owner = platform_hub_repositories.owner
              )
              WHERE COALESCE(owner_user_id, '') = ''",
             [],
@@ -1443,8 +1429,8 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         .map_err(Self::qe)?;
 
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_marketplace_repositories_source_id
-             ON platform_marketplace_repositories(source_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_platform_hub_repositories_source_id
+             ON platform_hub_repositories(source_id)",
             [],
         )
         .map_err(Self::qe)?;
@@ -1503,39 +1489,39 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_authority_publisher
-             ON marketplace_publishers(authority_id, publisher_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_publishers_authority_publisher
+             ON hub_publishers(authority_id, publisher_id)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_authority_url
-             ON marketplace_publishers(authority_id, publisher_url)
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_publishers_authority_url
+             ON hub_publishers(authority_id, publisher_url)
              WHERE publisher_url <> ''",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_authority_package
-             ON marketplace_asset_packages(authority_id, package_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_asset_packages_authority_package
+             ON hub_asset_packages(authority_id, package_id)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_versions_packagepk_version
-             ON marketplace_asset_versions(package_pk, version)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_asset_versions_packagepk_version
+             ON hub_asset_versions(package_pk, version)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_platform_marketplace_repositories_owner_user
-             ON platform_marketplace_repositories(owner_user_id, enabled, title)",
+            "CREATE INDEX IF NOT EXISTS idx_platform_hub_repositories_owner_user
+             ON platform_hub_repositories(owner_user_id, enabled, title)",
             [],
         )
         .map_err(Self::qe)?;
         Self::ensure_table_column(
             tx,
-            "platform_marketplace_repositories",
+            "platform_hub_repositories",
             "visibility",
             "TEXT NOT NULL DEFAULT 'public'",
         )?;
@@ -1557,18 +1543,18 @@ CREATE TABLE IF NOT EXISTS office_nodes (
         Self::assert_non_empty_column(tx, "users", "user_id")?;
         Self::assert_non_empty_column(tx, "projects", "project_id")?;
         Self::assert_non_empty_column(tx, "projects", "owner_user_id")?;
-        Self::assert_non_empty_column(tx, "platform_marketplace_repositories", "source_id")?;
-        Self::assert_non_empty_column(tx, "platform_marketplace_repositories", "owner_user_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_authorities", "authority_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_authorities", "host_project_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_publishers", "authority_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_publishers", "publisher_pk")?;
-        Self::assert_non_empty_column(tx, "marketplace_tokens", "authority_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_tokens", "publisher_pk")?;
-        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "package_pk")?;
-        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "authority_id")?;
-        Self::assert_non_empty_column(tx, "marketplace_asset_packages", "publisher_pk")?;
-        Self::assert_non_empty_column(tx, "marketplace_asset_versions", "package_pk")?;
+        Self::assert_non_empty_column(tx, "platform_hub_repositories", "source_id")?;
+        Self::assert_non_empty_column(tx, "platform_hub_repositories", "owner_user_id")?;
+        Self::assert_non_empty_column(tx, "hub_authorities", "authority_id")?;
+        Self::assert_non_empty_column(tx, "hub_authorities", "host_project_id")?;
+        Self::assert_non_empty_column(tx, "hub_publishers", "authority_id")?;
+        Self::assert_non_empty_column(tx, "hub_publishers", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "hub_tokens", "authority_id")?;
+        Self::assert_non_empty_column(tx, "hub_tokens", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "hub_asset_packages", "package_pk")?;
+        Self::assert_non_empty_column(tx, "hub_asset_packages", "authority_id")?;
+        Self::assert_non_empty_column(tx, "hub_asset_packages", "publisher_pk")?;
+        Self::assert_non_empty_column(tx, "hub_asset_versions", "package_pk")?;
         Self::assert_non_empty_column(tx, "office_nodes", "office_id")?;
         Self::assert_non_empty_column(tx, "project_runtime_placements", "project_id")?;
         Self::assert_non_empty_column(tx, "project_operations", "project_id")?;
@@ -1620,9 +1606,9 @@ CREATE TABLE projects (
         )?;
         Self::rebuild_table(
             tx,
-            "platform_marketplace_repositories",
+            "platform_hub_repositories",
             "
-CREATE TABLE platform_marketplace_repositories (
+CREATE TABLE platform_hub_repositories (
     source_id      TEXT NOT NULL UNIQUE DEFAULT '',
     owner_user_id  TEXT NOT NULL DEFAULT '',
     owner          TEXT NOT NULL,
@@ -1659,9 +1645,9 @@ CREATE TABLE platform_marketplace_repositories (
         )?;
         Self::rebuild_table(
             tx,
-            "marketplace_authorities",
+            "hub_authorities",
             "
-CREATE TABLE marketplace_authorities (
+CREATE TABLE hub_authorities (
     authority_id     TEXT PRIMARY KEY,
     host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
     owner            TEXT NOT NULL DEFAULT '',
@@ -1687,9 +1673,9 @@ CREATE TABLE marketplace_authorities (
         )?;
         Self::rebuild_table(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "
-CREATE TABLE marketplace_publishers (
+CREATE TABLE hub_publishers (
     authority_id    TEXT NOT NULL DEFAULT '',
     publisher_pk    TEXT NOT NULL UNIQUE DEFAULT '',
     owner           TEXT NOT NULL,
@@ -1712,7 +1698,7 @@ CREATE TABLE marketplace_publishers (
     created_at      INTEGER NOT NULL DEFAULT 0,
     updated_at      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (owner, project, publisher_id),
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
@@ -1742,9 +1728,9 @@ CREATE TABLE marketplace_publishers (
         )?;
         Self::rebuild_table(
             tx,
-            "marketplace_tokens",
+            "hub_tokens",
             "
-CREATE TABLE marketplace_tokens (
+CREATE TABLE hub_tokens (
     token_id                TEXT PRIMARY KEY,
     authority_id            TEXT NOT NULL DEFAULT '',
     publisher_pk            TEXT NOT NULL DEFAULT '',
@@ -1762,10 +1748,10 @@ CREATE TABLE marketplace_tokens (
     revoked_at              INTEGER,
     created_at              INTEGER NOT NULL DEFAULT 0,
     updated_at              INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+    FOREIGN KEY (publisher_pk) REFERENCES hub_publishers(publisher_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
@@ -1791,9 +1777,9 @@ CREATE TABLE marketplace_tokens (
         )?;
         Self::rebuild_table(
             tx,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "
-CREATE TABLE marketplace_asset_packages (
+CREATE TABLE hub_asset_packages (
     package_pk              TEXT NOT NULL UNIQUE DEFAULT '',
     authority_id            TEXT NOT NULL DEFAULT '',
     publisher_pk            TEXT NOT NULL DEFAULT '',
@@ -1812,10 +1798,10 @@ CREATE TABLE marketplace_asset_packages (
     tags_json               TEXT NOT NULL DEFAULT '[]',
     created_at              INTEGER NOT NULL DEFAULT 0,
     updated_at              INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+    FOREIGN KEY (publisher_pk) REFERENCES hub_publishers(publisher_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
@@ -1842,9 +1828,9 @@ CREATE TABLE marketplace_asset_packages (
         )?;
         Self::rebuild_table(
             tx,
-            "marketplace_asset_versions",
+            "hub_asset_versions",
             "
-CREATE TABLE marketplace_asset_versions (
+CREATE TABLE hub_asset_versions (
     package_pk         TEXT NOT NULL DEFAULT '',
     package_id         TEXT NOT NULL,
     version            TEXT NOT NULL,
@@ -1861,7 +1847,7 @@ CREATE TABLE marketplace_asset_versions (
     manifest_json      TEXT NOT NULL DEFAULT 'null',
     created_at         INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (package_id, version),
-    FOREIGN KEY (package_pk) REFERENCES marketplace_asset_packages(package_pk)
+    FOREIGN KEY (package_pk) REFERENCES hub_asset_packages(package_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
@@ -2035,26 +2021,26 @@ CREATE TABLE project_operations (
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_publishers_publisher_pk
-             ON marketplace_publishers(publisher_pk)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_publishers_publisher_pk
+             ON hub_publishers(publisher_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_asset_packages_package_pk
-             ON marketplace_asset_packages(package_pk)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_asset_packages_package_pk
+             ON hub_asset_packages(package_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
-             ON marketplace_tokens(publisher_pk)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_tokens_publisher_pk
+             ON hub_tokens(publisher_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_asset_versions_package_pk
-             ON marketplace_asset_versions(package_pk)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_asset_versions_package_pk
+             ON hub_asset_versions(package_pk)",
             [],
         )
         .map_err(Self::qe)?;
@@ -2278,43 +2264,38 @@ CREATE TABLE project_members (
         Ok(())
     }
 
-    fn apply_migration_0011_marketplace_token_scope_flags(
+    fn apply_migration_0011_hub_token_scope_flags(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         tx.execute_batch("PRAGMA defer_foreign_keys = ON;")
             .map_err(Self::qe)?;
+        Self::ensure_table_column(tx, "hub_tokens", "scope_read", "INTEGER NOT NULL DEFAULT 0")?;
         Self::ensure_table_column(
             tx,
-            "marketplace_tokens",
-            "scope_read",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        Self::ensure_table_column(
-            tx,
-            "marketplace_tokens",
+            "hub_tokens",
             "scope_publish",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_tokens",
+            "hub_tokens",
             "scope_manage",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
 
-        if Self::table_has_column(tx, "marketplace_tokens", "scopes_json")? {
+        if Self::table_has_column(tx, "hub_tokens", "scopes_json")? {
             tx.execute(
-                "UPDATE marketplace_tokens
+                "UPDATE hub_tokens
                  SET scope_read = CASE
-                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:read\"%' THEN 1
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:read\"%' THEN 1
                         ELSE 0
                      END,
                      scope_publish = CASE
-                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:publish\"%' THEN 1
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:publish\"%' THEN 1
                         ELSE 0
                      END,
                      scope_manage = CASE
-                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:manage\"%' THEN 1
+                        WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:manage\"%' THEN 1
                         ELSE 0
                      END",
                 [],
@@ -2322,14 +2303,12 @@ CREATE TABLE project_members (
             .map_err(Self::qe)?;
         }
 
-        let old_table = "marketplace_tokens__old";
-        tx.execute_batch(&format!(
-            "ALTER TABLE marketplace_tokens RENAME TO {old_table};"
-        ))
-        .map_err(Self::qe)?;
+        let old_table = "hub_tokens__old";
+        tx.execute_batch(&format!("ALTER TABLE hub_tokens RENAME TO {old_table};"))
+            .map_err(Self::qe)?;
         tx.execute_batch(
             "
-CREATE TABLE marketplace_tokens (
+CREATE TABLE hub_tokens (
     token_id                TEXT PRIMARY KEY,
     authority_id            TEXT NOT NULL DEFAULT '',
     publisher_pk            TEXT NOT NULL DEFAULT '',
@@ -2349,10 +2328,10 @@ CREATE TABLE marketplace_tokens (
     revoked_at              INTEGER,
     created_at              INTEGER NOT NULL DEFAULT 0,
     updated_at              INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (authority_id) REFERENCES marketplace_authorities(authority_id)
+    FOREIGN KEY (authority_id) REFERENCES hub_authorities(authority_id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-    FOREIGN KEY (publisher_pk) REFERENCES marketplace_publishers(publisher_pk)
+    FOREIGN KEY (publisher_pk) REFERENCES hub_publishers(publisher_pk)
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 )",
@@ -2362,26 +2341,26 @@ CREATE TABLE marketplace_tokens (
         let old_has_scopes_json = Self::table_has_column(tx, old_table, "scopes_json")?;
         let insert_sql = if old_has_scope_columns {
             format!(
-                "INSERT INTO marketplace_tokens
+                "INSERT INTO hub_tokens
                  (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
                  SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
                  FROM {old_table}"
             )
         } else if old_has_scopes_json {
             format!(
-                "INSERT INTO marketplace_tokens
+                "INSERT INTO hub_tokens
                  (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
                  SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash,
-                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:read\"%' THEN 1 ELSE 0 END,
-                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:publish\"%' THEN 1 ELSE 0 END,
-                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"marketplace:manage\"%' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:read\"%' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:publish\"%' THEN 1 ELSE 0 END,
+                        CASE WHEN COALESCE(scopes_json, '[]') LIKE '%\"hub:manage\"%' THEN 1 ELSE 0 END,
                         expires_at, last_used_at, revoked_at, created_at, updated_at
                  FROM {old_table}"
             )
         } else {
             return Err(PlatformError::new(
                 "PLATFORM_SQLITE_SCOPE_MIGRATION",
-                "marketplace_tokens has neither scope flags nor scopes_json",
+                "hub_tokens has neither scope flags nor scopes_json",
             ));
         };
         tx.execute(&insert_sql, []).map_err(Self::qe)?;
@@ -2389,20 +2368,20 @@ CREATE TABLE marketplace_tokens (
             .map_err(Self::qe)?;
 
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_publisher_pk
-             ON marketplace_tokens(publisher_pk)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_tokens_publisher_pk
+             ON hub_tokens(publisher_pk)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_scope_publish
-             ON marketplace_tokens(scope_publish, revoked_at, expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_tokens_scope_publish
+             ON hub_tokens(scope_publish, revoked_at, expires_at)",
             [],
         )
         .map_err(Self::qe)?;
         tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marketplace_tokens_scope_read
-             ON marketplace_tokens(scope_read, revoked_at, expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_hub_tokens_scope_read
+             ON hub_tokens(scope_read, revoked_at, expires_at)",
             [],
         )
         .map_err(Self::qe)?;
@@ -2459,54 +2438,54 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         .map_err(Self::qe)
     }
 
-    fn apply_migration_0013_marketplace_publisher_limits(
+    fn apply_migration_0013_hub_publisher_limits(
         tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_read",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_publish",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_manage",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_packages",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_package_bytes",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_media_files",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             tx,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_image_bytes",
             "INTEGER NOT NULL DEFAULT 0",
         )
     }
 
-    fn apply_migration_0014_reserved_post_stable_marketplace_schema(
+    fn apply_migration_0014_reserved_post_stable_hub_schema(
         _tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
         Ok(())
@@ -2570,13 +2549,13 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
         Ok(())
     }
 
-    fn ensure_marketplace_schema<C>(conn: &C) -> Result<(), PlatformError>
+    fn ensure_hub_schema<C>(conn: &C) -> Result<(), PlatformError>
     where
         C: std::ops::Deref<Target = Connection>,
     {
         conn.execute_batch(
             "
-CREATE TABLE IF NOT EXISTS marketplace_publishers (
+CREATE TABLE IF NOT EXISTS hub_publishers (
     owner          TEXT NOT NULL,
     project        TEXT NOT NULL,
     publisher_id   TEXT NOT NULL,
@@ -2603,127 +2582,122 @@ CREATE TABLE IF NOT EXISTS marketplace_publishers (
         .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_read",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_publish",
             "INTEGER NOT NULL DEFAULT 1",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "can_manage",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_packages",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_package_bytes",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_media_files",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_publishers",
+            "hub_publishers",
             "max_image_bytes",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "authority_owner",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "authority_project",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "publisher_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "publisher_display_name",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "publisher_url",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_packages",
+            "hub_asset_packages",
             "publisher_email",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_versions",
+            "hub_asset_versions",
             "authority_owner",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_versions",
+            "hub_asset_versions",
             "authority_project",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_asset_versions",
+            "hub_asset_versions",
+            "publisher_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(conn, "hub_tokens", "project", "TEXT NOT NULL DEFAULT ''")?;
+        Self::ensure_table_column(
+            conn,
+            "hub_tokens",
             "publisher_id",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_tokens",
-            "project",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        Self::ensure_table_column(
-            conn,
-            "marketplace_tokens",
-            "publisher_id",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
-        Self::ensure_table_column(
-            conn,
-            "marketplace_tokens",
+            "hub_tokens",
             "publisher_display_name",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_tokens",
+            "hub_tokens",
             "publisher_url",
             "TEXT NOT NULL DEFAULT ''",
         )?;
         Self::ensure_table_column(
             conn,
-            "marketplace_tokens",
+            "hub_tokens",
             "publisher_email",
             "TEXT NOT NULL DEFAULT ''",
         )
@@ -3283,13 +3257,13 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn put_project_marketplace_repository(
+    fn put_project_hub_repository(
         &self,
-        repository: &ProjectMarketplaceRepository,
+        repository: &ProjectHubRepository,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT OR REPLACE INTO project_marketplace_repositories
+            "INSERT OR REPLACE INTO project_hub_repositories
              (owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
@@ -3310,22 +3284,22 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_project_marketplace_repositories(
+    fn list_project_hub_repositories(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Vec<ProjectMarketplaceRepository>, PlatformError> {
+    ) -> Result<Vec<ProjectHubRepository>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
-                 FROM project_marketplace_repositories WHERE owner = ?1 AND project = ?2
+                 FROM project_hub_repositories WHERE owner = ?1 AND project = ?2
                  ORDER BY title ASC, repository_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner, project], |row| {
-                Ok(ProjectMarketplaceRepository {
+                Ok(ProjectHubRepository {
                     owner: row.get(0)?,
                     project: row.get(1)?,
                     repository_id: row.get(2)?,
@@ -3345,7 +3319,7 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn delete_project_marketplace_repository(
+    fn delete_project_hub_repository(
         &self,
         owner: &str,
         project: &str,
@@ -3353,7 +3327,7 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "DELETE FROM project_marketplace_repositories
+            "DELETE FROM project_hub_repositories
              WHERE owner = ?1 AND project = ?2 AND repository_id = ?3",
             params![owner, project, repository_id],
         )
@@ -3361,13 +3335,13 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn put_platform_marketplace_repository(
+    fn put_platform_hub_repository(
         &self,
-        repository: &PlatformMarketplaceRepository,
+        repository: &PlatformHubRepository,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO platform_marketplace_repositories
+            "INSERT INTO platform_hub_repositories
              (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(owner, repository_id) DO UPDATE SET
@@ -3402,21 +3376,21 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_platform_marketplace_repositories(
+    fn list_platform_hub_repositories(
         &self,
         owner: &str,
-    ) -> Result<Vec<PlatformMarketplaceRepository>, PlatformError> {
+    ) -> Result<Vec<PlatformHubRepository>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at
-                 FROM platform_marketplace_repositories WHERE owner = ?1
+                 FROM platform_hub_repositories WHERE owner = ?1
                  ORDER BY title ASC, repository_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner], |row| {
-                Ok(PlatformMarketplaceRepository {
+                Ok(PlatformHubRepository {
                     source_id: row.get(0)?,
                     owner_user_id: row.get(1)?,
                     owner: row.get(2)?,
@@ -3438,14 +3412,14 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn delete_platform_marketplace_repository(
+    fn delete_platform_hub_repository(
         &self,
         owner: &str,
         repository_id: &str,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "DELETE FROM platform_marketplace_repositories
+            "DELETE FROM platform_hub_repositories
              WHERE owner = ?1 AND repository_id = ?2",
             params![owner, repository_id],
         )
@@ -3453,13 +3427,10 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn put_marketplace_publisher(
-        &self,
-        publisher: &MarketplacePublisher,
-    ) -> Result<(), PlatformError> {
+    fn put_hub_publisher(&self, publisher: &HubPublisher) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO marketplace_publishers
+            "INSERT INTO hub_publishers
              (authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT(owner, project, publisher_id) DO UPDATE SET
@@ -3509,22 +3480,22 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_marketplace_publishers(
+    fn list_hub_publishers(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Vec<MarketplacePublisher>, PlatformError> {
+    ) -> Result<Vec<HubPublisher>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at
-                 FROM marketplace_publishers WHERE owner = ?1 AND project = ?2
+                 FROM hub_publishers WHERE owner = ?1 AND project = ?2
                  ORDER BY display_name ASC, publisher_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![owner, project], |row| {
-                Ok(MarketplacePublisher {
+                Ok(HubPublisher {
                     authority_id: row.get(0)?,
                     publisher_pk: row.get(1)?,
                     owner: row.get(2)?,
@@ -3554,21 +3525,21 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn get_marketplace_publisher(
+    fn get_hub_publisher(
         &self,
         owner: &str,
         project: &str,
         publisher_id: &str,
-    ) -> Result<Option<MarketplacePublisher>, PlatformError> {
+    ) -> Result<Option<HubPublisher>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT authority_id, publisher_pk, owner, project, publisher_id, display_name, publisher_url, email, description, icon_url, website_url, enabled, can_read, can_publish, can_manage, max_packages, max_package_bytes, max_media_files, max_image_bytes, created_at, updated_at
-                 FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
+                 FROM hub_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![owner, project, publisher_id], |row| {
-            Ok(MarketplacePublisher {
+            Ok(HubPublisher {
                 authority_id: row.get(0)?,
                 publisher_pk: row.get(1)?,
                 owner: row.get(2)?,
@@ -3598,7 +3569,7 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn delete_marketplace_publisher(
+    fn delete_hub_publisher(
         &self,
         owner: &str,
         project: &str,
@@ -3606,21 +3577,18 @@ impl DataAdapter for SqliteDataAdapter {
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "DELETE FROM marketplace_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
+            "DELETE FROM hub_publishers WHERE owner = ?1 AND project = ?2 AND publisher_id = ?3",
             params![owner, project, publisher_id],
         )
         .map_err(Self::qe)?;
         Ok(())
     }
 
-    fn put_marketplace_asset_package(
-        &self,
-        package: &MarketplaceAssetPackage,
-    ) -> Result<(), PlatformError> {
+    fn put_hub_asset_package(&self, package: &HubAssetPackage) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tags_json = serde_json::to_string(&package.tags).map_err(Self::json_error)?;
         conn.execute(
-            "INSERT INTO marketplace_asset_packages
+            "INSERT INTO hub_asset_packages
              (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(package_id) DO UPDATE SET
@@ -3666,20 +3634,18 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_marketplace_asset_packages(
-        &self,
-    ) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+    fn list_hub_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
-                 FROM marketplace_asset_packages
+                 FROM hub_asset_packages
                  ORDER BY updated_at DESC, package_id ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                Ok(MarketplaceAssetPackage {
+                Ok(HubAssetPackage {
                     package_pk: row.get(0)?,
                     authority_id: row.get(1)?,
                     publisher_pk: row.get(2)?,
@@ -3707,19 +3673,19 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn get_marketplace_asset_package(
+    fn get_hub_asset_package(
         &self,
         package_id: &str,
-    ) -> Result<Option<MarketplaceAssetPackage>, PlatformError> {
+    ) -> Result<Option<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
-                 FROM marketplace_asset_packages WHERE package_id = ?1",
+                 FROM hub_asset_packages WHERE package_id = ?1",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![package_id], |row| {
-            Ok(MarketplaceAssetPackage {
+            Ok(HubAssetPackage {
                 package_pk: row.get(0)?,
                 authority_id: row.get(1)?,
                 publisher_pk: row.get(2)?,
@@ -3747,14 +3713,11 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn put_marketplace_asset_version(
-        &self,
-        version: &MarketplaceAssetVersion,
-    ) -> Result<(), PlatformError> {
+    fn put_hub_asset_version(&self, version: &HubAssetVersion) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let manifest_json = serde_json::to_string(&version.manifest).map_err(Self::json_error)?;
         conn.execute(
-            "INSERT INTO marketplace_asset_versions
+            "INSERT INTO hub_asset_versions
              (package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(package_id, version) DO UPDATE SET
@@ -3793,21 +3756,21 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_marketplace_asset_versions(
+    fn list_hub_asset_versions(
         &self,
         package_id: &str,
-    ) -> Result<Vec<MarketplaceAssetVersion>, PlatformError> {
+    ) -> Result<Vec<HubAssetVersion>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
-                 FROM marketplace_asset_versions WHERE package_id = ?1
+                 FROM hub_asset_versions WHERE package_id = ?1
                  ORDER BY created_at DESC, version DESC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map(params![package_id], |row| {
-                Ok(MarketplaceAssetVersion {
+                Ok(HubAssetVersion {
                     package_pk: row.get(0)?,
                     package_id: row.get(1)?,
                     version: row.get(2)?,
@@ -3832,20 +3795,20 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn get_marketplace_asset_version(
+    fn get_hub_asset_version(
         &self,
         package_id: &str,
         version: &str,
-    ) -> Result<Option<MarketplaceAssetVersion>, PlatformError> {
+    ) -> Result<Option<HubAssetVersion>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT package_pk, package_id, version, authority_owner, authority_project, publisher_owner, publisher_id, source_owner, source_project, source_kind, source_ref, artifact_rel_path, artifact_sha256, manifest_json, created_at
-                 FROM marketplace_asset_versions WHERE package_id = ?1 AND version = ?2",
+                 FROM hub_asset_versions WHERE package_id = ?1 AND version = ?2",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![package_id, version], |row| {
-            Ok(MarketplaceAssetVersion {
+            Ok(HubAssetVersion {
                 package_pk: row.get(0)?,
                 package_id: row.get(1)?,
                 version: row.get(2)?,
@@ -3870,10 +3833,10 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn put_marketplace_token(&self, token: &MarketplaceToken) -> Result<(), PlatformError> {
+    fn put_hub_token(&self, token: &HubToken) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO marketplace_tokens
+            "INSERT INTO hub_tokens
              (token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(token_id) DO UPDATE SET
@@ -3921,22 +3884,19 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn get_marketplace_token(
-        &self,
-        token_id: &str,
-    ) -> Result<Option<MarketplaceToken>, PlatformError> {
+    fn get_hub_token(&self, token_id: &str) -> Result<Option<HubToken>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
-                 FROM marketplace_tokens WHERE token_id = ?1",
+                 FROM hub_tokens WHERE token_id = ?1",
             )
             .map_err(Self::qe)?;
         match stmt.query_row(params![token_id], |row| {
             let scope_read = row.get::<_, i64>(11)? != 0;
             let scope_publish = row.get::<_, i64>(12)? != 0;
             let scope_manage = row.get::<_, i64>(13)? != 0;
-            Ok(MarketplaceToken {
+            Ok(HubToken {
                 token_id: row.get(0)?,
                 authority_id: row.get(1)?,
                 publisher_pk: row.get(2)?,
@@ -3948,7 +3908,7 @@ impl DataAdapter for SqliteDataAdapter {
                 publisher_email: row.get(8)?,
                 title: row.get(9)?,
                 secret_hash: row.get(10)?,
-                scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                scopes: Self::hub_token_scopes(scope_read, scope_publish, scope_manage),
                 scope_read,
                 scope_publish,
                 scope_manage,
@@ -3965,16 +3925,12 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn list_marketplace_tokens(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<Vec<MarketplaceToken>, PlatformError> {
+    fn list_hub_tokens(&self, owner: &str, project: &str) -> Result<Vec<HubToken>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
-                 FROM marketplace_tokens WHERE owner = ?1 AND project = ?2
+                 FROM hub_tokens WHERE owner = ?1 AND project = ?2
                  ORDER BY updated_at DESC, token_id ASC",
             )
             .map_err(Self::qe)?;
@@ -3983,7 +3939,7 @@ impl DataAdapter for SqliteDataAdapter {
                 let scope_read = row.get::<_, i64>(11)? != 0;
                 let scope_publish = row.get::<_, i64>(12)? != 0;
                 let scope_manage = row.get::<_, i64>(13)? != 0;
-                Ok(MarketplaceToken {
+                Ok(HubToken {
                     token_id: row.get(0)?,
                     authority_id: row.get(1)?,
                     publisher_pk: row.get(2)?,
@@ -3995,7 +3951,7 @@ impl DataAdapter for SqliteDataAdapter {
                     publisher_email: row.get(8)?,
                     title: row.get(9)?,
                     secret_hash: row.get(10)?,
-                    scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                    scopes: Self::hub_token_scopes(scope_read, scope_publish, scope_manage),
                     scope_read,
                     scope_publish,
                     scope_manage,
@@ -4012,12 +3968,12 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn list_all_marketplace_tokens(&self) -> Result<Vec<MarketplaceToken>, PlatformError> {
+    fn list_all_hub_tokens(&self) -> Result<Vec<HubToken>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT token_id, authority_id, publisher_pk, owner, project, publisher_id, publisher_display_name, publisher_url, publisher_email, title, secret_hash, scope_read, scope_publish, scope_manage, expires_at, last_used_at, revoked_at, created_at, updated_at
-                 FROM marketplace_tokens
+                 FROM hub_tokens
                  ORDER BY updated_at DESC, token_id ASC",
             )
             .map_err(Self::qe)?;
@@ -4026,7 +3982,7 @@ impl DataAdapter for SqliteDataAdapter {
                 let scope_read = row.get::<_, i64>(11)? != 0;
                 let scope_publish = row.get::<_, i64>(12)? != 0;
                 let scope_manage = row.get::<_, i64>(13)? != 0;
-                Ok(MarketplaceToken {
+                Ok(HubToken {
                     token_id: row.get(0)?,
                     authority_id: row.get(1)?,
                     publisher_pk: row.get(2)?,
@@ -4038,7 +3994,7 @@ impl DataAdapter for SqliteDataAdapter {
                     publisher_email: row.get(8)?,
                     title: row.get(9)?,
                     secret_hash: row.get(10)?,
-                    scopes: Self::marketplace_token_scopes(scope_read, scope_publish, scope_manage),
+                    scopes: Self::hub_token_scopes(scope_read, scope_publish, scope_manage),
                     scope_read,
                     scope_publish,
                     scope_manage,
@@ -4055,10 +4011,10 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(items)
     }
 
-    fn delete_marketplace_token(&self, token_id: &str) -> Result<(), PlatformError> {
+    fn delete_hub_token(&self, token_id: &str) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "DELETE FROM marketplace_tokens WHERE token_id = ?1",
+            "DELETE FROM hub_tokens WHERE token_id = ?1",
             params![token_id],
         )
         .map_err(Self::qe)?;
@@ -4742,19 +4698,19 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn get_marketplace_authority(
+    fn get_hub_authority(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Option<MarketplaceAuthority>, PlatformError> {
+    ) -> Result<Option<HubAuthority>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let result = conn.query_row(
             "SELECT authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at
-             FROM marketplace_authorities
+             FROM hub_authorities
              WHERE owner = ?1 AND project = ?2",
             params![owner, project],
             |row| {
-                Ok(MarketplaceAuthority {
+                Ok(HubAuthority {
                     authority_id: row.get(0)?,
                     host_project_id: row.get(1)?,
                     owner: row.get(2)?,
@@ -4773,13 +4729,10 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
-    fn put_marketplace_authority(
-        &self,
-        authority: &MarketplaceAuthority,
-    ) -> Result<(), PlatformError> {
+    fn put_hub_authority(&self, authority: &HubAuthority) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO marketplace_authorities
+            "INSERT INTO hub_authorities
              (authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(authority_id) DO UPDATE SET
@@ -4805,18 +4758,18 @@ impl DataAdapter for SqliteDataAdapter {
         Ok(())
     }
 
-    fn list_marketplace_authorities(&self) -> Result<Vec<MarketplaceAuthority>, PlatformError> {
+    fn list_hub_authorities(&self) -> Result<Vec<HubAuthority>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn
             .prepare(
                 "SELECT authority_id, host_project_id, owner, project, enabled, public_base_url, created_at, updated_at
-                 FROM marketplace_authorities
+                 FROM hub_authorities
                  ORDER BY owner ASC, project ASC",
             )
             .map_err(Self::qe)?;
         let items = stmt
             .query_map([], |row| {
-                Ok(MarketplaceAuthority {
+                Ok(HubAuthority {
                     authority_id: row.get(0)?,
                     host_project_id: row.get(1)?,
                     owner: row.get(2)?,
@@ -6052,8 +6005,8 @@ impl DataAdapter for SqliteDataAdapter {
         let rekey_tables = [
             "project_credentials",
             "project_db_connections",
-            "project_marketplace_repositories",
-            "marketplace_publishers",
+            "project_hub_repositories",
+            "hub_publishers",
             "pipeline_meta",
             "project_policies",
             "project_policy_bindings",
@@ -6071,11 +6024,11 @@ impl DataAdapter for SqliteDataAdapter {
             .map_err(Self::qe)?;
         }
 
-        // Marketplace asset versions: multiple owner columns that may reference the old owner.
+        // Hub asset versions: multiple owner columns that may reference the old owner.
         for col in &["authority_owner", "publisher_owner", "source_owner"] {
             tx.execute(
                 &format!(
-                    "UPDATE marketplace_asset_versions SET {col} = ?1 WHERE {col} = ?2 AND source_project = ?3"
+                    "UPDATE hub_asset_versions SET {col} = ?1 WHERE {col} = ?2 AND source_project = ?3"
                 ),
                 params![new_owner, old_owner, project],
             )

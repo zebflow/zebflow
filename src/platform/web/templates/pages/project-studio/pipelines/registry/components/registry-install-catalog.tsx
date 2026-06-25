@@ -8,7 +8,7 @@ const ESSENTIALS = [
 ];
 
 type CatalogEntry = { name: string; installed?: boolean; category?: string };
-type MarketplacePackEntry = {
+type HubPackEntry = {
   package_id: string;
   asset_kind: string;
   latest_version?: string;
@@ -32,11 +32,11 @@ export function RegistryInstallCatalog({
   installResult,
   installing,
   onInstallSubmit,
-  marketplacePacks,
+  hubPacks,
   packSearch,
   setPackSearch,
-  marketplaceInstallMode,
-  setMarketplaceInstallMode,
+  hubInstallMode,
+  setHubInstallMode,
   onAddPack,
 }: {
   onClose: () => void;
@@ -48,15 +48,15 @@ export function RegistryInstallCatalog({
   installResult: string | null;
   installing: boolean;
   onInstallSubmit: () => void;
-  marketplacePacks: MarketplacePackEntry[];
+  hubPacks: HubPackEntry[];
   packSearch: string;
   setPackSearch: (value: string) => void;
-  marketplaceInstallMode: string;
-  setMarketplaceInstallMode: (value: string) => void;
-  onAddPack: (item: MarketplacePackEntry, installMode: string) => void;
+  hubInstallMode: string;
+  setHubInstallMode: (value: string) => void;
+  onAddPack: (item: HubPackEntry, installMode: string) => void;
 }) {
   const normalizedQuery = String(packSearch || "").trim().toLowerCase();
-  const filteredPacks = marketplacePacks.filter((item) => {
+  const filteredPacks = hubPacks.filter((item) => {
     if (installTab === "pipelines" && !String(item.asset_kind || "").includes("pipeline")) return false;
     if (installTab === "templates" && !String(item.asset_kind || "").includes("template")) return false;
     if (installTab === "packs" && String(item.asset_kind || "") === "template_bundle") return true;
@@ -136,13 +136,13 @@ export function RegistryInstallCatalog({
             <div className="install-catalog-tab-panel">
               <div className="space-y-3">
                 <p className="text-xs text-body-soft m-0">
-                  Browse marketplace packs and choose how they enter this project workspace.
+                  Browse hub packs and choose how they enter this project workspace.
                 </p>
                 <label className="pipeline-editor-field">
                   <span>Mode</span>
                   <select
-                    value={marketplaceInstallMode}
-                    onChange={(e) => setMarketplaceInstallMode((e?.currentTarget as HTMLSelectElement)?.value || "add_to_current_project")}
+                    value={hubInstallMode}
+                    onChange={(e) => setHubInstallMode((e?.currentTarget as HTMLSelectElement)?.value || "add_to_current_project")}
                   >
                     <option value="add_to_current_project">Add to current project</option>
                     <option value="clone_as_folder">Clone as folder</option>
@@ -168,8 +168,8 @@ export function RegistryInstallCatalog({
                           <p className="mt-1 text-xs text-ui-text-soft">{item.description}</p>
                         ) : null}
                       </div>
-                      <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item, marketplaceInstallMode)}>
-                        {marketplaceInstallMode === "clone_as_folder" ? "Clone" : "Add"}
+                      <Button type="button" size="xs" variant="ghost" onClick={() => onAddPack(item, hubInstallMode)}>
+                        {hubInstallMode === "clone_as_folder" ? "Clone" : "Add"}
                       </Button>
                     </div>
                   )) : (

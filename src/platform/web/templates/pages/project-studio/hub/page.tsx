@@ -90,9 +90,9 @@ function sourceLabel(value) {
 }
 
 export default function Page(input) {
-  const tabs = Array.isArray(input?.marketplace_tabs) ? input.marketplace_tabs : [];
+  const tabs = Array.isArray(input?.hub_tabs) ? input.hub_tabs : [];
   const tabFlags = input?.tab_flags ?? {};
-  const api = input?.marketplace_api ?? {};
+  const api = input?.hub_api ?? {};
   const [packs, setPacks] = useState(Array.isArray(input?.assets) ? input.assets : []);
   const [myPacks, setMyPacks] = useState(Array.isArray(input?.my_assets) ? input.my_assets : []);
   const [publishSources, setPublishSources] = useState(Array.isArray(input?.publish_sources) ? input.publish_sources : []);
@@ -219,7 +219,7 @@ export default function Page(input) {
       <ProjectStudioShell
         projectHref={input.project_href}
         projectLabel={input.title}
-        currentMenu="Marketplace"
+        currentMenu="Hub"
         owner={input.owner}
         project={input.project}
         nav={input.nav}
@@ -238,8 +238,8 @@ export default function Page(input) {
               <section className="project-content-section">
                 <div className="project-content-head">
                   <div>
-                    <p className="project-content-title">Project Marketplace</p>
-                    <p className="project-content-copy">Install marketplace packs into this project, or publish from this project with a scoped publisher token. Marketplace service enablement and office placement live in Home &gt; Marketplace.</p>
+                    <p className="project-content-title">Project Hub</p>
+                    <p className="project-content-copy">Install hub packages into this project, or publish from this project with a scoped publisher token. Hub service enablement and office placement live in Home &gt; Hub.</p>
                   </div>
                   <Button type="button" variant="outline" onClick={() => refresh().then(() => showStatus("Refreshed")).catch((err) => showStatus(err?.message || err))}>
                     Refresh
@@ -285,7 +285,7 @@ export default function Page(input) {
                           </tr>
                         ))}
                         {!packs.length ? (
-                          <tr><StudioTd colSpan={7}>No marketplace packs yet.</StudioTd></tr>
+                          <tr><StudioTd colSpan={7}>No hub packages yet.</StudioTd></tr>
                         ) : null}
                       </tbody>
                     </StudioTable>
@@ -444,7 +444,7 @@ export default function Page(input) {
                       <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">4. Publish Package</p>
-                          <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Marketplace. This project cannot create publishers, tokens, or marketplace sources.</p>
+                          <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Hub. This project cannot create publishers, tokens, or hub sources.</p>
                         </div>
                         <Field label="Publisher Token">
                           <Input type="password" value={publishForm.publisher_token} onInput={(e) => setPublishForm((prev) => ({ ...prev, publisher_token: e.target.value }))} placeholder="zfmt_..." />

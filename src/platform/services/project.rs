@@ -15,12 +15,12 @@ use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
 use crate::platform::model::ZebLock;
 use crate::platform::model::{
-    AgentDocItem, CreateProjectRequest, MarketplaceAuthority, PipelineBreadcrumb,
-    PipelineFolderItem, PipelineMeta, PipelineRegistryItem, PipelineRegistryListing,
-    PlatformProject, ProjectDocItem, ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem,
-    TemplateCreateKind, TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem,
-    TemplateMoveRequest, TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing,
-    normalize_virtual_path, now_ts, slug_segment,
+    AgentDocItem, CreateProjectRequest, HubAuthority, PipelineBreadcrumb, PipelineFolderItem,
+    PipelineMeta, PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
+    ProjectDocMoveRequest, ProjectFileLayout, RegistryFileItem, TemplateCreateKind,
+    TemplateCreateRequest, TemplateFilePayload, TemplateGitStatusItem, TemplateMoveRequest,
+    TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
+    now_ts, slug_segment,
 };
 use crate::platform::services::project_config::ZebflowJsonService;
 use crate::platform::services::zeb_lock::ZebLockService;
@@ -438,7 +438,7 @@ impl ProjectService {
             updated_at: now,
         };
         self.data.put_project(&record)?;
-        self.data.put_marketplace_authority(&MarketplaceAuthority {
+        self.data.put_hub_authority(&HubAuthority {
             authority_id: format!("mka_{}", record.project_id),
             host_project_id: record.project_id.clone(),
             owner: owner.clone(),

@@ -231,14 +231,14 @@ impl PlatformOps {
                 ],
             ),
             section(
-                "marketplace",
-                "Marketplace",
-                doc("guide/marketplace"),
+                "hub",
+                "Hub",
+                doc("guide/hub"),
                 vec![
                     section(
                         "frontend-libraries",
                         "Frontend Libraries",
-                        doc("guide/marketplace/frontend-libraries"),
+                        doc("guide/hub/frontend-libraries"),
                         vec![
                             section("zeb-use", "zeb/use", doc("web/use"), vec![]),
                             section("zeb-deckgl", "zeb/deckgl", doc("web/deckgl"), vec![]),
@@ -247,9 +247,9 @@ impl PlatformOps {
                         ],
                     ),
                     section(
-                        "marketplace-nodes",
+                        "hub-nodes",
                         "Nodes",
-                        doc("guide/marketplace/nodes"),
+                        doc("guide/hub/nodes"),
                         vec![section(
                             "node-catalog",
                             "Node Catalog",
@@ -257,11 +257,11 @@ impl PlatformOps {
                             vec![],
                         )],
                     ),
-                    section("packs", "Packs", doc("guide/marketplace/packs"), vec![]),
+                    section("packs", "Packs", doc("guide/hub/packs"), vec![]),
                     section(
-                        "marketplace-how-it-works",
-                        "How Marketplace Works",
-                        doc("guide/marketplace/how-it-works"),
+                        "hub-how-it-works",
+                        "How Hub Works",
+                        doc("guide/hub/how-it-works"),
                         vec![],
                     ),
                 ],
