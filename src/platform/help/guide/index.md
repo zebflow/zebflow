@@ -6,7 +6,7 @@ Use this guide in order if you are new to Zebflow:
 2. Learn how pipelines and templates combine into one app.
 3. See a simple blog structure so the repo shape becomes concrete.
 4. Learn the frontend stack: React + Zeb libraries.
-5. Browse examples, project management, databases, marketplace, and agentic tooling.
+5. Browse examples, project management, databases, hub, and agentic tooling.
 
 Zebflow is opinionated:
 

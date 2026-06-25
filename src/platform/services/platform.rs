@@ -6,9 +6,7 @@ use crate::infra::execution::runner::RunnerCapabilities;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
-use crate::platform::adapters::data::{
-    DataAdapter, build_data_adapter, build_marketplace_data_adapter,
-};
+use crate::platform::adapters::data::{DataAdapter, build_data_adapter, build_hub_data_adapter};
 use crate::platform::adapters::file::{FileAdapter, build_file_adapter};
 use crate::platform::adapters::project_data::{ProjectDataFactory, build_project_data_factory};
 use crate::platform::error::PlatformError;
@@ -19,7 +17,7 @@ use crate::platform::model::{
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
-    DbConnectionService, DbRuntimeService, GitIdentityService, LibraryService, MarketplaceService,
+    DbConnectionService, DbRuntimeService, GitIdentityService, HubService, LibraryService,
     McpSessionService, NodeRegistryService, PipelineHitsService, PipelineRuntimeService,
     ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
     ProjectTransferService, UserService, ZebLockService, ZebflowJsonService,
@@ -88,8 +86,8 @@ pub struct PlatformService {
     pub state_bus: DynStateBus,
     /// In-memory registry of embedded `zeb/*` library manifests.
     pub library: Arc<LibraryService>,
-    /// Platform-level asset marketplace service.
-    pub marketplace: Arc<MarketplaceService>,
+    /// Platform-level asset hub service.
+    pub hub: Arc<HubService>,
     /// Read/write service for per-project `repo/zeb.lock`.
     pub zeb_lock: Arc<ZebLockService>,
 }
@@ -130,19 +128,17 @@ impl PlatformService {
             credentials.clone(),
             config.data_root.clone(),
         ));
-        let marketplace_data = build_marketplace_data_adapter(
+        let hub_data = build_hub_data_adapter(
             config.data_adapter,
             &config
                 .data_root
                 .join("services")
-                .join(
-                    crate::platform::services::marketplace::DEFAULT_MARKETPLACE_SERVICE_INSTANCE_ID,
-                )
-                .join("marketplace.db"),
+                .join(crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID)
+                .join("hub.db"),
         )?;
-        let marketplace = Arc::new(MarketplaceService::new(
+        let hub = Arc::new(HubService::new(
             data.clone(),
-            marketplace_data,
+            hub_data,
             projects.clone(),
             config.data_root.clone(),
         ));
@@ -207,7 +203,7 @@ impl PlatformService {
             mem_hub,
             state_bus,
             library,
-            marketplace,
+            hub,
             zeb_lock,
         };
         svc.bootstrap_local_office()?;

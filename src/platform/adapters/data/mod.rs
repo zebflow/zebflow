@@ -11,12 +11,12 @@ use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, MarketplaceAssetPackage, MarketplaceAssetVersion, MarketplaceAuthority,
-    MarketplacePublisher, MarketplaceToken, McpSession, PipelineInvocationEntry,
-    PipelineInvocationLogStats, PipelineMeta, PlatformMarketplaceRepository, PlatformOffice,
-    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser, ProjectCredential,
-    ProjectDbConnection, ProjectInvite, ProjectMarketplaceRepository, ProjectMember,
-    ProjectOperationRecord, ProjectPolicy, ProjectPolicyBinding, StoredUser,
+    DataAdapterKind, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken,
+    McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
+    PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
+    PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
+    ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
+    ProjectPolicyBinding, StoredUser,
 };
 
 /// Metadata adapter contract used by platform services.
@@ -88,28 +88,28 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         connection_slug: &str,
     ) -> Result<(), PlatformError>;
-    /// Upsert one marketplace repository source.
-    fn put_project_marketplace_repository(
+    /// Upsert one hub repository source.
+    fn put_project_hub_repository(
         &self,
-        repository: &ProjectMarketplaceRepository,
+        repository: &ProjectHubRepository,
     ) -> Result<(), PlatformError> {
         let _ = repository;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace repositories are not supported by this adapter",
+            "hub repositories are not supported by this adapter",
         ))
     }
-    /// List marketplace repository sources for one project.
-    fn list_project_marketplace_repositories(
+    /// List hub repository sources for one project.
+    fn list_project_hub_repositories(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Vec<ProjectMarketplaceRepository>, PlatformError> {
+    ) -> Result<Vec<ProjectHubRepository>, PlatformError> {
         let _ = (owner, project);
         Ok(vec![])
     }
-    /// Delete one marketplace repository source.
-    fn delete_project_marketplace_repository(
+    /// Delete one hub repository source.
+    fn delete_project_hub_repository(
         &self,
         owner: &str,
         project: &str,
@@ -118,27 +118,27 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, project, repository_id);
         Ok(())
     }
-    /// Upsert one platform-scoped marketplace repository source.
-    fn put_platform_marketplace_repository(
+    /// Upsert one platform-scoped hub repository source.
+    fn put_platform_hub_repository(
         &self,
-        repository: &PlatformMarketplaceRepository,
+        repository: &PlatformHubRepository,
     ) -> Result<(), PlatformError> {
         let _ = repository;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "platform marketplace repositories are not supported by this adapter",
+            "platform hub repositories are not supported by this adapter",
         ))
     }
-    /// List platform marketplace repository sources for one owner.
-    fn list_platform_marketplace_repositories(
+    /// List platform hub repository sources for one owner.
+    fn list_platform_hub_repositories(
         &self,
         owner: &str,
-    ) -> Result<Vec<PlatformMarketplaceRepository>, PlatformError> {
+    ) -> Result<Vec<PlatformHubRepository>, PlatformError> {
         let _ = owner;
         Ok(vec![])
     }
-    /// Delete one platform marketplace repository source.
-    fn delete_platform_marketplace_repository(
+    /// Delete one platform hub repository source.
+    fn delete_platform_hub_repository(
         &self,
         owner: &str,
         repository_id: &str,
@@ -146,38 +146,35 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, repository_id);
         Ok(())
     }
-    /// Upsert one marketplace publisher identity.
-    fn put_marketplace_publisher(
-        &self,
-        publisher: &MarketplacePublisher,
-    ) -> Result<(), PlatformError> {
+    /// Upsert one hub publisher identity.
+    fn put_hub_publisher(&self, publisher: &HubPublisher) -> Result<(), PlatformError> {
         let _ = publisher;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace publishers are not supported by this adapter",
+            "hub publishers are not supported by this adapter",
         ))
     }
-    /// List marketplace publishers for one project authority.
-    fn list_marketplace_publishers(
+    /// List hub publishers for one project authority.
+    fn list_hub_publishers(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Vec<MarketplacePublisher>, PlatformError> {
+    ) -> Result<Vec<HubPublisher>, PlatformError> {
         let _ = (owner, project);
         Ok(vec![])
     }
-    /// Get one marketplace publisher.
-    fn get_marketplace_publisher(
+    /// Get one hub publisher.
+    fn get_hub_publisher(
         &self,
         owner: &str,
         project: &str,
         publisher_id: &str,
-    ) -> Result<Option<MarketplacePublisher>, PlatformError> {
+    ) -> Result<Option<HubPublisher>, PlatformError> {
         let _ = (owner, project, publisher_id);
         Ok(None)
     }
-    /// Delete one marketplace publisher.
-    fn delete_marketplace_publisher(
+    /// Delete one hub publisher.
+    fn delete_hub_publisher(
         &self,
         owner: &str,
         project: &str,
@@ -186,90 +183,75 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, project, publisher_id);
         Ok(())
     }
-    /// Upsert one marketplace asset package.
-    fn put_marketplace_asset_package(
-        &self,
-        package: &MarketplaceAssetPackage,
-    ) -> Result<(), PlatformError> {
+    /// Upsert one hub asset package.
+    fn put_hub_asset_package(&self, package: &HubAssetPackage) -> Result<(), PlatformError> {
         let _ = package;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace packages are not supported by this adapter",
+            "hub packages are not supported by this adapter",
         ))
     }
-    /// List marketplace asset packages.
-    fn list_marketplace_asset_packages(
-        &self,
-    ) -> Result<Vec<MarketplaceAssetPackage>, PlatformError> {
+    /// List hub asset packages.
+    fn list_hub_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
         Ok(vec![])
     }
-    /// Get one marketplace asset package.
-    fn get_marketplace_asset_package(
+    /// Get one hub asset package.
+    fn get_hub_asset_package(
         &self,
         package_id: &str,
-    ) -> Result<Option<MarketplaceAssetPackage>, PlatformError> {
+    ) -> Result<Option<HubAssetPackage>, PlatformError> {
         let _ = package_id;
         Ok(None)
     }
-    /// Upsert one marketplace asset version.
-    fn put_marketplace_asset_version(
-        &self,
-        version: &MarketplaceAssetVersion,
-    ) -> Result<(), PlatformError> {
+    /// Upsert one hub asset version.
+    fn put_hub_asset_version(&self, version: &HubAssetVersion) -> Result<(), PlatformError> {
         let _ = version;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace package versions are not supported by this adapter",
+            "hub package versions are not supported by this adapter",
         ))
     }
     /// List versions for one package.
-    fn list_marketplace_asset_versions(
+    fn list_hub_asset_versions(
         &self,
         package_id: &str,
-    ) -> Result<Vec<MarketplaceAssetVersion>, PlatformError> {
+    ) -> Result<Vec<HubAssetVersion>, PlatformError> {
         let _ = package_id;
         Ok(vec![])
     }
-    /// Get one specific marketplace asset version.
-    fn get_marketplace_asset_version(
+    /// Get one specific hub asset version.
+    fn get_hub_asset_version(
         &self,
         package_id: &str,
         version: &str,
-    ) -> Result<Option<MarketplaceAssetVersion>, PlatformError> {
+    ) -> Result<Option<HubAssetVersion>, PlatformError> {
         let _ = (package_id, version);
         Ok(None)
     }
-    /// Upsert one marketplace token.
-    fn put_marketplace_token(&self, token: &MarketplaceToken) -> Result<(), PlatformError> {
+    /// Upsert one hub token.
+    fn put_hub_token(&self, token: &HubToken) -> Result<(), PlatformError> {
         let _ = token;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace tokens are not supported by this adapter",
+            "hub tokens are not supported by this adapter",
         ))
     }
-    /// Get one marketplace token by id.
-    fn get_marketplace_token(
-        &self,
-        token_id: &str,
-    ) -> Result<Option<MarketplaceToken>, PlatformError> {
+    /// Get one hub token by id.
+    fn get_hub_token(&self, token_id: &str) -> Result<Option<HubToken>, PlatformError> {
         let _ = token_id;
         Ok(None)
     }
-    /// List marketplace tokens by owner/project authority.
-    fn list_marketplace_tokens(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> Result<Vec<MarketplaceToken>, PlatformError> {
+    /// List hub tokens by owner/project authority.
+    fn list_hub_tokens(&self, owner: &str, project: &str) -> Result<Vec<HubToken>, PlatformError> {
         let _ = (owner, project);
         Ok(vec![])
     }
-    /// List all marketplace tokens in this marketplace catalog.
-    fn list_all_marketplace_tokens(&self) -> Result<Vec<MarketplaceToken>, PlatformError> {
+    /// List all hub tokens in this hub catalog.
+    fn list_all_hub_tokens(&self) -> Result<Vec<HubToken>, PlatformError> {
         Ok(vec![])
     }
-    /// Delete one marketplace token.
-    fn delete_marketplace_token(&self, token_id: &str) -> Result<(), PlatformError> {
+    /// Delete one hub token.
+    fn delete_hub_token(&self, token_id: &str) -> Result<(), PlatformError> {
         let _ = token_id;
         Ok(())
     }
@@ -365,28 +347,25 @@ pub trait DataAdapter: Send + Sync {
         project: &str,
         invite_id: &str,
     ) -> Result<(), PlatformError>;
-    /// Get one explicit marketplace authority row for a host project.
-    fn get_marketplace_authority(
+    /// Get one explicit hub authority row for a host project.
+    fn get_hub_authority(
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Option<MarketplaceAuthority>, PlatformError> {
+    ) -> Result<Option<HubAuthority>, PlatformError> {
         let _ = (owner, project);
         Ok(None)
     }
-    /// Upsert one explicit marketplace authority row.
-    fn put_marketplace_authority(
-        &self,
-        authority: &MarketplaceAuthority,
-    ) -> Result<(), PlatformError> {
+    /// Upsert one explicit hub authority row.
+    fn put_hub_authority(&self, authority: &HubAuthority) -> Result<(), PlatformError> {
         let _ = authority;
         Err(PlatformError::new(
             "PLATFORM_ADAPTER_UNAVAILABLE",
-            "marketplace authorities are not supported by this adapter",
+            "hub authorities are not supported by this adapter",
         ))
     }
-    /// List marketplace authorities.
-    fn list_marketplace_authorities(&self) -> Result<Vec<MarketplaceAuthority>, PlatformError> {
+    /// List hub authorities.
+    fn list_hub_authorities(&self) -> Result<Vec<HubAuthority>, PlatformError> {
         Ok(vec![])
     }
     /// Get one office row.
@@ -635,12 +614,12 @@ pub fn build_data_adapter(
     }
 }
 
-/// Builds the SQLite-backed marketplace service catalog at an exact DB path.
+/// Builds the SQLite-backed hub service catalog at an exact DB path.
 ///
-/// Marketplace is an office-hosted service in the fresh storage model, so its
-/// operational rows live under `{data_root}/services/{service}/marketplace.db`
+/// Hub is an office-hosted service in the fresh storage model, so its
+/// operational rows live under `{data_root}/services/{service}/hub.db`
 /// instead of the platform control-plane catalog.
-pub fn build_marketplace_data_adapter(
+pub fn build_hub_data_adapter(
     kind: DataAdapterKind,
     db_path: &Path,
 ) -> Result<Arc<dyn DataAdapter>, PlatformError> {
@@ -649,8 +628,8 @@ pub fn build_marketplace_data_adapter(
             db_path,
         )?)),
         DataAdapterKind::DynamoDb | DataAdapterKind::Firebase => Err(PlatformError::new(
-            "PLATFORM_MARKETPLACE_ADAPTER_UNAVAILABLE",
-            "office-hosted marketplace service storage currently requires sqlite",
+            "PLATFORM_HUB_ADAPTER_UNAVAILABLE",
+            "office-hosted hub service storage currently requires sqlite",
         )),
     }
 }

@@ -456,13 +456,13 @@ export default function UnifiedRegistryEditor(input) {
   const [installOpen, setInstallOpen] = useState(false);
   const [catalogData, setCatalogData] = useState([] as any[]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
-  const [marketplacePacks, setMarketplacePacks] = useState([] as any[]);
+  const [hubPacks, setHubPacks] = useState([] as any[]);
   const [packSearch, setPackSearch] = useState("");
   const [selectedComponents, setSelectedComponents] = useState(new Set<string>());
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState(null as string | null);
   const [installTab, setInstallTab] = useState("packs");
-  const [marketplaceInstallMode, setMarketplaceInstallMode] = useState("add_to_current_project");
+  const [hubInstallMode, setHubInstallMode] = useState("add_to_current_project");
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -678,16 +678,16 @@ export default function UnifiedRegistryEditor(input) {
     try {
       const [uiRes, packsRes] = await Promise.all([
         fetch(`${projectApiBase}/install/catalog/ui`, { headers: { Accept: "application/json" } }),
-        fetch(`${projectApiBase}/marketplace/assets`, { headers: { Accept: "application/json" } }),
+        fetch(`${projectApiBase}/hub/assets`, { headers: { Accept: "application/json" } }),
       ]);
       const uiJson = await uiRes.json().catch(() => null);
       const packsJson = await packsRes.json().catch(() => null);
       setCatalogData(uiJson?.components ?? []);
-      setMarketplacePacks(Array.isArray(packsJson?.items) ? packsJson.items : []);
+      setHubPacks(Array.isArray(packsJson?.items) ? packsJson.items : []);
       setCatalogLoaded(true);
     } catch {
       setCatalogData([]);
-      setMarketplacePacks([]);
+      setHubPacks([]);
     }
   }
 
@@ -742,8 +742,8 @@ export default function UnifiedRegistryEditor(input) {
     setInstallResult(`${verb} ${packageId}@${version}...`);
     try {
       const url = item?.source === "remote"
-        ? `${projectApiBase}/marketplace/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
-        : `${projectApiBase}/marketplace/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
+        ? `${projectApiBase}/hub/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
+        : `${projectApiBase}/hub/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
       const json = await requestJson(url, {
         method: "POST",
         body: JSON.stringify({ install_mode: normalizedMode }),
@@ -1751,11 +1751,11 @@ export default function UnifiedRegistryEditor(input) {
               installTab={installTab}
               setInstallTab={setInstallTab}
               catalogData={catalogData}
-              marketplacePacks={marketplacePacks}
+              hubPacks={hubPacks}
               packSearch={packSearch}
               setPackSearch={setPackSearch}
-              marketplaceInstallMode={marketplaceInstallMode}
-              setMarketplaceInstallMode={setMarketplaceInstallMode}
+              hubInstallMode={hubInstallMode}
+              setHubInstallMode={setHubInstallMode}
               selectedComponents={selectedComponents}
               setSelectedComponents={setSelectedComponents}
               installResult={installResult}

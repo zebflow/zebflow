@@ -1,4 +1,4 @@
-# Nodes in Marketplace
+# Nodes in Hub
 
 Nodes are a first-class learning surface because they define what a pipeline can do.
 

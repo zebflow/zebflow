@@ -134,7 +134,7 @@ fn top_level_help() -> String {
 
 Usage:
   zebflow [standalone]
-  zebflow run <project-or-marketplace-asset-url> [--owner <owner>] [--project <project>]
+  zebflow run <project-or-hub-asset-url> [--owner <owner>] [--project <project>]
   zebflow controller
   zebflow office
   zebflow k8s cluster <command> ...
@@ -173,7 +173,7 @@ Environment:
   ZEBFLOW_HEALTH_HOST                Dedicated liveness host (default: ZEBFLOW_PLATFORM_HOST)
   ZEBFLOW_PLATFORM_DATA_DIR          Data root override
   ZEBFLOW_SECRET_ROTATION_EPOCH      Unix timestamp; invalidate older platform-issued tokens
-  ZEBFLOW_MARKETPLACE_DEFAULT_BASE_URL  Default platform marketplace API URL
+  ZEBFLOW_HUB_DEFAULT_BASE_URL          Default platform hub API URL
 
 Use `zebflow k8s --help` for the file-based Kubernetes cluster manager.",
         version = APP_VERSION
@@ -500,7 +500,7 @@ async fn install_remote_project_asset(
     let response = reqwest::Client::new().get(&remote.url).send().await?;
     if !response.status().is_success() {
         return Err(io::Error::other(format!(
-            "remote marketplace fetch failed with {}",
+            "remote hub fetch failed with {}",
             response.status()
         ))
         .into());
@@ -618,7 +618,7 @@ async fn run_project(req: RunRequest) -> Result<(), Box<dyn std::error::Error>> 
     let platform = Arc::new(PlatformService::from_config(config)?);
     if let Some(remote) = remote {
         println!(
-            "Installing {}@{} from remote marketplace asset...",
+            "Installing {}@{} from remote hub asset...",
             remote.package_id, remote.version
         );
         install_remote_project_asset(platform.as_ref(), &owner, &project, &remote).await?;

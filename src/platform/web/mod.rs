@@ -46,7 +46,7 @@ use crate::pipeline::{BasicPipelineEngine, PipelineContext, PipelineEngine, Pipe
 use crate::platform::error::PlatformError;
 use crate::platform::model::NodePackageManifest;
 use crate::platform::model::{
-    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateMarketplaceTokenRequest,
+    ClusterWorkerHeartbeatRequest, ClusterWorkerRegisterRequest, CreateHubTokenRequest,
     CreateProjectDocFolderRequest, CreateProjectRequest, CreateSimpleTableRequest,
     CreateUserRequest, DeletePipelineRequest, DescribeProjectDbConnectionRequest,
     ExecutePipelineRequest, GitCommitRequest, LoginRequest, McpSessionCreateRequest,
@@ -62,7 +62,7 @@ use crate::platform::model::{
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
-use crate::platform::services::marketplace::RemoteMarketplacePublishRequest;
+use crate::platform::services::hub::RemoteHubPublishRequest;
 use crate::platform::services::node_registry::NodeRegistryService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
@@ -141,11 +141,7 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "platform.profile",
         "pages/profile/page.tsx",
     ),
-    (
-        "platform-marketplace",
-        "platform.marketplace",
-        "pages/marketplace/page.tsx",
-    ),
+    ("platform-hub", "platform.hub", "pages/hub/page.tsx"),
     (
         "platform-project-pipelines",
         "platform.project.pipelines",
@@ -207,9 +203,9 @@ const PAGE_DEFS: &[(&str, &str, &str)] = &[
         "pages/project-studio/connections/db/mapserver/page.tsx",
     ),
     (
-        "platform-project-marketplace",
-        "platform.project.marketplace",
-        "pages/project-studio/marketplace/page.tsx",
+        "platform-project-hub",
+        "platform.project.hub",
+        "pages/project-studio/hub/page.tsx",
     ),
     (
         "platform-design-system",
@@ -387,7 +383,7 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route("/logout", post(logout_submit))
         .route("/home", get(home_page))
         .route("/profile", get(profile_page))
-        .route("/marketplace", get(platform_marketplace_page))
+        .route("/hub", get(platform_hub_page))
         .route("/dev/design-system", get(design_system_page))
         .route("/docs/node", get(docs_node_contract))
         .route("/docs/operation", get(docs_operation_contract))
@@ -403,12 +399,12 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(project_dashboard_page),
         )
         .route(
-            "/projects/{owner}/{project}/marketplace",
-            get(project_marketplace_page),
+            "/projects/{owner}/{project}/hub",
+            get(project_hub_page),
         )
         .route(
-            "/projects/{owner}/{project}/marketplace/{tab}",
-            get(project_marketplace_tab_page),
+            "/projects/{owner}/{project}/hub/{tab}",
+            get(project_hub_tab_page),
         )
         .route(
             "/projects/{owner}/{project}/credentials",
@@ -523,57 +519,57 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_projects).post(api_create_project),
         )
         .route(
-            "/api/users/{owner}/marketplace/repositories",
-            get(api_list_platform_marketplace_repositories)
-                .post(api_upsert_platform_marketplace_repository),
+            "/api/users/{owner}/hub/repositories",
+            get(api_list_platform_hub_repositories)
+                .post(api_upsert_platform_hub_repository),
         )
         .route(
-            "/api/platform/marketplace/repositories",
-            get(api_list_platform_marketplace_sources).post(api_upsert_platform_marketplace_source),
+            "/api/platform/hub/repositories",
+            get(api_list_platform_hub_sources).post(api_upsert_platform_hub_source),
         )
         .route(
-            "/api/platform/marketplace/service",
-            get(api_get_platform_marketplace_service).post(api_configure_platform_marketplace_service),
+            "/api/platform/hub/service",
+            get(api_get_platform_hub_service).post(api_configure_platform_hub_service),
         )
         .route(
-            "/api/platform/marketplace/publishers",
-            get(api_list_platform_marketplace_publishers).post(api_upsert_platform_marketplace_publisher),
+            "/api/platform/hub/publishers",
+            get(api_list_platform_hub_publishers).post(api_upsert_platform_hub_publisher),
         )
         .route(
-            "/api/platform/marketplace/tokens",
-            get(api_list_platform_marketplace_tokens).post(api_create_platform_marketplace_token),
+            "/api/platform/hub/tokens",
+            get(api_list_platform_hub_tokens).post(api_create_platform_hub_token),
         )
         .route(
-            "/api/platform/marketplace/tokens/{token_id}",
-            delete(api_delete_platform_marketplace_token),
+            "/api/platform/hub/tokens/{token_id}",
+            delete(api_delete_platform_hub_token),
         )
         .route(
-            "/api/platform/marketplace/publishers/{publisher_id}",
-            delete(api_delete_platform_marketplace_publisher),
+            "/api/platform/hub/publishers/{publisher_id}",
+            delete(api_delete_platform_hub_publisher),
         )
         .route(
-            "/api/users/{owner}/marketplace/repositories/{repository_id}",
-            delete(api_delete_platform_marketplace_repository),
+            "/api/users/{owner}/hub/repositories/{repository_id}",
+            delete(api_delete_platform_hub_repository),
         )
         .route(
-            "/api/platform/marketplace/repositories/{repository_id}",
-            delete(api_delete_platform_marketplace_source),
+            "/api/platform/hub/repositories/{repository_id}",
+            delete(api_delete_platform_hub_source),
         )
         .route(
-            "/api/users/{owner}/marketplace/assets",
-            get(api_list_platform_marketplace_assets),
+            "/api/users/{owner}/hub/assets",
+            get(api_list_platform_hub_assets),
         )
         .route(
-            "/api/platform/marketplace/assets",
-            get(api_list_platform_marketplace_apps),
+            "/api/platform/hub/assets",
+            get(api_list_platform_hub_apps),
         )
         .route(
-            "/api/users/{owner}/marketplace/install",
-            post(api_install_platform_marketplace_project),
+            "/api/users/{owner}/hub/install",
+            post(api_install_platform_hub_project),
         )
         .route(
-            "/api/platform/marketplace/install",
-            post(api_install_platform_marketplace_app),
+            "/api/platform/hub/install",
+            post(api_install_platform_hub_app),
         )
         .route(
             "/api/users/{owner}/projects/{project}",
@@ -827,96 +823,96 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_test_db_connection),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/assets",
-            get(api_list_marketplace_assets),
+            "/api/projects/{owner}/{project}/hub/assets",
+            get(api_list_hub_assets),
         )
         .route(
             "/api/projects/{owner}/{project}/help",
             get(api_get_project_help),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/remote/assets",
-            get(api_list_remote_marketplace_assets),
+            "/api/projects/{owner}/{project}/hub/remote/assets",
+            get(api_list_remote_hub_assets),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/remote/assets/{package_id}/{version}",
-            get(api_get_remote_marketplace_asset),
+            "/api/projects/{owner}/{project}/hub/remote/assets/{package_id}/{version}",
+            get(api_get_remote_hub_asset),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/remote/assets/{package_id}/{version}/artifact",
-            get(api_get_remote_marketplace_artifact),
+            "/api/projects/{owner}/{project}/hub/remote/assets/{package_id}/{version}/artifact",
+            get(api_get_remote_hub_artifact),
         )
         .route(
-            "/api/marketplace/remote/assets",
-            get(api_list_public_marketplace_assets),
+            "/api/hub/remote/assets",
+            get(api_list_public_hub_assets),
         )
         .route(
-            "/api/marketplace/remote/assets/{package_id}/{version}",
-            get(api_get_public_marketplace_asset),
+            "/api/hub/remote/assets/{package_id}/{version}",
+            get(api_get_public_hub_asset),
         )
         .route(
-            "/api/marketplace/remote/assets/{package_id}/{version}/artifact",
-            get(api_get_public_marketplace_artifact),
+            "/api/hub/remote/assets/{package_id}/{version}/artifact",
+            get(api_get_public_hub_artifact),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/assets/mine",
-            get(api_list_my_marketplace_assets),
+            "/api/projects/{owner}/{project}/hub/assets/mine",
+            get(api_list_my_hub_assets),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/publish-sources",
-            get(api_list_marketplace_publish_sources),
+            "/api/projects/{owner}/{project}/hub/publish-sources",
+            get(api_list_hub_publish_sources),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/publish-preview",
-            get(api_preview_marketplace_publish_source),
+            "/api/projects/{owner}/{project}/hub/publish-preview",
+            get(api_preview_hub_publish_source),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/assets/preview",
-            get(api_preview_marketplace_publish_source),
+            "/api/projects/{owner}/{project}/hub/assets/preview",
+            get(api_preview_hub_publish_source),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/assets/publish",
-            post(api_publish_marketplace_asset),
+            "/api/projects/{owner}/{project}/hub/assets/publish",
+            post(api_publish_hub_asset),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/assets/{package_id}/{version}/add",
-            post(api_install_marketplace_asset),
+            "/api/projects/{owner}/{project}/hub/assets/{package_id}/{version}/add",
+            post(api_install_hub_asset),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/remote/assets/publish",
-            post(api_remote_publish_marketplace_asset),
+            "/api/projects/{owner}/{project}/hub/remote/assets/publish",
+            post(api_remote_publish_hub_asset),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/tokens",
-            get(api_list_marketplace_tokens).post(api_create_marketplace_token),
+            "/api/projects/{owner}/{project}/hub/tokens",
+            get(api_list_hub_tokens).post(api_create_hub_token),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/publishers",
-            get(api_list_marketplace_publishers).post(api_upsert_marketplace_publisher),
+            "/api/projects/{owner}/{project}/hub/publishers",
+            get(api_list_hub_publishers).post(api_upsert_hub_publisher),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/repositories",
-            get(api_list_marketplace_repositories).post(api_upsert_marketplace_repository),
+            "/api/projects/{owner}/{project}/hub/repositories",
+            get(api_list_hub_repositories).post(api_upsert_hub_repository),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/repositories/{repository_id}/packs/{package_id}/{version}/add",
-            post(api_install_remote_marketplace_pack),
+            "/api/projects/{owner}/{project}/hub/repositories/{repository_id}/packs/{package_id}/{version}/add",
+            post(api_install_remote_hub_pack),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/repositories/{repository_id}",
-            delete(api_delete_marketplace_repository),
+            "/api/projects/{owner}/{project}/hub/repositories/{repository_id}",
+            delete(api_delete_hub_repository),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/producer",
-            post(api_set_marketplace_producer_mode),
+            "/api/projects/{owner}/{project}/hub/producer",
+            post(api_set_hub_producer_mode),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/tokens/{token_id}",
-            delete(api_delete_marketplace_token),
+            "/api/projects/{owner}/{project}/hub/tokens/{token_id}",
+            delete(api_delete_hub_token),
         )
         .route(
-            "/api/projects/{owner}/{project}/marketplace/publishers/{publisher_id}",
-            delete(api_delete_marketplace_publisher),
+            "/api/projects/{owner}/{project}/hub/publishers/{publisher_id}",
+            delete(api_delete_hub_publisher),
         )
         .route(
             "/api/projects/{owner}/{project}/docs",
@@ -2546,10 +2542,10 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
-    if let Some(source_owner) = platform_marketplace_source_owner(&state)
+    if let Some(source_owner) = platform_hub_source_owner(&state)
         && let Err(err) = state
             .platform
-            .marketplace
+            .hub
             .ensure_default_platform_repository(&source_owner)
     {
         return internal_error(err);
@@ -2746,11 +2742,11 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                     },
                     "owner": owner,
                     "projects": projects,
-                    "marketplace_api": {
-                        "service": "/api/platform/marketplace/service",
-                        "repositories": format!("/api/users/{}/marketplace/repositories", owner),
-                        "assets": format!("/api/users/{}/marketplace/assets", owner),
-                        "install": format!("/api/users/{}/marketplace/install", owner),
+                    "hub_api": {
+                        "service": "/api/platform/hub/service",
+                        "repositories": format!("/api/users/{}/hub/repositories", owner),
+                        "assets": format!("/api/users/{}/hub/assets", owner),
+                        "install": format!("/api/users/{}/hub/install", owner),
                     },
                     "offices": offices,
                     "runtime_targets": runtime_targets,
@@ -2765,34 +2761,31 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
     }
 }
 
-async fn platform_marketplace_page(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-) -> Response {
+async fn platform_hub_page(State(state): State<PlatformAppState>, headers: HeaderMap) -> Response {
     let Some(owner) = session_owner(&state, &headers) else {
         return Redirect::to(LOGIN_PATH).into_response();
     };
     let is_superadmin = is_superadmin_owner(&state, &owner);
-    let service = match state.platform.marketplace.get_default_service_instance() {
+    let service = match state.platform.hub.get_default_service_instance() {
         Ok(service) => service,
         Err(err) => return internal_error(err),
     };
-    let (source_owner, source_rows) = match visible_platform_marketplace_sources(&state, &owner) {
+    let (source_owner, source_rows) = match visible_platform_hub_sources(&state, &owner) {
         Ok(value) => value,
         Err(err) => return internal_error(err),
     };
     let repositories = source_rows
         .clone()
         .into_iter()
-        .map(platform_marketplace_repository_json)
+        .map(platform_hub_repository_json)
         .collect::<Vec<_>>();
     let remote_apps = state
         .platform
-        .marketplace
+        .hub
         .fetch_platform_remote_app_rows_from_repositories(&state.http_client, source_rows)
         .await
         .unwrap_or_default();
-    let local_packages = match state.platform.marketplace.list_asset_packages() {
+    let local_packages = match state.platform.hub.list_asset_packages() {
         Ok(items) => items
             .into_iter()
             .filter(|item| item.visibility == "public" || item.visibility == "unlisted")
@@ -2816,12 +2809,12 @@ async fn platform_marketplace_page(
             .into_iter()
             .map(|item| {
                 let producer_enabled =
-                    is_project_marketplace_producer_enabled(&state, &owner, &item.project);
+                    is_project_hub_producer_enabled(&state, &owner, &item.project);
                 json!({
                     "owner": item.owner,
                     "project": item.project,
                     "title": item.title,
-                    "marketplace_href": format!("/projects/{owner}/{}/marketplace", item.project),
+                    "hub_href": format!("/projects/{owner}/{}/hub", item.project),
                     "producer_enabled": producer_enabled,
                 })
             })
@@ -2831,12 +2824,12 @@ async fn platform_marketplace_page(
     let publishers = if is_superadmin {
         match state
             .platform
-            .marketplace
+            .hub
             .list_publishers(&source_owner, "platform")
         {
             Ok(items) => items
                 .into_iter()
-                .map(marketplace_publisher_json)
+                .map(hub_publisher_json)
                 .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         }
@@ -2844,11 +2837,8 @@ async fn platform_marketplace_page(
         Vec::new()
     };
     let tokens = if is_superadmin {
-        match state.platform.marketplace.list_all_tokens() {
-            Ok(items) => items
-                .into_iter()
-                .map(marketplace_token_json)
-                .collect::<Vec<_>>(),
+        match state.platform.hub.list_all_tokens() {
+            Ok(items) => items.into_iter().map(hub_token_json).collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         }
     } else {
@@ -2857,12 +2847,12 @@ async fn platform_marketplace_page(
     let offices = platform_office_rows(&state);
     match render_page(
         &state,
-        "platform-marketplace",
-        "/marketplace",
+        "platform-hub",
+        "/hub",
         json!({
             "seo": {
-                "title": "Zebflow Marketplace",
-                "description": "Platform marketplace management and app explorer."
+                "title": "Zebflow Hub",
+                "description": "Platform hub management and app explorer."
             },
             "owner": owner,
             "source_owner": source_owner,
@@ -2875,13 +2865,13 @@ async fn platform_marketplace_page(
             "publishers": publishers,
             "tokens": tokens,
             "offices": offices,
-            "marketplace_api": {
-                "service": "/api/platform/marketplace/service",
-                "repositories": "/api/platform/marketplace/repositories",
-                "assets": "/api/platform/marketplace/assets",
-                "install": "/api/platform/marketplace/install",
-                "publishers": "/api/platform/marketplace/publishers",
-                "tokens": "/api/platform/marketplace/tokens"
+            "hub_api": {
+                "service": "/api/platform/hub/service",
+                "repositories": "/api/platform/hub/repositories",
+                "assets": "/api/platform/hub/assets",
+                "install": "/api/platform/hub/install",
+                "publishers": "/api/platform/hub/publishers",
+                "tokens": "/api/platform/hub/tokens"
             },
             "app_version": APP_VERSION,
         }),
@@ -2949,15 +2939,15 @@ fn home_project_card_json(
                 .map(str::to_string),
         ),
     };
-    let marketplace_cfg = state
+    let hub_cfg = state
         .platform
         .zebflow_cfg
-        .get_marketplace_distribution(&item_owner, &item.project);
-    let open_app_path = resolve_project_marketplace_entry_path(
+        .get_hub_distribution(&item_owner, &item.project);
+    let open_app_path = resolve_project_hub_entry_path(
         &item_owner,
         &item.project,
-        &marketplace_cfg.entry_url,
-        marketplace_cfg.as_app,
+        &hub_cfg.entry_url,
+        hub_cfg.as_app,
     );
     json!({
         "owner": item_owner,
@@ -2966,7 +2956,7 @@ fn home_project_card_json(
         "path": format!("/projects/{}/{}", item_owner, item.project),
         "edit_path": format!("/projects/{}/{}", item_owner, item.project),
         "open_app_path": open_app_path,
-        "is_app": marketplace_cfg.as_app,
+        "is_app": hub_cfg.as_app,
         "runtime_mode": runtime_mode,
         "runtime_summary": runtime_summary,
         "office_label": office_label,
@@ -2994,7 +2984,7 @@ fn platform_office_rows(state: &PlatformAppState) -> Vec<Value> {
     rows
 }
 
-fn resolve_project_marketplace_entry_path(
+fn resolve_project_hub_entry_path(
     owner: &str,
     project: &str,
     entry_url: &str,
@@ -3018,36 +3008,32 @@ fn resolve_project_marketplace_entry_path(
     Some(format!("/wh/{owner}/{project}{suffix}"))
 }
 
-fn is_project_marketplace_producer_enabled(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-) -> bool {
+fn is_project_hub_producer_enabled(state: &PlatformAppState, owner: &str, project: &str) -> bool {
     let cfg = state
         .platform
         .zebflow_cfg
-        .get_marketplace_distribution(owner, project);
+        .get_hub_distribution(owner, project);
     cfg.producer_enabled && owner == state.platform.config.default_owner
 }
 
-fn can_manage_project_marketplace_producer(state: &PlatformAppState, owner: &str) -> bool {
+fn can_manage_project_hub_producer(state: &PlatformAppState, owner: &str) -> bool {
     owner == state.platform.config.default_owner
 }
 
-fn require_project_marketplace_producer(
+fn require_project_hub_producer(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
 ) -> Result<(), Response> {
-    if is_project_marketplace_producer_enabled(state, owner, project) {
+    if is_project_hub_producer_enabled(state, owner, project) {
         Ok(())
     } else {
         Err((
             StatusCode::FORBIDDEN,
             Json(json!({
                 "ok": false,
-                "error": "Marketplace producer mode is disabled for this project",
-                "code": "MARKETPLACE_PRODUCER_DISABLED"
+                "error": "Hub producer mode is disabled for this project",
+                "code": "HUB_PRODUCER_DISABLED"
             })),
         )
             .into_response())
@@ -5835,13 +5821,13 @@ async fn project_dashboard_page(
     }
 }
 
-async fn project_marketplace_page(
+async fn project_hub_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     uri: Uri,
     Path((owner, project)): Path<(String, String)>,
 ) -> Response {
-    project_marketplace_tab_page(
+    project_hub_tab_page(
         State(state),
         headers,
         uri,
@@ -5850,7 +5836,7 @@ async fn project_marketplace_page(
     .await
 }
 
-async fn project_marketplace_tab_page(
+async fn project_hub_tab_page(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     uri: Uri,
@@ -5872,49 +5858,45 @@ async fn project_marketplace_tab_page(
     }
     match state.platform.projects.get_project(&owner, &project) {
         Ok(Some(info)) => {
-            let tab = normalize_marketplace_tab(&raw_tab);
+            let tab = normalize_hub_tab(&raw_tab);
             let route = if tab == "packs" {
-                format!("/projects/{owner}/{project}/marketplace")
+                format!("/projects/{owner}/{project}/hub")
             } else {
-                format!("/projects/{owner}/{project}/marketplace/{tab}")
+                format!("/projects/{owner}/{project}/hub/{tab}")
             };
-            let nav = nav_classes(&owner, &project, "marketplace", None);
+            let nav = nav_classes(&owner, &project, "hub", None);
             if let Err(err) = state
                 .platform
-                .marketplace
+                .hub
                 .ensure_default_project_repository(&owner, &project)
             {
                 return internal_error(err);
             }
-            let assets = match marketplace_asset_rows(&state, &owner, &project, false) {
+            let assets = match hub_asset_rows(&state, &owner, &project, false) {
                 Ok(items) => items,
                 Err(err) => return internal_error(err),
             };
-            let my_assets = match marketplace_asset_rows(&state, &owner, &project, true) {
+            let my_assets = match hub_asset_rows(&state, &owner, &project, true) {
                 Ok(items) => items,
                 Err(err) => return internal_error(err),
             };
-            let publish_sources = match marketplace_publish_sources(
-                &state,
-                &owner,
-                &project,
-                "pipeline_with_dependencies",
-            ) {
-                Ok(items) => items,
-                Err(err) => return internal_error(err),
-            };
+            let publish_sources =
+                match hub_publish_sources(&state, &owner, &project, "pipeline_with_dependencies") {
+                    Ok(items) => items,
+                    Err(err) => return internal_error(err),
+                };
             let input = json!({
                 "seo": {
-                    "title": format!("{} - Marketplace", info.title),
-                    "description": "Embedded asset marketplace for pipelines and reusable project materials."
+                    "title": format!("{} - Hub", info.title),
+                    "description": "Embedded hub for pipelines and reusable project materials."
                 },
                 "owner": info.owner,
                 "project": info.project,
                 "title": info.title,
                 "project_href": format!("/projects/{owner}/{project}"),
                 "nav": nav,
-                "marketplace_tabs": marketplace_tab_items(&owner, &project, tab),
-                "marketplace_producer": {
+                "hub_tabs": hub_tab_items(&owner, &project, tab),
+                "hub_producer": {
                     "enabled": true,
                 },
                 "tab_flags": {
@@ -5925,16 +5907,16 @@ async fn project_marketplace_tab_page(
                 "assets": assets,
                 "my_assets": my_assets,
                 "publish_sources": publish_sources,
-                "marketplace_api": {
-                    "assets": format!("/api/projects/{owner}/{project}/marketplace/assets"),
-                    "my_assets": format!("/api/projects/{owner}/{project}/marketplace/assets/mine"),
-                    "publish_sources": format!("/api/projects/{owner}/{project}/marketplace/publish-sources"),
-                    "publish_preview": format!("/api/projects/{owner}/{project}/marketplace/publish-preview"),
-                    "publish_asset": format!("/api/projects/{owner}/{project}/marketplace/assets/publish"),
-                    "repositories": format!("/api/projects/{owner}/{project}/marketplace/repositories"),
+                "hub_api": {
+                    "assets": format!("/api/projects/{owner}/{project}/hub/assets"),
+                    "my_assets": format!("/api/projects/{owner}/{project}/hub/assets/mine"),
+                    "publish_sources": format!("/api/projects/{owner}/{project}/hub/publish-sources"),
+                    "publish_preview": format!("/api/projects/{owner}/{project}/hub/publish-preview"),
+                    "publish_asset": format!("/api/projects/{owner}/{project}/hub/assets/publish"),
+                    "repositories": format!("/api/projects/{owner}/{project}/hub/repositories"),
                 }
             });
-            match render_page(&state, "platform-project-marketplace", &route, input) {
+            match render_page(&state, "platform-project-hub", &route, input) {
                 Ok(html) => Html(html).into_response(),
                 Err(err) => internal_error(err),
             }
@@ -7111,7 +7093,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
             "pipelines_schedules": format!("{pipelines_base}/schedules"),
             "pipelines_manual": format!("{pipelines_base}/manual"),
             "pipelines_functions": format!("{pipelines_base}/functions"),
-            "marketplace": format!("/projects/{owner}/{project}/marketplace"),
+            "hub": format!("/projects/{owner}/{project}/hub"),
             "dashboard": format!("/projects/{owner}/{project}/dashboard"),
             "credentials": format!("/projects/{owner}/{project}/credentials"),
             "db_connections": format!("/projects/{owner}/{project}/db/connections"),
@@ -7122,7 +7104,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
         },
         "classes": {
             "pipelines": if main == "pipelines" { "is-active" } else { "" },
-            "marketplace": if main == "marketplace" { "is-active" } else { "" },
+            "hub": if main == "hub" { "is-active" } else { "" },
             "dashboard": if main == "dashboard" { "is-active" } else { "" },
             "credentials": if main == "credentials" { "is-active" } else { "" },
             "databases": if main == "databases" { "is-active" } else { "" },
@@ -7142,7 +7124,7 @@ fn nav_classes(owner: &str, project: &str, main: &str, pipeline_sub: Option<&str
     })
 }
 
-fn normalize_marketplace_tab(raw: &str) -> &'static str {
+fn normalize_hub_tab(raw: &str) -> &'static str {
     match raw.trim() {
         "" | "packs" | "assets" => "packs",
         "my-packs" => "my-packs",
@@ -7151,8 +7133,8 @@ fn normalize_marketplace_tab(raw: &str) -> &'static str {
     }
 }
 
-fn marketplace_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
-    let base = format!("/projects/{owner}/{project}/marketplace");
+fn hub_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
+    let base = format!("/projects/{owner}/{project}/hub");
     let tabs = vec!["packs", "my-packs", "publish"];
     tabs.into_iter()
         .map(|tab| {
@@ -7176,7 +7158,7 @@ fn marketplace_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value>
         .collect()
 }
 
-fn marketplace_publish_sources(
+fn hub_publish_sources(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
@@ -7184,7 +7166,7 @@ fn marketplace_publish_sources(
 ) -> Result<Vec<Value>, PlatformError> {
     let mut rows = state
         .platform
-        .marketplace
+        .hub
         .list_publish_sources(owner, project, source_type)?
         .into_iter()
         .collect::<Vec<_>>();
@@ -7195,22 +7177,19 @@ fn marketplace_publish_sources(
         .collect())
 }
 
-fn marketplace_asset_rows(
+fn hub_asset_rows(
     state: &PlatformAppState,
     owner: &str,
     _project: &str,
     only_mine: bool,
 ) -> Result<Vec<Value>, PlatformError> {
     let packages = match if only_mine {
-        state
-            .platform
-            .marketplace
-            .list_asset_packages_by_owner(owner)
+        state.platform.hub.list_asset_packages_by_owner(owner)
     } else {
-        state.platform.marketplace.list_asset_packages()
+        state.platform.hub.list_asset_packages()
     } {
         Ok(items) => items,
-        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => Vec::new(),
+        Err(err) if err.code == "HUB_SERVICE_DISABLED" => Vec::new(),
         Err(err) => return Err(err),
     };
     let mut rows = Vec::new();
@@ -7220,7 +7199,7 @@ fn marketplace_asset_rows(
         }
         let latest_version = state
             .platform
-            .marketplace
+            .hub
             .list_asset_versions(&package.package_id)?
             .into_iter()
             .next()
@@ -7248,13 +7227,13 @@ fn marketplace_asset_rows(
     Ok(rows)
 }
 
-fn public_marketplace_asset_item_json(
+fn public_hub_asset_item_json(
     state: &PlatformAppState,
-    package: crate::platform::model::MarketplaceAssetPackage,
+    package: crate::platform::model::HubAssetPackage,
 ) -> Value {
     let latest_version = state
         .platform
-        .marketplace
+        .hub
         .list_asset_versions(&package.package_id)
         .ok()
         .and_then(|items| items.into_iter().next().map(|item| item.version))
@@ -7271,13 +7250,13 @@ fn public_marketplace_asset_item_json(
         "tags": package.tags,
         "latest_version": latest_version,
         "updated_at": package.updated_at,
-        "service_instance_id": crate::platform::services::marketplace::DEFAULT_MARKETPLACE_SERVICE_INSTANCE_ID,
+        "service_instance_id": crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID,
     })
 }
 
-fn public_marketplace_version_json(
-    package: &crate::platform::model::MarketplaceAssetPackage,
-    version: &crate::platform::model::MarketplaceAssetVersion,
+fn public_hub_version_json(
+    package: &crate::platform::model::HubAssetPackage,
+    version: &crate::platform::model::HubAssetVersion,
 ) -> Value {
     json!({
         "package_id": version.package_id,
@@ -7306,7 +7285,7 @@ fn public_marketplace_version_json(
     })
 }
 
-fn public_marketplace_artifact_json(mut artifact: Value) -> Value {
+fn public_hub_artifact_json(mut artifact: Value) -> Value {
     if let Some(object) = artifact.as_object_mut() {
         object.remove("source_owner");
         object.remove("source_project");
@@ -7317,31 +7296,31 @@ fn public_marketplace_artifact_json(mut artifact: Value) -> Value {
     artifact
 }
 
-fn raw_marketplace_artifact_response_json(
-    package: &crate::platform::model::MarketplaceAssetPackage,
-    version_row: &crate::platform::model::MarketplaceAssetVersion,
+fn raw_hub_artifact_response_json(
+    package: &crate::platform::model::HubAssetPackage,
+    version_row: &crate::platform::model::HubAssetVersion,
     artifact: Value,
     artifact_size_bytes: u64,
 ) -> Value {
     json!({
         "ok": true,
-        "version": public_marketplace_version_json(package, version_row),
+        "version": public_hub_version_json(package, version_row),
         "artifact_sha256": version_row.artifact_sha256,
         "artifact_size_bytes": artifact_size_bytes,
         "artifact": artifact,
     })
 }
 
-fn require_marketplace_service_enabled(state: &PlatformAppState) -> Result<(), Response> {
-    match state.platform.marketplace.get_default_service_instance() {
+fn require_hub_service_enabled(state: &PlatformAppState) -> Result<(), Response> {
+    match state.platform.hub.get_default_service_instance() {
         Ok(Some(service)) if service.enabled => Ok(()),
         Ok(_) => Err((
             StatusCode::NOT_FOUND,
             Json(json!({
                 "ok": false,
                 "error": {
-                    "code": "MARKETPLACE_SERVICE_DISABLED",
-                    "message": "marketplace service is not enabled"
+                    "code": "HUB_SERVICE_DISABLED",
+                    "message": "hub service is not enabled"
                 }
             })),
         )
@@ -7350,17 +7329,17 @@ fn require_marketplace_service_enabled(state: &PlatformAppState) -> Result<(), R
     }
 }
 
-fn marketplace_token_rows(
+fn hub_token_rows(
     state: &PlatformAppState,
     owner: &str,
     project: &str,
 ) -> Result<Vec<Value>, PlatformError> {
     Ok(state
         .platform
-        .marketplace
+        .hub
         .list_tokens(owner, project)?
         .into_iter()
-        .map(marketplace_token_json)
+        .map(hub_token_json)
         .collect())
 }
 
@@ -9200,7 +9179,7 @@ fn is_superadmin_owner(state: &PlatformAppState, owner: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn platform_marketplace_source_owner(state: &PlatformAppState) -> Option<String> {
+fn platform_hub_source_owner(state: &PlatformAppState) -> Option<String> {
     state
         .platform
         .users
@@ -9211,25 +9190,19 @@ fn platform_marketplace_source_owner(state: &PlatformAppState) -> Option<String>
         .map(|user| user.owner)
 }
 
-fn visible_platform_marketplace_sources(
+fn visible_platform_hub_sources(
     state: &PlatformAppState,
     session_owner: &str,
-) -> Result<
-    (
-        String,
-        Vec<crate::platform::model::PlatformMarketplaceRepository>,
-    ),
-    PlatformError,
-> {
+) -> Result<(String, Vec<crate::platform::model::PlatformHubRepository>), PlatformError> {
     let source_owner =
-        platform_marketplace_source_owner(state).unwrap_or_else(|| slug_segment(session_owner));
+        platform_hub_source_owner(state).unwrap_or_else(|| slug_segment(session_owner));
     state
         .platform
-        .marketplace
+        .hub
         .ensure_default_platform_repository(&source_owner)?;
     let mut items = state
         .platform
-        .marketplace
+        .hub
         .list_platform_repositories(&source_owner)?;
     if !is_superadmin_owner(state, session_owner) {
         items.retain(|item| item.visibility == "public");
@@ -9464,7 +9437,7 @@ async fn api_create_project(
     }
 }
 
-async fn api_list_platform_marketplace_repositories(
+async fn api_list_platform_hub_repositories(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
@@ -9485,26 +9458,22 @@ async fn api_list_platform_marketplace_repositories(
     }
     if let Err(err) = state
         .platform
-        .marketplace
+        .hub
         .ensure_default_platform_repository(&owner)
     {
         return internal_error(err);
     }
-    match state
-        .platform
-        .marketplace
-        .list_platform_repositories(&owner)
-    {
+    match state.platform.hub.list_platform_repositories(&owner) {
         Ok(items) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(platform_marketplace_repository_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(platform_hub_repository_json).collect::<Vec<_>>()
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_platform_marketplace_sources(
+async fn api_list_platform_hub_sources(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> Response {
@@ -9515,33 +9484,33 @@ async fn api_list_platform_marketplace_sources(
         )
             .into_response();
     };
-    match visible_platform_marketplace_sources(&state, &session) {
+    match visible_platform_hub_sources(&state, &session) {
         Ok((_source_owner, items)) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(platform_marketplace_repository_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(platform_hub_repository_json).collect::<Vec<_>>()
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_get_platform_marketplace_service(
+async fn api_get_platform_hub_service(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    match state.platform.marketplace.get_default_service_instance() {
+    match state.platform.hub.get_default_service_instance() {
         Ok(service) => Json(json!({"ok": true, "service": service})).into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_configure_platform_marketplace_service(
+async fn api_configure_platform_hub_service(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<ConfigurePlatformMarketplaceServiceRequest>,
+    Json(req): Json<ConfigurePlatformHubServiceRequest>,
 ) -> Response {
     let Some(session_owner) = session_owner(&state, &headers) else {
         return (
@@ -9572,7 +9541,7 @@ async fn api_configure_platform_marketplace_service(
         }
         Err(err) => return internal_error(err),
     }
-    match state.platform.marketplace.ensure_default_service_instance(
+    match state.platform.hub.ensure_default_service_instance(
         &req.host_office_id,
         &req.public_base_url,
         req.enabled,
@@ -9582,21 +9551,21 @@ async fn api_configure_platform_marketplace_service(
     }
 }
 
-async fn api_upsert_platform_marketplace_source(
+async fn api_upsert_platform_hub_source(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+    Json(req): Json<UpsertHubRepositoryRequest>,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
         ));
     };
-    match state.platform.marketplace.upsert_platform_repository(
+    match state.platform.hub.upsert_platform_repository(
         &source_owner,
         &req.repository_id,
         &req.title,
@@ -9609,18 +9578,18 @@ async fn api_upsert_platform_marketplace_source(
     ) {
         Ok(repository) => Json(json!({
             "ok": true,
-            "repository": platform_marketplace_repository_json(repository)
+            "repository": platform_hub_repository_json(repository)
         }))
         .into_response(),
-        Err(err) => marketplace_api_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
-async fn api_upsert_platform_marketplace_repository(
+async fn api_upsert_platform_hub_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
-    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+    Json(req): Json<UpsertHubRepositoryRequest>,
 ) -> Response {
     let Some(session) = session_owner(&state, &headers) else {
         return (
@@ -9636,7 +9605,7 @@ async fn api_upsert_platform_marketplace_repository(
         )
             .into_response();
     }
-    match state.platform.marketplace.upsert_platform_repository(
+    match state.platform.hub.upsert_platform_repository(
         &owner,
         &req.repository_id,
         &req.title,
@@ -9649,14 +9618,14 @@ async fn api_upsert_platform_marketplace_repository(
     ) {
         Ok(repository) => Json(json!({
             "ok": true,
-            "repository": platform_marketplace_repository_json(repository)
+            "repository": platform_hub_repository_json(repository)
         }))
         .into_response(),
-        Err(err) => marketplace_api_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
-async fn api_delete_platform_marketplace_source(
+async fn api_delete_platform_hub_source(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(repository_id): Path<String>,
@@ -9664,7 +9633,7 @@ async fn api_delete_platform_marketplace_source(
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
@@ -9672,7 +9641,7 @@ async fn api_delete_platform_marketplace_source(
     };
     match state
         .platform
-        .marketplace
+        .hub
         .delete_platform_repository(&source_owner, &repository_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -9680,7 +9649,7 @@ async fn api_delete_platform_marketplace_source(
     }
 }
 
-async fn api_delete_platform_marketplace_repository(
+async fn api_delete_platform_hub_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, repository_id)): Path<(String, String)>,
@@ -9701,7 +9670,7 @@ async fn api_delete_platform_marketplace_repository(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .delete_platform_repository(&owner, &repository_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -9709,7 +9678,7 @@ async fn api_delete_platform_marketplace_repository(
     }
 }
 
-async fn api_list_platform_marketplace_apps(
+async fn api_list_platform_hub_apps(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> Response {
@@ -9720,13 +9689,13 @@ async fn api_list_platform_marketplace_apps(
         )
             .into_response();
     };
-    let (_source_owner, sources) = match visible_platform_marketplace_sources(&state, &session) {
+    let (_source_owner, sources) = match visible_platform_hub_sources(&state, &session) {
         Ok(value) => value,
         Err(err) => return internal_error(err),
     };
     match state
         .platform
-        .marketplace
+        .hub
         .fetch_platform_remote_app_rows_from_repositories(&state.http_client, sources)
         .await
     {
@@ -9735,7 +9704,7 @@ async fn api_list_platform_marketplace_apps(
     }
 }
 
-async fn api_list_platform_marketplace_assets(
+async fn api_list_platform_hub_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
@@ -9756,14 +9725,14 @@ async fn api_list_platform_marketplace_assets(
     }
     if let Err(err) = state
         .platform
-        .marketplace
+        .hub
         .ensure_default_platform_repository(&owner)
     {
         return internal_error(err);
     }
     match state
         .platform
-        .marketplace
+        .hub
         .fetch_platform_remote_app_rows(&state.http_client, &owner)
         .await
     {
@@ -9772,10 +9741,10 @@ async fn api_list_platform_marketplace_assets(
     }
 }
 
-async fn api_install_platform_marketplace_app(
+async fn api_install_platform_hub_app(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
+    Json(req): Json<InstallPlatformHubProjectRequest>,
 ) -> Response {
     let Some(session) = session_owner(&state, &headers) else {
         return (
@@ -9784,7 +9753,7 @@ async fn api_install_platform_marketplace_app(
         )
             .into_response();
     };
-    let (source_owner, sources) = match visible_platform_marketplace_sources(&state, &session) {
+    let (source_owner, sources) = match visible_platform_hub_sources(&state, &session) {
         Ok(value) => value,
         Err(err) => return internal_error(err),
     };
@@ -9794,13 +9763,13 @@ async fn api_install_platform_marketplace_app(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "marketplace source is not visible"})),
+            Json(json!({"ok": false, "error": "hub source is not visible"})),
         )
             .into_response();
     }
     match state
         .platform
-        .marketplace
+        .hub
         .install_remote_project_from_platform_source(
             &state.http_client,
             &source_owner,
@@ -9839,15 +9808,15 @@ async fn api_install_platform_marketplace_app(
                 Err(err) => internal_error(err),
             }
         }
-        Err(err) => marketplace_api_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
-async fn api_install_platform_marketplace_project(
+async fn api_install_platform_hub_project(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(owner): Path<String>,
-    Json(req): Json<InstallPlatformMarketplaceProjectRequest>,
+    Json(req): Json<InstallPlatformHubProjectRequest>,
 ) -> Response {
     let Some(session) = session_owner(&state, &headers) else {
         return (
@@ -9865,7 +9834,7 @@ async fn api_install_platform_marketplace_project(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .install_remote_project_from_platform_repository(
             &state.http_client,
             &owner,
@@ -9894,7 +9863,7 @@ async fn api_install_platform_marketplace_project(
                 }))
                 .into_response(),
                 Ok(None) => internal_error(PlatformError::new(
-                    "MARKETPLACE_INSTALL",
+                    "HUB_INSTALL",
                     "installed project missing after install",
                 )),
                 Err(err) => internal_error(err),
@@ -9904,14 +9873,14 @@ async fn api_install_platform_marketplace_project(
     }
 }
 
-async fn api_list_platform_marketplace_publishers(
+async fn api_list_platform_hub_publishers(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
@@ -9919,36 +9888,36 @@ async fn api_list_platform_marketplace_publishers(
     };
     match state
         .platform
-        .marketplace
+        .hub
         .list_publishers(&source_owner, "platform")
     {
         Ok(items) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(hub_publisher_json).collect::<Vec<_>>()
         }))
         .into_response(),
-        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => {
+        Err(err) if err.code == "HUB_SERVICE_DISABLED" => {
             Json(json!({"ok": true, "items": []})).into_response()
         }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_upsert_platform_marketplace_publisher(
+async fn api_upsert_platform_hub_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<UpsertMarketplacePublisherRequest>,
+    Json(req): Json<UpsertHubPublisherRequest>,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
         ));
     };
-    match state.platform.marketplace.upsert_publisher(
+    match state.platform.hub.upsert_publisher(
         &source_owner,
         "platform",
         &req.publisher_id,
@@ -9968,13 +9937,13 @@ async fn api_upsert_platform_marketplace_publisher(
         req.max_image_bytes,
     ) {
         Ok(item) => {
-            Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response()
+            Json(json!({"ok": true, "publisher": hub_publisher_json(item)})).into_response()
         }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_delete_platform_marketplace_publisher(
+async fn api_delete_platform_hub_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(publisher_id): Path<String>,
@@ -9982,7 +9951,7 @@ async fn api_delete_platform_marketplace_publisher(
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
@@ -9990,7 +9959,7 @@ async fn api_delete_platform_marketplace_publisher(
     };
     match state
         .platform
-        .marketplace
+        .hub
         .delete_publisher(&source_owner, "platform", &publisher_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -9998,35 +9967,35 @@ async fn api_delete_platform_marketplace_publisher(
     }
 }
 
-async fn api_list_platform_marketplace_tokens(
+async fn api_list_platform_hub_tokens(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    match state.platform.marketplace.list_all_tokens() {
+    match state.platform.hub.list_all_tokens() {
         Ok(items) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(marketplace_token_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(hub_token_json).collect::<Vec<_>>()
         }))
         .into_response(),
-        Err(err) if err.code == "MARKETPLACE_SERVICE_DISABLED" => {
+        Err(err) if err.code == "HUB_SERVICE_DISABLED" => {
             Json(json!({"ok": true, "items": []})).into_response()
         }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_create_platform_marketplace_token(
+async fn api_create_platform_hub_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<CreatePlatformMarketplaceTokenRequest>,
+    Json(req): Json<CreatePlatformHubTokenRequest>,
 ) -> Response {
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    let Some(source_owner) = platform_marketplace_source_owner(&state) else {
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
         return internal_error(PlatformError::new(
             "PLATFORM_USER_NOT_FOUND",
             "superadmin user not found",
@@ -10042,25 +10011,25 @@ async fn api_create_platform_marketplace_token(
     } else {
         req.project
     };
-    match state.platform.marketplace.create_token(
+    match state.platform.hub.create_token(
         &owner,
         &project,
-        &CreateMarketplaceTokenRequest {
+        &CreateHubTokenRequest {
             publisher_id: req.publisher_id,
             title: req.title,
             scopes: req.scopes,
             expires_at: req.expires_at,
         },
     ) {
-        Ok((token, token_value)) => Json(
-            json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value}),
-        )
-        .into_response(),
+        Ok((token, token_value)) => {
+            Json(json!({"ok": true, "token": hub_token_json(token), "token_value": token_value}))
+                .into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_delete_platform_marketplace_token(
+async fn api_delete_platform_hub_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path(token_id): Path<String>,
@@ -10068,7 +10037,7 @@ async fn api_delete_platform_marketplace_token(
     if let Err(response) = require_superadmin(&state, &headers) {
         return response;
     }
-    match state.platform.marketplace.revoke_token_any(&token_id) {
+    match state.platform.hub.revoke_token_any(&token_id) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
@@ -16568,7 +16537,7 @@ async fn api_list_db_connections(
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct PublishMarketplaceAssetRequest {
+struct PublishHubAssetRequest {
     source_type: String,
     source_ref: String,
     package_id: String,
@@ -16586,7 +16555,7 @@ struct PublishMarketplaceAssetRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct MarketplacePublishQuery {
+struct HubPublishQuery {
     #[serde(default)]
     source_type: String,
     #[serde(default)]
@@ -16594,12 +16563,12 @@ struct MarketplacePublishQuery {
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct InstallMarketplaceAssetRequest {
+struct InstallHubAssetRequest {
     #[serde(default)]
     install_mode: String,
 }
 
-fn normalize_marketplace_install_mode(raw: &str) -> &'static str {
+fn normalize_hub_install_mode(raw: &str) -> &'static str {
     match raw.trim() {
         "clone_as_folder" => "clone_as_folder",
         _ => "add_to_current_project",
@@ -16607,7 +16576,7 @@ fn normalize_marketplace_install_mode(raw: &str) -> &'static str {
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct UpsertMarketplaceRepositoryRequest {
+struct UpsertHubRepositoryRequest {
     repository_id: String,
     title: String,
     base_url: String,
@@ -16626,7 +16595,7 @@ fn default_public_visibility() -> String {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreatePlatformMarketplaceTokenRequest {
+struct CreatePlatformHubTokenRequest {
     #[serde(default)]
     owner: String,
     #[serde(default)]
@@ -16640,7 +16609,7 @@ struct CreatePlatformMarketplaceTokenRequest {
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct UpsertMarketplacePublisherRequest {
+struct UpsertHubPublisherRequest {
     publisher_id: String,
     #[serde(default)]
     display_name: String,
@@ -16673,14 +16642,14 @@ struct UpsertMarketplacePublisherRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct InstallPlatformMarketplaceProjectRequest {
+struct InstallPlatformHubProjectRequest {
     repository_id: String,
     package_id: String,
     version: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct ConfigurePlatformMarketplaceServiceRequest {
+struct ConfigurePlatformHubServiceRequest {
     host_office_id: String,
     #[serde(default)]
     public_base_url: String,
@@ -16689,15 +16658,13 @@ struct ConfigurePlatformMarketplaceServiceRequest {
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
-struct SetMarketplaceProducerRequest {
+struct SetHubProducerRequest {
     project_name: String,
     password: String,
     enabled: bool,
 }
 
-fn project_marketplace_repository_json(
-    item: crate::platform::model::ProjectMarketplaceRepository,
-) -> Value {
+fn project_hub_repository_json(item: crate::platform::model::ProjectHubRepository) -> Value {
     json!({
         "owner": item.owner,
         "project": item.project,
@@ -16714,9 +16681,7 @@ fn project_marketplace_repository_json(
     })
 }
 
-fn platform_marketplace_repository_json(
-    item: crate::platform::model::PlatformMarketplaceRepository,
-) -> Value {
+fn platform_hub_repository_json(item: crate::platform::model::PlatformHubRepository) -> Value {
     json!({
         "owner": item.owner,
         "repository_id": item.repository_id,
@@ -16733,11 +16698,11 @@ fn platform_marketplace_repository_json(
     })
 }
 
-fn marketplace_api_error(err: PlatformError) -> Response {
+fn hub_api_error(err: PlatformError) -> Response {
     let status = if err.code == "FW_EGRESS_DENIED"
         || err.code == "FW_EGRESS_URL_INVALID"
         || err.code == "FW_EGRESS_DNS"
-        || err.code == "MARKETPLACE_REPOSITORY_INVALID"
+        || err.code == "HUB_REPOSITORY_INVALID"
     {
         StatusCode::BAD_REQUEST
     } else {
@@ -16750,7 +16715,7 @@ fn marketplace_api_error(err: PlatformError) -> Response {
         .into_response()
 }
 
-fn marketplace_token_json(item: crate::platform::model::MarketplaceToken) -> Value {
+fn hub_token_json(item: crate::platform::model::HubToken) -> Value {
     json!({
         "token_id": item.token_id,
         "owner": item.owner,
@@ -16769,7 +16734,7 @@ fn marketplace_token_json(item: crate::platform::model::MarketplaceToken) -> Val
     })
 }
 
-fn marketplace_publisher_json(item: crate::platform::model::MarketplacePublisher) -> Value {
+fn hub_publisher_json(item: crate::platform::model::HubPublisher) -> Value {
     json!({
         "owner": item.owner,
         "project": item.project,
@@ -16797,7 +16762,7 @@ fn default_true() -> bool {
     true
 }
 
-async fn api_list_marketplace_assets(
+async fn api_list_hub_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -16827,13 +16792,13 @@ async fn api_list_marketplace_assets(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let mut items = match marketplace_asset_rows(&state, &owner, &project, false) {
+    let mut items = match hub_asset_rows(&state, &owner, &project, false) {
         Ok(items) => items,
         Err(err) => return internal_error(err),
     };
     match state
         .platform
-        .marketplace
+        .hub
         .fetch_remote_pack_rows(&state.http_client, &owner, &project)
         .await
     {
@@ -16888,7 +16853,7 @@ async fn api_get_project_help(
     .into_response()
 }
 
-async fn api_list_remote_marketplace_assets(
+async fn api_list_remote_hub_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -16909,24 +16874,24 @@ async fn api_list_remote_marketplace_assets(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
     let token = bearer_token_from_headers(&headers);
     let requester = if let Some(token_value) = token {
         match state
             .platform
-            .marketplace
-            .authenticate_token(&token_value, "marketplace:read")
+            .hub
+            .authenticate_token(&token_value, "hub:read")
         {
             Ok(token) => {
                 if token.owner != owner || token.project != project {
                     return (
                         StatusCode::UNAUTHORIZED,
-                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                        Json(json!({"ok": false, "error": "token does not belong to this hub", "code": "HUB_TOKEN_FORBIDDEN"})),
                     )
                         .into_response();
                 }
@@ -16943,7 +16908,7 @@ async fn api_list_remote_marketplace_assets(
     } else {
         None
     };
-    match state.platform.marketplace.list_asset_packages() {
+    match state.platform.hub.list_asset_packages() {
         Ok(packages) => {
             let mut items = Vec::new();
             for package in packages {
@@ -16954,12 +16919,12 @@ async fn api_list_remote_marketplace_assets(
                 }
                 let latest_version = state
                     .platform
-                    .marketplace
+                    .hub
                     .list_asset_versions(&package.package_id)
                     .ok()
                     .and_then(|items| items.into_iter().next().map(|v| v.version))
                     .unwrap_or_default();
-                let mut item = public_marketplace_asset_item_json(&state, package);
+                let mut item = public_hub_asset_item_json(&state, package);
                 if let Some(object) = item.as_object_mut() {
                     object.insert("latest_version".to_string(), json!(latest_version));
                 }
@@ -16971,7 +16936,7 @@ async fn api_list_remote_marketplace_assets(
     }
 }
 
-async fn api_get_remote_marketplace_asset(
+async fn api_get_remote_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
@@ -16992,24 +16957,24 @@ async fn api_get_remote_marketplace_asset(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
     let token = bearer_token_from_headers(&headers);
     let requester = if let Some(token_value) = token {
         match state
             .platform
-            .marketplace
-            .authenticate_token(&token_value, "marketplace:read")
+            .hub
+            .authenticate_token(&token_value, "hub:read")
         {
             Ok(token) => {
                 if token.owner != owner || token.project != project {
                     return (
                         StatusCode::UNAUTHORIZED,
-                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                        Json(json!({"ok": false, "error": "token does not belong to this hub", "code": "HUB_TOKEN_FORBIDDEN"})),
                     )
                         .into_response();
                 }
@@ -17028,7 +16993,7 @@ async fn api_get_remote_marketplace_asset(
     };
     let Some(package) = state
         .platform
-        .marketplace
+        .hub
         .list_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
@@ -17050,20 +17015,20 @@ async fn api_get_remote_marketplace_asset(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .get_asset_version_artifact(&package_id, &version)
     {
         Ok((version_row, artifact)) => Json(json!({
             "ok": true,
-            "version": public_marketplace_version_json(&package, &version_row),
-            "artifact": public_marketplace_artifact_json(artifact),
+            "version": public_hub_version_json(&package, &version_row),
+            "artifact": public_hub_artifact_json(artifact),
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_get_remote_marketplace_artifact(
+async fn api_get_remote_hub_artifact(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
@@ -17084,24 +17049,24 @@ async fn api_get_remote_marketplace_artifact(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
     let token = bearer_token_from_headers(&headers);
     let requester = if let Some(token_value) = token {
         match state
             .platform
-            .marketplace
-            .authenticate_token(&token_value, "marketplace:read")
+            .hub
+            .authenticate_token(&token_value, "hub:read")
         {
             Ok(token) => {
                 if token.owner != owner || token.project != project {
                     return (
                         StatusCode::UNAUTHORIZED,
-                        Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+                        Json(json!({"ok": false, "error": "token does not belong to this hub", "code": "HUB_TOKEN_FORBIDDEN"})),
                     )
                         .into_response();
                 }
@@ -17120,7 +17085,7 @@ async fn api_get_remote_marketplace_artifact(
     };
     let Some(package) = state
         .platform
-        .marketplace
+        .hub
         .list_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
@@ -17142,32 +17107,30 @@ async fn api_get_remote_marketplace_artifact(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .get_asset_version_install_artifact(&package_id, &version)
     {
-        Ok((version_row, artifact, artifact_size_bytes)) => {
-            Json(raw_marketplace_artifact_response_json(
-                &package,
-                &version_row,
-                artifact,
-                artifact_size_bytes,
-            ))
-            .into_response()
-        }
+        Ok((version_row, artifact, artifact_size_bytes)) => Json(raw_hub_artifact_response_json(
+            &package,
+            &version_row,
+            artifact,
+            artifact_size_bytes,
+        ))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_public_marketplace_assets(State(state): State<PlatformAppState>) -> Response {
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+async fn api_list_public_hub_assets(State(state): State<PlatformAppState>) -> Response {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
-    match state.platform.marketplace.list_asset_packages() {
+    match state.platform.hub.list_asset_packages() {
         Ok(packages) => {
             let items = packages
                 .into_iter()
                 .filter(|package| package.visibility == "public")
-                .map(|package| public_marketplace_asset_item_json(&state, package))
+                .map(|package| public_hub_asset_item_json(&state, package))
                 .collect::<Vec<_>>();
             Json(json!({"ok": true, "items": items})).into_response()
         }
@@ -17175,16 +17138,16 @@ async fn api_list_public_marketplace_assets(State(state): State<PlatformAppState
     }
 }
 
-async fn api_get_public_marketplace_asset(
+async fn api_get_public_hub_asset(
     State(state): State<PlatformAppState>,
     Path((package_id, version)): Path<(String, String)>,
 ) -> Response {
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
     let Some(package) = state
         .platform
-        .marketplace
+        .hub
         .list_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
@@ -17204,33 +17167,33 @@ async fn api_get_public_marketplace_asset(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .get_asset_version_artifact(&package_id, &version)
     {
         Ok((version_row, artifact)) => Json(json!({
             "ok": true,
-            "version": public_marketplace_version_json(&package, &version_row),
-            "artifact": public_marketplace_artifact_json(artifact),
+            "version": public_hub_version_json(&package, &version_row),
+            "artifact": public_hub_artifact_json(artifact),
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_get_public_marketplace_artifact(
+async fn api_get_public_hub_artifact(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((package_id, version)): Path<(String, String)>,
 ) -> Response {
-    if let Err(response) = require_marketplace_service_enabled(&state) {
+    if let Err(response) = require_hub_service_enabled(&state) {
         return response;
     }
     let token = bearer_token_from_headers(&headers);
     let requester = if let Some(token_value) = token {
         match state
             .platform
-            .marketplace
-            .authenticate_token(&token_value, "marketplace:read")
+            .hub
+            .authenticate_token(&token_value, "hub:read")
         {
             Ok(token) => Some(token.owner),
             Err(err) => {
@@ -17246,7 +17209,7 @@ async fn api_get_public_marketplace_artifact(
     };
     let Some(package) = state
         .platform
-        .marketplace
+        .hub
         .list_asset_packages()
         .ok()
         .and_then(|items| items.into_iter().find(|item| item.package_id == package_id))
@@ -17268,23 +17231,21 @@ async fn api_get_public_marketplace_artifact(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .get_asset_version_install_artifact(&package_id, &version)
     {
-        Ok((version_row, artifact, artifact_size_bytes)) => {
-            Json(raw_marketplace_artifact_response_json(
-                &package,
-                &version_row,
-                artifact,
-                artifact_size_bytes,
-            ))
-            .into_response()
-        }
+        Ok((version_row, artifact, artifact_size_bytes)) => Json(raw_hub_artifact_response_json(
+            &package,
+            &version_row,
+            artifact,
+            artifact_size_bytes,
+        ))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_my_marketplace_assets(
+async fn api_list_my_hub_assets(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -17314,18 +17275,18 @@ async fn api_list_my_marketplace_assets(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    match marketplace_asset_rows(&state, &owner, &project, true) {
+    match hub_asset_rows(&state, &owner, &project, true) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_marketplace_publish_sources(
+async fn api_list_hub_publish_sources(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Query(query): Query<MarketplacePublishQuery>,
+    Query(query): Query<HubPublishQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17351,7 +17312,7 @@ async fn api_list_marketplace_publish_sources(
             Err(err) => internal_error(err),
         };
     }
-    match marketplace_publish_sources(
+    match hub_publish_sources(
         &state,
         &owner,
         &project,
@@ -17366,12 +17327,12 @@ async fn api_list_marketplace_publish_sources(
     }
 }
 
-async fn api_preview_marketplace_publish_source(
+async fn api_preview_hub_publish_source(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Query(query): Query<MarketplacePublishQuery>,
+    Query(query): Query<HubPublishQuery>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17397,7 +17358,7 @@ async fn api_preview_marketplace_publish_source(
             Err(err) => internal_error(err),
         };
     }
-    match state.platform.marketplace.preview_publish_source(
+    match state.platform.hub.preview_publish_source(
         &owner,
         &project,
         &query.source_type,
@@ -17408,12 +17369,12 @@ async fn api_preview_marketplace_publish_source(
     }
 }
 
-async fn api_publish_marketplace_asset(
+async fn api_publish_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<PublishMarketplaceAssetRequest>,
+    Json(req): Json<PublishHubAssetRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17451,15 +17412,15 @@ async fn api_publish_marketplace_asset(
             Json(json!({
                 "ok": false,
                 "error": "publisher token is required",
-                "code": "MARKETPLACE_TOKEN_REQUIRED"
+                "code": "HUB_TOKEN_REQUIRED"
             })),
         )
             .into_response();
     }
     let token = match state
         .platform
-        .marketplace
-        .authenticate_token(&token_value, "marketplace:publish")
+        .hub
+        .authenticate_token(&token_value, "hub:publish")
     {
         Ok(token) => token,
         Err(err) => {
@@ -17476,12 +17437,12 @@ async fn api_publish_marketplace_asset(
             Json(json!({
                 "ok": false,
                 "error": "publisher token does not belong to this project",
-                "code": "MARKETPLACE_TOKEN_FORBIDDEN"
+                "code": "HUB_TOKEN_FORBIDDEN"
             })),
         )
             .into_response();
     }
-    match state.platform.marketplace.publish_asset(
+    match state.platform.hub.publish_asset(
         &owner,
         &project,
         &token.owner,
@@ -17507,12 +17468,12 @@ async fn api_publish_marketplace_asset(
     }
 }
 
-async fn api_install_marketplace_asset(
+async fn api_install_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
     uri: Uri,
-    body: Option<Json<InstallMarketplaceAssetRequest>>,
+    body: Option<Json<InstallHubAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17542,14 +17503,14 @@ async fn api_install_marketplace_asset(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let install_mode = normalize_marketplace_install_mode(
+    let install_mode = normalize_hub_install_mode(
         body.as_ref()
             .map(|Json(req)| req.install_mode.as_str())
             .unwrap_or_default(),
     );
     match state
         .platform
-        .marketplace
+        .hub
         .install_asset(&owner, &project, &package_id, &version)
     {
         Ok(result) => Json(json!({"ok": true, "install_mode": install_mode, "result": result}))
@@ -17558,12 +17519,12 @@ async fn api_install_marketplace_asset(
     }
 }
 
-async fn api_remote_publish_marketplace_asset(
+async fn api_remote_publish_hub_asset(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<RemoteMarketplacePublishRequest>,
+    Json(req): Json<RemoteHubPublishRequest>,
 ) -> Response {
     match maybe_forward_project_json_to_worker(
         &state,
@@ -17589,8 +17550,8 @@ async fn api_remote_publish_marketplace_asset(
     };
     let token = match state
         .platform
-        .marketplace
-        .authenticate_token(&token_value, "marketplace:publish")
+        .hub
+        .authenticate_token(&token_value, "hub:publish")
     {
         Ok(token) => token,
         Err(err) => {
@@ -17604,13 +17565,13 @@ async fn api_remote_publish_marketplace_asset(
     if token.owner != owner || token.project != project {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({"ok": false, "error": "token does not belong to this marketplace", "code": "MARKETPLACE_TOKEN_FORBIDDEN"})),
+            Json(json!({"ok": false, "error": "token does not belong to this hub", "code": "HUB_TOKEN_FORBIDDEN"})),
         )
             .into_response();
     }
     match state
         .platform
-        .marketplace
+        .hub
         .import_remote_asset(&owner, &project, &token, &req)
     {
         Ok((package, version)) => {
@@ -17620,7 +17581,7 @@ async fn api_remote_publish_marketplace_asset(
     }
 }
 
-async fn api_list_marketplace_tokens(
+async fn api_list_hub_tokens(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -17650,21 +17611,21 @@ async fn api_list_marketplace_tokens(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
-    match marketplace_token_rows(&state, &owner, &project) {
+    match hub_token_rows(&state, &owner, &project) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_create_marketplace_token(
+async fn api_create_hub_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<CreateMarketplaceTokenRequest>,
+    Json(req): Json<CreateHubTokenRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17690,23 +17651,19 @@ async fn api_create_marketplace_token(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
-    match state
-        .platform
-        .marketplace
-        .create_token(&owner, &project, &req)
-    {
-        Ok((token, token_value)) => Json(
-            json!({"ok": true, "token": marketplace_token_json(token), "token_value": token_value}),
-        )
-        .into_response(),
+    match state.platform.hub.create_token(&owner, &project, &req) {
+        Ok((token, token_value)) => {
+            Json(json!({"ok": true, "token": hub_token_json(token), "token_value": token_value}))
+                .into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_delete_marketplace_token(
+async fn api_delete_hub_token(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, token_id)): Path<(String, String, String)>,
@@ -17736,20 +17693,16 @@ async fn api_delete_marketplace_token(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
-    match state
-        .platform
-        .marketplace
-        .revoke_token(&owner, &project, &token_id)
-    {
+    match state.platform.hub.revoke_token(&owner, &project, &token_id) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_marketplace_publishers(
+async fn api_list_hub_publishers(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -17779,25 +17732,25 @@ async fn api_list_marketplace_publishers(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
-    match state.platform.marketplace.list_publishers(&owner, &project) {
+    match state.platform.hub.list_publishers(&owner, &project) {
         Ok(items) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(marketplace_publisher_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(hub_publisher_json).collect::<Vec<_>>()
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_upsert_marketplace_publisher(
+async fn api_upsert_hub_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<UpsertMarketplacePublisherRequest>,
+    Json(req): Json<UpsertHubPublisherRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -17823,10 +17776,10 @@ async fn api_upsert_marketplace_publisher(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
-    match state.platform.marketplace.upsert_publisher(
+    match state.platform.hub.upsert_publisher(
         &owner,
         &project,
         &req.publisher_id,
@@ -17846,13 +17799,13 @@ async fn api_upsert_marketplace_publisher(
         req.max_image_bytes,
     ) {
         Ok(item) => {
-            Json(json!({"ok": true, "publisher": marketplace_publisher_json(item)})).into_response()
+            Json(json!({"ok": true, "publisher": hub_publisher_json(item)})).into_response()
         }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_delete_marketplace_publisher(
+async fn api_delete_hub_publisher(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, publisher_id)): Path<(String, String, String)>,
@@ -17882,12 +17835,12 @@ async fn api_delete_marketplace_publisher(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    if let Err(response) = require_project_marketplace_producer(&state, &owner, &project) {
+    if let Err(response) = require_project_hub_producer(&state, &owner, &project) {
         return response;
     }
     match state
         .platform
-        .marketplace
+        .hub
         .delete_publisher(&owner, &project, &publisher_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -17895,12 +17848,12 @@ async fn api_delete_marketplace_publisher(
     }
 }
 
-async fn api_set_marketplace_producer_mode(
+async fn api_set_hub_producer_mode(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<SetMarketplaceProducerRequest>,
+    Json(req): Json<SetHubProducerRequest>,
 ) -> Response {
     let internal_cluster_call = has_valid_cluster_token(&state, &headers);
     let Some(session_owner) = session_owner(&state, &headers).or_else(|| {
@@ -17925,10 +17878,10 @@ async fn api_set_marketplace_producer_mode(
         )
             .into_response();
     }
-    if !can_manage_project_marketplace_producer(&state, &owner_slug) {
+    if !can_manage_project_hub_producer(&state, &owner_slug) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"ok": false, "error": "Only curated superadmin projects can host a marketplace producer"})),
+            Json(json!({"ok": false, "error": "Only curated superadmin projects can host a hub producer"})),
         )
             .into_response();
     }
@@ -17976,27 +17929,30 @@ async fn api_set_marketplace_producer_mode(
     let mut cfg = state
         .platform
         .zebflow_cfg
-        .get_marketplace_distribution(&owner_slug, &project_slug);
+        .get_hub_distribution(&owner_slug, &project_slug);
     cfg.producer_enabled = req.enabled;
-    match state.platform.zebflow_cfg.set_marketplace_distribution(
-        &owner_slug,
-        &project_slug,
-        cfg.clone(),
-    ) {
-        Ok(()) => match state.platform.marketplace.set_authority_enabled(
-            &owner_slug,
-            &project_slug,
-            req.enabled,
-        ) {
-            Ok(authority) => Json(json!({"ok": true, "marketplace": cfg, "authority": authority}))
-                .into_response(),
-            Err(err) => internal_error(err),
-        },
+    match state
+        .platform
+        .zebflow_cfg
+        .set_hub_distribution(&owner_slug, &project_slug, cfg.clone())
+    {
+        Ok(()) => {
+            match state
+                .platform
+                .hub
+                .set_authority_enabled(&owner_slug, &project_slug, req.enabled)
+            {
+                Ok(authority) => {
+                    Json(json!({"ok": true, "hub": cfg, "authority": authority})).into_response()
+                }
+                Err(err) => internal_error(err),
+            }
+        }
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_list_marketplace_repositories(
+async fn api_list_hub_repositories(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
@@ -18028,31 +17984,27 @@ async fn api_list_marketplace_repositories(
     }
     if let Err(err) = state
         .platform
-        .marketplace
+        .hub
         .ensure_default_project_repository(&owner, &project)
     {
         return internal_error(err);
     }
-    match state
-        .platform
-        .marketplace
-        .list_repositories(&owner, &project)
-    {
+    match state.platform.hub.list_repositories(&owner, &project) {
         Ok(items) => Json(json!({
             "ok": true,
-            "items": items.into_iter().map(project_marketplace_repository_json).collect::<Vec<_>>()
+            "items": items.into_iter().map(project_hub_repository_json).collect::<Vec<_>>()
         }))
         .into_response(),
         Err(err) => internal_error(err),
     }
 }
 
-async fn api_upsert_marketplace_repository(
+async fn api_upsert_hub_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project)): Path<(String, String)>,
     uri: Uri,
-    Json(req): Json<UpsertMarketplaceRepositoryRequest>,
+    Json(req): Json<UpsertHubRepositoryRequest>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -18078,7 +18030,7 @@ async fn api_upsert_marketplace_repository(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    match state.platform.marketplace.upsert_repository(
+    match state.platform.hub.upsert_repository(
         &owner,
         &project,
         &req.repository_id,
@@ -18091,14 +18043,14 @@ async fn api_upsert_marketplace_repository(
     ) {
         Ok(item) => Json(json!({
             "ok": true,
-            "repository": project_marketplace_repository_json(item)
+            "repository": project_hub_repository_json(item)
         }))
         .into_response(),
-        Err(err) => marketplace_api_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
-async fn api_delete_marketplace_repository(
+async fn api_delete_hub_repository(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, repository_id)): Path<(String, String, String)>,
@@ -18130,7 +18082,7 @@ async fn api_delete_marketplace_repository(
     }
     match state
         .platform
-        .marketplace
+        .hub
         .delete_repository(&owner, &project, &repository_id)
     {
         Ok(()) => Json(json!({"ok": true})).into_response(),
@@ -18138,7 +18090,7 @@ async fn api_delete_marketplace_repository(
     }
 }
 
-async fn api_install_remote_marketplace_pack(
+async fn api_install_remote_hub_pack(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
     Path((owner, project, repository_id, package_id, version)): Path<(
@@ -18149,7 +18101,7 @@ async fn api_install_remote_marketplace_pack(
         String,
     )>,
     uri: Uri,
-    body: Option<Json<InstallMarketplaceAssetRequest>>,
+    body: Option<Json<InstallHubAssetRequest>>,
 ) -> Response {
     if let Err(response) = require_project_api_capability(
         &state,
@@ -18179,14 +18131,14 @@ async fn api_install_remote_marketplace_pack(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let install_mode = normalize_marketplace_install_mode(
+    let install_mode = normalize_hub_install_mode(
         body.as_ref()
             .map(|Json(req)| req.install_mode.as_str())
             .unwrap_or_default(),
     );
     match state
         .platform
-        .marketplace
+        .hub
         .install_remote_pack_from_repository(
             &state.http_client,
             &owner,
@@ -23363,27 +23315,27 @@ where
 fn internal_error(err: PlatformError) -> Response {
     let status = match &*err.code {
         "PLATFORM_PIPELINE_LOCKED" | "PLATFORM_TEMPLATE_LOCKED" => StatusCode::LOCKED,
-        "MARKETPLACE_PUBLISHER_MISSING"
-        | "MARKETPLACE_ASSET_MISSING"
-        | "MARKETPLACE_PUBLISH_SOURCE_MISSING"
-        | "MARKETPLACE_SERVICE_DISABLED"
+        "HUB_PUBLISHER_MISSING"
+        | "HUB_ASSET_MISSING"
+        | "HUB_PUBLISH_SOURCE_MISSING"
+        | "HUB_SERVICE_DISABLED"
         | "MCP_SESSION_NOT_FOUND" => StatusCode::NOT_FOUND,
-        "MARKETPLACE_TOKEN_FORBIDDEN"
-        | "MARKETPLACE_PUBLISHER_FORBIDDEN"
-        | "MARKETPLACE_PUBLISHER_SCOPE_DENIED"
-        | "MARKETPLACE_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
-        "MARKETPLACE_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
-        "MARKETPLACE_PUBLISHER_QUOTA_EXCEEDED" => StatusCode::CONFLICT,
-        "MARKETPLACE_TOKEN_INVALID"
-        | "MARKETPLACE_ARTIFACT_PATH_INVALID"
-        | "MARKETPLACE_PUBLISH_INVALID"
-        | "MARKETPLACE_REMOTE_INVALID"
-        | "MARKETPLACE_REMOTE_HASH_MISSING"
-        | "MARKETPLACE_REMOTE_HASH_MISMATCH"
-        | "MARKETPLACE_REPOSITORY_INVALID"
-        | "MARKETPLACE_TOKEN_SCOPE_INVALID"
-        | "MARKETPLACE_PUBLISH_EMPTY" => StatusCode::BAD_REQUEST,
-        "MARKETPLACE_ARTIFACT_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
+        "HUB_TOKEN_FORBIDDEN"
+        | "HUB_PUBLISHER_FORBIDDEN"
+        | "HUB_PUBLISHER_SCOPE_DENIED"
+        | "HUB_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
+        "HUB_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
+        "HUB_PUBLISHER_QUOTA_EXCEEDED" => StatusCode::CONFLICT,
+        "HUB_TOKEN_INVALID"
+        | "HUB_ARTIFACT_PATH_INVALID"
+        | "HUB_PUBLISH_INVALID"
+        | "HUB_REMOTE_INVALID"
+        | "HUB_REMOTE_HASH_MISSING"
+        | "HUB_REMOTE_HASH_MISMATCH"
+        | "HUB_REPOSITORY_INVALID"
+        | "HUB_TOKEN_SCOPE_INVALID"
+        | "HUB_PUBLISH_EMPTY" => StatusCode::BAD_REQUEST,
+        "HUB_ARTIFACT_TOO_LARGE" => StatusCode::PAYLOAD_TOO_LARGE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (

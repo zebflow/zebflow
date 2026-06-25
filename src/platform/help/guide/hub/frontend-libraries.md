@@ -1,6 +1,6 @@
 # Frontend Libraries
 
-Frontend Libraries are the primary curated library surface in Marketplace.
+Frontend Libraries are the primary curated library surface in Hub.
 
 These are the libraries Zebflow projects use directly in TSX:
 

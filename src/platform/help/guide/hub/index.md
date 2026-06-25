@@ -1,6 +1,6 @@
-# Marketplace
+# Hub
 
-Marketplace is the sharing surface for reusable Zebflow project materials.
+Hub is the sharing surface for reusable Zebflow project materials.
 
 It is not only a plugin registry.
 
@@ -13,7 +13,7 @@ The current main focus is:
 
 ## Important distinction
 
-Adding something from Marketplace usually means:
+Adding something from Hub usually means:
 
 - copy into project
 - clone into workspace
@@ -23,4 +23,4 @@ not:
 
 - activate a hidden runtime install
 
-This keeps Marketplace aligned with how Zebflow projects actually work.
+This keeps Hub aligned with how Zebflow projects actually work.

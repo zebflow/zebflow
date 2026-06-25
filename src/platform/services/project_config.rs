@@ -6,7 +6,7 @@ use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::sync::ProjectBootstrapPlan;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionMarketplace, ZebflowJsonMetadata,
+    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub, ZebflowJsonMetadata,
     ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
 };
 
@@ -97,25 +97,19 @@ impl ZebflowJsonService {
         }
     }
 
-    /// Returns the marketplace distribution contract for one project.
-    pub fn get_marketplace_distribution(
-        &self,
-        owner: &str,
-        project: &str,
-    ) -> ZebflowJsonDistributionMarketplace {
-        self.read_or_default(owner, project)
-            .distribution
-            .marketplace
+    /// Returns the hub distribution contract for one project.
+    pub fn get_hub_distribution(&self, owner: &str, project: &str) -> ZebflowJsonDistributionHub {
+        self.read_or_default(owner, project).distribution.hub
     }
 
-    pub fn set_marketplace_distribution(
+    pub fn set_hub_distribution(
         &self,
         owner: &str,
         project: &str,
-        marketplace: ZebflowJsonDistributionMarketplace,
+        hub: ZebflowJsonDistributionHub,
     ) -> Result<(), PlatformError> {
         self.update(owner, project, |cfg| {
-            cfg.distribution.marketplace = marketplace;
+            cfg.distribution.hub = hub;
         })?;
         Ok(())
     }

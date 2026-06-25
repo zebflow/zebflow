@@ -19,7 +19,7 @@ export const page = {
 export function getPage(input) {
   return {
     head: {
-      title: input?.seo?.title ?? "Zebflow Marketplace",
+      title: input?.seo?.title ?? "Zebflow Hub",
       description: input?.seo?.description ?? "",
     },
   };
@@ -27,8 +27,8 @@ export function getPage(input) {
 
 const DEFAULT_SOURCE = {
   repository_id: "zebflow-com",
-  title: "Zebflow Marketplace",
-  base_url: "https://market.zebflow.com/api",
+  title: "Zebflow Hub",
+  base_url: "https://hub.zebflow.com/api",
   remote_owner: "",
   remote_project: "",
   read_token: "",
@@ -106,7 +106,7 @@ function publisherScopes(item) {
 }
 
 export default function Page(input) {
-  const api = input?.marketplace_api ?? {};
+  const api = input?.hub_api ?? {};
   const isSuperadmin = !!input?.is_superadmin;
   const offices = Array.isArray(input?.offices) ? input.offices : [];
   const projects = Array.isArray(input?.projects) ? input.projects : [];
@@ -209,9 +209,9 @@ export default function Page(input) {
       await requestJson(api.repositories, { method: "POST", body: JSON.stringify(sourceForm) });
       setSourceForm(blankSource());
       await reloadExplore();
-      setStatus("Marketplace source saved");
+      setStatus("Hub source saved");
     } catch (err) {
-      setStatus(err?.message || "Failed saving marketplace source");
+      setStatus(err?.message || "Failed saving hub source");
     } finally {
       setBusy(false);
     }
@@ -223,9 +223,9 @@ export default function Page(input) {
     try {
       await requestJson(`${api.repositories}/${encodeURIComponent(repositoryId)}`, { method: "DELETE" });
       await reloadExplore();
-      setStatus("Marketplace source deleted");
+      setStatus("Hub source deleted");
     } catch (err) {
-      setStatus(err?.message || "Failed deleting marketplace source");
+      setStatus(err?.message || "Failed deleting hub source");
     } finally {
       setBusy(false);
     }
@@ -259,9 +259,9 @@ export default function Page(input) {
       const payload = await requestJson(api.service, { method: "POST", body: JSON.stringify(serviceForm) });
       setService(payload?.service || null);
       setServiceForm((prev) => ({ ...prev, password: "" }));
-      setStatus(payload?.service?.enabled ? "Marketplace service enabled" : "Marketplace service disabled");
+      setStatus(payload?.service?.enabled ? "Hub service enabled" : "Hub service disabled");
     } catch (err) {
-      setStatus(err?.message || "Failed saving marketplace service");
+      setStatus(err?.message || "Failed saving hub service");
     } finally {
       setBusy(false);
     }
@@ -308,9 +308,9 @@ export default function Page(input) {
     setTokenValue("");
     try {
       const scopes = [];
-      if (tokenForm.read) scopes.push("marketplace:read");
-      if (tokenForm.publish) scopes.push("marketplace:publish");
-      if (tokenForm.manage) scopes.push("marketplace:manage");
+      if (tokenForm.read) scopes.push("hub:read");
+      if (tokenForm.publish) scopes.push("hub:publish");
+      if (tokenForm.manage) scopes.push("hub:manage");
       const payload = await requestJson(api.tokens, {
         method: "POST",
         body: JSON.stringify({
@@ -365,18 +365,18 @@ export default function Page(input) {
           <div className="mb-6 flex flex-col gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Platform Home</p>
-              <h1 className="mt-1 text-3xl font-black text-gray-900">Marketplace</h1>
+              <h1 className="mt-1 text-3xl font-black text-gray-900">Hub</h1>
             </div>
             <Button as="a" href="/home" variant="outline">Home</Button>
           </div>
 
           <div className="mb-5 flex flex-wrap gap-2">
             <Button type="button" variant={activeTab === "explore" ? "primary" : "outline"} onClick={() => setActiveTab("explore")}>
-              Explore Apps From Other Marketplace
+              Explore Apps From Other Hubs
             </Button>
             {isSuperadmin ? (
               <Button type="button" variant={activeTab === "manage" ? "primary" : "outline"} onClick={() => setActiveTab("manage")}>
-                Manage This Platform-Owned Marketplace
+                Manage This Platform-Owned Hub
               </Button>
             ) : null}
           </div>
@@ -390,8 +390,8 @@ export default function Page(input) {
               <div className="rounded-lg border border-gray-200 bg-white p-5">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <h2 className="text-lg font-semibold text-gray-900">Explore Apps From Other Marketplace</h2>
-                    <p className="mt-1 text-sm text-gray-500">Default source: https://market.zebflow.com/api. Only full app/project packages are shown here.</p>
+                    <h2 className="text-lg font-semibold text-gray-900">Explore Apps From Other Hubs</h2>
+                    <p className="mt-1 text-sm text-gray-500">Default source: https://hub.zebflow.com/api. Only full app/project packages are shown here.</p>
                   </div>
                   {isSuperadmin ? (
                     <Button type="button" variant="outline" onClick={() => setSourceSettingsOpen(true)}>Settings</Button>
@@ -415,7 +415,7 @@ export default function Page(input) {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-lg font-semibold text-gray-900">{item?.title || item?.package_id}</p>
-                            <p className="mt-1 text-sm text-gray-500">{item?.description || "Marketplace app"}</p>
+                            <p className="mt-1 text-sm text-gray-500">{item?.description || "Hub app"}</p>
                           </div>
                           <span className="rounded-full border border-gray-200 px-2 py-1 text-[0.7rem] uppercase text-gray-500">App</span>
                         </div>
@@ -434,7 +434,7 @@ export default function Page(input) {
                 </div>
               ) : (
                 <div className="rounded-lg border border-dashed border-gray-300 bg-white px-4 py-10 text-sm text-gray-500">
-                  No app packages found from visible marketplace sources.
+                  No app packages found from visible hub sources.
                 </div>
               )}
             </section>
@@ -442,7 +442,7 @@ export default function Page(input) {
             <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
               <div className="space-y-5">
                 <section className="rounded-lg border border-gray-200 bg-white p-5">
-                  <h2 className="text-lg font-semibold text-gray-900">Marketplace Service</h2>
+                  <h2 className="text-lg font-semibold text-gray-900">Hub Service</h2>
                   <div className="mt-4 grid gap-3 text-sm md:grid-cols-3">
                     <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
                       <p className="text-gray-500">Status</p>
@@ -458,16 +458,16 @@ export default function Page(input) {
                     </div>
                   </div>
                   <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={saveService}>
-                    <Field label="Host Office" id="marketplace-service-office">
-                      <select id="marketplace-service-office" className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm" value={serviceForm.host_office_id} onChange={(e) => setServiceForm((prev) => ({ ...prev, host_office_id: e.target.value }))}>
+                    <Field label="Host Office" id="hub-service-office">
+                      <select id="hub-service-office" className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm" value={serviceForm.host_office_id} onChange={(e) => setServiceForm((prev) => ({ ...prev, host_office_id: e.target.value }))}>
                         {offices.map((office) => <option key={office?.id} value={office?.id}>{office?.label || office?.id}</option>)}
                       </select>
                     </Field>
-                    <Field label="Public Base URL" id="marketplace-service-url">
-                      <Input id="marketplace-service-url" value={serviceForm.public_base_url} onInput={(e) => setServiceForm((prev) => ({ ...prev, public_base_url: e.target.value }))} placeholder="https://market.zebflow.com/api" />
+                    <Field label="Public Base URL" id="hub-service-url">
+                      <Input id="hub-service-url" value={serviceForm.public_base_url} onInput={(e) => setServiceForm((prev) => ({ ...prev, public_base_url: e.target.value }))} placeholder="https://hub.zebflow.com/api" />
                     </Field>
-                    <Field label="Password" id="marketplace-service-password">
-                      <Input id="marketplace-service-password" type="password" value={serviceForm.password} onInput={(e) => setServiceForm((prev) => ({ ...prev, password: e.target.value }))} required />
+                    <Field label="Password" id="hub-service-password">
+                      <Input id="hub-service-password" type="password" value={serviceForm.password} onInput={(e) => setServiceForm((prev) => ({ ...prev, password: e.target.value }))} required />
                     </Field>
                     <label className="flex items-center gap-2 pt-6 text-sm text-gray-600">
                       <input type="checkbox" checked={serviceForm.enabled} onChange={(e) => setServiceForm((prev) => ({ ...prev, enabled: e.target.checked }))} />
@@ -524,7 +524,7 @@ export default function Page(input) {
                           );
                         })}
                         {!publishers.length ? (
-                          <div className="rounded-lg border border-dashed border-gray-300 bg-white px-3 py-6 text-sm text-gray-500">Create a publisher to issue marketplace access.</div>
+                          <div className="rounded-lg border border-dashed border-gray-300 bg-white px-3 py-6 text-sm text-gray-500">Create a publisher to issue hub access.</div>
                         ) : null}
                       </div>
                     </aside>
@@ -549,7 +549,7 @@ export default function Page(input) {
                           <Field label="Display Name" id="publisher-name"><Input id="publisher-name" value={publisherForm.display_name} onInput={(e) => setPublisherForm((prev) => ({ ...prev, display_name: e.target.value }))} /></Field>
                           <Field label="Email" id="publisher-email"><Input id="publisher-email" type="email" value={publisherForm.email} onInput={(e) => setPublisherForm((prev) => ({ ...prev, email: e.target.value }))} /></Field>
                           <Field label="Website URL" id="publisher-website"><Input id="publisher-website" value={publisherForm.website_url} onInput={(e) => setPublisherForm((prev) => ({ ...prev, website_url: e.target.value }))} placeholder="https://example.com" /></Field>
-                          <Field label="Marketplace Profile URL" id="publisher-profile-url"><Input id="publisher-profile-url" value={publisherForm.publisher_url} onInput={(e) => setPublisherForm((prev) => ({ ...prev, publisher_url: e.target.value }))} placeholder="/publishers/example" /></Field>
+                          <Field label="Hub Profile URL" id="publisher-profile-url"><Input id="publisher-profile-url" value={publisherForm.publisher_url} onInput={(e) => setPublisherForm((prev) => ({ ...prev, publisher_url: e.target.value }))} placeholder="/publishers/example" /></Field>
                           <Field label="Icon URL" id="publisher-icon-url"><Input id="publisher-icon-url" value={publisherForm.icon_url} onInput={(e) => setPublisherForm((prev) => ({ ...prev, icon_url: e.target.value }))} placeholder="https://example.com/icon.png" /></Field>
                           <Field label="Description" id="publisher-description">
                             <textarea id="publisher-description" className="min-h-24 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-none" value={publisherForm.description} onInput={(e) => setPublisherForm((prev) => ({ ...prev, description: e.target.value }))} />
@@ -664,7 +664,7 @@ export default function Page(input) {
                   <h2 className="text-lg font-semibold text-gray-900">Project Access</h2>
                   <div className="mt-3 space-y-2 text-sm">
                     {projects.map((item) => (
-                      <a key={item?.project} href={item?.marketplace_href} className="block rounded-lg border border-gray-200 px-3 py-2 text-gray-700 hover:bg-gray-50">
+                      <a key={item?.project} href={item?.hub_href} className="block rounded-lg border border-gray-200 px-3 py-2 text-gray-700 hover:bg-gray-50">
                         {item?.title || item?.project}
                       </a>
                     ))}
@@ -681,13 +681,13 @@ export default function Page(input) {
           <form onSubmit={saveSource}>
             <div className="space-y-4 px-6 pt-6 pb-2">
               <DialogHeader>
-                <DialogTitle>External Marketplace Sources</DialogTitle>
+                <DialogTitle>External Hub Sources</DialogTitle>
                 <DialogDescription>Only superadmin can add sources. Public sources are visible to all users; private sources are superadmin-only.</DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 md:grid-cols-2">
                 <Field label="Repository ID" id="source-id"><Input id="source-id" value={sourceForm.repository_id} onInput={(e) => setSourceForm((prev) => ({ ...prev, repository_id: e.target.value }))} required /></Field>
                 <Field label="Title" id="source-title"><Input id="source-title" value={sourceForm.title} onInput={(e) => setSourceForm((prev) => ({ ...prev, title: e.target.value }))} /></Field>
-                <Field label="Base URL" id="source-url"><Input id="source-url" value={sourceForm.base_url} onInput={(e) => setSourceForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://market.zebflow.com/api" required /></Field>
+                <Field label="Base URL" id="source-url"><Input id="source-url" value={sourceForm.base_url} onInput={(e) => setSourceForm((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://hub.zebflow.com/api" required /></Field>
                 <Field label="Read Token" id="source-token"><Input id="source-token" type="password" value={sourceForm.read_token} onInput={(e) => setSourceForm((prev) => ({ ...prev, read_token: e.target.value }))} /></Field>
                 <Field label="Visibility" id="source-visibility">
                   <select id="source-visibility" className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm" value={sourceForm.visibility} onChange={(e) => setSourceForm((prev) => ({ ...prev, visibility: e.target.value }))}>
