@@ -21,7 +21,9 @@ use crate::platform::error::PlatformError;
 use crate::platform::model::{
     ProjectTransferArtifactKind, ProjectTransferManifest, now_ts, slug_segment,
 };
+use crate::platform::sekejap;
 use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::sqlite_schema;
 
 #[derive(Default)]
 struct DirectoryStats {
@@ -33,6 +35,7 @@ struct DirectoryStats {
 pub struct ProjectTransferService {
     file: Arc<dyn FileAdapter>,
     zebflow_cfg: Arc<ZebflowJsonService>,
+    data_root: PathBuf,
     artifacts_root: PathBuf,
 }
 
@@ -41,11 +44,13 @@ impl ProjectTransferService {
     pub fn new(
         file: Arc<dyn FileAdapter>,
         zebflow_cfg: Arc<ZebflowJsonService>,
+        data_root: PathBuf,
         artifacts_root: PathBuf,
     ) -> Self {
         Self {
             file,
             zebflow_cfg,
+            data_root,
             artifacts_root,
         }
     }
@@ -197,6 +202,8 @@ impl ProjectTransferService {
             ProjectTransferArtifactKind::Bundle => {
                 replace_directory(&layout.repo_dir, &extract_dir.join("repo"))?;
                 replace_directory(&layout.data_dir, &extract_dir.join("data"))?;
+                sekejap::apply_schema_from_repo(&self.data_root, &owner, &project)?;
+                sqlite_schema::apply_schema_from_repo(&self.data_root, &owner, &project)?;
             }
             ProjectTransferArtifactKind::Files => {
                 replace_directory(&layout.files_dir, &extract_dir.join("files"))?;

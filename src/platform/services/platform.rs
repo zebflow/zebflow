@@ -146,6 +146,7 @@ impl PlatformService {
         let project_transfer = Arc::new(ProjectTransferService::new(
             file.clone(),
             zebflow_cfg.clone(),
+            config.data_root.clone(),
             config.data_root.join("platform").join("project-operations"),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));

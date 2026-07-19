@@ -257,7 +257,7 @@ impl PlatformOps {
                             vec![],
                         )],
                     ),
-                    section("packs", "Packs", doc("guide/hub/packs"), vec![]),
+                    section("packs", "Packages", doc("guide/hub/packs"), vec![]),
                     section(
                         "hub-how-it-works",
                         "How Hub Works",

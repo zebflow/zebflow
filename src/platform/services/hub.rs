@@ -2,10 +2,12 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine as _;
+use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,12 +16,20 @@ use sha2::{Digest, Sha256};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateHubTokenRequest, CreateProjectRequest, HubAssetPackage, HubAssetVersion, HubAuthority,
-    HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance, ProjectFileLayout,
-    ProjectHubRepository, ProjectRuntimeSelectionRequest, ZebflowJson, now_ts, slug_segment,
+    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetPackage, HubAssetVersion,
+    HubAuthority, HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance,
+    ProjectFileLayout, ProjectHubRepository, ProjectRuntimeSelectionRequest, ZebflowJson, now_ts,
+    slug_segment,
 };
+use crate::platform::policy::package::{
+    PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview, review_package_entries,
+};
+use crate::platform::sekejap;
 use crate::platform::services::ProjectService;
+use crate::platform::services::project::derive_trigger_kind_from_source;
 use crate::platform::services::tsx_outline::extract_import_sources;
+use crate::platform::sqlite_schema;
+use crate::zebfs::{LocalZebFs, normalize_object_path};
 
 pub struct HubService {
     control_data: Arc<dyn DataAdapter>,
@@ -37,6 +47,18 @@ const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
 const DEFAULT_PUBLISHER_MAX_PACKAGE_BYTES: i64 = 10 * 1024 * 1024;
 const DEFAULT_PUBLISHER_MAX_MEDIA_FILES: i64 = 8;
 const DEFAULT_PUBLISHER_MAX_IMAGE_BYTES: i64 = 2 * 1024 * 1024;
+const HUB_ASSET_KIND_PIPELINE_BUNDLE: &str = "pipeline_bundle";
+const HUB_ASSET_KIND_TEMPLATE_BUNDLE: &str = "template_bundle";
+const HUB_ASSET_KIND_FOLDER_BUNDLE: &str = "folder_bundle";
+const HUB_ASSET_KIND_PROJECT_BUNDLE: &str = "project_bundle";
+const HUB_ASSET_KIND_NODE_BUNDLE: &str = "node_bundle";
+const HUB_ASSET_KINDS: &[&str] = &[
+    HUB_ASSET_KIND_PIPELINE_BUNDLE,
+    HUB_ASSET_KIND_TEMPLATE_BUNDLE,
+    HUB_ASSET_KIND_FOLDER_BUNDLE,
+    HUB_ASSET_KIND_PROJECT_BUNDLE,
+    HUB_ASSET_KIND_NODE_BUNDLE,
+];
 
 fn default_hub_base_url() -> String {
     std::env::var("ZEBFLOW_HUB_DEFAULT_BASE_URL")
@@ -52,6 +74,22 @@ fn preserve_or_replace_token(existing: Option<&str>, incoming: &str) -> String {
         existing.unwrap_or_default().to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn prune_empty_hub_dirs(start: Option<&Path>, stop: &Path) {
+    let Some(mut current) = start.map(Path::to_path_buf) else {
+        return;
+    };
+    while current.starts_with(stop) && current != stop {
+        match fs::remove_dir(&current) {
+            Ok(()) => {}
+            Err(_) => break,
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent.to_path_buf();
     }
 }
 
@@ -89,6 +127,42 @@ pub struct HubExportPreview {
     pub total_bytes: usize,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HubProjectBundlePublishOptions {
+    #[serde(default)]
+    pub include_sekejap_schema: bool,
+    #[serde(default)]
+    pub include_sqlite_schema: bool,
+    #[serde(default)]
+    pub include_libraries: Vec<String>,
+    #[serde(default)]
+    pub include_initial_data: bool,
+    #[serde(default)]
+    pub initial_data_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct HubProjectInitialization {
+    #[serde(default)]
+    include_sekejap_schema: bool,
+    #[serde(default)]
+    include_sqlite_schema: bool,
+    #[serde(default)]
+    libraries: Vec<String>,
+    #[serde(default)]
+    initial_data: Vec<HubInitialDataStep>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HubInitialDataStep {
+    pub engine: String,
+    pub path: String,
+    #[serde(default)]
+    pub statement_count: usize,
+    #[serde(default)]
+    pub size_bytes: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HubInstallResult {
     pub package_id: String,
@@ -96,6 +170,67 @@ pub struct HubInstallResult {
     pub install_root: String,
     pub files_written: usize,
     pub pipelines_registered: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HubInstallReview {
+    pub package_id: String,
+    pub version: String,
+    pub target_folder: String,
+    pub install_root: String,
+    pub asset_kind: String,
+    pub files_added: Vec<String>,
+    pub files_overwritten: Vec<String>,
+    pub pipelines_registered: Vec<String>,
+    pub nodes_used: Vec<String>,
+    pub credentials_required: Vec<String>,
+    pub external_urls: Vec<String>,
+    pub database_effects: Vec<String>,
+    pub filesystem_effects: Vec<String>,
+    pub public_endpoints: Vec<String>,
+    pub schedules: Vec<String>,
+    pub large_files: Vec<String>,
+    pub seed_data: Vec<String>,
+    pub project_initialization: serde_json::Value,
+    pub warnings: Vec<String>,
+    pub risk_level: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HubPublishReview {
+    pub package_id: String,
+    pub version: String,
+    pub asset_kind: String,
+    pub source_type: String,
+    pub source_ref: String,
+    pub title: String,
+    pub description: String,
+    pub visibility: String,
+    pub tags: Vec<String>,
+    pub total_files: usize,
+    pub total_bytes: usize,
+    pub files: Vec<HubExportEntry>,
+    pub media: Vec<HubPublishMediaReview>,
+    pub nodes_used: Vec<String>,
+    pub credentials_required: Vec<String>,
+    pub external_urls: Vec<String>,
+    pub database_effects: Vec<String>,
+    pub filesystem_effects: Vec<String>,
+    pub public_endpoints: Vec<String>,
+    pub schedules: Vec<String>,
+    pub large_files: Vec<String>,
+    pub seed_data: Vec<String>,
+    pub project_initialization: serde_json::Value,
+    pub warnings: Vec<String>,
+    pub risk_level: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HubPublishMediaReview {
+    pub name: String,
+    pub role: String,
+    pub content_type: String,
+    pub size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,6 +248,9 @@ pub struct HubRemotePackRow {
     pub asset_kind: String,
     pub title: String,
     pub description: String,
+    pub summary: String,
+    pub image_url: String,
+    pub gallery: Value,
     pub visibility: String,
     pub tags: Vec<String>,
     pub latest_version: String,
@@ -141,6 +279,12 @@ struct RemoteHubAssetItem {
     asset_kind: String,
     title: String,
     description: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    image_url: String,
+    #[serde(default)]
+    gallery: Value,
     visibility: String,
     #[serde(default)]
     tags: Vec<String>,
@@ -188,7 +332,61 @@ struct HubArtifact {
     publisher_email: String,
     title: String,
     description: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    description_md: String,
+    #[serde(default)]
+    image_url: String,
+    #[serde(default)]
+    gallery: HubGallery,
+    #[serde(default)]
+    media: Vec<HubMediaFile>,
+    #[serde(default)]
+    active_pipelines: Vec<String>,
+    #[serde(default)]
+    project_initialization: HubProjectInitialization,
     files: Vec<HubExportEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubMediaFile {
+    pub name: String,
+    pub role: String,
+    pub content_type: String,
+    pub size_bytes: usize,
+    pub sha256: String,
+    pub encoding: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct HubGallery {
+    #[serde(default)]
+    cover: Option<HubGalleryImage>,
+    #[serde(default)]
+    items: Vec<HubGalleryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HubGalleryImage {
+    kind: String,
+    media_name: String,
+    #[serde(default)]
+    alt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct HubGalleryItem {
+    kind: String,
+    #[serde(default)]
+    media_name: String,
+    #[serde(default)]
+    alt: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    title: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
@@ -350,6 +548,55 @@ impl HubService {
         self.hub_data.list_hub_asset_versions(package_id)
     }
 
+    pub fn delete_asset_package(
+        &self,
+        token: &HubToken,
+        package_id: &str,
+    ) -> Result<usize, PlatformError> {
+        self.require_enabled()?;
+        let package_id = canonical_hub_package_id(&token.publisher_id, package_id)?;
+        if package_id.is_empty() {
+            return Err(PlatformError::new(
+                "HUB_PACKAGE_INVALID",
+                "package id must not be empty",
+            ));
+        }
+        let Some(package) = self.hub_data.get_hub_asset_package(&package_id)? else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset package not found",
+            ));
+        };
+        let can_manage = token.scopes.iter().any(|scope| scope == "hub:manage");
+        if !can_manage
+            && (package.publisher_owner != token.owner
+                || package.publisher_id != token.publisher_id)
+        {
+            return Err(PlatformError::new(
+                "HUB_PACKAGE_FORBIDDEN",
+                "token cannot delete this package",
+            ));
+        }
+        let versions = self.hub_data.list_hub_asset_versions(&package_id)?;
+        let artifact_paths = versions
+            .iter()
+            .filter_map(|version| {
+                self.hub_artifact_path_for_delete(&version.artifact_rel_path)
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        self.hub_data.delete_hub_asset_package(&package_id)?;
+        for path in artifact_paths {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {}
+            }
+            prune_empty_hub_dirs(path.parent(), &self.data_root);
+        }
+        Ok(versions.len())
+    }
+
     pub fn list_publishers(
         &self,
         owner: &str,
@@ -384,7 +631,7 @@ impl HubService {
         let _ = (owner, project);
         self.require_enabled()?;
         let authority = self.ensure_service_authority()?;
-        let publisher_id = slug_segment(publisher_id);
+        let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
         if publisher_id.is_empty() {
             return Err(PlatformError::new(
                 "HUB_PUBLISHER_INVALID",
@@ -465,7 +712,7 @@ impl HubService {
                 "owner/project must not be empty",
             ));
         }
-        let publisher_id = slug_segment(&req.publisher_id);
+        let publisher_id = normalize_hub_id_segment(&req.publisher_id, "publisher id")?;
         let title = req.title.trim();
         if title.is_empty() || publisher_id.is_empty() {
             return Err(PlatformError::new(
@@ -578,6 +825,155 @@ impl HubService {
             .list_project_hub_repositories(&slug_segment(owner), &slug_segment(project))
     }
 
+    pub fn list_access_grants(
+        &self,
+        source_owner: &str,
+    ) -> Result<Vec<HubAccessGrant>, PlatformError> {
+        self.control_data
+            .list_hub_access_grants(&slug_segment(source_owner))
+    }
+
+    pub fn upsert_access_grant(
+        &self,
+        source_owner: &str,
+        repository_id: &str,
+        grant_scope: &str,
+        target_owner: &str,
+        target_project: &str,
+        can_read: bool,
+        can_publish: bool,
+        can_manage: bool,
+        enabled: bool,
+    ) -> Result<HubAccessGrant, PlatformError> {
+        let source_owner = slug_segment(source_owner);
+        let repository_id = slug_segment(repository_id);
+        let grant_scope = normalize_hub_grant_scope(grant_scope)?;
+        let target_owner = if grant_scope == "all_projects" {
+            String::new()
+        } else {
+            slug_segment(target_owner)
+        };
+        let target_project = if grant_scope == "all_projects" {
+            String::new()
+        } else {
+            slug_segment(target_project)
+        };
+        if source_owner.is_empty()
+            || repository_id.is_empty()
+            || (grant_scope == "selected_project"
+                && (target_owner.is_empty() || target_project.is_empty()))
+        {
+            return Err(PlatformError::new(
+                "HUB_ACCESS_GRANT_INVALID",
+                "source owner, repository id, and selected project target are required",
+            ));
+        }
+        let repos = self
+            .control_data
+            .list_platform_hub_repositories(&source_owner)?;
+        let Some(repo) = repos
+            .into_iter()
+            .find(|item| item.repository_id == repository_id)
+        else {
+            return Err(PlatformError::new(
+                "HUB_REPOSITORY_MISSING",
+                "platform Hub source not found",
+            ));
+        };
+        let now = now_ts();
+        let existing = self
+            .control_data
+            .list_hub_access_grants(&source_owner)?
+            .into_iter()
+            .find(|item| {
+                item.source_id == repo.source_id
+                    && item.grant_scope == grant_scope
+                    && item.target_owner == target_owner
+                    && item.target_project == target_project
+            });
+        let grant = HubAccessGrant {
+            grant_id: existing
+                .as_ref()
+                .map(|item| item.grant_id.clone())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| format!("hgrant_{}", random_hex(8))),
+            source_owner,
+            source_id: repo.source_id,
+            repository_id,
+            grant_scope,
+            target_owner,
+            target_project,
+            can_read,
+            can_publish,
+            can_manage,
+            enabled,
+            created_at: existing.as_ref().map(|item| item.created_at).unwrap_or(now),
+            updated_at: now,
+        };
+        self.control_data.put_hub_access_grant(&grant)?;
+        Ok(grant)
+    }
+
+    pub fn delete_access_grant(&self, grant_id: &str) -> Result<(), PlatformError> {
+        self.control_data
+            .delete_hub_access_grant(&slug_segment(grant_id))
+    }
+
+    pub fn list_effective_repositories(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<ProjectHubRepository>, PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let mut out = self
+            .control_data
+            .list_project_hub_repositories(&owner, &project)?;
+        let mut seen = out
+            .iter()
+            .map(|item| item.repository_id.clone())
+            .collect::<BTreeSet<_>>();
+        let grants = self
+            .control_data
+            .list_effective_hub_access_grants(&owner, &project)?;
+        for grant in grants
+            .into_iter()
+            .filter(|item| item.enabled && item.can_read)
+        {
+            if seen.contains(&grant.repository_id) {
+                continue;
+            }
+            let source = self
+                .control_data
+                .list_platform_hub_repositories(&grant.source_owner)?
+                .into_iter()
+                .find(|item| {
+                    item.source_id == grant.source_id || item.repository_id == grant.repository_id
+                });
+            let Some(source) = source else {
+                continue;
+            };
+            if !source.enabled {
+                continue;
+            }
+            seen.insert(source.repository_id.clone());
+            out.push(ProjectHubRepository {
+                owner: owner.clone(),
+                project: project.clone(),
+                repository_id: source.repository_id,
+                title: source.title,
+                base_url: source.base_url,
+                remote_owner: source.remote_owner,
+                remote_project: source.remote_project,
+                read_token: source.read_token,
+                enabled: source.enabled,
+                created_at: grant.created_at,
+                updated_at: grant.updated_at,
+            });
+        }
+        Ok(out)
+    }
+
     pub fn ensure_default_project_repository(
         &self,
         owner: &str,
@@ -588,30 +984,30 @@ impl HubService {
         if owner.is_empty() || project.is_empty() {
             return Ok(());
         }
-        let existing = self
+        self.ensure_default_platform_repository(&owner)?;
+        let has_default_grant = self
             .control_data
-            .list_project_hub_repositories(&owner, &project)?;
-        if existing
-            .iter()
-            .any(|item| item.repository_id == "zebflow-com")
-        {
-            return Ok(());
+            .list_hub_access_grants(&owner)?
+            .into_iter()
+            .any(|grant| {
+                grant.repository_id == "zebflow-com"
+                    && grant.grant_scope == "all_projects"
+                    && grant.enabled
+                    && grant.can_read
+            });
+        if !has_default_grant {
+            self.upsert_access_grant(
+                &owner,
+                "zebflow-com",
+                "all_projects",
+                "",
+                "",
+                true,
+                false,
+                false,
+                true,
+            )?;
         }
-        let now = now_ts();
-        self.control_data
-            .put_project_hub_repository(&ProjectHubRepository {
-                owner,
-                project,
-                repository_id: "zebflow-com".to_string(),
-                title: "Zebflow Hub".to_string(),
-                base_url: default_hub_base_url(),
-                remote_owner: String::new(),
-                remote_project: String::new(),
-                read_token: String::new(),
-                enabled: true,
-                created_at: now,
-                updated_at: now,
-            })?;
         Ok(())
     }
 
@@ -1009,7 +1405,9 @@ impl HubService {
         version: &str,
         title: &str,
         description: &str,
+        image_file_path: &str,
         visibility: &str,
+        project_options: HubProjectBundlePublishOptions,
         tags: Vec<String>,
     ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
         let _ = (authority_owner, authority_project);
@@ -1017,11 +1415,11 @@ impl HubService {
         let authority_owner = HUB_SERVICE_SCOPE_OWNER.to_string();
         let authority_project = HUB_SERVICE_SCOPE_PROJECT.to_string();
         let publisher_owner = slug_segment(publisher_owner);
-        let publisher_id = slug_segment(publisher_id);
+        let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
         let source_owner = slug_segment(source_owner);
         let source_project = slug_segment(source_project);
         let source_type = normalize_source_type(source_type);
-        let package_id = slug_segment(package_id);
+        let package_id = canonical_hub_package_id(&publisher_id, package_id)?;
         let version = version.trim();
         if authority_owner.is_empty()
             || authority_project.is_empty()
@@ -1074,7 +1472,35 @@ impl HubService {
                 "nothing to publish for this source",
             ));
         }
+        let project_initialization = self.apply_project_bundle_publish_options(
+            &source_owner,
+            &source_project,
+            &source_type,
+            &mut preview,
+            project_options,
+        )?;
         sanitize_hub_export_entries(&mut preview.entries)?;
+        let media = collect_publish_media_from_files(
+            &self
+                .projects
+                .project_layout(&source_owner, &source_project)?,
+            image_file_path,
+            &publisher,
+        )?;
+        let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
+            self.projects
+                .list_active_pipeline_meta(&source_owner, &source_project)?
+                .into_iter()
+                .map(|meta| meta.file_rel_path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let image_url = media
+            .iter()
+            .find(|item| item.role == "cover")
+            .map(|item| format!("/api/hub/remote/assets/{package_id}/media/{}", item.name))
+            .unwrap_or_default();
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
             DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
@@ -1117,6 +1543,13 @@ impl HubService {
             } else {
                 description.trim().to_string()
             },
+            summary: String::new(),
+            description_md: String::new(),
+            image_url: image_url.clone(),
+            gallery: HubGallery::default(),
+            media,
+            active_pipelines,
+            project_initialization,
             files: preview.entries.clone(),
         };
         let artifact_bytes = serde_json::to_vec_pretty(&manifest)
@@ -1149,6 +1582,7 @@ impl HubService {
             asset_kind: preview.asset_kind.clone(),
             title: manifest.title.clone(),
             description: manifest.description.clone(),
+            image_url,
             visibility: normalize_visibility(visibility),
             tags,
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
@@ -1177,12 +1611,207 @@ impl HubService {
         Ok((package, version_row))
     }
 
+    pub fn review_publish_asset(
+        &self,
+        source_owner: &str,
+        source_project: &str,
+        publisher_id: &str,
+        source_type: &str,
+        source_ref: &str,
+        package_id: &str,
+        version: &str,
+        title: &str,
+        description: &str,
+        image_file_path: &str,
+        visibility: &str,
+        project_options: HubProjectBundlePublishOptions,
+        tags: Vec<String>,
+    ) -> Result<HubPublishReview, PlatformError> {
+        self.require_enabled()?;
+        let source_owner = slug_segment(source_owner);
+        let source_project = slug_segment(source_project);
+        let publisher_id = normalize_hub_id_segment(publisher_id, "publisher id")?;
+        let source_type = normalize_source_type(source_type);
+        let package_id = canonical_hub_package_id(&publisher_id, package_id)?;
+        let version = version.trim().to_string();
+        validate_hub_version(&version)?;
+        let Some(publisher) = self.hub_data.get_hub_publisher(
+            HUB_SERVICE_SCOPE_OWNER,
+            HUB_SERVICE_SCOPE_PROJECT,
+            &publisher_id,
+        )?
+        else {
+            return Err(PlatformError::new(
+                "HUB_PUBLISHER_MISSING",
+                "publisher not found",
+            ));
+        };
+        let mut preview =
+            self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
+        let project_initialization = self.apply_project_bundle_publish_options(
+            &source_owner,
+            &source_project,
+            &source_type,
+            &mut preview,
+            project_options,
+        )?;
+        sanitize_hub_export_entries(&mut preview.entries)?;
+        let media = collect_publish_media_from_files(
+            &self
+                .projects
+                .project_layout(&source_owner, &source_project)?,
+            image_file_path,
+            &publisher,
+        )?;
+        let title = if title.trim().is_empty() {
+            preview.name.clone()
+        } else {
+            title.trim().to_string()
+        };
+        let description = if description.trim().is_empty() {
+            preview.description.clone()
+        } else {
+            description.trim().to_string()
+        };
+        review_publish_artifact(
+            package_id,
+            version,
+            preview,
+            title,
+            description,
+            normalize_visibility(visibility),
+            tags,
+            media,
+            project_initialization,
+        )
+    }
+
+    fn apply_project_bundle_publish_options(
+        &self,
+        source_owner: &str,
+        source_project: &str,
+        source_type: &str,
+        preview: &mut HubExportPreview,
+        mut options: HubProjectBundlePublishOptions,
+    ) -> Result<HubProjectInitialization, PlatformError> {
+        if source_type != "project_files" || preview.asset_kind != HUB_ASSET_KIND_PROJECT_BUNDLE {
+            return Ok(HubProjectInitialization::default());
+        }
+
+        options.include_libraries.sort();
+        options.include_libraries.dedup();
+        options.initial_data_paths = options
+            .initial_data_paths
+            .into_iter()
+            .map(|path| normalize_repo_rel(&path))
+            .filter(|path| initial_data_engine_for_path(path).is_some())
+            .collect();
+        options.initial_data_paths.sort();
+        options.initial_data_paths.dedup();
+
+        if !options.include_sekejap_schema {
+            preview.entries.retain(|entry| {
+                !normalize_repo_rel(&entry.rel_path).starts_with("schemas/sekejap/")
+            });
+        } else if !preview
+            .entries
+            .iter()
+            .any(|entry| normalize_repo_rel(&entry.rel_path) == "schemas/sekejap/schema.json")
+        {
+            let export = sekejap::export_schema(&self.data_root, source_owner, source_project)?;
+            if !export.tables.is_empty() {
+                let content = serde_json::to_string_pretty(&export)
+                    .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?
+                    + "\n";
+                preview.entries.push(text_export_entry(
+                    "schemas/sekejap/schema.json",
+                    "sekejap schema",
+                    "Portable Sekejap schema",
+                    content,
+                ));
+            }
+        }
+
+        preview
+            .entries
+            .retain(|entry| normalize_repo_rel(&entry.rel_path) != sqlite_schema::REPO_SCHEMA_PATH);
+        if options.include_sqlite_schema {
+            if let Some(sql) =
+                sqlite_schema::export_schema_sql(&self.data_root, source_owner, source_project)?
+            {
+                preview.entries.push(text_export_entry(
+                    sqlite_schema::REPO_SCHEMA_PATH,
+                    "sqlite schema",
+                    "Portable SQLite schema",
+                    sql,
+                ));
+            }
+        }
+
+        let initial_data = if options.include_initial_data {
+            preview
+                .entries
+                .iter()
+                .filter_map(initial_data_step_from_entry)
+                .filter(|step| {
+                    options
+                        .initial_data_paths
+                        .iter()
+                        .any(|path| path == &step.path)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        rewrite_project_libraries(preview, &options.include_libraries)?;
+        let init = HubProjectInitialization {
+            include_sekejap_schema: options.include_sekejap_schema,
+            include_sqlite_schema: options.include_sqlite_schema,
+            libraries: options.include_libraries,
+            initial_data,
+        };
+        let init_content = serde_json::to_string_pretty(&init)
+            .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?
+            + "\n";
+        preview
+            .entries
+            .retain(|entry| normalize_repo_rel(&entry.rel_path) != "zebflow.init.json");
+        preview.entries.push(text_export_entry(
+            "zebflow.init.json",
+            "project initialization",
+            "Project bundle initialization plan",
+            init_content,
+        ));
+        Ok(init)
+    }
+
+    pub fn list_project_initial_data(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<Vec<HubInitialDataStep>, PlatformError> {
+        let layout = self.projects.project_layout(owner, project)?;
+        let mut steps = Vec::new();
+        for (prefix, engine) in INITIAL_DATA_DIRS {
+            let root = layout.repo_dir.join(prefix);
+            if !root.is_dir() {
+                continue;
+            }
+            collect_initial_data_steps(&layout.repo_dir, &root, engine, &mut steps)?;
+        }
+        steps.sort_by(|a, b| a.path.cmp(&b.path));
+        steps.dedup_by(|a, b| a.path == b.path);
+        Ok(steps)
+    }
+
     pub fn install_asset(
         &self,
         target_owner: &str,
         target_project: &str,
         package_id: &str,
         version: &str,
+        target_folder: &str,
     ) -> Result<HubInstallResult, PlatformError> {
         let target_owner = slug_segment(target_owner);
         let target_project = slug_segment(target_project);
@@ -1197,7 +1826,45 @@ impl HubService {
         let raw = fs::read_to_string(&artifact_abs)?;
         let payload: HubArtifact = serde_json::from_str(&raw)
             .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
-        self.install_artifact_payload(target_owner, target_project, package_id, version, payload)
+        self.install_artifact_payload(
+            target_owner,
+            target_project,
+            package_id,
+            version,
+            target_folder,
+            payload,
+        )
+    }
+
+    pub fn review_asset_install(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+    ) -> Result<HubInstallReview, PlatformError> {
+        let target_owner = slug_segment(target_owner);
+        let target_project = slug_segment(target_project);
+        self.require_enabled()?;
+        let Some(version_row) = self.hub_data.get_hub_asset_version(package_id, version)? else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset version not found",
+            ));
+        };
+        let artifact_abs = self.data_root.join(&version_row.artifact_rel_path);
+        let raw = fs::read_to_string(&artifact_abs)?;
+        let payload: HubArtifact = serde_json::from_str(&raw)
+            .map_err(|err| PlatformError::new("HUB_INSTALL_REVIEW", err.to_string()))?;
+        self.review_artifact_payload(
+            &target_owner,
+            &target_project,
+            package_id,
+            version,
+            target_folder,
+            &payload,
+        )
     }
 
     fn install_artifact_payload(
@@ -1206,15 +1873,18 @@ impl HubService {
         target_project: String,
         package_id: &str,
         version: &str,
+        target_folder: &str,
         payload: HubArtifact,
     ) -> Result<HubInstallResult, PlatformError> {
         let layout = self
             .projects
             .project_layout(&target_owner, &target_project)?;
+        let install_root =
+            install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
 
         let mut pipelines_registered = Vec::new();
         for entry in &payload.files {
-            let install_rel = install_rel_path(package_id, &entry.rel_path);
+            let install_rel = install_rel_path_under_folder(&install_root, &entry.rel_path);
             let dest_abs = layout.repo_dir.join(&install_rel);
             if let Some(parent) = dest_abs.parent() {
                 fs::create_dir_all(parent)?;
@@ -1235,13 +1905,71 @@ impl HubService {
                 pipelines_registered.push(meta.file_rel_path);
             }
         }
-
         Ok(HubInstallResult {
             package_id: package_id.to_string(),
             version: version.to_string(),
-            install_root: install_root_for(package_id, &payload.asset_kind),
+            install_root,
             files_written: payload.files.len(),
             pipelines_registered,
+        })
+    }
+
+    fn review_artifact_payload(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        payload: &HubArtifact,
+    ) -> Result<HubInstallReview, PlatformError> {
+        let layout = self.projects.project_layout(target_owner, target_project)?;
+        let install_root =
+            install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
+        let mut files_added = Vec::new();
+        let mut files_overwritten = Vec::new();
+        let mut pipelines_registered = Vec::new();
+        let mut policy_entries = Vec::new();
+
+        for entry in &payload.files {
+            let install_rel = install_rel_path_under_folder(&install_root, &entry.rel_path);
+            let dest_abs = layout.repo_dir.join(&install_rel);
+            if dest_abs.exists() {
+                files_overwritten.push(install_rel.clone());
+            } else {
+                files_added.push(install_rel.clone());
+            }
+            if install_rel.ends_with(".zf.json") && install_rel.starts_with("pipelines/") {
+                pipelines_registered.push(install_rel.clone());
+            }
+            policy_entries.push(package_policy_entry(&install_rel, entry));
+        }
+        let mut policy =
+            review_package_entries(&policy_entries, Vec::new(), PackageReviewOptions::default());
+        policy.risk_level = install_risk_level(&policy, !files_overwritten.is_empty());
+
+        Ok(HubInstallReview {
+            package_id: package_id.to_string(),
+            version: version.to_string(),
+            target_folder: target_folder.to_string(),
+            install_root,
+            asset_kind: payload.asset_kind.clone(),
+            files_added,
+            files_overwritten,
+            pipelines_registered,
+            nodes_used: policy.nodes_used,
+            credentials_required: policy.credentials_required,
+            external_urls: policy.external_urls,
+            database_effects: policy.database_effects,
+            filesystem_effects: policy.filesystem_effects,
+            public_endpoints: policy.public_endpoints,
+            schedules: policy.schedules,
+            large_files: policy.large_files,
+            seed_data: policy.seed_data,
+            project_initialization: serde_json::to_value(&payload.project_initialization)
+                .unwrap_or_else(|_| Value::Null),
+            warnings: policy.warnings,
+            risk_level: policy.risk_level,
         })
     }
 
@@ -1281,6 +2009,52 @@ impl HubService {
         Ok((version_row, artifact, artifact_size_bytes))
     }
 
+    pub fn get_latest_asset_media(
+        &self,
+        package_id: &str,
+        media_name: &str,
+    ) -> Result<(HubAssetPackage, HubMediaFile, Vec<u8>), PlatformError> {
+        self.require_enabled()?;
+        let Some(package) = self.hub_data.get_hub_asset_package(package_id)? else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset package not found",
+            ));
+        };
+        let Some(version) = self
+            .hub_data
+            .list_hub_asset_versions(package_id)?
+            .into_iter()
+            .next()
+        else {
+            return Err(PlatformError::new(
+                "HUB_ASSET_MISSING",
+                "asset version not found",
+            ));
+        };
+        let artifact_abs = self.hub_artifact_path(&version.artifact_rel_path)?;
+        let raw = fs::read_to_string(&artifact_abs)?;
+        let artifact: HubArtifact = serde_json::from_str(&raw)
+            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+        let Some(media) = artifact
+            .media
+            .into_iter()
+            .find(|item| item.name == media_name)
+        else {
+            return Err(PlatformError::new("HUB_MEDIA_MISSING", "media not found"));
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&media.content)
+            .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+        if sha256_hex(&bytes) != media.sha256 {
+            return Err(PlatformError::new(
+                "HUB_MEDIA_INVALID",
+                "media hash mismatch",
+            ));
+        }
+        Ok((package, media, bytes))
+    }
+
     pub fn import_remote_asset(
         &self,
         authority_owner: &str,
@@ -1294,7 +2068,7 @@ impl HubService {
         let authority_project = HUB_SERVICE_SCOPE_PROJECT.to_string();
         let publisher_owner = slug_segment(&token.owner);
         let publisher_id = slug_segment(&token.publisher_id);
-        let package_id = slug_segment(&req.package_id);
+        let package_id = canonical_hub_package_id(&publisher_id, &req.package_id)?;
         let version = req.version.trim().to_string();
         if authority_owner.is_empty()
             || authority_project.is_empty()
@@ -1342,6 +2116,26 @@ impl HubService {
                 "artifact must contain at least one file",
             ));
         }
+        validate_hub_media(&artifact.media, &publisher)?;
+        validate_hub_gallery(&artifact.gallery, &artifact.media)?;
+        artifact.image_url = artifact
+            .gallery
+            .cover
+            .as_ref()
+            .map(|item| {
+                format!(
+                    "/api/hub/remote/assets/{package_id}/media/{}",
+                    item.media_name
+                )
+            })
+            .or_else(|| {
+                artifact
+                    .media
+                    .iter()
+                    .find(|item| item.role == "cover")
+                    .map(|item| format!("/api/hub/remote/assets/{package_id}/media/{}", item.name))
+            })
+            .unwrap_or_default();
         sanitize_hub_export_entries(&mut artifact.files)?;
         let artifact_value = serde_json::to_value(&artifact)
             .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
@@ -1381,7 +2175,7 @@ impl HubService {
             publisher_display_name: publisher.display_name.clone(),
             publisher_url: publisher.publisher_url.clone(),
             publisher_email: publisher.email.clone(),
-            asset_kind: artifact.asset_kind.clone(),
+            asset_kind: validate_hub_asset_kind(&artifact.asset_kind)?,
             title: if req.title.trim().is_empty() {
                 artifact.title.clone()
             } else {
@@ -1392,6 +2186,7 @@ impl HubService {
             } else {
                 req.description.trim().to_string()
             },
+            image_url: artifact.image_url.clone(),
             visibility: normalize_visibility(&req.visibility),
             tags: req.tags.clone(),
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
@@ -1425,7 +2220,7 @@ impl HubService {
         owner: &str,
         project: &str,
     ) -> Result<Vec<HubRemotePackRow>, PlatformError> {
-        let repos = self.list_repositories(owner, project)?;
+        let repos = self.list_effective_repositories(owner, project)?;
         let mut out = Vec::new();
         for repo in repos.into_iter().filter(|item| item.enabled) {
             let url = remote_hub_url(&repo, "remote/assets");
@@ -1457,6 +2252,9 @@ impl HubService {
                 asset_kind: item.asset_kind,
                 title: item.title,
                 description: item.description,
+                summary: item.summary,
+                image_url: item.image_url,
+                gallery: item.gallery,
                 visibility: item.visibility,
                 tags: item.tags,
                 latest_version: item.latest_version,
@@ -1505,7 +2303,7 @@ impl HubService {
                 payload
                     .items
                     .into_iter()
-                    .filter(|item| item.asset_kind == "project_bundle")
+                    .filter(|item| item.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE)
                     .map(|item| HubRemotePackRow {
                         repository_id: repo.repository_id.clone(),
                         repository_title: repo.title.clone(),
@@ -1518,6 +2316,9 @@ impl HubService {
                         asset_kind: item.asset_kind,
                         title: item.title,
                         description: item.description,
+                        summary: item.summary,
+                        image_url: item.image_url,
+                        gallery: item.gallery,
                         visibility: item.visibility,
                         tags: item.tags,
                         latest_version: item.latest_version,
@@ -1537,9 +2338,10 @@ impl HubService {
         repository_id: &str,
         package_id: &str,
         version: &str,
+        target_folder: &str,
     ) -> Result<HubInstallResult, PlatformError> {
         let repo = self
-            .list_repositories(target_owner, target_project)?
+            .list_effective_repositories(target_owner, target_project)?
             .into_iter()
             .find(|item| item.repository_id == repository_id)
             .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
@@ -1574,7 +2376,59 @@ impl HubService {
             slug_segment(target_project),
             package_id,
             version,
+            target_folder,
             artifact,
+        )
+    }
+
+    pub async fn review_remote_pack_from_repository(
+        &self,
+        http_client: &reqwest::Client,
+        target_owner: &str,
+        target_project: &str,
+        repository_id: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+    ) -> Result<HubInstallReview, PlatformError> {
+        let repo = self
+            .list_effective_repositories(target_owner, target_project)?
+            .into_iter()
+            .find(|item| item.repository_id == repository_id)
+            .ok_or_else(|| PlatformError::new("HUB_REPOSITORY_MISSING", "repository not found"))?;
+        let url = remote_hub_url(
+            &repo,
+            &format!("remote/assets/{}/{}/artifact", package_id, version),
+        );
+        validate_remote_hub_url(&url)?;
+        let mut req = http_client.get(url);
+        if !repo.read_token.trim().is_empty() {
+            req = req.bearer_auth(repo.read_token.trim());
+        }
+        let response = req
+            .send()
+            .await
+            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
+        if !response.status().is_success() {
+            return Err(PlatformError::new(
+                "HUB_REMOTE_FETCH",
+                format!("remote fetch failed with {}", response.status()),
+            ));
+        }
+        let payload: RemoteHubArtifactResponse = response
+            .json()
+            .await
+            .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
+        verify_remote_artifact_hash(&payload)?;
+        let artifact: HubArtifact = serde_json::from_value(payload.artifact)
+            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+        self.review_artifact_payload(
+            &slug_segment(target_owner),
+            &slug_segment(target_project),
+            package_id,
+            version,
+            target_folder,
+            &artifact,
         )
     }
 
@@ -1639,7 +2493,7 @@ impl HubService {
         verify_remote_artifact_hash(&payload)?;
         let artifact: HubArtifact = serde_json::from_value(payload.artifact.clone())
             .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
-        if artifact.asset_kind != "project_bundle" {
+        if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
             return Err(PlatformError::new(
                 "HUB_REMOTE_INVALID",
                 "platform hub install only supports project bundles",
@@ -1702,6 +2556,24 @@ impl HubService {
             }
             write_entry_content(&dest_abs, entry)?;
         }
+        reindex_project_bundle_pipelines(self, &target_owner, &project, &artifact.files)?;
+        sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+        sqlite_schema::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+        execute_project_initial_data(
+            &self.data_root,
+            &target_owner,
+            &project,
+            &layout,
+            &artifact.project_initialization.initial_data,
+        )?;
+        for file_rel_path in &artifact.active_pipelines {
+            let normalized = normalize_repo_rel(file_rel_path);
+            if normalized.is_empty() || !normalized.ends_with(".zf.json") {
+                continue;
+            }
+            self.projects
+                .activate_pipeline_definition(&target_owner, &project, &normalized)?;
+        }
         Ok((target_owner, project))
     }
 
@@ -1758,7 +2630,7 @@ impl HubService {
         }
         entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(build_preview(
-            "pipeline_bundle".to_string(),
+            HUB_ASSET_KIND_PIPELINE_BUNDLE.to_string(),
             "pipeline_with_dependencies".to_string(),
             meta.file_rel_path.clone(),
             meta.title,
@@ -1803,7 +2675,7 @@ impl HubService {
         )?;
         entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(build_preview(
-            "template_bundle".to_string(),
+            HUB_ASSET_KIND_TEMPLATE_BUNDLE.to_string(),
             "template_with_dependencies".to_string(),
             selected.rel_path.clone(),
             selected.name,
@@ -1829,7 +2701,7 @@ impl HubService {
             .unwrap_or(source_ref)
             .to_string();
         Ok(build_preview(
-            "folder_bundle".to_string(),
+            HUB_ASSET_KIND_FOLDER_BUNDLE.to_string(),
             "folder_files".to_string(),
             source_ref.to_string(),
             name,
@@ -1846,7 +2718,7 @@ impl HubService {
         let mut entries = collect_tree_entries(layout, ".")?;
         entries.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
         Ok(build_preview(
-            "project_bundle".to_string(),
+            HUB_ASSET_KIND_PROJECT_BUNDLE.to_string(),
             "project_files".to_string(),
             ".".to_string(),
             "Project files".to_string(),
@@ -1983,6 +2855,35 @@ impl HubService {
             ));
         }
         Ok(abs)
+    }
+
+    fn hub_artifact_path_for_delete(&self, rel_path: &str) -> Result<PathBuf, PlatformError> {
+        let rel_path = rel_path.trim().replace('\\', "/");
+        if rel_path.is_empty() || rel_path.contains('\0') {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_PATH_INVALID",
+                "artifact path is invalid",
+            ));
+        }
+        let rel = Path::new(&rel_path);
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_PATH_INVALID",
+                "artifact path must be a contained relative path",
+            ));
+        }
+        let service_rel_prefix = format!("services/{DEFAULT_HUB_SERVICE_INSTANCE_ID}/");
+        if !rel_path.starts_with(&service_rel_prefix) {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_PATH_INVALID",
+                "artifact path must live under the hub service root",
+            ));
+        }
+        Ok(self.data_root.join(rel))
     }
 
     fn enforce_publisher_package_quota(
@@ -2186,6 +3087,413 @@ fn build_preview(
     }
 }
 
+fn text_export_entry(rel_path: &str, kind: &str, reason: &str, content: String) -> HubExportEntry {
+    HubExportEntry {
+        rel_path: rel_path.to_string(),
+        kind: kind.to_string(),
+        size_bytes: content.len(),
+        reason: reason.to_string(),
+        encoding: "text".to_string(),
+        content,
+    }
+}
+
+fn rewrite_project_libraries(
+    preview: &mut HubExportPreview,
+    selected_libraries: &[String],
+) -> Result<(), PlatformError> {
+    let Some(entry) = preview
+        .entries
+        .iter_mut()
+        .find(|entry| normalize_repo_rel(&entry.rel_path) == "zebflow.json")
+    else {
+        return Ok(());
+    };
+    let Some(raw) = entry_text(entry) else {
+        return Ok(());
+    };
+    let Ok(mut cfg) = serde_json::from_str::<ZebflowJson>(&raw) else {
+        return Ok(());
+    };
+    let selected = selected_libraries.iter().cloned().collect::<BTreeSet<_>>();
+    cfg.configs
+        .rwe
+        .libraries
+        .retain(|name, _| selected.contains(name));
+    let content = serde_json::to_string_pretty(&cfg)
+        .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?
+        + "\n";
+    entry.size_bytes = content.len();
+    entry.encoding = "text".to_string();
+    entry.content = content;
+    Ok(())
+}
+
+fn collect_publish_media_from_files(
+    layout: &ProjectFileLayout,
+    image_file_path: &str,
+    publisher: &HubPublisher,
+) -> Result<Vec<HubMediaFile>, PlatformError> {
+    let image_file_path = image_file_path.trim();
+    if image_file_path.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rel = normalize_object_path(image_file_path)
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+    let zebfs = LocalZebFs::new(layout.files_dir.clone());
+    let object = zebfs
+        .get(&rel)
+        .map_err(|err| PlatformError::new("HUB_MEDIA_MISSING", err.to_string()))?;
+    image_content_type_from_path(&rel)?;
+    let max_image_bytes =
+        normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize;
+    let webp_bytes = normalize_hub_cover_to_webp(&object.bytes)?;
+    if webp_bytes.len() > max_image_bytes {
+        return Err(PlatformError::new(
+            "HUB_PUBLISHER_QUOTA_EXCEEDED",
+            "webp cover image exceeds publisher max image bytes",
+        ));
+    }
+    let media_name = "cover.webp".to_string();
+    let sha256 = sha256_hex(&webp_bytes);
+    Ok(vec![HubMediaFile {
+        name: media_name,
+        role: "cover".to_string(),
+        content_type: "image/webp".to_string(),
+        size_bytes: webp_bytes.len(),
+        sha256,
+        encoding: "base64".to_string(),
+        content: base64::engine::general_purpose::STANDARD.encode(webp_bytes),
+    }])
+}
+
+fn validate_hub_media(
+    media: &[HubMediaFile],
+    publisher: &HubPublisher,
+) -> Result<(), PlatformError> {
+    let max_media_files =
+        normalize_limit(publisher.max_media_files, DEFAULT_PUBLISHER_MAX_MEDIA_FILES) as usize;
+    if media.len() > max_media_files {
+        return Err(PlatformError::new(
+            "HUB_PUBLISHER_QUOTA_EXCEEDED",
+            "media file count exceeds publisher limit",
+        ));
+    }
+    let max_image_bytes =
+        normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize;
+    for item in media {
+        let normalized_name = normalize_media_name(&item.name)?;
+        if normalized_name != item.name {
+            return Err(PlatformError::new(
+                "HUB_MEDIA_INVALID",
+                "media name is not normalized",
+            ));
+        }
+        if item.encoding != "base64" {
+            return Err(PlatformError::new(
+                "HUB_MEDIA_INVALID",
+                "media encoding must be base64",
+            ));
+        }
+        validate_image_content_type(&item.content_type)?;
+        if item.size_bytes > max_image_bytes {
+            return Err(PlatformError::new(
+                "HUB_PUBLISHER_QUOTA_EXCEEDED",
+                "image exceeds publisher max image bytes",
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&item.content)
+            .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+        if bytes.len() != item.size_bytes || sha256_hex(&bytes) != item.sha256 {
+            return Err(PlatformError::new(
+                "HUB_MEDIA_INVALID",
+                "media size or hash does not match content",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_hub_gallery(gallery: &HubGallery, media: &[HubMediaFile]) -> Result<(), PlatformError> {
+    let media_names = media
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(cover) = &gallery.cover {
+        if cover.kind.trim() != "image" {
+            return Err(PlatformError::new(
+                "HUB_GALLERY_INVALID",
+                "gallery cover kind must be image",
+            ));
+        }
+        validate_gallery_media_ref(&cover.media_name, &media_names)?;
+    }
+    for item in &gallery.items {
+        match item.kind.trim() {
+            "image" => validate_gallery_media_ref(&item.media_name, &media_names)?,
+            "youtube" => validate_youtube_url(&item.url)?,
+            _ => {
+                return Err(PlatformError::new(
+                    "HUB_GALLERY_INVALID",
+                    "gallery item kind must be image or youtube",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn review_publish_artifact(
+    package_id: String,
+    version: String,
+    preview: HubExportPreview,
+    title: String,
+    description: String,
+    visibility: String,
+    tags: Vec<String>,
+    media: Vec<HubMediaFile>,
+    project_initialization: HubProjectInitialization,
+) -> Result<HubPublishReview, PlatformError> {
+    let policy_entries = preview
+        .entries
+        .iter()
+        .map(|entry| package_policy_entry(&entry.rel_path, entry))
+        .collect::<Vec<_>>();
+    let policy = review_package_entries(
+        &policy_entries,
+        preview.warnings.clone(),
+        PackageReviewOptions {
+            publish_mode: true,
+            require_title: true,
+            require_description: true,
+            require_cover_image: true,
+            title: title.clone(),
+            description: description.clone(),
+            has_cover_image: !media.is_empty(),
+        },
+    );
+
+    Ok(HubPublishReview {
+        package_id,
+        version,
+        asset_kind: preview.asset_kind.clone(),
+        source_type: preview.source_type.clone(),
+        source_ref: preview.source_ref.clone(),
+        title,
+        description,
+        visibility,
+        tags,
+        total_files: preview.total_files,
+        total_bytes: preview.total_bytes,
+        files: preview.entries.clone(),
+        media: media
+            .iter()
+            .map(|item| HubPublishMediaReview {
+                name: item.name.clone(),
+                role: item.role.clone(),
+                content_type: item.content_type.clone(),
+                size_bytes: item.size_bytes,
+            })
+            .collect(),
+        nodes_used: policy.nodes_used,
+        credentials_required: policy.credentials_required,
+        external_urls: policy.external_urls,
+        database_effects: policy.database_effects,
+        filesystem_effects: policy.filesystem_effects,
+        public_endpoints: policy.public_endpoints,
+        schedules: policy.schedules,
+        large_files: policy.large_files,
+        seed_data: policy.seed_data,
+        project_initialization: serde_json::to_value(project_initialization)
+            .map_err(|err| PlatformError::new("HUB_PUBLISH_REVIEW", err.to_string()))?,
+        warnings: policy.warnings,
+        risk_level: policy.risk_level,
+    })
+}
+
+fn normalize_hub_cover_to_webp(bytes: &[u8]) -> Result<Vec<u8>, PlatformError> {
+    const MAX_DIM: u32 = 8000;
+    const MAX_DECODED_BYTES: u64 = 128 * 1024 * 1024;
+    let (w, h) = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?
+        .into_dimensions()
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+    if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+        return Err(PlatformError::new(
+            "HUB_MEDIA_INVALID",
+            "cover image dimensions are invalid or too large",
+        ));
+    }
+    if (w as u64) * (h as u64) * 4 > MAX_DECODED_BYTES {
+        return Err(PlatformError::new(
+            "HUB_MEDIA_INVALID",
+            "cover image decoded size is too large",
+        ));
+    }
+    let image = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?
+        .decode()
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+    let image = fit_hub_cover(image, 1200, 675);
+    let mut out = Vec::new();
+    image
+        .write_to(&mut Cursor::new(&mut out), ImageFormat::WebP)
+        .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
+    Ok(out)
+}
+
+fn fit_hub_cover(img: DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {
+    let (w, h) = img.dimensions();
+    if w <= max_w && h <= max_h {
+        return img;
+    }
+    img.resize(max_w, max_h, FilterType::Lanczos3)
+}
+
+fn validate_gallery_media_ref(
+    media_name: &str,
+    media_names: &BTreeSet<&str>,
+) -> Result<(), PlatformError> {
+    let normalized = normalize_media_name(media_name)?;
+    if normalized != media_name {
+        return Err(PlatformError::new(
+            "HUB_GALLERY_INVALID",
+            "gallery media name is not normalized",
+        ));
+    }
+    if !media_names.contains(media_name) {
+        return Err(PlatformError::new(
+            "HUB_GALLERY_INVALID",
+            "gallery image must reference an existing media item",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_youtube_url(input: &str) -> Result<(), PlatformError> {
+    let url = reqwest::Url::parse(input.trim()).map_err(|_| {
+        PlatformError::new("HUB_GALLERY_INVALID", "youtube URL must be a valid URL")
+    })?;
+    if url.scheme() != "https" {
+        return Err(PlatformError::new(
+            "HUB_GALLERY_INVALID",
+            "youtube URL must use https",
+        ));
+    }
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let ok_host = matches!(
+        host.as_str(),
+        "youtube.com" | "www.youtube.com" | "youtu.be" | "m.youtube.com"
+    );
+    if !ok_host {
+        return Err(PlatformError::new(
+            "HUB_GALLERY_INVALID",
+            "gallery video URL must be a YouTube URL",
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_media_name(input: &str) -> Result<String, PlatformError> {
+    let value = input.trim();
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('\0')
+        || value == "."
+        || value == ".."
+    {
+        return Err(PlatformError::new(
+            "HUB_MEDIA_INVALID",
+            "media name must be a plain file name",
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn image_content_type_from_path(path: &str) -> Result<String, PlatformError> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let content_type = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => {
+            return Err(PlatformError::new(
+                "HUB_MEDIA_INVALID",
+                "package image must be png, jpg, webp, or gif",
+            ));
+        }
+    };
+    Ok(content_type.to_string())
+}
+
+fn normalize_hub_id_segment(raw: &str, label: &str) -> Result<String, PlatformError> {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for c in raw.trim().to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_dash = false;
+        } else if c == '-' || c == '_' || c.is_ascii_whitespace() {
+            if !last_dash && !out.is_empty() {
+                out.push('-');
+                last_dash = true;
+            }
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let value = out.trim_matches('-').to_string();
+    if value.is_empty() {
+        return Err(PlatformError::new(
+            "HUB_ID_INVALID",
+            format!("{label} must contain at least one alphanumeric character"),
+        ));
+    }
+    Ok(value)
+}
+
+fn canonical_hub_package_id(
+    publisher_id: &str,
+    raw_package_id: &str,
+) -> Result<String, PlatformError> {
+    let publisher = normalize_hub_id_segment(publisher_id, "publisher id")?;
+    let trimmed = raw_package_id.trim();
+    let asset_raw = if let Some((prefix, rest)) = trimmed.split_once('.') {
+        let normalized_prefix = normalize_hub_id_segment(prefix, "package publisher prefix")?;
+        if normalized_prefix != publisher {
+            return Err(PlatformError::new(
+                "HUB_PACKAGE_ID_INVALID",
+                "package id must use the selected publisher prefix",
+            ));
+        }
+        rest
+    } else {
+        trimmed
+    };
+    let asset = normalize_hub_id_segment(asset_raw, "asset slug")?;
+    Ok(format!("{publisher}.{asset}"))
+}
+
+fn validate_image_content_type(content_type: &str) -> Result<(), PlatformError> {
+    match content_type.trim().to_ascii_lowercase().as_str() {
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif" => Ok(()),
+        _ => Err(PlatformError::new(
+            "HUB_MEDIA_INVALID",
+            "media content type is not an allowed image type",
+        )),
+    }
+}
+
 fn normalize_visibility(input: &str) -> String {
     match input.trim().to_ascii_lowercase().as_str() {
         "public" => "public".to_string(),
@@ -2253,10 +3561,33 @@ fn normalize_source_type(input: &str) -> String {
     }
 }
 
+fn validate_hub_asset_kind(input: &str) -> Result<String, PlatformError> {
+    let value = input.trim();
+    if HUB_ASSET_KINDS.contains(&value) {
+        Ok(value.to_string())
+    } else {
+        Err(PlatformError::new(
+            "HUB_ASSET_KIND_INVALID",
+            format!("asset kind must be one of: {}", HUB_ASSET_KINDS.join(", ")),
+        ))
+    }
+}
+
 fn normalize_platform_source_visibility(input: &str) -> String {
     match input.trim().to_ascii_lowercase().as_str() {
         "private" => "private".to_string(),
         _ => "public".to_string(),
+    }
+}
+
+fn normalize_hub_grant_scope(input: &str) -> Result<String, PlatformError> {
+    match input.trim() {
+        "all_projects" => Ok("all_projects".to_string()),
+        "selected_project" => Ok("selected_project".to_string()),
+        _ => Err(PlatformError::new(
+            "HUB_ACCESS_GRANT_INVALID",
+            "grant_scope must be all_projects or selected_project",
+        )),
     }
 }
 
@@ -2501,20 +3832,66 @@ fn file_kind_from_path(path: &Path) -> String {
     }
 }
 
-fn install_root_for(package_id: &str, asset_kind: &str) -> String {
-    if matches!(asset_kind, "pipeline_bundle" | "template_bundle") {
-        format!("pipelines/hub/{package_id}")
+fn install_root_for_target_folder(
+    package_id: &str,
+    asset_kind: &str,
+    target_folder: &str,
+) -> String {
+    let folder = target_folder.trim();
+    if !folder.is_empty() {
+        return normalize_install_target_folder(folder, asset_kind);
+    }
+    default_install_target_folder(package_id, asset_kind)
+}
+
+fn normalize_install_target_folder(target_folder: &str, asset_kind: &str) -> String {
+    let folder = normalize_repo_rel(target_folder);
+    if folder.is_empty() {
+        return ".".to_string();
+    }
+    if target_folder.trim_start().starts_with('/')
+        && matches!(
+            asset_kind,
+            HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
+        )
+        && !folder.starts_with("pipelines/")
+    {
+        return format!("pipelines/{folder}");
+    }
+    folder
+}
+
+fn install_rel_path_under_folder(install_root: &str, rel_path: &str) -> String {
+    let root = normalize_repo_rel(install_root);
+    let rel = install_entry_rel_inside_folder(rel_path);
+    if root.is_empty() || root == "." {
+        rel
     } else {
-        format!("hub/{package_id}")
+        format!("{root}/{rel}")
     }
 }
 
-fn install_rel_path(package_id: &str, rel_path: &str) -> String {
+fn install_entry_rel_inside_folder(rel_path: &str) -> String {
     let rel = normalize_repo_rel(rel_path);
     if let Some(rest) = rel.strip_prefix("pipelines/") {
-        format!("pipelines/hub/{package_id}/{rest}")
+        rest.to_string()
+    } else if let Some(rest) = rel.strip_prefix("templates/") {
+        rest.to_string()
     } else {
-        format!("hub/{package_id}/{rel}")
+        rel
+    }
+}
+
+fn default_install_target_folder(package_id: &str, asset_kind: &str) -> String {
+    if matches!(
+        asset_kind,
+        HUB_ASSET_KIND_PIPELINE_BUNDLE | HUB_ASSET_KIND_TEMPLATE_BUNDLE
+    ) {
+        format!("pipelines/hub/{package_id}")
+    } else if asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+        format!("nodes/{package_id}")
+    } else {
+        format!("hub/{package_id}")
     }
 }
 
@@ -2527,6 +3904,223 @@ fn write_entry_content(dest_abs: &Path, entry: &HubExportEntry) -> Result<(), Pl
         entry.content.as_bytes().to_vec()
     };
     fs::write(dest_abs, bytes)?;
+    Ok(())
+}
+
+fn reindex_project_bundle_pipelines(
+    hub: &HubService,
+    owner: &str,
+    project: &str,
+    entries: &[HubExportEntry],
+) -> Result<(), PlatformError> {
+    for entry in entries {
+        let rel_path = normalize_repo_rel(&entry.rel_path);
+        if !rel_path.starts_with("pipelines/") || !rel_path.ends_with(".zf.json") {
+            continue;
+        }
+        let Some(source) = entry_text(entry) else {
+            continue;
+        };
+        let description = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
+            .ok()
+            .and_then(|graph| graph.description)
+            .unwrap_or_default();
+        let trigger_kind = derive_trigger_kind_from_source(&source).unwrap_or_default();
+        hub.projects.upsert_pipeline_definition(
+            owner,
+            project,
+            &rel_path,
+            "",
+            &description,
+            &trigger_kind,
+            &source,
+        )?;
+    }
+    Ok(())
+}
+
+fn entry_text(entry: &HubExportEntry) -> Option<String> {
+    if entry.encoding == "text" || entry.encoding.trim().is_empty() {
+        return Some(entry.content.clone());
+    }
+    if entry.encoding == "base64" {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&entry.content)
+            .ok()?;
+        return String::from_utf8(bytes).ok();
+    }
+    None
+}
+
+fn package_policy_entry(rel_path: &str, entry: &HubExportEntry) -> PackagePolicyEntry {
+    PackagePolicyEntry {
+        rel_path: rel_path.to_string(),
+        kind: entry.kind.clone(),
+        size_bytes: entry.size_bytes,
+        content: entry_text(entry).unwrap_or_default(),
+    }
+}
+
+fn install_risk_level(policy: &PackageSafetyReview, has_overwrites: bool) -> String {
+    let mut risk_score = 0;
+    if has_overwrites {
+        risk_score += 2;
+    }
+    if !policy.credentials_required.is_empty() {
+        risk_score += 1;
+    }
+    if !policy.external_urls.is_empty() {
+        risk_score += 1;
+    }
+    if !policy.database_effects.is_empty() {
+        risk_score += 2;
+    }
+    if !policy.filesystem_effects.is_empty() {
+        risk_score += 1;
+    }
+    if !policy.public_endpoints.is_empty() || !policy.schedules.is_empty() {
+        risk_score += 2;
+    }
+    if !policy.large_files.is_empty() || !policy.seed_data.is_empty() {
+        risk_score += 1;
+    }
+    if risk_score >= 4 {
+        "high".to_string()
+    } else if risk_score >= 2 {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+const INITIAL_DATA_DIRS: &[(&str, &str)] = &[
+    ("initial-data/sekejap", "sekejap"),
+    ("initial-data/sqlite", "sqlite"),
+    ("init/sekejap", "sekejap"),
+    ("init/sqlite", "sqlite"),
+    ("seeds/sekejap", "sekejap"),
+    ("seeds/sqlite", "sqlite"),
+];
+
+fn initial_data_engine_for_path(rel_path: &str) -> Option<&'static str> {
+    let rel = normalize_repo_rel(rel_path);
+    if !rel.ends_with(".sql") {
+        return None;
+    }
+    INITIAL_DATA_DIRS
+        .iter()
+        .find_map(|(prefix, engine)| rel.starts_with(&format!("{prefix}/")).then_some(*engine))
+}
+
+fn split_initial_data_sql(sql: &str) -> Vec<String> {
+    let uncommented = sql
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    uncommented
+        .split(';')
+        .map(str::trim)
+        .filter(|stmt| !stmt.is_empty())
+        .map(|stmt| format!("{stmt};"))
+        .collect()
+}
+
+fn initial_data_step_from_entry(entry: &HubExportEntry) -> Option<HubInitialDataStep> {
+    let rel = normalize_repo_rel(&entry.rel_path);
+    let engine = initial_data_engine_for_path(&rel)?;
+    let sql = entry_text(entry)?;
+    Some(HubInitialDataStep {
+        engine: engine.to_string(),
+        path: rel,
+        statement_count: split_initial_data_sql(&sql).len(),
+        size_bytes: entry.size_bytes,
+    })
+}
+
+fn execute_project_initial_data(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    layout: &ProjectFileLayout,
+    steps: &[HubInitialDataStep],
+) -> Result<(), PlatformError> {
+    for step in steps {
+        let rel = normalize_repo_rel(&step.path);
+        let Some(engine) = initial_data_engine_for_path(&rel) else {
+            return Err(PlatformError::new(
+                "HUB_INITIAL_DATA_INVALID",
+                format!("initial data path '{}' is not allowed", step.path),
+            ));
+        };
+        if engine != step.engine {
+            return Err(PlatformError::new(
+                "HUB_INITIAL_DATA_INVALID",
+                format!(
+                    "initial data path '{}' does not match engine '{}'",
+                    step.path, step.engine
+                ),
+            ));
+        }
+        let path = sanitize_install_repo_path(layout, &rel)?;
+        let sql = fs::read_to_string(&path)?;
+        match engine {
+            "sekejap" => {
+                for stmt in split_initial_data_sql(&sql) {
+                    sekejap::execute_sql(data_root, owner, project, &stmt, &[], 0, false)?;
+                }
+            }
+            "sqlite" => {
+                sqlite_schema::execute_sql(data_root, owner, project, &sql)?;
+            }
+            _ => {
+                return Err(PlatformError::new(
+                    "HUB_INITIAL_DATA_INVALID",
+                    format!("unsupported initial data engine '{}'", engine),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_initial_data_steps(
+    repo_dir: &Path,
+    dir: &Path,
+    engine: &str,
+    steps: &mut Vec<HubInitialDataStep>,
+) -> Result<(), PlatformError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_initial_data_steps(repo_dir, &path, engine, steps)?;
+            continue;
+        }
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("sql"))
+            != Some(true)
+        {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(repo_dir)
+            .map_err(|err| PlatformError::new("HUB_INITIAL_DATA", err.to_string()))?;
+        let rel = normalize_repo_rel(&rel.to_string_lossy());
+        if initial_data_engine_for_path(&rel) != Some(engine) {
+            continue;
+        }
+        let sql = fs::read_to_string(&path)?;
+        let size_bytes = sql.len();
+        steps.push(HubInitialDataStep {
+            engine: engine.to_string(),
+            path: rel,
+            statement_count: split_initial_data_sql(&sql).len(),
+            size_bytes,
+        });
+    }
     Ok(())
 }
 

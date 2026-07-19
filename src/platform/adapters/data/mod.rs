@@ -11,8 +11,8 @@ use crate::infra::cluster::registry::WorkerRegistryRecord;
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    DataAdapterKind, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken,
-    McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
+    DataAdapterKind, HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher,
+    HubToken, McpSession, PipelineInvocationEntry, PipelineInvocationLogStats, PipelineMeta,
     PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
     PlatformServiceInstance, PlatformUser, ProjectCredential, ProjectDbConnection,
     ProjectHubRepository, ProjectInvite, ProjectMember, ProjectOperationRecord, ProjectPolicy,
@@ -146,6 +146,36 @@ pub trait DataAdapter: Send + Sync {
         let _ = (owner, repository_id);
         Ok(())
     }
+    /// Upsert one platform-to-project Hub access grant.
+    fn put_hub_access_grant(&self, grant: &HubAccessGrant) -> Result<(), PlatformError> {
+        let _ = grant;
+        Err(PlatformError::new(
+            "PLATFORM_ADAPTER_UNAVAILABLE",
+            "hub access grants are not supported by this adapter",
+        ))
+    }
+    /// List all Hub access grants owned by one platform owner.
+    fn list_hub_access_grants(
+        &self,
+        source_owner: &str,
+    ) -> Result<Vec<HubAccessGrant>, PlatformError> {
+        let _ = source_owner;
+        Ok(vec![])
+    }
+    /// List Hub access grants effective for one project.
+    fn list_effective_hub_access_grants(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+    ) -> Result<Vec<HubAccessGrant>, PlatformError> {
+        let _ = (target_owner, target_project);
+        Ok(vec![])
+    }
+    /// Delete one Hub access grant.
+    fn delete_hub_access_grant(&self, grant_id: &str) -> Result<(), PlatformError> {
+        let _ = grant_id;
+        Ok(())
+    }
     /// Upsert one hub publisher identity.
     fn put_hub_publisher(&self, publisher: &HubPublisher) -> Result<(), PlatformError> {
         let _ = publisher;
@@ -227,6 +257,11 @@ pub trait DataAdapter: Send + Sync {
     ) -> Result<Option<HubAssetVersion>, PlatformError> {
         let _ = (package_id, version);
         Ok(None)
+    }
+    /// Delete one hub package and all of its versions.
+    fn delete_hub_asset_package(&self, package_id: &str) -> Result<(), PlatformError> {
+        let _ = package_id;
+        Ok(())
     }
     /// Upsert one hub token.
     fn put_hub_token(&self, token: &HubToken) -> Result<(), PlatformError> {

@@ -942,7 +942,11 @@ fn pipe_starts_node_segment(body: &str, pipe_pos: usize) -> bool {
         return false;
     };
     let kind = raw_kind.trim_matches(|ch: char| ch == ';' || ch == ',' || ch == ')');
-    expand_kind(kind).is_some() || kind.starts_with("n.c.") || kind.starts_with("c.")
+    expand_kind(kind).is_some()
+        || kind.starts_with("n.c.")
+        || kind.starts_with("c.")
+        || kind.starts_with("n.wasm.")
+        || kind.starts_with("wasm.")
 }
 
 /// Build pipeline from graph notation: `[label] node_kind --flags...\n[from] -> [to]`
@@ -1353,6 +1357,52 @@ return { values };
     }
 
     #[test]
+    fn registry_definitions_parse_wasm_node_dsl_flags() {
+        let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
+        definitions.push(NodeDefinition {
+            kind: "n.wasm.test.add".to_string(),
+            title: "WASM Test Add".to_string(),
+            description: "WASM test node.".to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string(), "error".to_string()],
+            dsl_flags: vec![
+                DslFlag {
+                    flag: "--a".to_string(),
+                    config_key: "a".to_string(),
+                    description: "Left integer operand.".to_string(),
+                    kind: DslFlagKind::Scalar,
+                    required: false,
+                },
+                DslFlag {
+                    flag: "--b".to_string(),
+                    config_key: "b".to_string(),
+                    description: "Right integer operand.".to_string(),
+                    kind: DslFlagKind::Scalar,
+                    required: false,
+                },
+            ],
+            ..Default::default()
+        });
+
+        let graph = build_pipeline_graph_with_definitions(
+            "wasm-test-dsl",
+            r#"
+| trigger.manual
+| wasm.test.add --a 2 --b 3
+"#,
+            &definitions,
+        )
+        .expect("graph");
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "n.wasm.test.add")
+            .expect("wasm node");
+        assert_eq!(node.config["a"], json!(2));
+        assert_eq!(node.config["b"], json!(3));
+    }
+
+    #[test]
     fn patch_script_body_is_opaque_to_shell_separators() {
         let source = r#"const lat = row.Stop_lat ?? row.stop_lat;
 const lon = row.Stop_long ?? row.stop_long;
@@ -1443,16 +1493,24 @@ fn parse_graph_node(
         return Err(format!("node '[{label}]' has no kind"));
     }
     let raw_kind = &tokens[0];
-    let composite_kind: String;
+    let custom_kind: String;
     let full_kind = match expand_kind(raw_kind) {
         Some(k) => k,
         None if raw_kind.starts_with("n.c.") => {
-            composite_kind = raw_kind.to_string();
-            &composite_kind
+            custom_kind = raw_kind.to_string();
+            &custom_kind
         }
         None if raw_kind.starts_with("c.") => {
-            composite_kind = format!("n.{raw_kind}");
-            &composite_kind
+            custom_kind = format!("n.{raw_kind}");
+            &custom_kind
+        }
+        None if raw_kind.starts_with("n.wasm.") => {
+            custom_kind = raw_kind.to_string();
+            &custom_kind
+        }
+        None if raw_kind.starts_with("wasm.") => {
+            custom_kind = format!("n.{raw_kind}");
+            &custom_kind
         }
         None => return Err(format!("Unknown node kind: '{raw_kind}'")),
     };
@@ -1922,16 +1980,24 @@ fn build_pipe_mode(
         }
 
         let raw_kind = &seg_tokens[0];
-        let composite_kind: String;
+        let custom_kind: String;
         let full_kind = match expand_kind(raw_kind) {
             Some(k) => k,
             None if raw_kind.starts_with("n.c.") => {
-                composite_kind = raw_kind.to_string();
-                &composite_kind
+                custom_kind = raw_kind.to_string();
+                &custom_kind
             }
             None if raw_kind.starts_with("c.") => {
-                composite_kind = format!("n.{raw_kind}");
-                &composite_kind
+                custom_kind = format!("n.{raw_kind}");
+                &custom_kind
+            }
+            None if raw_kind.starts_with("n.wasm.") => {
+                custom_kind = raw_kind.to_string();
+                &custom_kind
+            }
+            None if raw_kind.starts_with("wasm.") => {
+                custom_kind = format!("n.{raw_kind}");
+                &custom_kind
             }
             None => return Err(format!("Unknown node kind: '{raw_kind}'")),
         };

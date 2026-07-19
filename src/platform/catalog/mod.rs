@@ -6,6 +6,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::platform::policy::package::{
+    PackagePolicyEntry, PackageReviewOptions, review_package_entries,
+};
+
 /// One entry in the UI component catalog.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogEntry {
@@ -27,6 +31,29 @@ pub struct CatalogEntry {
 pub struct CloneReport {
     pub installed: Vec<String>,
     pub skipped: Vec<String>,
+}
+
+/// Policy review for installing built-in UI components through Add+.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct UiInstallReview {
+    pub source: String,
+    pub asset_kind: String,
+    pub install_root: String,
+    pub components: Vec<String>,
+    pub files_added: Vec<String>,
+    pub files_overwritten: Vec<String>,
+    pub files_skipped: Vec<String>,
+    pub nodes_used: Vec<String>,
+    pub credentials_required: Vec<String>,
+    pub external_urls: Vec<String>,
+    pub database_effects: Vec<String>,
+    pub filesystem_effects: Vec<String>,
+    pub public_endpoints: Vec<String>,
+    pub schedules: Vec<String>,
+    pub large_files: Vec<String>,
+    pub seed_data: Vec<String>,
+    pub warnings: Vec<String>,
+    pub risk_level: String,
 }
 
 /// Request to install UI components.
@@ -319,6 +346,88 @@ impl CatalogService {
             .collect()
     }
 
+    /// Review installing UI components before writing to the project repo.
+    pub fn review_ui(
+        names: &[String],
+        shared_ui_dir: &PathBuf,
+        overwrite: bool,
+    ) -> UiInstallReview {
+        let source_map: HashMap<&str, (&str, &str)> = UI_SOURCES
+            .iter()
+            .map(|(name, src, filename, _, _)| (*name, (*src, *filename)))
+            .collect();
+
+        let mut components = Vec::new();
+        let mut files_added = Vec::new();
+        let mut files_overwritten = Vec::new();
+        let mut files_skipped = Vec::new();
+        let mut warnings = Vec::new();
+        let mut policy_entries = Vec::new();
+
+        for name in names {
+            let Some((src, filename)) = source_map.get(name.as_str()) else {
+                warnings.push(format!("unknown UI component '{name}'"));
+                continue;
+            };
+            components.push(name.clone());
+            let rel_path = format!("pipelines/shared/ui/{filename}");
+            let dest = shared_ui_dir.join(filename);
+            if dest.exists() && overwrite {
+                files_overwritten.push(rel_path.clone());
+            } else if dest.exists() {
+                files_skipped.push(rel_path.clone());
+            } else {
+                files_added.push(rel_path.clone());
+            }
+            policy_entries.push(PackagePolicyEntry {
+                rel_path,
+                kind: "template".to_string(),
+                size_bytes: src.len(),
+                content: (*src).to_string(),
+            });
+        }
+
+        if components.is_empty() {
+            warnings.push("no valid UI components selected".to_string());
+        }
+        if !files_overwritten.is_empty() {
+            warnings.push("install will overwrite existing shared UI files".to_string());
+        }
+
+        let mut policy = review_package_entries(
+            &policy_entries,
+            warnings,
+            PackageReviewOptions {
+                publish_mode: true,
+                ..PackageReviewOptions::default()
+            },
+        );
+        if !files_overwritten.is_empty() && policy.risk_level == "low" {
+            policy.risk_level = "medium".to_string();
+        }
+
+        UiInstallReview {
+            source: "built_in".to_string(),
+            asset_kind: "ui_components".to_string(),
+            install_root: "pipelines/shared/ui".to_string(),
+            components,
+            files_added,
+            files_overwritten,
+            files_skipped,
+            nodes_used: policy.nodes_used,
+            credentials_required: policy.credentials_required,
+            external_urls: policy.external_urls,
+            database_effects: policy.database_effects,
+            filesystem_effects: policy.filesystem_effects,
+            public_endpoints: policy.public_endpoints,
+            schedules: policy.schedules,
+            large_files: policy.large_files,
+            seed_data: policy.seed_data,
+            warnings: policy.warnings,
+            risk_level: policy.risk_level,
+        }
+    }
+
     /// Install the requested components into `shared_ui_dir`.
     /// Returns a `CloneReport` describing what was installed vs skipped.
     pub fn install_ui(
@@ -358,5 +467,58 @@ impl CatalogService {
             .iter()
             .find(|(n, _, _, _, _)| *n == name)
             .map(|(_, src, _, _, _)| *src)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_shared_ui_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("zebflow-catalog-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn ui_install_review_reports_files_before_write() {
+        let dir = temp_shared_ui_dir("review-files-before-write");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let review = CatalogService::review_ui(&["button".to_string()], &dir, false);
+
+        assert_eq!(review.source, "built_in");
+        assert_eq!(review.asset_kind, "ui_components");
+        assert_eq!(review.install_root, "pipelines/shared/ui");
+        assert_eq!(review.components, vec!["button"]);
+        assert_eq!(review.files_added, vec!["pipelines/shared/ui/button.tsx"]);
+        assert!(review.files_skipped.is_empty());
+        assert!(review.files_overwritten.is_empty());
+        assert_eq!(review.risk_level, "low");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ui_install_review_reports_skip_and_overwrite() {
+        let dir = temp_shared_ui_dir("review-skip-overwrite");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("button.tsx"), "local edit").unwrap();
+
+        let skipped = CatalogService::review_ui(&["button".to_string()], &dir, false);
+        assert_eq!(
+            skipped.files_skipped,
+            vec!["pipelines/shared/ui/button.tsx"]
+        );
+        assert!(skipped.files_overwritten.is_empty());
+
+        let overwritten = CatalogService::review_ui(&["button".to_string()], &dir, true);
+        assert!(overwritten.files_skipped.is_empty());
+        assert_eq!(
+            overwritten.files_overwritten,
+            vec!["pipelines/shared/ui/button.tsx"]
+        );
+        assert_eq!(overwritten.risk_level, "medium");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

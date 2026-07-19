@@ -16,9 +16,11 @@ pub mod interaction;
 pub mod mcp;
 pub mod model;
 pub mod operations;
+pub mod policy;
 pub mod sekejap;
 pub mod services;
 pub mod shell;
+pub mod sqlite_schema;
 pub mod web;
 
 use std::sync::Arc;

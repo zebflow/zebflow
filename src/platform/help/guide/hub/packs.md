@@ -1,6 +1,6 @@
-# Packs
+# Packages
 
-Packs are reusable project materials.
+Packages are reusable project materials.
 
 Examples:
 
@@ -11,8 +11,10 @@ Examples:
 
 ## Mental model
 
-A pack is a sharable project artifact.
-When you add it, Zebflow copies it into your project workspace.
+A package is a versioned, typed, sharable project artifact.
+When you add it, Zebflow copies or clones it into your project workspace.
+After that, the added files are ordinary project source; Hub does not manage or
+track them as an installed dependency.
 
 That is why the product language should be:
 
@@ -21,3 +23,5 @@ That is why the product language should be:
 - Copy into project
 
 and not system-level plugin installation language.
+
+`Pack` was older shorthand. New UI and docs should say `package`.

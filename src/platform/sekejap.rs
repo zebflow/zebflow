@@ -155,11 +155,12 @@ pub fn sync_project(
     })
 }
 
-/// Compact the project's open Sekejap DB: snapshot current state and truncate WAL.
+/// Compact the project's open Sekejap DB: snapshot current state and reset the WAL.
 ///
 /// This is the foundational WAL checkpoint primitive. It should be called by
 /// explicit admin actions, low-traffic scheduled maintenance, and graceful
-/// shutdown hooks for projects that have been opened in-process.
+/// shutdown hooks for projects that have been opened in-process. Sekejap 0.12+
+/// retains the fresh WAL's 8-byte format header after a successful checkpoint.
 pub fn compact_project(
     data_root: &Path,
     owner: &str,
@@ -246,6 +247,14 @@ pub struct SekejapSchemaSyncReport {
     pub root: String,
     pub files_written: Vec<String>,
     pub files_removed: Vec<String>,
+    pub table_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SekejapSchemaApplyReport {
+    pub schema_version: String,
+    pub tables_created: Vec<String>,
+    pub tables_skipped: Vec<String>,
     pub table_count: usize,
 }
 
@@ -721,6 +730,147 @@ fn export_tables_from_defs(defs: Vec<SimpleTableDefinition>) -> Vec<SekejapTable
         .collect::<Vec<_>>();
     tables.sort_by(|a, b| a.table.cmp(&b.table));
     tables
+}
+
+fn imported_table_definition(table: &SekejapTableSchemaExport) -> Option<SimpleTableDefinition> {
+    let table_slug = slug_segment(&table.table);
+    if table_slug.is_empty() {
+        return None;
+    }
+    let collection_slug = slug_segment(&table.collection);
+    let collection = if collection_slug.is_empty() {
+        table_slug.clone()
+    } else {
+        collection_slug
+    };
+    let title = table.title.trim();
+    let now = now_ts();
+    Some(SimpleTableDefinition {
+        table: table_slug.clone(),
+        title: if title.is_empty() {
+            table_slug.clone()
+        } else {
+            title.to_string()
+        },
+        collection,
+        attributes: table.attributes.clone(),
+        hash_indexed_fields: stable_list(table.hash_indexed_fields.clone()),
+        range_indexed_fields: stable_list(table.range_indexed_fields.clone()),
+        fulltext_fields: stable_list(table.fulltext_fields.clone()),
+        vector_fields: stable_list(table.vector_fields.clone()),
+        spatial_fields: stable_list(table.spatial_fields.clone()),
+        row_count: 0,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
+pub fn apply_schema_export(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+    export: &SekejapSchemaExport,
+) -> Result<SekejapSchemaApplyReport, PlatformError> {
+    if export.schema_version != REPO_SCHEMA_VERSION {
+        return Err(PlatformError::new(
+            "PLATFORM_SEKEJAP_SCHEMA_VERSION",
+            format!(
+                "unsupported sekejap schema version '{}'",
+                export.schema_version
+            ),
+        ));
+    }
+
+    let mut existing = load_catalog(data_root, owner, project)?;
+    let mut existing_tables = existing
+        .iter()
+        .map(|def| def.table.clone())
+        .collect::<BTreeSet<_>>();
+    let mut tables_created = Vec::new();
+    let mut tables_skipped = Vec::new();
+    let db_arc = get_db(data_root, owner, project)?;
+    let mut db = db_arc.write().unwrap();
+
+    for table in &export.tables {
+        let Some(def) = imported_table_definition(table) else {
+            continue;
+        };
+        if existing_tables.contains(&def.table) {
+            tables_skipped.push(def.table.clone());
+            continue;
+        }
+
+        db.execute(&build_create_table_sql(&def))
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string()))?;
+        for field in &def.hash_indexed_fields {
+            if field == "_key" {
+                continue;
+            }
+            db.execute(&build_index_sql(&def.collection, "hash", field))
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
+                })?;
+        }
+        for field in &def.range_indexed_fields {
+            db.execute(&build_index_sql(&def.collection, "btree", field))
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
+                })?;
+        }
+        for field in &def.fulltext_fields {
+            db.execute(&build_index_sql(&def.collection, "gist", field))
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
+                })?;
+        }
+        for field in &def.vector_fields {
+            db.execute(&build_index_sql(&def.collection, "hnsw", field))
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
+                })?;
+        }
+        for field in &def.spatial_fields {
+            db.execute(&build_index_sql(&def.collection, "spatial", field))
+                .map_err(|err| {
+                    PlatformError::new("PLATFORM_SEKEJAP_SCHEMA_APPLY", err.to_string())
+                })?;
+        }
+
+        existing_tables.insert(def.table.clone());
+        tables_created.push(def.table.clone());
+        existing.push(def);
+    }
+
+    existing.sort_by(|a, b| a.table.cmp(&b.table));
+    save_catalog(data_root, owner, project, &existing)?;
+    drop(db);
+    sync_schema_to_repo(data_root, owner, project)?;
+
+    Ok(SekejapSchemaApplyReport {
+        schema_version: export.schema_version.clone(),
+        table_count: export.tables.len(),
+        tables_created,
+        tables_skipped,
+    })
+}
+
+pub fn apply_schema_from_repo(
+    data_root: &Path,
+    owner: &str,
+    project: &str,
+) -> Result<Option<SekejapSchemaApplyReport>, PlatformError> {
+    let schema_path = repo_schema_dir(data_root, owner, project).join("schema.json");
+    if !schema_path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(&schema_path)?;
+    let export = serde_json::from_str::<SekejapSchemaExport>(&raw).map_err(|err| {
+        PlatformError::new(
+            "PLATFORM_SEKEJAP_SCHEMA_READ",
+            format!("failed to parse sekejap schema export: {err}"),
+        )
+    })?;
+    apply_schema_export(data_root, owner, project, &export).map(Some)
 }
 
 fn sync_catalog_with_live(
@@ -1758,6 +1908,67 @@ mod tests {
     }
 
     #[test]
+    fn apply_schema_from_repo_hydrates_live_store() {
+        let tmp = tmp_root();
+        create_table(
+            tmp.path(),
+            "alice",
+            "source",
+            &CreateSimpleTableRequest {
+                table: "places".to_string(),
+                title: Some("Places".to_string()),
+                attributes: vec![
+                    CollectionAttribute {
+                        name: "name".to_string(),
+                        kind: "string".to_string(),
+                        index_types: vec!["hash".to_string(), "fulltext".to_string()],
+                        default_value: None,
+                    },
+                    CollectionAttribute {
+                        name: "geometry".to_string(),
+                        kind: "geo".to_string(),
+                        index_types: vec!["spatial".to_string()],
+                        default_value: None,
+                    },
+                    CollectionAttribute {
+                        name: "embedding".to_string(),
+                        kind: "vector".to_string(),
+                        index_types: vec!["vector".to_string()],
+                        default_value: None,
+                    },
+                ],
+                hash_indexed_fields: Vec::new(),
+                range_indexed_fields: Vec::new(),
+            },
+        )
+        .expect("create source table");
+
+        let source_schema = tmp
+            .path()
+            .join("users/alice/source/repo/schemas/sekejap/schema.json");
+        let target_schema = tmp
+            .path()
+            .join("users/alice/clone/repo/schemas/sekejap/schema.json");
+        std::fs::create_dir_all(target_schema.parent().expect("schema parent"))
+            .expect("target schema dir");
+        std::fs::copy(source_schema, &target_schema).expect("copy schema");
+
+        let report = apply_schema_from_repo(tmp.path(), "alice", "clone")
+            .expect("apply schema")
+            .expect("schema report");
+        assert_eq!(report.tables_created, vec!["places"]);
+
+        let tables = list_tables(tmp.path(), "alice", "clone").expect("list target tables");
+        assert_eq!(tables.len(), 1);
+        let places = &tables[0];
+        assert_eq!(places.table, "places");
+        assert!(places.hash_indexed_fields.contains(&"name".to_string()));
+        assert!(places.fulltext_fields.contains(&"name".to_string()));
+        assert!(places.spatial_fields.contains(&"geometry".to_string()));
+        assert!(places.vector_fields.contains(&"embedding".to_string()));
+    }
+
+    #[test]
     fn sync_schema_removes_stale_table_files() {
         let tmp = tmp_root();
         create_table(
@@ -2230,12 +2441,12 @@ mod tests {
 
         let before = project_health(tmp.path(), "alice", "demo").expect("health");
         assert_eq!(before.node_count, 1);
-        assert!(before.wal_bytes > 0);
+        assert!(before.wal_bytes > 8);
 
         let report = compact_project(tmp.path(), "alice", "demo").expect("compact");
         assert_eq!(report.operation, "compact");
         assert_eq!(report.after.node_count, 1);
-        assert_eq!(report.after.wal_bytes, 0);
+        assert_eq!(report.after.wal_bytes, 8);
         assert!(report.after.snapshot_bytes > 0);
     }
 }

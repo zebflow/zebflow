@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, Row, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 
 use crate::infra::cluster::registry::WorkerRegistryRecord;
@@ -17,14 +17,14 @@ use crate::infra::execution::placement::{
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, McpSession,
-    PipelineInvocationEntry, PipelineInvocationLogPipelineStats, PipelineInvocationLogStats,
-    PipelineMeta, PlatformHubRepository, PlatformOffice, PlatformOfficeNode, PlatformProject,
-    PlatformServiceInstance, PlatformUser, PlatformUserLocalAuth, ProjectAccessRolePreset,
-    ProjectCapability, ProjectCredential, ProjectDbConnection, ProjectHubRepository, ProjectInvite,
-    ProjectInviteStatus, ProjectMember, ProjectOperationKind, ProjectOperationRecord,
-    ProjectOperationStatus, ProjectPolicy, ProjectPolicyBinding, ProjectSubjectKind, StoredUser,
-    now_ts, slug_segment,
+    HubAccessGrant, HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken,
+    McpSession, PipelineInvocationEntry, PipelineInvocationLogPipelineStats,
+    PipelineInvocationLogStats, PipelineMeta, PlatformHubRepository, PlatformOffice,
+    PlatformOfficeNode, PlatformProject, PlatformServiceInstance, PlatformUser,
+    PlatformUserLocalAuth, ProjectAccessRolePreset, ProjectCapability, ProjectCredential,
+    ProjectDbConnection, ProjectHubRepository, ProjectInvite, ProjectInviteStatus, ProjectMember,
+    ProjectOperationKind, ProjectOperationRecord, ProjectOperationStatus, ProjectPolicy,
+    ProjectPolicyBinding, ProjectSubjectKind, StoredUser, now_ts, slug_segment,
 };
 
 const SCHEMA_SQL: &str = "
@@ -117,6 +117,21 @@ CREATE TABLE IF NOT EXISTS platform_hub_repositories (
         ON UPDATE CASCADE
         ON DELETE RESTRICT
 );
+CREATE TABLE IF NOT EXISTS hub_access_grants (
+    grant_id       TEXT PRIMARY KEY,
+    source_owner   TEXT NOT NULL DEFAULT '',
+    source_id      TEXT NOT NULL DEFAULT '',
+    repository_id  TEXT NOT NULL DEFAULT '',
+    grant_scope    TEXT NOT NULL DEFAULT 'selected_project',
+    target_owner   TEXT NOT NULL DEFAULT '',
+    target_project TEXT NOT NULL DEFAULT '',
+    can_read       INTEGER NOT NULL DEFAULT 1,
+    can_publish    INTEGER NOT NULL DEFAULT 0,
+    can_manage     INTEGER NOT NULL DEFAULT 0,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS hub_authorities (
     authority_id     TEXT PRIMARY KEY,
     host_project_id  TEXT NOT NULL UNIQUE DEFAULT '',
@@ -172,6 +187,7 @@ CREATE TABLE IF NOT EXISTS hub_asset_packages (
     asset_kind       TEXT NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
     description      TEXT NOT NULL DEFAULT '',
+    image_url        TEXT NOT NULL DEFAULT '',
     visibility       TEXT NOT NULL DEFAULT 'private',
     tags_json        TEXT NOT NULL DEFAULT '[]',
     created_at       INTEGER NOT NULL DEFAULT 0,
@@ -468,6 +484,24 @@ pub struct SqliteDataAdapter {
     data_root: Option<PathBuf>,
 }
 
+fn hub_access_grant_from_row(row: &Row<'_>) -> rusqlite::Result<HubAccessGrant> {
+    Ok(HubAccessGrant {
+        grant_id: row.get(0)?,
+        source_owner: row.get(1)?,
+        source_id: row.get(2)?,
+        repository_id: row.get(3)?,
+        grant_scope: row.get(4)?,
+        target_owner: row.get(5)?,
+        target_project: row.get(6)?,
+        can_read: row.get::<_, i64>(7)? != 0,
+        can_publish: row.get::<_, i64>(8)? != 0,
+        can_manage: row.get::<_, i64>(9)? != 0,
+        enabled: row.get::<_, i64>(10)? != 0,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
 impl SqliteDataAdapter {
     /// Opens or creates `{data_root}/platform/catalog.db` with WAL mode and
     /// applies ordered platform schema migrations.
@@ -617,7 +651,7 @@ impl SqliteDataAdapter {
         Ok(exists)
     }
 
-    fn migrations() -> [MigrationDef; 14] {
+    fn migrations() -> [MigrationDef; 15] {
         [
             MigrationDef {
                 version: 1,
@@ -688,6 +722,11 @@ impl SqliteDataAdapter {
                 version: 14,
                 name: "reserved_post_stable_hub_schema",
                 apply: Self::apply_migration_0014_reserved_post_stable_hub_schema,
+            },
+            MigrationDef {
+                version: 15,
+                name: "hub_access_grants",
+                apply: Self::apply_migration_0015_hub_access_grants,
             },
         ]
     }
@@ -1794,6 +1833,7 @@ CREATE TABLE hub_asset_packages (
     asset_kind              TEXT NOT NULL DEFAULT '',
     title                   TEXT NOT NULL DEFAULT '',
     description             TEXT NOT NULL DEFAULT '',
+    image_url               TEXT NOT NULL DEFAULT '',
     visibility              TEXT NOT NULL DEFAULT 'private',
     tags_json               TEXT NOT NULL DEFAULT '[]',
     created_at              INTEGER NOT NULL DEFAULT 0,
@@ -1820,6 +1860,7 @@ CREATE TABLE hub_asset_packages (
                 "asset_kind",
                 "title",
                 "description",
+                "image_url",
                 "visibility",
                 "tags_json",
                 "created_at",
@@ -2486,8 +2527,14 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
     }
 
     fn apply_migration_0014_reserved_post_stable_hub_schema(
-        _tx: &Transaction<'_>,
+        tx: &Transaction<'_>,
     ) -> Result<(), PlatformError> {
+        Self::ensure_hub_repository_schema(tx)?;
+        Ok(())
+    }
+
+    fn apply_migration_0015_hub_access_grants(tx: &Transaction<'_>) -> Result<(), PlatformError> {
+        Self::ensure_hub_access_grant_schema(tx)?;
         Ok(())
     }
 
@@ -2660,6 +2707,12 @@ CREATE TABLE IF NOT EXISTS hub_publishers (
         )?;
         Self::ensure_table_column(
             conn,
+            "hub_asset_packages",
+            "image_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
             "hub_asset_versions",
             "authority_owner",
             "TEXT NOT NULL DEFAULT ''",
@@ -2701,6 +2754,106 @@ CREATE TABLE IF NOT EXISTS hub_publishers (
             "publisher_email",
             "TEXT NOT NULL DEFAULT ''",
         )
+    }
+
+    fn ensure_hub_repository_schema<C>(conn: &C) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS project_hub_repositories (
+    owner         TEXT NOT NULL,
+    project       TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    base_url      TEXT NOT NULL DEFAULT '',
+    remote_owner  TEXT NOT NULL DEFAULT '',
+    remote_project TEXT NOT NULL DEFAULT '',
+    read_token    TEXT NOT NULL DEFAULT '',
+    visibility    TEXT NOT NULL DEFAULT 'public',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, project, repository_id)
+);
+CREATE TABLE IF NOT EXISTS platform_hub_repositories (
+    source_id     TEXT NOT NULL UNIQUE DEFAULT '',
+    owner_user_id TEXT NOT NULL DEFAULT '',
+    owner         TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    base_url      TEXT NOT NULL DEFAULT '',
+    remote_owner  TEXT NOT NULL DEFAULT '',
+    remote_project TEXT NOT NULL DEFAULT '',
+    read_token    TEXT NOT NULL DEFAULT '',
+    visibility    TEXT NOT NULL DEFAULT 'public',
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    INTEGER NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (owner, repository_id)
+);
+",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+        Self::ensure_table_column(
+            conn,
+            "project_hub_repositories",
+            "visibility",
+            "TEXT NOT NULL DEFAULT 'public'",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "platform_hub_repositories",
+            "visibility",
+            "TEXT NOT NULL DEFAULT 'public'",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "platform_hub_repositories",
+            "source_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Self::ensure_table_column(
+            conn,
+            "platform_hub_repositories",
+            "owner_user_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        Ok(())
+    }
+
+    fn ensure_hub_access_grant_schema<C>(conn: &C) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        conn.execute_batch(
+            "
+CREATE TABLE IF NOT EXISTS hub_access_grants (
+    grant_id       TEXT PRIMARY KEY,
+    source_owner   TEXT NOT NULL DEFAULT '',
+    source_id      TEXT NOT NULL DEFAULT '',
+    repository_id  TEXT NOT NULL DEFAULT '',
+    grant_scope    TEXT NOT NULL DEFAULT 'selected_project',
+    target_owner   TEXT NOT NULL DEFAULT '',
+    target_project TEXT NOT NULL DEFAULT '',
+    can_read       INTEGER NOT NULL DEFAULT 1,
+    can_publish    INTEGER NOT NULL DEFAULT 0,
+    can_manage     INTEGER NOT NULL DEFAULT 0,
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    created_at     INTEGER NOT NULL DEFAULT 0,
+    updated_at     INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hub_access_grants_unique_target
+    ON hub_access_grants(source_id, grant_scope, target_owner, target_project);
+CREATE INDEX IF NOT EXISTS idx_hub_access_grants_source
+    ON hub_access_grants(source_owner, repository_id, enabled);
+CREATE INDEX IF NOT EXISTS idx_hub_access_grants_project
+    ON hub_access_grants(target_owner, target_project, enabled);
+",
+        )
+        .map_err(|e| PlatformError::new("PLATFORM_SQLITE_SCHEMA", e.to_string()))?;
+        Ok(())
     }
 
     fn decode_project_operation_kind(raw: &str) -> Result<ProjectOperationKind, PlatformError> {
@@ -3262,6 +3415,7 @@ impl DataAdapter for SqliteDataAdapter {
         repository: &ProjectHubRepository,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         conn.execute(
             "INSERT OR REPLACE INTO project_hub_repositories
              (owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at)
@@ -3290,6 +3444,7 @@ impl DataAdapter for SqliteDataAdapter {
         project: &str,
     ) -> Result<Vec<ProjectHubRepository>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         let mut stmt = conn
             .prepare(
                 "SELECT owner, project, repository_id, title, base_url, remote_owner, remote_project, read_token, enabled, created_at, updated_at
@@ -3326,6 +3481,7 @@ impl DataAdapter for SqliteDataAdapter {
         repository_id: &str,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         conn.execute(
             "DELETE FROM project_hub_repositories
              WHERE owner = ?1 AND project = ?2 AND repository_id = ?3",
@@ -3340,6 +3496,7 @@ impl DataAdapter for SqliteDataAdapter {
         repository: &PlatformHubRepository,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         conn.execute(
             "INSERT INTO platform_hub_repositories
              (source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at)
@@ -3381,6 +3538,7 @@ impl DataAdapter for SqliteDataAdapter {
         owner: &str,
     ) -> Result<Vec<PlatformHubRepository>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         let mut stmt = conn
             .prepare(
                 "SELECT source_id, owner_user_id, owner, repository_id, title, base_url, remote_owner, remote_project, read_token, visibility, enabled, created_at, updated_at
@@ -3418,10 +3576,114 @@ impl DataAdapter for SqliteDataAdapter {
         repository_id: &str,
     ) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_repository_schema(&conn)?;
         conn.execute(
             "DELETE FROM platform_hub_repositories
              WHERE owner = ?1 AND repository_id = ?2",
             params![owner, repository_id],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn put_hub_access_grant(&self, grant: &HubAccessGrant) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_access_grant_schema(&conn)?;
+        conn.execute(
+            "INSERT INTO hub_access_grants
+             (grant_id, source_owner, source_id, repository_id, grant_scope, target_owner, target_project, can_read, can_publish, can_manage, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(grant_id) DO UPDATE SET
+                 source_owner = excluded.source_owner,
+                 source_id = excluded.source_id,
+                 repository_id = excluded.repository_id,
+                 grant_scope = excluded.grant_scope,
+                 target_owner = excluded.target_owner,
+                 target_project = excluded.target_project,
+                 can_read = excluded.can_read,
+                 can_publish = excluded.can_publish,
+                 can_manage = excluded.can_manage,
+                 enabled = excluded.enabled,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at",
+            params![
+                &grant.grant_id,
+                &grant.source_owner,
+                &grant.source_id,
+                &grant.repository_id,
+                &grant.grant_scope,
+                &grant.target_owner,
+                &grant.target_project,
+                if grant.can_read { 1 } else { 0 },
+                if grant.can_publish { 1 } else { 0 },
+                if grant.can_manage { 1 } else { 0 },
+                if grant.enabled { 1 } else { 0 },
+                grant.created_at,
+                grant.updated_at,
+            ],
+        )
+        .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    fn list_hub_access_grants(
+        &self,
+        source_owner: &str,
+    ) -> Result<Vec<HubAccessGrant>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_access_grant_schema(&conn)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT grant_id, source_owner, source_id, repository_id, grant_scope, target_owner, target_project, can_read, can_publish, can_manage, enabled, created_at, updated_at
+                 FROM hub_access_grants
+                 WHERE source_owner = ?1
+                 ORDER BY repository_id ASC, grant_scope ASC, target_owner ASC, target_project ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(params![source_owner], hub_access_grant_from_row)
+            .map_err(Self::qe)?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(items)
+    }
+
+    fn list_effective_hub_access_grants(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+    ) -> Result<Vec<HubAccessGrant>, PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_access_grant_schema(&conn)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT grant_id, source_owner, source_id, repository_id, grant_scope, target_owner, target_project, can_read, can_publish, can_manage, enabled, created_at, updated_at
+                 FROM hub_access_grants
+                 WHERE enabled = 1
+                   AND (
+                       grant_scope = 'all_projects'
+                       OR (grant_scope = 'selected_project' AND target_owner = ?1 AND target_project = ?2)
+                   )
+                 ORDER BY repository_id ASC, grant_scope ASC, grant_id ASC",
+            )
+            .map_err(Self::qe)?;
+        let items = stmt
+            .query_map(
+                params![target_owner, target_project],
+                hub_access_grant_from_row,
+            )
+            .map_err(Self::qe)?
+            .filter_map(Result::ok)
+            .collect();
+        Ok(items)
+    }
+
+    fn delete_hub_access_grant(&self, grant_id: &str) -> Result<(), PlatformError> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_hub_access_grant_schema(&conn)?;
+        conn.execute(
+            "DELETE FROM hub_access_grants WHERE grant_id = ?1",
+            params![grant_id],
         )
         .map_err(Self::qe)?;
         Ok(())
@@ -3586,11 +3848,17 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn put_hub_asset_package(&self, package: &HubAssetPackage) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_table_column(
+            &conn,
+            "hub_asset_packages",
+            "image_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         let tags_json = serde_json::to_string(&package.tags).map_err(Self::json_error)?;
         conn.execute(
             "INSERT INTO hub_asset_packages
-             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
              ON CONFLICT(package_id) DO UPDATE SET
                  package_pk = excluded.package_pk,
                  authority_id = excluded.authority_id,
@@ -3605,6 +3873,7 @@ impl DataAdapter for SqliteDataAdapter {
                  asset_kind = excluded.asset_kind,
                  title = excluded.title,
                  description = excluded.description,
+                 image_url = excluded.image_url,
                  visibility = excluded.visibility,
                  tags_json = excluded.tags_json,
                  created_at = excluded.created_at,
@@ -3624,6 +3893,7 @@ impl DataAdapter for SqliteDataAdapter {
                 &package.asset_kind,
                 &package.title,
                 &package.description,
+                &package.image_url,
                 &package.visibility,
                 &tags_json,
                 package.created_at,
@@ -3636,9 +3906,15 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn list_hub_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_table_column(
+            &conn,
+            "hub_asset_packages",
+            "image_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at
                  FROM hub_asset_packages
                  ORDER BY updated_at DESC, package_id ASC",
             )
@@ -3660,11 +3936,12 @@ impl DataAdapter for SqliteDataAdapter {
                     asset_kind: row.get(11)?,
                     title: row.get(12)?,
                     description: row.get(13)?,
-                    visibility: row.get(14)?,
-                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?)
+                    image_url: row.get(14)?,
+                    visibility: row.get(15)?,
+                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(16)?)
                         .unwrap_or_default(),
-                    created_at: row.get(16)?,
-                    updated_at: row.get(17)?,
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
                 })
             })
             .map_err(Self::qe)?
@@ -3678,9 +3955,15 @@ impl DataAdapter for SqliteDataAdapter {
         package_id: &str,
     ) -> Result<Option<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::ensure_table_column(
+            &conn,
+            "hub_asset_packages",
+            "image_url",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at
                  FROM hub_asset_packages WHERE package_id = ?1",
             )
             .map_err(Self::qe)?;
@@ -3700,11 +3983,12 @@ impl DataAdapter for SqliteDataAdapter {
                 asset_kind: row.get(11)?,
                 title: row.get(12)?,
                 description: row.get(13)?,
-                visibility: row.get(14)?,
-                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(15)?)
+                image_url: row.get(14)?,
+                visibility: row.get(15)?,
+                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(16)?)
                     .unwrap_or_default(),
-                created_at: row.get(16)?,
-                updated_at: row.get(17)?,
+                created_at: row.get(17)?,
+                updated_at: row.get(18)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),
@@ -3831,6 +4115,23 @@ impl DataAdapter for SqliteDataAdapter {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(Self::qe(e)),
         }
+    }
+
+    fn delete_hub_asset_package(&self, package_id: &str) -> Result<(), PlatformError> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction().map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM hub_asset_versions WHERE package_id = ?1",
+            params![package_id],
+        )
+        .map_err(Self::qe)?;
+        tx.execute(
+            "DELETE FROM hub_asset_packages WHERE package_id = ?1",
+            params![package_id],
+        )
+        .map_err(Self::qe)?;
+        tx.commit().map_err(Self::qe)?;
+        Ok(())
     }
 
     fn put_hub_token(&self, token: &HubToken) -> Result<(), PlatformError> {
