@@ -1,10 +1,31 @@
 # Tailwind in Zeb Templates
 
-The RWE engine processes Tailwind utility classes at compile time. Standard utilities work as-is. This doc covers Zeb-specific patterns you must follow.
+The RWE engine processes Tailwind utility classes at compile time without Node.js or an npm build step. Zebflow targets the high-frequency **Tailwind CSS 3.4 LTS** class contract used by existing themes and component libraries.
+
+Compatibility is tested by CSS meaning, not only by whether a class produces a rule. Unsupported utilities are ignored rather than translated into an unrelated property.
+
+## Compatibility Boundary
+
+Built in:
+
+- the standard v3 spacing, sizing, layout, flexbox, grid, typography, color, border, effect, table, transform, filter, interaction, SVG, and accessibility families used by common application themes
+- composable transforms, filters, gradients, shadows, and rings
+- responsive, state, structural, `group-*`, `peer-*`, `has-*`, `aria-*`, `data-*`, `supports-*`, direction, orientation, print, and pseudo-element variants
+- arbitrary values such as `w-[320px]` and explicit CSS variables such as `bg-[var(--color-product)]`
+- OXC source discovery for conditional classes in TSX and JavaScript string literals
+
+Not part of the current contract:
+
+- loading `tailwind.config.js`
+- executing third-party Tailwind plugins
+- automatically importing npm packages
+- Tailwind v4-only syntax and utilities
+
+Use project CSS for plugin-specific class systems. Do not assume that a third-party plugin class exists merely because its name starts with `prose-`, `form-`, or another familiar prefix.
 
 ---
 
-## Standard Tailwind — works normally
+## Standard Tailwind 3.4 Utilities
 
 ```tsx
 <div className="flex items-center gap-4 p-6 rounded-xl border">
@@ -58,7 +79,13 @@ Zeb defines `--color-*` CSS custom properties that resolve to the active theme (
 | `text-brand-blue` | `#005b9a` |
 | `bg-brand-blue` | `#005b9a` |
 
-**How it works:** Any lowercase hyphen-separated class that isn't a standard Tailwind palette name is treated as a semantic token. `bg-surface` → `background-color: var(--color-surface)`. The CSS defines `--color-surface` under `[data-studio-theme="dark"]` and `[data-studio-theme="light"]` selectors — the browser resolves it automatically.
+**How it works:** Declared Zebflow semantic names map to CSS variables. `bg-surface` becomes `background-color: var(--color-surface)`. The CSS defines `--color-surface` under the active theme and the browser resolves it automatically.
+
+Arbitrary semantic names are deliberately not inferred because names such as `bg-fixed`, `border-collapse`, and `outline-offset-2` are real Tailwind utilities. For a project-specific variable, use an explicit arbitrary value:
+
+```tsx
+<div className="bg-[var(--color-product)] text-[var(--color-product-foreground)]" />
+```
 
 ---
 

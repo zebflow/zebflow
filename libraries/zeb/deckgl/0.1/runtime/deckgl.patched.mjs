@@ -746,17 +746,22 @@ function createPatchedDeckMapRuntime(host, options = {}) {
 
 function mountExistingHost(host, originalGet) {
   if (!(host instanceof Element)) return;
-  if (host._zebDeckPatched) return;
+  if (host._zebDeckPatched || host._zebDeckMounting) return;
+  host._zebDeckMounting = true;
   if (!host.id && host.dataset?.config) {
     host.id = `zd-${Math.random().toString(36).slice(2, 8)}`;
   }
-  const staleInstance = patchedInstances.get(host.id) || originalGet?.(host.id);
-  staleInstance?.destroy?.();
-  host._zdMounted = false;
-  host._zdInstance = null;
-  host._zebDeckPatched = false;
-  host.innerHTML = "";
-  mountDeckMap(host);
+  try {
+    const staleInstance = patchedInstances.get(host.id) || originalGet?.(host.id);
+    staleInstance?.destroy?.();
+    host._zdMounted = false;
+    host._zdInstance = null;
+    host._zebDeckPatched = false;
+    host.innerHTML = "";
+    mountDeckMap(host);
+  } finally {
+    host._zebDeckMounting = false;
+  }
 }
 
 function scanDeckHosts(root, originalGet) {

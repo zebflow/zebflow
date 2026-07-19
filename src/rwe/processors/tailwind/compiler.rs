@@ -113,9 +113,30 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
             medias.push(media);
             continue;
         }
-        if variant == "peer-disabled" {
-            rule.selector = format!(".peer:disabled ~ {}", rule.selector);
+        if apply_relational_variant(&mut rule.selector, variant) {
             continue;
+        }
+        if apply_attribute_variant(&mut rule.selector, variant) {
+            continue;
+        }
+        match variant.as_str() {
+            "rtl" => {
+                rule.selector = format!("[dir=\"rtl\"] {}", rule.selector);
+                continue;
+            }
+            "ltr" => {
+                rule.selector = format!("[dir=\"ltr\"] {}", rule.selector);
+                continue;
+            }
+            "*" => {
+                rule.selector.push_str(" > *");
+                continue;
+            }
+            "**" => {
+                rule.selector.push_str(" *");
+                continue;
+            }
+            _ => {}
         }
         if let Some(pseudo) = variant_pseudo(variant) {
             rule.selector.push_str(pseudo);
@@ -125,7 +146,11 @@ fn token_css_rule_uncached(token: &str) -> Option<String> {
     }
     let mut out = format!("{}{{{}}}", rule.selector, rule.declarations);
     for media in medias.into_iter().rev() {
-        out = format!("@media {}{{{}}}", media, out);
+        if media.starts_with("@supports ") {
+            out = format!("{}{{{}}}", media, out);
+        } else {
+            out = format!("@media {}{{{}}}", media, out);
+        }
     }
     if let Some(prelude) = rule.prelude.take() {
         return Some(format!("{}\n{}", prelude, out));
@@ -237,12 +262,13 @@ fn compare_token_precedence(a: &str, b: &str) -> std::cmp::Ordering {
     ak.cmp(&bk).then_with(|| a.cmp(b))
 }
 
-fn token_precedence_key(token: &str) -> (u8, u8) {
-    let Some((variants, _)) = split_variants(token) else {
-        return (0, 0);
+fn token_precedence_key(token: &str) -> (u8, u8, u8) {
+    let Some((variants, utility)) = split_variants(token) else {
+        return (0, 0, 0);
     };
+    let utility_rank = utility_precedence_rank(&utility);
     if variants.is_empty() {
-        return (0, 0);
+        return (0, 0, utility_rank);
     }
 
     let mut has_non_media = false;
@@ -263,12 +289,26 @@ fn token_precedence_key(token: &str) -> (u8, u8) {
     if has_media {
         // Keep all responsive variants after base and pseudo variants.
         // Use breakpoint rank so `sm` rules emit before `md`, `lg`, ...
-        return (2, max_media_rank);
+        return (2, max_media_rank, utility_rank);
     }
     if has_non_media {
-        return (1, 0);
+        return (1, 0, utility_rank);
     }
-    (0, 0)
+    (0, 0, utility_rank)
+}
+
+fn utility_precedence_rank(utility: &str) -> u8 {
+    let utility = utility.strip_prefix('!').unwrap_or(utility);
+    if utility.starts_with("from-") {
+        return 1;
+    }
+    if utility.starts_with("via-") {
+        return 2;
+    }
+    if utility.starts_with("to-") {
+        return 3;
+    }
+    0
 }
 
 fn tailwind_preflight_css() -> &'static str {
@@ -512,25 +552,37 @@ fn split_variants(token: &str) -> Option<(Vec<String>, String)> {
     Some((parts, utility))
 }
 
-fn variant_media_query(v: &str) -> Option<&'static str> {
-    match v {
-        "sm" => Some("(min-width: 640px)"),
-        "md" => Some("(min-width: 768px)"),
-        "lg" => Some("(min-width: 1024px)"),
-        "xl" => Some("(min-width: 1280px)"),
-        "2xl" => Some("(min-width: 1536px)"),
-        "motion-reduce" => Some("(prefers-reduced-motion: reduce)"),
-        "motion-safe" => Some("(prefers-reduced-motion: no-preference)"),
-        "dark" => Some("(prefers-color-scheme: dark)"),
-        "light" => Some("(prefers-color-scheme: light)"),
-        "max-sm" => Some("(max-width: 639px)"),
-        "max-md" => Some("(max-width: 767px)"),
-        "max-lg" => Some("(max-width: 1023px)"),
-        "max-xl" => Some("(max-width: 1279px)"),
-        "max-2xl" => Some("(max-width: 1535px)"),
-        "print" => Some("print"),
-        _ => None,
-    }
+fn variant_media_query(v: &str) -> Option<String> {
+    let fixed = match v {
+        "sm" => "(min-width: 640px)",
+        "md" => "(min-width: 768px)",
+        "lg" => "(min-width: 1024px)",
+        "xl" => "(min-width: 1280px)",
+        "2xl" => "(min-width: 1536px)",
+        "motion-reduce" => "(prefers-reduced-motion: reduce)",
+        "motion-safe" => "(prefers-reduced-motion: no-preference)",
+        "dark" => "(prefers-color-scheme: dark)",
+        "light" => "(prefers-color-scheme: light)",
+        "portrait" => "(orientation: portrait)",
+        "landscape" => "(orientation: landscape)",
+        "contrast-more" => "(prefers-contrast: more)",
+        "contrast-less" => "(prefers-contrast: less)",
+        "forced-colors" => "(forced-colors: active)",
+        "max-sm" => "(max-width: 639px)",
+        "max-md" => "(max-width: 767px)",
+        "max-lg" => "(max-width: 1023px)",
+        "max-xl" => "(max-width: 1279px)",
+        "max-2xl" => "(max-width: 1535px)",
+        "print" => "print",
+        _ => {
+            let raw = v.strip_prefix("supports-[")?.strip_suffix(']')?;
+            if !is_safe_css_fragment(raw) {
+                return None;
+            }
+            return Some(format!("@supports ({})", raw.replace('_', " ")));
+        }
+    };
+    Some(fixed.to_string())
 }
 
 fn variant_media_rank(v: &str) -> Option<u8> {
@@ -554,9 +606,24 @@ fn variant_pseudo(v: &str) -> Option<&'static str> {
         "disabled" => Some(":disabled"),
         "last" => Some(":last-child"),
         "first" => Some(":first-child"),
+        "only" => Some(":only-child"),
+        "first-of-type" => Some(":first-of-type"),
+        "last-of-type" => Some(":last-of-type"),
+        "only-of-type" => Some(":only-of-type"),
         "odd" => Some(":nth-child(odd)"),
         "even" => Some(":nth-child(even)"),
         "checked" => Some(":checked"),
+        "indeterminate" => Some(":indeterminate"),
+        "default" => Some(":default"),
+        "enabled" => Some(":enabled"),
+        "optional" => Some(":optional"),
+        "in-range" => Some(":in-range"),
+        "out-of-range" => Some(":out-of-range"),
+        "placeholder-shown" => Some(":placeholder-shown"),
+        "autofill" => Some(":autofill"),
+        "open" => Some("[open]"),
+        "target" => Some(":target"),
+        "visited" => Some(":visited"),
         "empty" => Some(":empty"),
         "required" => Some(":required"),
         "valid" => Some(":valid"),
@@ -568,12 +635,252 @@ fn variant_pseudo(v: &str) -> Option<&'static str> {
         "after" => Some("::after"),
         "placeholder" => Some("::placeholder"),
         "selection" => Some("::selection"),
+        "marker" => Some("::marker"),
+        "first-letter" => Some("::first-letter"),
+        "first-line" => Some("::first-line"),
+        "backdrop" => Some("::backdrop"),
         "file" => Some("::file-selector-button"),
         _ => None,
     }
 }
 
+fn apply_relational_variant(selector: &mut String, variant: &str) -> bool {
+    if let Some(state) = variant.strip_prefix("group-") {
+        if let Some(pseudo) = variant_pseudo(state) {
+            *selector = format!(".group{} {}", pseudo, selector);
+            return true;
+        }
+    }
+    if let Some(state) = variant.strip_prefix("peer-") {
+        if let Some(pseudo) = variant_pseudo(state) {
+            *selector = format!(".peer{} ~ {}", pseudo, selector);
+            return true;
+        }
+    }
+    if let Some(raw) = variant
+        .strip_prefix("has-[")
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        if !is_safe_css_fragment(raw) {
+            return false;
+        }
+        selector.push_str(&format!(":has({})", raw.replace('_', " ")));
+        return true;
+    }
+    false
+}
+
+fn apply_attribute_variant(selector: &mut String, variant: &str) -> bool {
+    if let Some(name) = variant.strip_prefix("aria-") {
+        if let Some(raw) = name
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+        {
+            if let Some((attribute, value)) = raw.split_once('=') {
+                if is_safe_attribute_name(attribute) && is_safe_attribute_value(value) {
+                    selector.push_str(&format!("[aria-{}=\"{}\"]", attribute, value));
+                    return true;
+                }
+            }
+        }
+        if is_safe_attribute_name(name) {
+            selector.push_str(&format!("[aria-{}=\"true\"]", name));
+            return true;
+        }
+    }
+    if let Some(raw) = variant
+        .strip_prefix("data-[")
+        .and_then(|value| value.strip_suffix(']'))
+    {
+        if let Some((name, value)) = raw.split_once('=') {
+            if is_safe_attribute_name(name) && is_safe_attribute_value(value) {
+                selector.push_str(&format!("[data-{}=\"{}\"]", name, value));
+                return true;
+            }
+        } else if is_safe_attribute_name(raw) {
+            selector.push_str(&format!("[data-{}]", raw));
+            return true;
+        }
+    }
+    false
+}
+
+fn is_safe_attribute_value(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':' | '.'))
+}
+
+fn is_safe_css_fragment(value: &str) -> bool {
+    !value.is_empty()
+        && !value
+            .chars()
+            .any(|ch| matches!(ch, '{' | '}' | ';' | '@' | '"' | '\'' | '\\'))
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '-' | '_'
+                        | ':'
+                        | '.'
+                        | '#'
+                        | '['
+                        | ']'
+                        | '('
+                        | ')'
+                        | '='
+                        | '>'
+                        | '+'
+                        | '~'
+                        | '*'
+                        | ' '
+                )
+        })
+}
+
+fn is_safe_attribute_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
 fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<UtilityRule> {
+    if utility == "container" {
+        let prelude = [
+            ("640px", "640px"),
+            ("768px", "768px"),
+            ("1024px", "1024px"),
+            ("1280px", "1280px"),
+            ("1536px", "1536px"),
+        ]
+        .into_iter()
+        .map(|(screen, width)| {
+            format!(
+                "@media (min-width: {}){{{}{{max-width:{};}}}}",
+                screen, base_selector, width
+            )
+        })
+        .collect::<String>();
+        return Some(UtilityRule {
+            selector: base_selector.to_string(),
+            declarations: maybe_important("width:100%;", important),
+            prelude: Some(prelude),
+        });
+    }
+    if let Some(v) = utility.strip_prefix("aspect-") {
+        let value = match v {
+            "auto" => "auto".to_string(),
+            "square" => "1 / 1".to_string(),
+            "video" => "16 / 9".to_string(),
+            _ => arbitrary_value(v)?,
+        };
+        return Some(simple_rule(
+            base_selector,
+            &format!("aspect-ratio:{};", value),
+            important,
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("columns-") {
+        let value = match v {
+            "auto" => "auto".to_string(),
+            "3xs" => "16rem".to_string(),
+            "2xs" => "18rem".to_string(),
+            "xs" => "20rem".to_string(),
+            "sm" => "24rem".to_string(),
+            "md" => "28rem".to_string(),
+            "lg" => "32rem".to_string(),
+            "xl" => "36rem".to_string(),
+            "2xl" => "42rem".to_string(),
+            _ => v
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n > 0)
+                .map(|n| n.to_string())
+                .or_else(|| arbitrary_value(v))?,
+        };
+        return Some(simple_rule(
+            base_selector,
+            &format!("columns:{};", value),
+            important,
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("basis-") {
+        let value = size_value(v, SizeAxis::Width)?;
+        return Some(simple_rule(
+            base_selector,
+            &format!("flex-basis:{};", value),
+            important,
+        ));
+    }
+    if let Some(declarations) = fragmentation_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(v) = utility.strip_prefix("gap-x-") {
+        let value = spacing_value(v)?;
+        return Some(simple_rule(
+            base_selector,
+            &format!("column-gap:{};", value),
+            important,
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("gap-y-") {
+        let value = spacing_value(v)?;
+        return Some(simple_rule(
+            base_selector,
+            &format!("row-gap:{};", value),
+            important,
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("object-") {
+        let position = match v {
+            "bottom" => "bottom",
+            "center" => "center",
+            "left" => "left",
+            "left-bottom" => "left bottom",
+            "left-top" => "left top",
+            "right" => "right",
+            "right-bottom" => "right bottom",
+            "right-top" => "right top",
+            "top" => "top",
+            _ => "",
+        };
+        if !position.is_empty() {
+            return Some(simple_rule(
+                base_selector,
+                &format!("object-position:{};", position),
+                important,
+            ));
+        }
+    }
+    if let Some(declarations) = background_layout_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = table_layout_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = svg_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = scroll_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = common_misc_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = transform_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = filter_rule(utility, false) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = filter_rule(utility, true) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
+    if let Some(declarations) = shadow_rule(utility) {
+        return Some(simple_rule(base_selector, &declarations, important));
+    }
     if let Some(v) = utility.strip_prefix("brightness-") {
         let amount = v.parse::<f64>().ok()?;
         return Some(simple_rule(
@@ -596,11 +903,31 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             important,
         ));
     }
+    if utility == "space-y-reverse" {
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important("--tw-space-y-reverse:1;", important),
+            prelude: None,
+        });
+    }
+    if utility == "space-x-reverse" {
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important("--tw-space-x-reverse:1;", important),
+            prelude: None,
+        });
+    }
     if let Some(v) = utility.strip_prefix("space-y-") {
         let value = spacing_value(v)?;
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
-            declarations: maybe_important(&format!("margin-top:{};", value), important),
+            declarations: maybe_important(
+                &format!(
+                    "--tw-space-y-reverse:0;margin-top:calc({0} * calc(1 - var(--tw-space-y-reverse)));margin-bottom:calc({0} * var(--tw-space-y-reverse));",
+                    value
+                ),
+                important,
+            ),
             prelude: None,
         });
     }
@@ -608,11 +935,38 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         let value = spacing_value(v)?;
         return Some(UtilityRule {
             selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
-            declarations: maybe_important(&format!("margin-left:{};", value), important),
+            declarations: maybe_important(
+                &format!(
+                    "--tw-space-x-reverse:0;margin-right:calc({0} * var(--tw-space-x-reverse));margin-left:calc({0} * calc(1 - var(--tw-space-x-reverse)));",
+                    value
+                ),
+                important,
+            ),
             prelude: None,
         });
     }
     if let Some(v) = utility.strip_prefix("grid-cols-") {
+        if v == "subgrid" {
+            return Some(simple_rule(
+                base_selector,
+                "grid-template-columns:subgrid;",
+                important,
+            ));
+        }
+        if v == "none" {
+            return Some(simple_rule(
+                base_selector,
+                "grid-template-columns:none;",
+                important,
+            ));
+        }
+        if let Some(raw) = arbitrary_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("grid-template-columns:{};", raw),
+                important,
+            ));
+        }
         let n = v.parse::<u32>().ok()?;
         if n == 0 {
             return None;
@@ -624,6 +978,9 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     if let Some(v) = utility.strip_prefix("col-span-") {
+        if v == "full" {
+            return Some(simple_rule(base_selector, "grid-column:1 / -1;", important));
+        }
         let n = v.parse::<u32>().ok()?;
         if n == 0 {
             return None;
@@ -1089,7 +1446,7 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         ));
     }
     if let Some(v) = utility.strip_prefix("text-") {
-        if !matches!(v, "left" | "center" | "right" | "justify") {
+        if !matches!(v, "left" | "center" | "right" | "start" | "end" | "justify") {
             if let Some(raw) = arbitrary_value(v) {
                 if is_size_like(&raw) {
                     return Some(simple_rule(
@@ -1113,6 +1470,15 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                     important,
                 ));
             }
+        }
+    }
+    if let Some(v) = utility.strip_prefix("placeholder-") {
+        if let Some(color) = color_value(v) {
+            return Some(UtilityRule {
+                selector: format!("{}::placeholder", base_selector),
+                declarations: maybe_important(&format!("color:{};opacity:1;", color), important),
+                prelude: None,
+            });
         }
     }
     if let Some(v) = utility.strip_prefix("font-") {
@@ -1186,7 +1552,10 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Some(color) = color_value(v) {
             return Some(simple_rule(
                 base_selector,
-                &format!("--tw-gradient-from:{};--tw-gradient-to:transparent;", color),
+                &format!(
+                    "--tw-gradient-from:{} var(--tw-gradient-from-position,);--tw-gradient-to:transparent var(--tw-gradient-to-position,);--tw-gradient-stops:var(--tw-gradient-from),var(--tw-gradient-to);",
+                    color
+                ),
                 important,
             ));
         }
@@ -1195,7 +1564,10 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Some(color) = color_value(v) {
             return Some(simple_rule(
                 base_selector,
-                &format!("--tw-gradient-to:{};", color),
+                &format!(
+                    "--tw-gradient-to:{} var(--tw-gradient-to-position,);",
+                    color
+                ),
                 important,
             ));
         }
@@ -1204,7 +1576,10 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         if let Some(color) = color_value(v) {
             return Some(simple_rule(
                 base_selector,
-                &format!("--tw-gradient-via:{};", color),
+                &format!(
+                    "--tw-gradient-to:transparent var(--tw-gradient-to-position,);--tw-gradient-stops:var(--tw-gradient-from),{} var(--tw-gradient-via-position,),var(--tw-gradient-to);",
+                    color
+                ),
                 important,
             ));
         }
@@ -1221,6 +1596,13 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             return Some(simple_rule(
                 base_selector,
                 &format!("border-top-width:{raw};border-top-style:solid;"),
+                important,
+            ));
+        }
+        if let Some(color) = color_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("border-top-color:{};", color),
                 important,
             ));
         }
@@ -1241,6 +1623,13 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                 important,
             ));
         }
+        if let Some(color) = color_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("border-right-color:{};", color),
+                important,
+            ));
+        }
         return None;
     }
     if let Some(v) = utility.strip_prefix("border-b-") {
@@ -1255,6 +1644,13 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             return Some(simple_rule(
                 base_selector,
                 &format!("border-bottom-width:{raw};border-bottom-style:solid;"),
+                important,
+            ));
+        }
+        if let Some(color) = color_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("border-bottom-color:{};", color),
                 important,
             ));
         }
@@ -1275,7 +1671,38 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
                 important,
             ));
         }
+        if let Some(color) = color_value(v) {
+            return Some(simple_rule(
+                base_selector,
+                &format!("border-left-color:{};", color),
+                important,
+            ));
+        }
         return None;
+    }
+    for (prefix, first, second) in [
+        ("border-x-", "border-left", "border-right"),
+        ("border-y-", "border-top", "border-bottom"),
+    ] {
+        if let Some(v) = utility.strip_prefix(prefix) {
+            if let Some(width) = border_width_value(v) {
+                return Some(simple_rule(
+                    base_selector,
+                    &format!(
+                        "{first}-width:{width};{second}-width:{width};{first}-style:solid;{second}-style:solid;"
+                    ),
+                    important,
+                ));
+            }
+            if let Some(color) = color_value(v) {
+                return Some(simple_rule(
+                    base_selector,
+                    &format!("{first}-color:{color};{second}-color:{color};"),
+                    important,
+                ));
+            }
+            return None;
+        }
     }
     if let Some(v) = utility.strip_prefix("border-") {
         if let Some(decl) = border_rule(v) {
@@ -1283,16 +1710,38 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         }
     }
     if let Some(v) = utility.strip_prefix("outline-") {
+        if let Some(offset) = v.strip_prefix("offset-") {
+            let value = if let Ok(px) = offset.parse::<u32>() {
+                format!("{}px", px)
+            } else {
+                arbitrary_value(offset)?
+            };
+            return Some(simple_rule(
+                base_selector,
+                &format!("outline-offset:{};", value),
+                important,
+            ));
+        }
         if let Some(decl) = outline_rule(v) {
             return Some(simple_rule(base_selector, &decl, important));
         }
     }
     if let Some(v) = utility.strip_prefix("ring-") {
-        if let Some(decl) = ring_rule(v) {
+        if let Some(decl) = composable_ring_rule(v) {
             return Some(simple_rule(base_selector, &decl, important));
         }
     }
+    if utility == "ring" {
+        return Some(simple_rule(
+            base_selector,
+            &ring_width_declaration("3px"),
+            important,
+        ));
+    }
     if let Some(v) = utility.strip_prefix("rounded-") {
+        if let Some(declarations) = directional_radius_rule(v) {
+            return Some(simple_rule(base_selector, &declarations, important));
+        }
         if v == "none" {
             return Some(simple_rule(base_selector, "border-radius:0;", important));
         }
@@ -1352,8 +1801,71 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
             ));
         }
     }
+    if let Some(v) = utility.strip_prefix("divide-x-") {
+        let value = border_width_value(v)?;
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important(
+                &format!("border-left-width:{};border-left-style:solid;", value),
+                important,
+            ),
+            prelude: None,
+        });
+    }
+    if utility == "divide-x" {
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important(
+                "border-left-width:1px;border-left-style:solid;",
+                important,
+            ),
+            prelude: None,
+        });
+    }
+    if let Some(v) = utility.strip_prefix("divide-y-") {
+        let value = border_width_value(v)?;
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important(
+                &format!("border-top-width:{};border-top-style:solid;", value),
+                important,
+            ),
+            prelude: None,
+        });
+    }
+    if utility == "divide-y" {
+        return Some(UtilityRule {
+            selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+            declarations: maybe_important(
+                "border-top-width:1px;border-top-style:solid;",
+                important,
+            ),
+            prelude: None,
+        });
+    }
+    if let Some(v) = utility.strip_prefix("divide-") {
+        if matches!(v, "solid" | "dashed" | "dotted" | "double" | "none") {
+            return Some(UtilityRule {
+                selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+                declarations: maybe_important(&format!("border-style:{};", v), important),
+                prelude: None,
+            });
+        }
+        if let Some(color) = color_value(v) {
+            return Some(UtilityRule {
+                selector: format!("{} > :not([hidden]) ~ :not([hidden])", base_selector),
+                declarations: maybe_important(&format!("border-color:{};", color), important),
+                prelude: None,
+            });
+        }
+    }
     if let Some(v) = utility.strip_prefix("order-") {
-        let order = v.parse::<i32>().ok()?;
+        let order = match v {
+            "first" => i32::MIN,
+            "last" => i32::MAX,
+            "none" => 0,
+            _ => v.parse::<i32>().ok()?,
+        };
         return Some(simple_rule(
             base_selector,
             &format!("order:{};", order),
@@ -1378,6 +1890,21 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
     }
     // leading-N: numeric scale (N * 0.25rem), e.g. leading-6 → 1.5rem
     if let Some(v) = utility.strip_prefix("leading-") {
+        if let Some(value) = match v {
+            "none" => Some("1"),
+            "tight" => Some("1.25"),
+            "snug" => Some("1.375"),
+            "normal" => Some("1.5"),
+            "relaxed" => Some("1.625"),
+            "loose" => Some("2"),
+            _ => None,
+        } {
+            return Some(simple_rule(
+                base_selector,
+                &format!("line-height:{};", value),
+                important,
+            ));
+        }
         if let Ok(n) = v.parse::<u64>() {
             let hundredths = n * 25;
             let whole = hundredths / 100;
@@ -1697,6 +2224,20 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
     }
     // grid-rows-{n|arbitrary}
     if let Some(v) = utility.strip_prefix("grid-rows-") {
+        if v == "subgrid" {
+            return Some(simple_rule(
+                base_selector,
+                "grid-template-rows:subgrid;",
+                important,
+            ));
+        }
+        if v == "none" {
+            return Some(simple_rule(
+                base_selector,
+                "grid-template-rows:none;",
+                important,
+            ));
+        }
         if let Ok(n) = v.parse::<u32>() {
             if n > 0 {
                 return Some(simple_rule(
@@ -2021,6 +2562,630 @@ fn utility_rule(utility: &str, base_selector: &str, important: bool) -> Option<U
         _ => None }
 }
 
+fn background_layout_rule(utility: &str) -> Option<String> {
+    let declaration = match utility {
+        "bg-fixed" => "background-attachment:fixed;",
+        "bg-local" => "background-attachment:local;",
+        "bg-scroll" => "background-attachment:scroll;",
+        "bg-clip-border" => "background-clip:border-box;",
+        "bg-clip-padding" => "background-clip:padding-box;",
+        "bg-clip-content" => "background-clip:content-box;",
+        "bg-clip-text" => "background-clip:text;-webkit-background-clip:text;",
+        "bg-origin-border" => "background-origin:border-box;",
+        "bg-origin-padding" => "background-origin:padding-box;",
+        "bg-origin-content" => "background-origin:content-box;",
+        "bg-top" => "background-position:top;",
+        "bg-top-right" => "background-position:top right;",
+        "bg-right" => "background-position:right;",
+        "bg-right-bottom" => "background-position:right bottom;",
+        "bg-left" => "background-position:left;",
+        "bg-left-top" => "background-position:left top;",
+        "bg-left-bottom" => "background-position:left bottom;",
+        "bg-repeat-round" => "background-repeat:round;",
+        "bg-repeat-space" => "background-repeat:space;",
+        "bg-none" => "background-image:none;",
+        "bg-gradient-to-t" => "background-image:linear-gradient(to top,var(--tw-gradient-stops));",
+        "bg-gradient-to-tr" => {
+            "background-image:linear-gradient(to top right,var(--tw-gradient-stops));"
+        }
+        "bg-gradient-to-r" => {
+            "background-image:linear-gradient(to right,var(--tw-gradient-stops));"
+        }
+        "bg-gradient-to-br" => {
+            "background-image:linear-gradient(to bottom right,var(--tw-gradient-stops));"
+        }
+        "bg-gradient-to-b" => {
+            "background-image:linear-gradient(to bottom,var(--tw-gradient-stops));"
+        }
+        "bg-gradient-to-bl" => {
+            "background-image:linear-gradient(to bottom left,var(--tw-gradient-stops));"
+        }
+        "bg-gradient-to-l" => "background-image:linear-gradient(to left,var(--tw-gradient-stops));",
+        "bg-gradient-to-tl" => {
+            "background-image:linear-gradient(to top left,var(--tw-gradient-stops));"
+        }
+        _ => return None,
+    };
+    Some(declaration.to_string())
+}
+
+fn table_layout_rule(utility: &str) -> Option<String> {
+    let declaration = match utility {
+        "border-collapse" => "border-collapse:collapse;",
+        "border-separate" => "border-collapse:separate;",
+        "table-auto" => "table-layout:auto;",
+        "table-fixed" => "table-layout:fixed;",
+        "caption-top" => "caption-side:top;",
+        "caption-bottom" => "caption-side:bottom;",
+        _ => {
+            if let Some(v) = utility.strip_prefix("border-spacing-x-") {
+                return Some(format!(
+                    "--tw-border-spacing-x:{};border-spacing:var(--tw-border-spacing-x) var(--tw-border-spacing-y,0);",
+                    spacing_value(v)?
+                ));
+            }
+            if let Some(v) = utility.strip_prefix("border-spacing-y-") {
+                return Some(format!(
+                    "--tw-border-spacing-y:{};border-spacing:var(--tw-border-spacing-x,0) var(--tw-border-spacing-y);",
+                    spacing_value(v)?
+                ));
+            }
+            if let Some(v) = utility.strip_prefix("border-spacing-") {
+                let value = spacing_value(v)?;
+                return Some(format!(
+                    "--tw-border-spacing-x:{0};--tw-border-spacing-y:{0};border-spacing:var(--tw-border-spacing-x) var(--tw-border-spacing-y);",
+                    value
+                ));
+            }
+            return None;
+        }
+    };
+    Some(declaration.to_string())
+}
+
+fn fragmentation_rule(utility: &str) -> Option<String> {
+    for (prefix, property) in [
+        ("break-after-", "break-after"),
+        ("break-before-", "break-before"),
+        ("break-inside-", "break-inside"),
+    ] {
+        if let Some(value) = utility.strip_prefix(prefix) {
+            let valid = match value {
+                "auto" | "avoid" | "avoid-page" | "avoid-column" => value,
+                "page" | "left" | "right" | "column" if property != "break-inside" => value,
+                _ => return None,
+            };
+            return Some(format!("{}:{};", property, valid));
+        }
+    }
+    None
+}
+
+fn common_misc_rule(utility: &str) -> Option<String> {
+    let declaration = match utility {
+        "static" => "position:static;",
+        "not-sr-only" => {
+            "position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto;white-space:normal;"
+        }
+        "ordinal" => "font-variant-numeric:ordinal;",
+        "tracking-tighter" => "letter-spacing:-0.05em;",
+        "list-square" => "list-style-type:square;",
+        "text-start" => "text-align:start;",
+        "text-end" => "text-align:end;",
+        "normal-case" => "text-transform:none;",
+        "transition-shadow" => {
+            "transition-property:box-shadow;transition-duration:150ms;transition-timing-function:cubic-bezier(0.4,0,0.2,1);"
+        }
+        "list-inside" => "list-style-position:inside;",
+        "list-outside" => "list-style-position:outside;",
+        "list-image-none" => "list-style-image:none;",
+        "hyphens-none" => "hyphens:none;",
+        "hyphens-manual" => "hyphens:manual;",
+        "hyphens-auto" => "hyphens:auto;",
+        "place-content-center" => "place-content:center;",
+        "place-content-start" => "place-content:start;",
+        "place-content-end" => "place-content:end;",
+        "place-content-between" => "place-content:space-between;",
+        "place-content-around" => "place-content:space-around;",
+        "place-content-evenly" => "place-content:space-evenly;",
+        "place-content-baseline" => "place-content:baseline;",
+        "place-content-stretch" => "place-content:stretch;",
+        "forced-color-adjust-auto" => "forced-color-adjust:auto;",
+        "forced-color-adjust-none" => "forced-color-adjust:none;",
+        _ => {
+            for (prefix, property) in [
+                ("overscroll-x-", "overscroll-behavior-x"),
+                ("overscroll-y-", "overscroll-behavior-y"),
+            ] {
+                if let Some(value) = utility.strip_prefix(prefix) {
+                    if matches!(value, "auto" | "contain" | "none") {
+                        return Some(format!("{}:{};", property, value));
+                    }
+                }
+            }
+            if let Some(mode) = utility.strip_prefix("mix-blend-") {
+                if valid_blend_mode(mode) {
+                    return Some(format!("mix-blend-mode:{};", mode));
+                }
+            }
+            if let Some(mode) = utility.strip_prefix("bg-blend-") {
+                if valid_blend_mode(mode) {
+                    return Some(format!("background-blend-mode:{};", mode));
+                }
+            }
+            if let Some(raw) = utility
+                .strip_prefix("list-image-[")
+                .and_then(|value| value.strip_suffix(']'))
+            {
+                return Some(format!("list-style-image:{};", raw.replace('_', " ")));
+            }
+            return None;
+        }
+    };
+    Some(declaration.to_string())
+}
+
+fn valid_blend_mode(value: &str) -> bool {
+    matches!(
+        value,
+        "normal"
+            | "multiply"
+            | "screen"
+            | "overlay"
+            | "darken"
+            | "lighten"
+            | "color-dodge"
+            | "color-burn"
+            | "hard-light"
+            | "soft-light"
+            | "difference"
+            | "exclusion"
+            | "hue"
+            | "saturation"
+            | "color"
+            | "luminosity"
+            | "plus-lighter"
+    )
+}
+
+fn svg_rule(utility: &str) -> Option<String> {
+    if let Some(v) = utility.strip_prefix("fill-") {
+        return color_value(v).map(|color| format!("fill:{};", color));
+    }
+    if let Some(v) = utility.strip_prefix("stroke-") {
+        if let Ok(width) = v.parse::<u32>() {
+            return Some(format!("stroke-width:{};", width));
+        }
+        return color_value(v).map(|color| format!("stroke:{};", color));
+    }
+    None
+}
+
+fn scroll_rule(utility: &str) -> Option<String> {
+    let declaration = match utility {
+        "scroll-auto" => "scroll-behavior:auto;",
+        "scroll-smooth" => "scroll-behavior:smooth;",
+        "snap-start" => "scroll-snap-align:start;",
+        "snap-end" => "scroll-snap-align:end;",
+        "snap-center" => "scroll-snap-align:center;",
+        "snap-align-none" => "scroll-snap-align:none;",
+        "snap-normal" => "scroll-snap-stop:normal;",
+        "snap-always" => "scroll-snap-stop:always;",
+        "snap-none" => "scroll-snap-type:none;",
+        "snap-x" => "scroll-snap-type:x var(--tw-scroll-snap-strictness,proximity);",
+        "snap-y" => "scroll-snap-type:y var(--tw-scroll-snap-strictness,proximity);",
+        "snap-both" => "scroll-snap-type:both var(--tw-scroll-snap-strictness,proximity);",
+        "snap-mandatory" => "--tw-scroll-snap-strictness:mandatory;",
+        "snap-proximity" => "--tw-scroll-snap-strictness:proximity;",
+        _ => {
+            for (prefix, property) in [
+                ("scroll-m-", "scroll-margin"),
+                ("scroll-mx-", "scroll-margin-left|scroll-margin-right"),
+                ("scroll-my-", "scroll-margin-top|scroll-margin-bottom"),
+                ("scroll-mt-", "scroll-margin-top"),
+                ("scroll-mr-", "scroll-margin-right"),
+                ("scroll-mb-", "scroll-margin-bottom"),
+                ("scroll-ml-", "scroll-margin-left"),
+                ("scroll-p-", "scroll-padding"),
+                ("scroll-px-", "scroll-padding-left|scroll-padding-right"),
+                ("scroll-py-", "scroll-padding-top|scroll-padding-bottom"),
+                ("scroll-pt-", "scroll-padding-top"),
+                ("scroll-pr-", "scroll-padding-right"),
+                ("scroll-pb-", "scroll-padding-bottom"),
+                ("scroll-pl-", "scroll-padding-left"),
+            ] {
+                if let Some(v) = utility.strip_prefix(prefix) {
+                    let value = spacing_value(v)?;
+                    return Some(
+                        property
+                            .split('|')
+                            .map(|name| format!("{}:{};", name, value))
+                            .collect(),
+                    );
+                }
+            }
+            return None;
+        }
+    };
+    Some(declaration.to_string())
+}
+
+fn transform_expression() -> &'static str {
+    "translate(var(--tw-translate-x,0),var(--tw-translate-y,0)) rotate(var(--tw-rotate,0)) skewX(var(--tw-skew-x,0)) skewY(var(--tw-skew-y,0)) scaleX(var(--tw-scale-x,1)) scaleY(var(--tw-scale-y,1))"
+}
+
+fn transform_rule(utility: &str) -> Option<String> {
+    if utility == "transform" {
+        return Some(format!("transform:{};", transform_expression()));
+    }
+    if utility == "transform-none" {
+        return Some("transform:none;".to_string());
+    }
+    for (prefix, variable) in [
+        ("translate-x-", "--tw-translate-x"),
+        ("translate-y-", "--tw-translate-y"),
+    ] {
+        if let Some(v) = utility.strip_prefix(prefix) {
+            return Some(format!(
+                "{}:{};transform:{};",
+                variable,
+                inset_value(v)?,
+                transform_expression()
+            ));
+        }
+        let negative_prefix = format!("-{}", prefix);
+        if let Some(v) = utility.strip_prefix(&negative_prefix) {
+            return Some(format!(
+                "{}:{};transform:{};",
+                variable,
+                negate_css_value(&inset_value(v)?)?,
+                transform_expression()
+            ));
+        }
+    }
+    for (prefix, variable) in [("skew-x-", "--tw-skew-x"), ("skew-y-", "--tw-skew-y")] {
+        if let Some(v) = utility.strip_prefix(prefix) {
+            let degrees = angle_value(v)?;
+            return Some(format!(
+                "{}:{};transform:{};",
+                variable,
+                degrees,
+                transform_expression()
+            ));
+        }
+        let negative_prefix = format!("-{}", prefix);
+        if let Some(v) = utility.strip_prefix(&negative_prefix) {
+            let degrees = negate_css_value(&angle_value(v)?)?;
+            return Some(format!(
+                "{}:{};transform:{};",
+                variable,
+                degrees,
+                transform_expression()
+            ));
+        }
+    }
+    if let Some(v) = utility.strip_prefix("rotate-") {
+        return Some(format!(
+            "--tw-rotate:{};transform:{};",
+            angle_value(v)?,
+            transform_expression()
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("-rotate-") {
+        return Some(format!(
+            "--tw-rotate:{};transform:{};",
+            negate_css_value(&angle_value(v)?)?,
+            transform_expression()
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("scale-x-") {
+        return Some(format!(
+            "--tw-scale-x:{};transform:{};",
+            scale_value(v)?,
+            transform_expression()
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("scale-y-") {
+        return Some(format!(
+            "--tw-scale-y:{};transform:{};",
+            scale_value(v)?,
+            transform_expression()
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("scale-") {
+        let value = scale_value(v)?;
+        return Some(format!(
+            "--tw-scale-x:{0};--tw-scale-y:{0};transform:{1};",
+            value,
+            transform_expression()
+        ));
+    }
+    if let Some(v) = utility.strip_prefix("origin-") {
+        let value = match v {
+            "center" => "center",
+            "top" => "top",
+            "top-right" => "top right",
+            "right" => "right",
+            "bottom-right" => "bottom right",
+            "bottom" => "bottom",
+            "bottom-left" => "bottom left",
+            "left" => "left",
+            "top-left" => "top left",
+            _ => return arbitrary_value(v).map(|raw| format!("transform-origin:{};", raw)),
+        };
+        return Some(format!("transform-origin:{};", value));
+    }
+    None
+}
+
+fn angle_value(v: &str) -> Option<String> {
+    if let Some(raw) = arbitrary_value(v) {
+        return Some(raw);
+    }
+    Some(format!("{}deg", v.parse::<f64>().ok()?))
+}
+
+fn scale_value(v: &str) -> Option<String> {
+    if let Some(raw) = arbitrary_value(v) {
+        return Some(raw);
+    }
+    let value = v.parse::<f64>().ok()? / 100.0;
+    Some(format_number(value))
+}
+
+fn filter_expression(prefix: &str) -> String {
+    [
+        "blur",
+        "brightness",
+        "contrast",
+        "grayscale",
+        "hue-rotate",
+        "invert",
+        "opacity",
+        "saturate",
+        "sepia",
+        "drop-shadow",
+    ]
+    .into_iter()
+    .map(|name| format!("var(--tw-{}{},)", prefix, name))
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn filter_rule(utility: &str, backdrop: bool) -> Option<String> {
+    let (name, variable_prefix, property) = if backdrop {
+        (
+            utility.strip_prefix("backdrop-")?,
+            "backdrop-",
+            "backdrop-filter",
+        )
+    } else {
+        if utility.starts_with("backdrop-") {
+            return None;
+        }
+        (utility, "", "filter")
+    };
+    let (variable, function) = if name == "blur" {
+        ("blur", "blur(8px)".to_string())
+    } else if let Some(v) = name.strip_prefix("blur-") {
+        let value = match v {
+            "none" => "0".to_string(),
+            "sm" => "4px".to_string(),
+            "md" => "12px".to_string(),
+            "lg" => "16px".to_string(),
+            "xl" => "24px".to_string(),
+            "2xl" => "40px".to_string(),
+            "3xl" => "64px".to_string(),
+            _ => arbitrary_value(v)?,
+        };
+        ("blur", format!("blur({})", value))
+    } else if let Some(v) = name.strip_prefix("brightness-") {
+        ("brightness", format!("brightness({})", percent_ratio(v)?))
+    } else if let Some(v) = name.strip_prefix("contrast-") {
+        ("contrast", format!("contrast({})", percent_ratio(v)?))
+    } else if name == "grayscale" {
+        ("grayscale", "grayscale(100%)".to_string())
+    } else if let Some(v) = name.strip_prefix("grayscale-") {
+        (
+            "grayscale",
+            format!("grayscale({}%)", v.parse::<u32>().ok()?),
+        )
+    } else if let Some(v) = name.strip_prefix("hue-rotate-") {
+        ("hue-rotate", format!("hue-rotate({})", angle_value(v)?))
+    } else if name == "invert" {
+        ("invert", "invert(100%)".to_string())
+    } else if let Some(v) = name.strip_prefix("invert-") {
+        ("invert", format!("invert({}%)", v.parse::<u32>().ok()?))
+    } else if backdrop && name.starts_with("opacity-") {
+        let v = name.strip_prefix("opacity-")?;
+        ("opacity", format!("opacity({})", percent_ratio(v)?))
+    } else if let Some(v) = name.strip_prefix("saturate-") {
+        ("saturate", format!("saturate({})", percent_ratio(v)?))
+    } else if name == "sepia" {
+        ("sepia", "sepia(100%)".to_string())
+    } else if let Some(v) = name.strip_prefix("sepia-") {
+        ("sepia", format!("sepia({}%)", v.parse::<u32>().ok()?))
+    } else if let Some(v) = name.strip_prefix("drop-shadow-") {
+        let value = match v {
+            "sm" => "0 1px 1px rgb(0 0 0 / 0.05)",
+            "md" => "0 4px 3px rgb(0 0 0 / 0.07)",
+            "lg" => "0 10px 8px rgb(0 0 0 / 0.04)",
+            "xl" => "0 20px 13px rgb(0 0 0 / 0.03)",
+            "2xl" => "0 25px 25px rgb(0 0 0 / 0.15)",
+            "none" => "0 0 #0000",
+            _ => return None,
+        };
+        ("drop-shadow", format!("drop-shadow({})", value))
+    } else {
+        return None;
+    };
+    Some(format!(
+        "--tw-{}{}:{};{}:{};",
+        variable_prefix,
+        variable,
+        function,
+        property,
+        filter_expression(variable_prefix)
+    ))
+}
+
+fn percent_ratio(v: &str) -> Option<String> {
+    Some(format_number(v.parse::<f64>().ok()? / 100.0))
+}
+
+fn format_number(value: f64) -> String {
+    let mut out = format!("{:.4}", value);
+    while out.ends_with('0') {
+        out.pop();
+    }
+    if out.ends_with('.') {
+        out.pop();
+    }
+    if out.starts_with("0.") {
+        out.remove(0);
+    }
+    if out.starts_with("-0.") {
+        out.remove(1);
+    }
+    out
+}
+
+fn box_shadow_expression() -> &'static str {
+    "var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow,0 0 #0000)"
+}
+
+fn shadow_rule(utility: &str) -> Option<String> {
+    if utility == "shadow-none" {
+        return Some(format!(
+            "--tw-shadow:0 0 #0000;box-shadow:{};",
+            box_shadow_expression()
+        ));
+    }
+    let (shadow, colored) = match utility {
+        "shadow-sm" => (
+            "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+            "0 1px 2px 0 var(--tw-shadow-color)",
+        ),
+        "shadow" => (
+            "0 1px 3px 0 rgb(0 0 0 / 0.1),0 1px 2px -1px rgb(0 0 0 / 0.1)",
+            "0 1px 3px 0 var(--tw-shadow-color),0 1px 2px -1px var(--tw-shadow-color)",
+        ),
+        "shadow-md" => (
+            "0 4px 6px -1px rgb(0 0 0 / 0.1),0 2px 4px -2px rgb(0 0 0 / 0.1)",
+            "0 4px 6px -1px var(--tw-shadow-color),0 2px 4px -2px var(--tw-shadow-color)",
+        ),
+        "shadow-lg" => (
+            "0 10px 15px -3px rgb(0 0 0 / 0.1),0 4px 6px -4px rgb(0 0 0 / 0.1)",
+            "0 10px 15px -3px var(--tw-shadow-color),0 4px 6px -4px var(--tw-shadow-color)",
+        ),
+        "shadow-xl" => (
+            "0 20px 25px -5px rgb(0 0 0 / 0.1),0 8px 10px -6px rgb(0 0 0 / 0.1)",
+            "0 20px 25px -5px var(--tw-shadow-color),0 8px 10px -6px var(--tw-shadow-color)",
+        ),
+        "shadow-2xl" => (
+            "0 25px 50px -12px rgb(0 0 0 / 0.25)",
+            "0 25px 50px -12px var(--tw-shadow-color)",
+        ),
+        _ => {
+            let color = color_value(utility.strip_prefix("shadow-")?)?;
+            return Some(format!(
+                "--tw-shadow-color:{};--tw-shadow:var(--tw-shadow-colored);box-shadow:{};",
+                color,
+                box_shadow_expression()
+            ));
+        }
+    };
+    Some(format!(
+        "--tw-shadow:{};--tw-shadow-colored:{};box-shadow:{};",
+        shadow,
+        colored,
+        box_shadow_expression()
+    ))
+}
+
+fn ring_width_declaration(width: &str) -> String {
+    format!(
+        "--tw-ring-offset-shadow:var(--tw-ring-inset,) 0 0 0 var(--tw-ring-offset-width,0px) var(--tw-ring-offset-color,#fff);--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc({} + var(--tw-ring-offset-width,0px)) var(--tw-ring-color,rgb(59 130 246 / 0.5));box-shadow:{};",
+        width,
+        box_shadow_expression()
+    )
+}
+
+fn composable_ring_rule(v: &str) -> Option<String> {
+    if v == "inset" {
+        return Some("--tw-ring-inset:inset;".to_string());
+    }
+    if let Some(offset) = v.strip_prefix("offset-") {
+        if let Ok(px) = offset.parse::<u32>() {
+            return Some(format!("--tw-ring-offset-width:{}px;", px));
+        }
+        return color_value(offset).map(|color| format!("--tw-ring-offset-color:{};", color));
+    }
+    if let Ok(px) = v.parse::<u32>() {
+        return Some(ring_width_declaration(&format!("{}px", px)));
+    }
+    if let Some(raw) = arbitrary_value(v) {
+        if is_size_like(&raw) {
+            return Some(ring_width_declaration(&raw));
+        }
+    }
+    color_value(v).map(|color| {
+        format!(
+            "--tw-ring-color:{};box-shadow:{};",
+            color,
+            box_shadow_expression()
+        )
+    })
+}
+
+fn directional_radius_rule(v: &str) -> Option<String> {
+    let (side, size) = v.split_once('-')?;
+    let value = radius_value(size)?;
+    let properties: &[&str] = match side {
+        "t" => &["border-top-left-radius", "border-top-right-radius"],
+        "r" => &["border-top-right-radius", "border-bottom-right-radius"],
+        "b" => &["border-bottom-right-radius", "border-bottom-left-radius"],
+        "l" => &["border-top-left-radius", "border-bottom-left-radius"],
+        "tl" => &["border-top-left-radius"],
+        "tr" => &["border-top-right-radius"],
+        "br" => &["border-bottom-right-radius"],
+        "bl" => &["border-bottom-left-radius"],
+        _ => return None,
+    };
+    Some(
+        properties
+            .iter()
+            .map(|property| format!("{}:{};", property, value))
+            .collect(),
+    )
+}
+
+fn radius_value(v: &str) -> Option<String> {
+    let value = match v {
+        "none" => "0",
+        "sm" => "0.125rem",
+        "" | "DEFAULT" => "0.25rem",
+        "md" => "0.375rem",
+        "lg" => "0.5rem",
+        "xl" => "0.75rem",
+        "2xl" => "1rem",
+        "3xl" => "1.5rem",
+        "full" => "9999px",
+        _ => return arbitrary_value(v),
+    };
+    Some(value.to_string())
+}
+
+fn border_width_value(v: &str) -> Option<String> {
+    if v == "px" {
+        return Some("1px".to_string());
+    }
+    if let Ok(px) = v.parse::<u32>() {
+        return Some(format!("{}px", px));
+    }
+    arbitrary_value(v)
+}
+
 fn simple_rule(s: &str, d: &str, i: bool) -> UtilityRule {
     UtilityRule {
         selector: s.to_string(),
@@ -2117,6 +3282,12 @@ fn size_value(v: &str, a: SizeAxis) -> Option<String> {
             }
             .to_string(),
         ),
+        "svw" if matches!(a, SizeAxis::Width) => Some("100svw".to_string()),
+        "lvw" if matches!(a, SizeAxis::Width) => Some("100lvw".to_string()),
+        "dvw" if matches!(a, SizeAxis::Width) => Some("100dvw".to_string()),
+        "svh" if matches!(a, SizeAxis::Height) => Some("100svh".to_string()),
+        "lvh" if matches!(a, SizeAxis::Height) => Some("100lvh".to_string()),
+        "dvh" if matches!(a, SizeAxis::Height) => Some("100dvh".to_string()),
         "px" => Some("1px".to_string()),
         _ => {
             if let Some(r) = arbitrary_value(v) {
@@ -2143,6 +3314,7 @@ fn minmax_size_value(v: &str, a: SizeAxis) -> Option<String> {
 }
 fn max_width_value(v: &str) -> Option<String> {
     match v {
+        "xs" => Some("20rem".to_string()),
         "sm" => Some("24rem".to_string()),
         "md" => Some("28rem".to_string()),
         "lg" => Some("32rem".to_string()),
@@ -2152,8 +3324,13 @@ fn max_width_value(v: &str) -> Option<String> {
         "4xl" => Some("56rem".to_string()),
         "5xl" => Some("64rem".to_string()),
         "6xl" => Some("72rem".to_string()),
+        "7xl" => Some("80rem".to_string()),
         "screen-md" => Some("768px".to_string()),
         "screen-lg" => Some("1024px".to_string()),
+        "screen-sm" => Some("640px".to_string()),
+        "screen-xl" => Some("1280px".to_string()),
+        "screen-2xl" => Some("1536px".to_string()),
+        "prose" => Some("65ch".to_string()),
         _ => minmax_size_value(v, SizeAxis::Width),
     }
 }
@@ -2168,16 +3345,21 @@ fn text_size_value(v: &str) -> Option<&'static str> {
         "3xl" => Some("1.875rem"),
         "4xl" => Some("2.25rem"),
         "5xl" => Some("3rem"),
+        "6xl" => Some("3.75rem"),
+        "7xl" => Some("4.5rem"),
+        "8xl" => Some("6rem"),
+        "9xl" => Some("8rem"),
         _ => None,
     }
 }
 fn border_rule(v: &str) -> Option<String> {
-    match v { "0" => Some("border-width:0;".to_string()), "2" => Some("border-width:2px;border-style:solid;".to_string()), "4" => Some("border-width:4px;border-style:solid;".to_string()), "t" => Some("border-top-width:1px;border-top-style:solid;".to_string()), "r" => Some("border-right-width:1px;border-right-style:solid;".to_string()), "b" => Some("border-bottom-width:1px;border-bottom-style:solid;".to_string()), "l" => Some("border-left-width:1px;border-left-style:solid;".to_string()), "x" => Some("border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;".to_string()), "y" => Some("border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;".to_string()), "dashed" => Some("border-style:dashed;".to_string()), "solid" => Some("border-style:solid;".to_string()), _ => color_value(v).map(|c| format!("border-color:{};", c)) }
+    match v { "0" => Some("border-width:0;".to_string()), "2" => Some("border-width:2px;border-style:solid;".to_string()), "4" => Some("border-width:4px;border-style:solid;".to_string()), "8" => Some("border-width:8px;border-style:solid;".to_string()), "t" => Some("border-top-width:1px;border-top-style:solid;".to_string()), "r" => Some("border-right-width:1px;border-right-style:solid;".to_string()), "b" => Some("border-bottom-width:1px;border-bottom-style:solid;".to_string()), "l" => Some("border-left-width:1px;border-left-style:solid;".to_string()), "x" => Some("border-left-width:1px;border-right-width:1px;border-left-style:solid;border-right-style:solid;".to_string()), "y" => Some("border-top-width:1px;border-bottom-width:1px;border-top-style:solid;border-bottom-style:solid;".to_string()), "dashed" => Some("border-style:dashed;".to_string()), "dotted" => Some("border-style:dotted;".to_string()), "double" => Some("border-style:double;".to_string()), "hidden" => Some("border-style:hidden;".to_string()), "none" => Some("border-style:none;".to_string()), "solid" => Some("border-style:solid;".to_string()), _ => color_value(v).map(|c| format!("border-color:{};", c)) }
 }
 fn outline_rule(v: &str) -> Option<String> {
     match v {
         "none" => Some("outline:2px solid transparent;outline-offset:2px;".to_string()),
         "hidden" => Some("outline:none;".to_string()),
+        "solid" | "dashed" | "dotted" | "double" => Some(format!("outline-style:{};", v)),
         _ => {
             if let Ok(px) = v.parse::<u32>() {
                 Some(format!("outline-width:{}px;outline-style:solid;", px))
@@ -2186,20 +3368,6 @@ fn outline_rule(v: &str) -> Option<String> {
             }
         }
     }
-}
-fn ring_rule(v: &str) -> Option<String> {
-    if let Some(raw) = arbitrary_value(v) {
-        if raw.ends_with("px") || raw.ends_with("rem") || raw.ends_with("em") {
-            return Some(format!("box-shadow:0 0 0 {} rgba(59,130,246,0.5);", raw));
-        }
-        if let Ok(px) = raw.parse::<u32>() {
-            return Some(format!("box-shadow:0 0 0 {}px rgba(59,130,246,0.5);", px));
-        }
-    }
-    if let Ok(px) = v.parse::<u32>() {
-        return Some(format!("box-shadow:0 0 0 {}px rgba(59,130,246,0.5);", px));
-    }
-    color_value(v).map(|c| format!("box-shadow:0 0 0 3px {};", c))
 }
 fn background_value(v: &str) -> Option<String> {
     arbitrary_value(v)
@@ -2289,11 +3457,45 @@ fn hex_to_rgb(v: &str) -> Option<(u8, u8, u8)> {
     }
 }
 fn is_semantic_color_token(v: &str) -> bool {
-    if v.is_empty() {
-        return false;
-    }
-    v.chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    matches!(
+        v,
+        "bg" | "surface"
+            | "surface-2"
+            | "surface-3"
+            | "body"
+            | "body-soft"
+            | "body-muted"
+            | "accent"
+            | "accent-strong"
+            | "accent-alt"
+            | "accent-alt-strong"
+            | "border"
+            | "border-soft"
+            | "warning"
+            | "destructive"
+            | "destructive-foreground"
+            | "brand-blue"
+            | "brand-blue-ink"
+            | "brand-orange"
+            | "brand-orange-ink"
+            | "dark-background"
+            | "dark-border"
+            | "dark-menus"
+            | "dark-text1"
+            | "dark-accent1"
+            | "dark-accent2"
+            | "dark-accent3"
+            | "dark-accent4"
+            | "dark-accent5"
+            | "ui-bg"
+            | "ui-bg-muted"
+            | "ui-bg-subtle"
+            | "ui-border"
+            | "ui-border-subtle"
+            | "ui-text"
+            | "ui-text-muted"
+            | "ui-text-soft"
+    )
 }
 fn is_size_like(v: &str) -> bool {
     if v == "0" || v == "auto" {
