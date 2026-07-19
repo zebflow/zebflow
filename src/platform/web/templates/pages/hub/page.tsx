@@ -89,6 +89,20 @@ function blankPublisher() {
   };
 }
 
+function blankGrant(sourceOwner, projects) {
+  const firstProject = Array.isArray(projects) && projects.length ? projects[0] : null;
+  return {
+    repository_id: "",
+    grant_scope: "selected_project",
+    target_owner: firstProject?.owner || sourceOwner || "superadmin",
+    target_project: firstProject?.project || "",
+    can_read: true,
+    can_publish: false,
+    can_manage: false,
+    enabled: true,
+  };
+}
+
 function fmtBytes(value) {
   const n = Number(value || 0);
   if (!n) return "-";
@@ -115,6 +129,7 @@ export default function Page(input) {
   const [apps, setApps] = useState(Array.isArray(input?.remote_apps) ? input.remote_apps : []);
   const [publishers, setPublishers] = useState(Array.isArray(input?.publishers) ? input.publishers : []);
   const [tokens, setTokens] = useState(Array.isArray(input?.tokens) ? input.tokens : []);
+  const [grants, setGrants] = useState(Array.isArray(input?.grants) ? input.grants : []);
   const [service, setService] = useState(input?.service || null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
@@ -137,6 +152,7 @@ export default function Page(input) {
     publish: false,
     manage: false,
   });
+  const [grantForm, setGrantForm] = useState(blankGrant(input?.source_owner || input?.owner || "superadmin", projects));
   const [tokenValue, setTokenValue] = useState("");
   const sourceById = useMemo(() => {
     const out = {};
@@ -191,14 +207,18 @@ export default function Page(input) {
 
   async function reloadManage() {
     if (!isSuperadmin) return;
-    const [servicePayload, publisherPayload, tokenPayload] = await Promise.all([
+    const [servicePayload, publisherPayload, tokenPayload, grantPayload, sourcePayload] = await Promise.all([
       requestJson(api.service),
       requestJson(api.publishers),
       requestJson(api.tokens),
+      requestJson(api.grants),
+      requestJson(api.repositories),
     ]);
     setService(servicePayload?.service || null);
     setPublishers(Array.isArray(publisherPayload?.items) ? publisherPayload.items : []);
     setTokens(Array.isArray(tokenPayload?.items) ? tokenPayload.items : []);
+    setGrants(Array.isArray(grantPayload?.items) ? grantPayload.items : []);
+    setSources(Array.isArray(sourcePayload?.items) ? sourcePayload.items : []);
   }
 
   async function saveSource(e) {
@@ -345,6 +365,35 @@ export default function Page(input) {
     }
   }
 
+  async function saveGrant(e) {
+    e.preventDefault();
+    setBusy(true);
+    setStatus("");
+    try {
+      await requestJson(api.grants, { method: "POST", body: JSON.stringify(grantForm) });
+      await reloadManage();
+      setStatus("Hub access grant saved");
+    } catch (err) {
+      setStatus(err?.message || "Failed saving hub access grant");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteGrant(grantId) {
+    setBusy(true);
+    setStatus("");
+    try {
+      await requestJson(`${api.grants}/${encodeURIComponent(grantId)}`, { method: "DELETE" });
+      await reloadManage();
+      setStatus("Hub access grant deleted");
+    } catch (err) {
+      setStatus(err?.message || "Failed deleting hub access grant");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (activeTab === "explore") reloadExplore().catch(() => {});
     if (activeTab === "manage") reloadManage().catch(() => {});
@@ -412,6 +461,9 @@ export default function Page(input) {
                     const source = sourceById[item?.repository_id] || {};
                     return (
                       <article key={`${item?.repository_id}-${item?.package_id}-${index}`} className="rounded-lg border border-gray-200 bg-white p-5">
+                        {item?.image_url ? (
+                          <img src={item.image_url} alt="" className="mb-4 h-36 w-full rounded-lg border border-gray-200 object-cover" />
+                        ) : null}
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="text-lg font-semibold text-gray-900">{item?.title || item?.package_id}</p>
@@ -662,7 +714,86 @@ export default function Page(input) {
               <aside className="space-y-5">
                 <section className="rounded-lg border border-gray-200 bg-white p-5">
                   <h2 className="text-lg font-semibold text-gray-900">Project Access</h2>
-                  <div className="mt-3 space-y-2 text-sm">
+                  <p className="mt-1 text-sm text-gray-500">Grant a platform Hub source to all projects or one selected project. Creating a source alone does not grant access.</p>
+                  <form className="mt-4 space-y-3" onSubmit={saveGrant}>
+                    <Field label="Hub Source" id="grant-source">
+                      <select
+                        id="grant-source"
+                        className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm"
+                        value={grantForm.repository_id}
+                        onChange={(e) => setGrantForm((prev) => ({ ...prev, repository_id: e.target.value }))}
+                        required
+                      >
+                        <option value="">Select source</option>
+                        {sources.map((item) => <option key={item?.repository_id} value={item?.repository_id}>{item?.title || item?.repository_id}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Scope" id="grant-scope">
+                      <select
+                        id="grant-scope"
+                        className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm"
+                        value={grantForm.grant_scope}
+                        onChange={(e) => setGrantForm((prev) => ({ ...prev, grant_scope: e.target.value }))}
+                      >
+                        <option value="selected_project">Selected project</option>
+                        <option value="all_projects">All projects</option>
+                      </select>
+                    </Field>
+                    {grantForm.grant_scope !== "all_projects" ? (
+                      <Field label="Project" id="grant-project">
+                        <select
+                          id="grant-project"
+                          className="h-10 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm"
+                          value={`${grantForm.target_owner}/${grantForm.target_project}`}
+                          onChange={(e) => {
+                            const [targetOwner, targetProject] = e.target.value.split("/");
+                            setGrantForm((prev) => ({ ...prev, target_owner: targetOwner || "", target_project: targetProject || "" }));
+                          }}
+                          required
+                        >
+                          <option value="/">Select project</option>
+                          {projects.map((item) => (
+                            <option key={`${item?.owner || input?.owner}/${item?.project}`} value={`${item?.owner || input?.owner}/${item?.project}`}>
+                              {item?.title || item?.project}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    ) : null}
+                    <div className="flex flex-wrap gap-3 text-sm text-gray-600">
+                      {[
+                        ["can_read", "Read"],
+                        ["can_publish", "Publish"],
+                        ["can_manage", "Manage"],
+                        ["enabled", "Enabled"],
+                      ].map(([key, label]) => (
+                        <label key={key} className="flex items-center gap-2">
+                          <input type="checkbox" checked={!!grantForm[key]} onChange={(e) => setGrantForm((prev) => ({ ...prev, [key]: e.target.checked }))} />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <Button type="submit" variant="primary" disabled={busy || !sources.length}>Save Grant</Button>
+                  </form>
+
+                  <div className="mt-5 space-y-2 text-sm">
+                    {grants.map((item) => (
+                      <div key={item?.grant_id} className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-medium text-gray-900">{item?.repository_id}</p>
+                            <p className="mt-1 text-xs text-gray-500">
+                              {item?.grant_scope === "all_projects" ? "All projects" : `${item?.target_owner}/${item?.target_project}`} · {[item?.can_read ? "read" : "", item?.can_publish ? "publish" : "", item?.can_manage ? "manage" : ""].filter(Boolean).join(", ") || "no capabilities"} · {item?.enabled ? "enabled" : "disabled"}
+                            </p>
+                          </div>
+                          <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => deleteGrant(item?.grant_id)}>Delete</Button>
+                        </div>
+                      </div>
+                    ))}
+                    {!grants.length ? <p className="text-sm text-gray-500">No Hub access grants yet.</p> : null}
+                  </div>
+
+                  <div className="mt-5 border-t border-gray-200 pt-4 space-y-2 text-sm">
                     {projects.map((item) => (
                       <a key={item?.project} href={item?.hub_href} className="block rounded-lg border border-gray-200 px-3 py-2 text-gray-700 hover:bg-gray-50">
                         {item?.title || item?.project}

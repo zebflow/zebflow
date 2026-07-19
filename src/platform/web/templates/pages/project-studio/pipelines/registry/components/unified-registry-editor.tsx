@@ -462,7 +462,12 @@ export default function UnifiedRegistryEditor(input) {
   const [installing, setInstalling] = useState(false);
   const [installResult, setInstallResult] = useState(null as string | null);
   const [installTab, setInstallTab] = useState("packs");
-  const [hubInstallMode, setHubInstallMode] = useState("add_to_current_project");
+  const [hubInstallReview, setHubInstallReview] = useState(null as any);
+  const [pendingHubAdd, setPendingHubAdd] = useState(null as any);
+  const [hubReviewTargetFolder, setHubReviewTargetFolder] = useState("");
+  const [hubReviewDirty, setHubReviewDirty] = useState(false);
+  const [uiInstallReview, setUiInstallReview] = useState(null as any);
+  const [uiReviewDirty, setUiReviewDirty] = useState(false);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -708,6 +713,8 @@ export default function UnifiedRegistryEditor(input) {
         const parts: string[] = [];
         if (installed.length) parts.push(`Installed: ${installed.join(", ")}`);
         if (skipped.length) parts.push(`Skipped: ${skipped.join(", ")}`);
+        setUiInstallReview(null);
+        setUiReviewDirty(false);
         setInstallResult(parts.join(" · ") || "Done.");
         if (installed.length > 0) {
           setTimeout(() => {
@@ -728,28 +735,97 @@ export default function UnifiedRegistryEditor(input) {
     }
   }
 
-  async function handleAddPack(item: any, installMode = "add_to_current_project") {
+  async function reviewUiInstall() {
+    const names = Array.from(selectedComponents);
+    if (names.length === 0) { setInstallResult("Select at least one component."); return; }
+    setInstalling(true);
+    setInstallResult("Reviewing UI components...");
+    try {
+      const json = await requestJson(`${projectApiBase}/install/ui/review`, {
+        method: "POST",
+        body: JSON.stringify({ names, overwrite: false }),
+      });
+      setUiInstallReview(json?.review || null);
+      setUiReviewDirty(false);
+      setInstallResult(null);
+    } catch (err: any) {
+      setInstallResult(String(err?.message || err));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  function cancelUiReview() {
+    setUiInstallReview(null);
+    setUiReviewDirty(false);
+    setInstallResult(null);
+  }
+
+  function hubAssetSlug(item: any) {
+    const packageId = String(item?.package_id || "").trim();
+    const tail = packageId.includes(".") ? packageId.split(".").pop() : packageId;
+    return peSanitizeSegment(tail || item?.title || "hub-asset") || "hub-asset";
+  }
+
+  function defaultHubTargetFolder(item: any) {
+    const slug = hubAssetSlug(item);
+    const base = peNormalizeVirtualPath(currentPath);
+    return base === "/" ? `/${slug}` : `${base.replace(/\/+$/, "")}/${slug}`;
+  }
+
+  async function handleAddPack(item: any, targetFolder?: string) {
     const packageId = item?.package_id;
     const version = item?.latest_version;
     if (!packageId || !version) {
-      setInstallResult("Pack is missing package id or version.");
+      setInstallResult("Package is missing package id or version.");
       return;
     }
-    const normalizedMode = installMode === "clone_as_folder" ? "clone_as_folder" : "add_to_current_project";
-    const verb = normalizedMode === "clone_as_folder" ? "Cloning" : "Adding";
-    const doneVerb = normalizedMode === "clone_as_folder" ? "Cloned" : "Added";
+    const resolvedTargetFolder = String(targetFolder || defaultHubTargetFolder(item));
     setInstalling(true);
-    setInstallResult(`${verb} ${packageId}@${version}...`);
+    setInstallResult(`Reviewing ${packageId}@${version}...`);
+    try {
+      const url = item?.source === "remote"
+        ? `${projectApiBase}/hub/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/review`
+        : `${projectApiBase}/hub/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/review`;
+      const json = await requestJson(url, {
+        method: "POST",
+        body: JSON.stringify({ target_folder: resolvedTargetFolder }),
+      });
+      setHubInstallReview(json?.review || null);
+      setPendingHubAdd({ item, targetFolder: resolvedTargetFolder });
+      setHubReviewTargetFolder(resolvedTargetFolder);
+      setHubReviewDirty(false);
+      setInstallResult(null);
+    } catch (err: any) {
+      setInstallResult(String(err?.message || err));
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  async function confirmHubAdd() {
+    const item = pendingHubAdd?.item;
+    const targetFolder = String(pendingHubAdd?.targetFolder || hubReviewTargetFolder || "");
+    const packageId = item?.package_id;
+    const version = item?.latest_version;
+    if (!item || !packageId || !version) {
+      setInstallResult("No reviewed Hub package is pending.");
+      return;
+    }
+    setInstalling(true);
+    setInstallResult(`Adding ${packageId}@${version}...`);
     try {
       const url = item?.source === "remote"
         ? `${projectApiBase}/hub/repositories/${encodeURIComponent(item.repository_id)}/packs/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`
         : `${projectApiBase}/hub/assets/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
       const json = await requestJson(url, {
         method: "POST",
-        body: JSON.stringify({ install_mode: normalizedMode }),
+        body: JSON.stringify({ target_folder: targetFolder }),
       });
       const result = json?.result || {};
-      setInstallResult(`${doneVerb} ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
+      setHubInstallReview(null);
+      setPendingHubAdd(null);
+      setInstallResult(`Added ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
       setTimeout(() => {
         setInstallOpen(false);
         nav(`${editorBase}?path=${encodeURIComponent(currentPath)}`);
@@ -759,6 +835,14 @@ export default function UnifiedRegistryEditor(input) {
     } finally {
       setInstalling(false);
     }
+  }
+
+  function cancelHubAddReview() {
+    setHubInstallReview(null);
+    setPendingHubAdd(null);
+    setHubReviewTargetFolder("");
+    setHubReviewDirty(false);
+    setInstallResult(null);
   }
 
   // ── Create handlers ───────────────────────────────────────────────────────
@@ -1082,9 +1166,9 @@ export default function UnifiedRegistryEditor(input) {
                     }}
                   />
                 </DropdownMenu>
-                <Button size="sm" variant="ghost"
+                  <Button size="sm" variant="ghost"
                   onClick={() => { setInstallResult(null); setInstallOpen(true); if (!catalogLoaded) loadCatalog(); }}
-                  title="Add packs, pipelines, templates, and UI"
+                  title="Add packages, pipelines, templates, and UI"
                   className="flex items-center gap-1.5">
                   <DownloadIcon />Add+
                 </Button>
@@ -1754,14 +1838,33 @@ export default function UnifiedRegistryEditor(input) {
               hubPacks={hubPacks}
               packSearch={packSearch}
               setPackSearch={setPackSearch}
-              hubInstallMode={hubInstallMode}
-              setHubInstallMode={setHubInstallMode}
+              hubReviewTargetFolder={hubReviewTargetFolder}
+              setHubReviewTargetFolder={(value) => {
+                setHubReviewTargetFolder(value);
+                setHubReviewDirty(true);
+              }}
+              hubReviewDirty={hubReviewDirty}
               selectedComponents={selectedComponents}
-              setSelectedComponents={setSelectedComponents}
+              setSelectedComponents={(value) => {
+                setSelectedComponents(value);
+                setUiReviewDirty(true);
+              }}
               installResult={installResult}
               installing={installing}
-              onInstallSubmit={handleInstallSubmit}
+              onInstallSubmit={reviewUiInstall}
+              onConfirmUiInstall={handleInstallSubmit}
+              uiInstallReview={uiInstallReview}
+              uiReviewDirty={uiReviewDirty}
+              onRefreshUiReview={reviewUiInstall}
+              onCancelUiReview={cancelUiReview}
               onAddPack={handleAddPack}
+              hubInstallReview={hubInstallReview}
+              onRefreshHubReview={() => {
+                const item = pendingHubAdd?.item;
+                if (item) void handleAddPack(item, hubReviewTargetFolder);
+              }}
+              onConfirmHubAdd={confirmHubAdd}
+              onCancelHubAddReview={cancelHubAddReview}
             />
           )}
 

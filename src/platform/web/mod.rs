@@ -62,7 +62,7 @@ use crate::platform::model::{
 };
 use crate::platform::sekejap;
 use crate::platform::services::PlatformService;
-use crate::platform::services::hub::RemoteHubPublishRequest;
+use crate::platform::services::hub::{HubProjectBundlePublishOptions, RemoteHubPublishRequest};
 use crate::platform::services::node_registry::NodeRegistryService;
 use crate::rwe::{
     CompiledScript, CompiledTemplate, ReactiveWebEngine, ReactiveWebOptions, RenderContext,
@@ -544,6 +544,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             delete(api_delete_platform_hub_token),
         )
         .route(
+            "/api/platform/hub/grants",
+            get(api_list_platform_hub_grants).post(api_upsert_platform_hub_grant),
+        )
+        .route(
+            "/api/platform/hub/grants/{grant_id}",
+            delete(api_delete_platform_hub_grant),
+        )
+        .route(
             "/api/platform/hub/publishers/{publisher_id}",
             delete(api_delete_platform_hub_publisher),
         )
@@ -827,6 +835,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_list_hub_assets),
         )
         .route(
+            "/api/projects/{owner}/{project}/hub/access",
+            get(api_list_project_hub_access),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/assets/{package_id}",
+            delete(api_delete_hub_asset),
+        )
+        .route(
             "/api/projects/{owner}/{project}/help",
             get(api_get_project_help),
         )
@@ -845,6 +861,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/hub/remote/assets",
             get(api_list_public_hub_assets).post(api_public_remote_publish_hub_asset),
+        )
+        .route(
+            "/api/hub/remote/assets/{package_id}",
+            delete(api_public_delete_hub_asset),
+        )
+        .route(
+            "/api/hub/remote/assets/{package_id}/media/{media_name}",
+            get(api_get_public_hub_media),
         )
         .route(
             "/api/hub/remote/assets/{package_id}/{version}",
@@ -875,8 +899,16 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_publish_hub_asset),
         )
         .route(
+            "/api/projects/{owner}/{project}/hub/assets/publish-review",
+            post(api_review_hub_publish_asset),
+        )
+        .route(
             "/api/projects/{owner}/{project}/hub/assets/{package_id}/{version}/add",
             post(api_install_hub_asset),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/assets/{package_id}/{version}/review",
+            post(api_review_hub_asset),
         )
         .route(
             "/api/projects/{owner}/{project}/hub/remote/assets/publish",
@@ -897,6 +929,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/hub/repositories/{repository_id}/packs/{package_id}/{version}/add",
             post(api_install_remote_hub_pack),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/hub/repositories/{repository_id}/packs/{package_id}/{version}/review",
+            post(api_review_remote_hub_pack),
         )
         .route(
             "/api/projects/{owner}/{project}/hub/repositories/{repository_id}",
@@ -984,6 +1020,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/install/catalog/ui",
             get(api_list_ui_catalog),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/install/ui/review",
+            post(api_review_ui_components),
         )
         .route(
             "/api/projects/{owner}/{project}/install/ui",
@@ -1258,6 +1298,10 @@ fn compile_page(
     options: ReactiveWebOptions,
 ) -> Result<CompiledTemplate, PlatformError> {
     let page_path = template_root.join(relative_path);
+    #[cfg(debug_assertions)]
+    if !page_path.exists() {
+        materialize_platform_template_root(template_root)?;
+    }
     let markup = fs::read_to_string(&page_path).map_err(|err| {
         PlatformError::new(
             "PLATFORM_RWE_SOURCE_READ",
@@ -2844,6 +2888,17 @@ async fn platform_hub_page(State(state): State<PlatformAppState>, headers: Heade
     } else {
         Vec::new()
     };
+    let grants = if is_superadmin {
+        match state.platform.hub.list_access_grants(&source_owner) {
+            Ok(items) => items
+                .into_iter()
+                .map(hub_access_grant_json)
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
     let offices = platform_office_rows(&state);
     match render_page(
         &state,
@@ -2864,10 +2919,12 @@ async fn platform_hub_page(State(state): State<PlatformAppState>, headers: Heade
             "projects": projects,
             "publishers": publishers,
             "tokens": tokens,
+            "grants": grants,
             "offices": offices,
             "hub_api": {
                 "service": "/api/platform/hub/service",
                 "repositories": "/api/platform/hub/repositories",
+                "grants": "/api/platform/hub/grants",
                 "assets": "/api/platform/hub/assets",
                 "install": "/api/platform/hub/install",
                 "publishers": "/api/platform/hub/publishers",
@@ -5885,6 +5942,54 @@ async fn project_hub_tab_page(
                     Ok(items) => items,
                     Err(err) => return internal_error(err),
                 };
+            let sekejap_schema =
+                match sekejap::export_schema(&state.platform.config.data_root, &owner, &project) {
+                    Ok(schema) => json!({
+                        "available": !schema.tables.is_empty(),
+                        "table_count": schema.tables.len(),
+                    }),
+                    Err(_) => json!({
+                        "available": false,
+                        "table_count": 0,
+                    }),
+                };
+            let sqlite_schema = match crate::platform::sqlite_schema::has_schema(
+                &state.platform.config.data_root,
+                &owner,
+                &project,
+            ) {
+                Ok(available) => json!({ "available": available }),
+                Err(_) => json!({ "available": false }),
+            };
+            let initial_data = match state
+                .platform
+                .hub
+                .list_project_initial_data(&owner, &project)
+            {
+                Ok(items) => json!({
+                    "available": !items.is_empty(),
+                    "items": items,
+                }),
+                Err(_) => json!({
+                    "available": false,
+                    "items": [],
+                }),
+            };
+            let rwe_libraries = state
+                .platform
+                .zebflow_cfg
+                .get_rwe_libraries(&owner, &project)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, entry)| {
+                    json!({
+                        "name": name,
+                        "version": entry.version,
+                        "source": entry.source,
+                        "enabled": true,
+                    })
+                })
+                .collect::<Vec<_>>();
             let input = json!({
                 "seo": {
                     "title": format!("{} - Hub", info.title),
@@ -5907,12 +6012,21 @@ async fn project_hub_tab_page(
                 "assets": assets,
                 "my_assets": my_assets,
                 "publish_sources": publish_sources,
+                "publish_options": {
+                    "sekejap_schema": sekejap_schema,
+                    "sqlite_schema": sqlite_schema,
+                    "initial_data": initial_data,
+                    "libraries": rwe_libraries,
+                },
                 "hub_api": {
                     "assets": format!("/api/projects/{owner}/{project}/hub/assets"),
                     "my_assets": format!("/api/projects/{owner}/{project}/hub/assets/mine"),
                     "publish_sources": format!("/api/projects/{owner}/{project}/hub/publish-sources"),
                     "publish_preview": format!("/api/projects/{owner}/{project}/hub/publish-preview"),
                     "publish_asset": format!("/api/projects/{owner}/{project}/hub/assets/publish"),
+                    "publish_review": format!("/api/projects/{owner}/{project}/hub/assets/publish-review"),
+                    "upload": format!("/api/projects/{owner}/{project}/files/upload"),
+                    "access": format!("/api/projects/{owner}/{project}/hub/access"),
                     "repositories": format!("/api/projects/{owner}/{project}/hub/repositories"),
                 }
             });
@@ -7139,8 +7253,8 @@ fn hub_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
     tabs.into_iter()
         .map(|tab| {
             let label = match tab {
-                "packs" => "Packs",
-                "my-packs" => "My Packs",
+                "packs" => "Browse",
+                "my-packs" => "Published",
                 "publish" => "Publish",
                 _ => tab,
             };
@@ -7205,6 +7319,7 @@ fn hub_asset_rows(
             .next()
             .map(|item| item.version)
             .unwrap_or_default();
+        let (summary, gallery) = hub_package_gallery_projection(state, &package);
         rows.push(json!({
             "package_id": package.package_id,
             "publisher_owner": package.publisher_owner,
@@ -7215,6 +7330,9 @@ fn hub_asset_rows(
             "asset_kind": package.asset_kind,
             "title": package.title,
             "description": package.description,
+            "summary": summary,
+            "image_url": package.image_url,
+            "gallery": gallery,
             "visibility": package.visibility,
             "tags": package.tags,
             "latest_version": latest_version,
@@ -7238,6 +7356,7 @@ fn public_hub_asset_item_json(
         .ok()
         .and_then(|items| items.into_iter().next().map(|item| item.version))
         .unwrap_or_default();
+    let (summary, gallery) = hub_package_gallery_projection(state, &package);
     json!({
         "package_id": package.package_id,
         "publisher_id": package.publisher_id,
@@ -7246,12 +7365,48 @@ fn public_hub_asset_item_json(
         "asset_kind": package.asset_kind,
         "title": package.title,
         "description": package.description,
+        "summary": summary,
+        "image_url": package.image_url,
+        "gallery": gallery,
         "visibility": package.visibility,
         "tags": package.tags,
         "latest_version": latest_version,
         "updated_at": package.updated_at,
         "service_instance_id": crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID,
     })
+}
+
+fn hub_package_gallery_projection(
+    state: &PlatformAppState,
+    package: &crate::platform::model::HubAssetPackage,
+) -> (String, Value) {
+    let mut summary = package.description.clone();
+    let mut gallery = Value::Null;
+    let Some(version) = state
+        .platform
+        .hub
+        .list_asset_versions(&package.package_id)
+        .ok()
+        .and_then(|items| items.into_iter().next())
+    else {
+        return (summary, gallery);
+    };
+    if let Ok((_version, artifact)) = state
+        .platform
+        .hub
+        .get_asset_version_artifact(&package.package_id, &version.version)
+    {
+        if let Some(value) = artifact
+            .get("summary")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            summary = value.to_string();
+        }
+        gallery = artifact.get("gallery").cloned().unwrap_or(Value::Null);
+    }
+    (summary, gallery)
 }
 
 fn public_hub_version_json(
@@ -7267,6 +7422,7 @@ fn public_hub_version_json(
         "asset_kind": package.asset_kind,
         "title": package.title,
         "description": package.description,
+        "image_url": package.image_url,
         "visibility": package.visibility,
         "tags": package.tags,
         "source_kind": version.source_kind,
@@ -7276,6 +7432,7 @@ fn public_hub_version_json(
             "asset_kind": package.asset_kind,
             "title": package.title,
             "description": package.description,
+            "image_url": package.image_url,
             "visibility": package.visibility,
             "tags": package.tags,
             "publisher_id": package.publisher_id,
@@ -7292,6 +7449,21 @@ fn public_hub_artifact_json(mut artifact: Value) -> Value {
         object.remove("source_ref");
         object.remove("publisher_email");
         object.remove("files");
+        if let Some(media) = object.get("media").and_then(Value::as_array) {
+            let public_media = media
+                .iter()
+                .filter_map(|item| {
+                    let item = item.as_object()?;
+                    Some(json!({
+                        "name": item.get("name").cloned().unwrap_or(Value::Null),
+                        "role": item.get("role").cloned().unwrap_or(Value::Null),
+                        "content_type": item.get("content_type").cloned().unwrap_or(Value::Null),
+                        "size_bytes": item.get("size_bytes").cloned().unwrap_or(Value::Null),
+                    }))
+                })
+                .collect::<Vec<_>>();
+            object.insert("media".to_string(), Value::Array(public_media));
+        }
     }
     artifact
 }
@@ -10040,6 +10212,77 @@ async fn api_delete_platform_hub_token(
     match state.platform.hub.revoke_token_any(&token_id) {
         Ok(()) => Json(json!({"ok": true})).into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_platform_hub_grants(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state.platform.hub.list_access_grants(&source_owner) {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "items": items.into_iter().map(hub_access_grant_json).collect::<Vec<_>>()
+        }))
+        .into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_upsert_platform_hub_grant(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<UpsertPlatformHubGrantRequest>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    let Some(source_owner) = platform_hub_source_owner(&state) else {
+        return internal_error(PlatformError::new(
+            "PLATFORM_USER_NOT_FOUND",
+            "superadmin user not found",
+        ));
+    };
+    match state.platform.hub.upsert_access_grant(
+        &source_owner,
+        &req.repository_id,
+        &req.grant_scope,
+        &req.target_owner,
+        &req.target_project,
+        req.can_read,
+        req.can_publish,
+        req.can_manage,
+        req.enabled,
+    ) {
+        Ok(grant) => Json(json!({
+            "ok": true,
+            "grant": hub_access_grant_json(grant)
+        }))
+        .into_response(),
+        Err(err) => hub_api_error(err),
+    }
+}
+
+async fn api_delete_platform_hub_grant(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(grant_id): Path<String>,
+) -> Response {
+    if let Err(response) = require_superadmin(&state, &headers) {
+        return response;
+    }
+    match state.platform.hub.delete_access_grant(&grant_id) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -16549,9 +16792,21 @@ struct PublishHubAssetRequest {
     #[serde(default)]
     description: String,
     #[serde(default)]
+    image_file_path: String,
+    #[serde(default)]
     visibility: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    include_sekejap_schema: bool,
+    #[serde(default)]
+    include_sqlite_schema: bool,
+    #[serde(default)]
+    include_libraries: Vec<String>,
+    #[serde(default)]
+    include_initial_data: bool,
+    #[serde(default)]
+    initial_data_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -16562,17 +16817,25 @@ struct HubPublishQuery {
     source_ref: String,
 }
 
+fn project_bundle_publish_options(req: &PublishHubAssetRequest) -> HubProjectBundlePublishOptions {
+    HubProjectBundlePublishOptions {
+        include_sekejap_schema: req.include_sekejap_schema,
+        include_sqlite_schema: req.include_sqlite_schema,
+        include_libraries: req.include_libraries.clone(),
+        include_initial_data: req.include_initial_data,
+        initial_data_paths: req.initial_data_paths.clone(),
+    }
+}
+
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct InstallHubAssetRequest {
     #[serde(default)]
-    install_mode: String,
+    target_folder: String,
 }
 
-fn normalize_hub_install_mode(raw: &str) -> &'static str {
-    match raw.trim() {
-        "clone_as_folder" => "clone_as_folder",
-        _ => "add_to_current_project",
-    }
+fn normalized_hub_target_folder(body: Option<&Json<InstallHubAssetRequest>>) -> String {
+    body.map(|Json(req)| req.target_folder.trim().to_string())
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -16606,6 +16869,29 @@ struct CreatePlatformHubTokenRequest {
     scopes: Vec<String>,
     #[serde(default)]
     expires_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize)]
+struct UpsertPlatformHubGrantRequest {
+    repository_id: String,
+    #[serde(default = "default_selected_project_grant_scope")]
+    grant_scope: String,
+    #[serde(default)]
+    target_owner: String,
+    #[serde(default)]
+    target_project: String,
+    #[serde(default = "default_true")]
+    can_read: bool,
+    #[serde(default)]
+    can_publish: bool,
+    #[serde(default)]
+    can_manage: bool,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+fn default_selected_project_grant_scope() -> String {
+    "selected_project".to_string()
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -16681,6 +16967,21 @@ fn project_hub_repository_json(item: crate::platform::model::ProjectHubRepositor
     })
 }
 
+fn project_hub_repository_json_with_scope(
+    item: crate::platform::model::ProjectHubRepository,
+    source_scope: &str,
+) -> Value {
+    let mut value = project_hub_repository_json(item);
+    if let Some(map) = value.as_object_mut() {
+        map.insert("source_scope".to_string(), json!(source_scope));
+        map.insert(
+            "editable".to_string(),
+            json!(source_scope == "project_local"),
+        );
+    }
+    value
+}
+
 fn platform_hub_repository_json(item: crate::platform::model::PlatformHubRepository) -> Value {
     json!({
         "owner": item.owner,
@@ -16698,13 +16999,48 @@ fn platform_hub_repository_json(item: crate::platform::model::PlatformHubReposit
     })
 }
 
+fn hub_access_grant_json(item: crate::platform::model::HubAccessGrant) -> Value {
+    json!({
+        "grant_id": item.grant_id,
+        "source_owner": item.source_owner,
+        "source_id": item.source_id,
+        "repository_id": item.repository_id,
+        "grant_scope": item.grant_scope,
+        "target_owner": item.target_owner,
+        "target_project": item.target_project,
+        "can_read": item.can_read,
+        "can_publish": item.can_publish,
+        "can_manage": item.can_manage,
+        "enabled": item.enabled,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+    })
+}
+
 fn hub_api_error(err: PlatformError) -> Response {
     let status = if err.code == "FW_EGRESS_DENIED"
         || err.code == "FW_EGRESS_URL_INVALID"
         || err.code == "FW_EGRESS_DNS"
         || err.code == "HUB_REPOSITORY_INVALID"
+        || err.code == "HUB_ACCESS_GRANT_INVALID"
+        || err.code == "HUB_PACKAGE_INVALID"
+        || err.code == "HUB_ASSET_KIND_INVALID"
+        || err.code == "HUB_MEDIA_INVALID"
+        || err.code == "HUB_GALLERY_INVALID"
     {
         StatusCode::BAD_REQUEST
+    } else if err.code == "HUB_ASSET_MISSING"
+        || err.code == "HUB_MEDIA_MISSING"
+        || err.code == "HUB_REPOSITORY_MISSING"
+    {
+        StatusCode::NOT_FOUND
+    } else if err.code == "HUB_TOKEN_INVALID"
+        || err.code == "HUB_TOKEN_REVOKED"
+        || err.code == "HUB_TOKEN_EXPIRED"
+    {
+        StatusCode::UNAUTHORIZED
+    } else if err.code == "HUB_TOKEN_FORBIDDEN" || err.code == "HUB_PACKAGE_FORBIDDEN" {
+        StatusCode::FORBIDDEN
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
@@ -16713,6 +17049,76 @@ fn hub_api_error(err: PlatformError) -> Response {
         Json(json!({"ok": false, "error": {"code": err.code, "message": err.message}})),
     )
         .into_response()
+}
+
+fn authenticate_hub_delete_token(
+    state: &PlatformAppState,
+    token_value: &str,
+) -> Result<crate::platform::model::HubToken, PlatformError> {
+    match state
+        .platform
+        .hub
+        .authenticate_token(token_value, "hub:manage")
+    {
+        Ok(token) => Ok(token),
+        Err(manage_err) if manage_err.code == "HUB_TOKEN_FORBIDDEN" => state
+            .platform
+            .hub
+            .authenticate_token(token_value, "hub:publish"),
+        Err(err) => Err(err),
+    }
+}
+
+fn authenticate_project_hub_publish_token(
+    state: &PlatformAppState,
+    headers: &HeaderMap,
+    owner: &str,
+    project: &str,
+    explicit_token: &str,
+) -> Result<crate::platform::model::HubToken, Response> {
+    let token_value = explicit_token.trim().to_string();
+    let token_value = if token_value.is_empty() {
+        bearer_token_from_headers(headers).unwrap_or_default()
+    } else {
+        token_value
+    };
+    if token_value.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token is required",
+                "code": "HUB_TOKEN_REQUIRED"
+            })),
+        )
+            .into_response());
+    }
+    let token = match state
+        .platform
+        .hub
+        .authenticate_token(&token_value, "hub:publish")
+    {
+        Ok(token) => token,
+        Err(err) => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"ok": false, "error": err.message, "code": err.code})),
+            )
+                .into_response());
+        }
+    };
+    if token.owner != owner || token.project != project {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token does not belong to this project",
+                "code": "HUB_TOKEN_FORBIDDEN"
+            })),
+        )
+            .into_response());
+    }
+    Ok(token)
 }
 
 fn hub_token_json(item: crate::platform::model::HubToken) -> Value {
@@ -16810,6 +17216,74 @@ async fn api_list_hub_assets(
             );
             Json(json!({"ok": true, "items": items})).into_response()
         }
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_list_project_hub_access(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    if let Err(err) = state
+        .platform
+        .hub
+        .ensure_default_project_repository(&owner, &project)
+    {
+        return internal_error(err);
+    }
+    let local_ids = match state.platform.hub.list_repositories(&owner, &project) {
+        Ok(items) => items
+            .into_iter()
+            .map(|item| item.repository_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        Err(err) => return internal_error(err),
+    };
+    match state
+        .platform
+        .hub
+        .list_effective_repositories(&owner, &project)
+    {
+        Ok(items) => Json(json!({
+            "ok": true,
+            "repositories": items
+                .into_iter()
+                .map(|item| {
+                    let scope = if local_ids.contains(&item.repository_id) {
+                        "project_local"
+                    } else {
+                        "platform_grant"
+                    };
+                    project_hub_repository_json_with_scope(item, scope)
+                })
+                .collect::<Vec<_>>()
+        }))
+        .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -17180,6 +17654,40 @@ async fn api_get_public_hub_asset(
     }
 }
 
+async fn api_get_public_hub_media(
+    State(state): State<PlatformAppState>,
+    Path((package_id, media_name)): Path<(String, String)>,
+) -> Response {
+    if let Err(response) = require_hub_service_enabled(&state) {
+        return response;
+    }
+    match state
+        .platform
+        .hub
+        .get_latest_asset_media(&package_id, &media_name)
+    {
+        Ok((package, media, bytes)) => {
+            if package.visibility != "public" {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"ok": false, "error": "private package"})),
+                )
+                    .into_response();
+            }
+            let mut headers = HeaderMap::new();
+            if let Ok(value) = HeaderValue::from_str(&media.content_type) {
+                headers.insert(CONTENT_TYPE, value);
+            }
+            headers.insert(
+                CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=300"),
+            );
+            (StatusCode::OK, headers, bytes).into_response()
+        }
+        Err(err) => hub_api_error(err),
+    }
+}
+
 async fn api_get_public_hub_artifact(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -17278,6 +17786,72 @@ async fn api_list_my_hub_assets(
     match hub_asset_rows(&state, &owner, &project, true) {
         Ok(items) => Json(json!({"ok": true, "items": items})).into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_delete_hub_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id)): Path<(String, String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::DELETE,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let Some(token_value) = bearer_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token is required",
+                "code": "HUB_TOKEN_REQUIRED"
+            })),
+        )
+            .into_response();
+    };
+    let token = match authenticate_hub_delete_token(&state, &token_value) {
+        Ok(token) => token,
+        Err(err) => return hub_api_error(err),
+    };
+    if !token.scopes.iter().any(|scope| scope == "hub:manage")
+        && (token.owner != owner || token.project != project)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "ok": false,
+                "error": "publisher token does not belong to this project",
+                "code": "HUB_TOKEN_FORBIDDEN"
+            })),
+        )
+            .into_response();
+    }
+    match state.platform.hub.delete_asset_package(&token, &package_id) {
+        Ok(deleted_versions) => {
+            Json(json!({"ok": true, "deleted_versions": deleted_versions})).into_response()
+        }
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -17400,48 +17974,16 @@ async fn api_publish_hub_asset(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let token_value = req.publisher_token.trim().to_string();
-    let token_value = if token_value.is_empty() {
-        bearer_token_from_headers(&headers).unwrap_or_default()
-    } else {
-        token_value
-    };
-    if token_value.is_empty() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "ok": false,
-                "error": "publisher token is required",
-                "code": "HUB_TOKEN_REQUIRED"
-            })),
-        )
-            .into_response();
-    }
-    let token = match state
-        .platform
-        .hub
-        .authenticate_token(&token_value, "hub:publish")
-    {
+    let token = match authenticate_project_hub_publish_token(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        &req.publisher_token,
+    ) {
         Ok(token) => token,
-        Err(err) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"ok": false, "error": err.message, "code": err.code})),
-            )
-                .into_response();
-        }
+        Err(response) => return response,
     };
-    if token.owner != owner || token.project != project {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({
-                "ok": false,
-                "error": "publisher token does not belong to this project",
-                "code": "HUB_TOKEN_FORBIDDEN"
-            })),
-        )
-            .into_response();
-    }
     match state.platform.hub.publish_asset(
         &owner,
         &project,
@@ -17458,13 +18000,76 @@ async fn api_publish_hub_asset(
         &req.version,
         &req.title,
         &req.description,
+        &req.image_file_path,
         &req.visibility,
+        project_bundle_publish_options(&req),
         req.tags,
     ) {
         Ok((package, version)) => {
             Json(json!({"ok": true, "package": package, "version": version})).into_response()
         }
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_review_hub_publish_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<PublishHubAssetRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let token = match authenticate_project_hub_publish_token(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        &req.publisher_token,
+    ) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state.platform.hub.review_publish_asset(
+        &owner,
+        &project,
+        &token.publisher_id,
+        &req.source_type,
+        &req.source_ref,
+        &req.package_id,
+        &req.version,
+        &req.title,
+        &req.description,
+        &req.image_file_path,
+        &req.visibility,
+        project_bundle_publish_options(&req),
+        req.tags,
+    ) {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -17486,7 +18091,7 @@ async fn api_install_hub_asset(
     }
     let forward_body = body
         .as_ref()
-        .map(|Json(req)| json!({"install_mode": req.install_mode}))
+        .map(|Json(req)| json!({"target_folder": req.target_folder}))
         .unwrap_or_else(|| json!({}));
     match maybe_forward_project_json_to_worker(
         &state,
@@ -17503,19 +18108,74 @@ async fn api_install_hub_asset(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let install_mode = normalize_hub_install_mode(
-        body.as_ref()
-            .map(|Json(req)| req.install_mode.as_str())
-            .unwrap_or_default(),
-    );
+    let target_folder = normalized_hub_target_folder(body.as_ref());
     match state
         .platform
         .hub
-        .install_asset(&owner, &project, &package_id, &version)
+        .install_asset(&owner, &project, &package_id, &version, &target_folder)
     {
-        Ok(result) => Json(json!({"ok": true, "install_mode": install_mode, "result": result}))
-            .into_response(),
+        Ok(result) => {
+            if result.install_root == "nodes" || result.install_root.starts_with("nodes/") {
+                if let Err(err) = state
+                    .platform
+                    .node_registry
+                    .refresh_project(&owner, &project)
+                {
+                    return internal_error(err);
+                }
+            }
+            Json(json!({"ok": true, "target_folder": target_folder, "result": result}))
+                .into_response()
+        }
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_review_hub_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, package_id, version)): Path<(String, String, String, String)>,
+    uri: Uri,
+    body: Option<Json<InstallHubAssetRequest>>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    let forward_body = body
+        .as_ref()
+        .map(|Json(req)| json!({"target_folder": req.target_folder}))
+        .unwrap_or_else(|| json!({}));
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &forward_body,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let target_folder = normalized_hub_target_folder(body.as_ref());
+    match state.platform.hub.review_asset_install(
+        &owner,
+        &project,
+        &package_id,
+        &version,
+        &target_folder,
+    ) {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -17577,7 +18237,7 @@ async fn api_remote_publish_hub_asset(
         Ok((package, version)) => {
             Json(json!({"ok": true, "package": package, "version": version})).into_response()
         }
-        Err(err) => internal_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -17615,7 +18275,33 @@ async fn api_public_remote_publish_hub_asset(
         Ok((package, version)) => {
             Json(json!({"ok": true, "package": package, "version": version})).into_response()
         }
-        Err(err) => internal_error(err),
+        Err(err) => hub_api_error(err),
+    }
+}
+
+async fn api_public_delete_hub_asset(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(package_id): Path<String>,
+) -> Response {
+    let Some(token_value) = bearer_token_from_headers(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(
+                json!({"ok": false, "error": "missing bearer token", "code": "HUB_TOKEN_REQUIRED"}),
+            ),
+        )
+            .into_response();
+    };
+    let token = match authenticate_hub_delete_token(&state, &token_value) {
+        Ok(token) => token,
+        Err(err) => return hub_api_error(err),
+    };
+    match state.platform.hub.delete_asset_package(&token, &package_id) {
+        Ok(deleted_versions) => {
+            Json(json!({"ok": true, "deleted_versions": deleted_versions})).into_response()
+        }
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -18027,7 +18713,11 @@ async fn api_list_hub_repositories(
     {
         return internal_error(err);
     }
-    match state.platform.hub.list_repositories(&owner, &project) {
+    match state
+        .platform
+        .hub
+        .list_effective_repositories(&owner, &project)
+    {
         Ok(items) => Json(json!({
             "ok": true,
             "items": items.into_iter().map(project_hub_repository_json).collect::<Vec<_>>()
@@ -18152,7 +18842,7 @@ async fn api_install_remote_hub_pack(
     }
     let forward_body = body
         .as_ref()
-        .map(|Json(req)| json!({"install_mode": req.install_mode}))
+        .map(|Json(req)| json!({"target_folder": req.target_folder}))
         .unwrap_or_else(|| json!({}));
     match maybe_forward_project_json_to_worker(
         &state,
@@ -18169,11 +18859,7 @@ async fn api_install_remote_hub_pack(
         Ok(None) => {}
         Err(err) => return internal_error(err),
     }
-    let install_mode = normalize_hub_install_mode(
-        body.as_ref()
-            .map(|Json(req)| req.install_mode.as_str())
-            .unwrap_or_default(),
-    );
+    let target_folder = normalized_hub_target_folder(body.as_ref());
     match state
         .platform
         .hub
@@ -18184,12 +18870,74 @@ async fn api_install_remote_hub_pack(
             &repository_id,
             &package_id,
             &version,
+            &target_folder,
         )
         .await
     {
-        Ok(result) => Json(json!({"ok": true, "install_mode": install_mode, "result": result}))
+        Ok(result) => Json(json!({"ok": true, "target_folder": target_folder, "result": result}))
             .into_response(),
         Err(err) => internal_error(err),
+    }
+}
+
+async fn api_review_remote_hub_pack(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project, repository_id, package_id, version)): Path<(
+        String,
+        String,
+        String,
+        String,
+        String,
+    )>,
+    uri: Uri,
+    body: Option<Json<InstallHubAssetRequest>>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesWrite,
+    ) {
+        return response;
+    }
+    let forward_body = body
+        .as_ref()
+        .map(|Json(req)| json!({"target_folder": req.target_folder}))
+        .unwrap_or_else(|| json!({}));
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &forward_body,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let target_folder = normalized_hub_target_folder(body.as_ref());
+    match state
+        .platform
+        .hub
+        .review_remote_pack_from_repository(
+            &state.http_client,
+            &owner,
+            &project,
+            &repository_id,
+            &package_id,
+            &version,
+            &target_folder,
+        )
+        .await
+    {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -23694,6 +24442,50 @@ async fn api_list_ui_catalog(
     let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
     let entries = crate::platform::catalog::CatalogService::list_ui_with_presence(&shared_ui_dir);
     Json(json!({ "ok": true, "components": entries })).into_response()
+}
+
+async fn api_review_ui_components(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+    Json(req): Json<crate::platform::catalog::InstallUiRequest>,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return r;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &req,
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let layout = match state.platform.file.ensure_project_layout(&owner, &project) {
+        Ok(l) => l,
+        Err(e) => return internal_error(e),
+    };
+    let shared_ui_dir = layout.repo_pipelines_dir.join("shared").join("ui");
+    let review = crate::platform::catalog::CatalogService::review_ui(
+        &req.names,
+        &shared_ui_dir,
+        req.overwrite,
+    );
+    Json(json!({ "ok": true, "review": review })).into_response()
 }
 
 async fn api_install_ui_components(

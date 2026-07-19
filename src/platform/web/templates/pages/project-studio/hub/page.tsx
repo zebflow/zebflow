@@ -51,10 +51,11 @@ function describeStatus(value) {
 }
 
 function requestJson(url, options = {}) {
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   return fetch(url, {
     headers: {
       Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.body && !isFormData ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
     },
     ...options,
@@ -89,15 +90,64 @@ function sourceLabel(value) {
   return SOURCE_TYPES.find((item) => item.value === value)?.label || value;
 }
 
+function formatBytes(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function blankProjectSource() {
+  return {
+    repository_id: "",
+    title: "",
+    base_url: "https://hub.zebflow.com/api",
+    remote_owner: "",
+    remote_project: "",
+    read_token: "",
+    enabled: true,
+  };
+}
+
+function ReviewList({ title, items, danger = false }) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : [];
+  return (
+    <div className={danger ? "rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2" : "rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-2"}>
+      <p className={danger ? "m-0 text-xs font-medium text-red-100" : "m-0 text-xs font-medium text-ui-text"}>{title}</p>
+      {values.length ? (
+        <ul className={danger ? "mt-1 space-y-1 text-[11px] text-red-50" : "mt-1 space-y-1 text-[11px] text-ui-text-soft"}>
+          {values.slice(0, 8).map((item, index) => <li key={`${title}-${index}`}>{String(item)}</li>)}
+          {values.length > 8 ? <li>+{values.length - 8} more</li> : null}
+        </ul>
+      ) : (
+        <p className="m-0 mt-1 text-[11px] text-ui-text-soft">None</p>
+      )}
+    </div>
+  );
+}
+
 export default function Page(input) {
   const tabs = Array.isArray(input?.hub_tabs) ? input.hub_tabs : [];
   const tabFlags = input?.tab_flags ?? {};
   const api = input?.hub_api ?? {};
   const [packs, setPacks] = useState(Array.isArray(input?.assets) ? input.assets : []);
   const [myPacks, setMyPacks] = useState(Array.isArray(input?.my_assets) ? input.my_assets : []);
+  const [hubSources, setHubSources] = useState([]);
+  const [sourceForm, setSourceForm] = useState(blankProjectSource());
+  const [editingSourceId, setEditingSourceId] = useState("");
   const [publishSources, setPublishSources] = useState(Array.isArray(input?.publish_sources) ? input.publish_sources : []);
   const [publishPreview, setPublishPreview] = useState(null);
+  const [publishReview, setPublishReview] = useState(null);
+  const [publishReviewDirty, setPublishReviewDirty] = useState(true);
+  const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const publishOptions = input?.publish_options ?? {};
+  const availableLibraries = Array.isArray(publishOptions?.libraries) ? publishOptions.libraries : [];
+  const sekejapSchemaAvailable = !!publishOptions?.sekejap_schema?.available;
+  const sqliteSchemaAvailable = !!publishOptions?.sqlite_schema?.available;
+  const initialDataItems = Array.isArray(publishOptions?.initial_data?.items) ? publishOptions.initial_data.items : [];
+  const initialDataAvailable = !!publishOptions?.initial_data?.available && initialDataItems.length > 0;
   const [publishForm, setPublishForm] = useState({
     source_type: "pipeline_with_dependencies",
     source_ref: (input?.publish_sources?.[0]?.source_ref) || "",
@@ -106,12 +156,43 @@ export default function Page(input) {
     publisher_token: "",
     title: "",
     description: "",
+    image_file_path: "",
     visibility: "private",
     tags_csv: "",
+    include_sekejap_schema: sekejapSchemaAvailable,
+    include_sqlite_schema: sqliteSchemaAvailable,
+    include_libraries: availableLibraries.map((item) => item?.name).filter(Boolean),
+    include_initial_data: false,
+    initial_data_paths: [],
   });
 
   function showStatus(value) {
     setStatus(describeStatus(value));
+  }
+
+  function patchPublishForm(patch) {
+    setPublishForm((prev) => ({ ...prev, ...patch }));
+    setPublishReviewDirty(true);
+  }
+
+  function publishPayload() {
+    return {
+      source_type: publishForm.source_type,
+      source_ref: publishForm.source_ref,
+      package_id: publishForm.package_id,
+      version: publishForm.version,
+      title: publishForm.title,
+      description: publishForm.description,
+      image_file_path: publishForm.image_file_path,
+      publisher_token: publishForm.publisher_token,
+      visibility: publishForm.visibility,
+      tags: String(publishForm.tags_csv || "").split(",").map((s) => s.trim()).filter(Boolean),
+      include_sekejap_schema: publishForm.source_type === "project_files" && sekejapSchemaAvailable ? !!publishForm.include_sekejap_schema : false,
+      include_sqlite_schema: publishForm.source_type === "project_files" && sqliteSchemaAvailable ? !!publishForm.include_sqlite_schema : false,
+      include_libraries: publishForm.source_type === "project_files" ? (Array.isArray(publishForm.include_libraries) ? publishForm.include_libraries : []) : [],
+      include_initial_data: publishForm.source_type === "project_files" && initialDataAvailable ? !!publishForm.include_initial_data : false,
+      initial_data_paths: publishForm.source_type === "project_files" && publishForm.include_initial_data ? (Array.isArray(publishForm.initial_data_paths) ? publishForm.initial_data_paths : []) : [],
+    };
   }
 
   useEffect(() => {
@@ -121,10 +202,15 @@ export default function Page(input) {
   }, [status]);
 
   async function refresh() {
-    const tasks = [requestJson(api.assets), requestJson(api.my_assets)];
-    const [assetsRes, myRes] = await Promise.all(tasks);
+    const tasks = [
+      requestJson(api.assets),
+      requestJson(api.my_assets),
+      api.access ? requestJson(api.access) : Promise.resolve(null),
+    ];
+    const [assetsRes, myRes, sourceRes] = await Promise.all(tasks);
     setPacks(Array.isArray(assetsRes?.items) ? assetsRes.items : []);
     setMyPacks(Array.isArray(myRes?.items) ? myRes.items : []);
+    setHubSources(Array.isArray(sourceRes?.repositories) ? sourceRes.repositories : []);
   }
 
   async function refreshPublishSources(sourceType) {
@@ -166,27 +252,65 @@ export default function Page(input) {
 
   useEffect(() => {
     refreshPreview(publishForm.source_type, publishForm.source_ref).catch(() => {});
+    setPublishReview(null);
+    setPublishReviewDirty(true);
   }, [publishForm.source_type, publishForm.source_ref]);
+
+  async function uploadCoverImage(event) {
+    const file = event?.target?.files?.[0];
+    if (!file || !api.upload) return;
+    setImageUploadBusy(true);
+    showStatus("Uploading cover image...");
+    try {
+      const form = new FormData();
+      form.append("file", file, file.name || "cover");
+      const payload = await requestJson(`${api.upload}?path=${encodeURIComponent("hub-media")}`, {
+        method: "POST",
+        body: form,
+      });
+      patchPublishForm({ image_file_path: payload?.path || "" });
+      showStatus(`Uploaded cover image to ${payload?.path || "hub-media"}. It will be normalized to WebP during review/publish.`);
+    } catch (err) {
+      showStatus(err?.message || err);
+    } finally {
+      setImageUploadBusy(false);
+      if (event?.target) event.target.value = "";
+    }
+  }
+
+  async function reviewPublish(event) {
+    event?.preventDefault?.();
+    showStatus("Reviewing package...");
+    try {
+      const payload = await requestJson(api.publish_review, {
+        method: "POST",
+        body: JSON.stringify(publishPayload()),
+      });
+      setPublishReview(payload?.review || null);
+      setPublishReviewDirty(false);
+      showStatus(`Review ready: risk ${payload?.review?.risk_level || "unknown"}`);
+    } catch (err) {
+      setPublishReview(null);
+      setPublishReviewDirty(true);
+      showStatus(err?.message || err);
+    }
+  }
 
   async function publishAsset(event) {
     event?.preventDefault?.();
-    showStatus("Publishing asset...");
+    if (!publishReview || publishReviewDirty) {
+      showStatus("Run package review before publishing.");
+      return;
+    }
+    showStatus("Publishing package...");
     try {
       const payload = await requestJson(api.publish_asset, {
         method: "POST",
-        body: JSON.stringify({
-          source_type: publishForm.source_type,
-          source_ref: publishForm.source_ref,
-          package_id: publishForm.package_id,
-          version: publishForm.version,
-          title: publishForm.title,
-          description: publishForm.description,
-          publisher_token: publishForm.publisher_token,
-          visibility: publishForm.visibility,
-          tags: String(publishForm.tags_csv || "").split(",").map((s) => s.trim()).filter(Boolean),
-        }),
+        body: JSON.stringify(publishPayload()),
       });
       await refresh();
+      setPublishReview(null);
+      setPublishReviewDirty(true);
       showStatus(`Published ${payload?.package?.package_id || publishForm.package_id}@${payload?.version?.version || publishForm.version}`);
     } catch (err) {
       showStatus(err?.message || err);
@@ -203,7 +327,7 @@ export default function Page(input) {
         : `${api.assets}/${encodeURIComponent(packageId)}/${encodeURIComponent(version)}/add`;
       const payload = await requestJson(url, {
         method: "POST",
-        body: JSON.stringify({ install_mode: "add_to_current_project" }),
+        body: JSON.stringify({ target_folder: "" }),
       });
       const result = payload?.result || {};
       showStatus(`Added ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
@@ -212,8 +336,116 @@ export default function Page(input) {
     }
   }
 
+  async function deleteAsset(item) {
+    const packageId = item?.package_id;
+    if (!packageId) return;
+    if (!publishForm.publisher_token) {
+      showStatus("Publisher token is required to delete a package.");
+      return;
+    }
+    if (!window.confirm(`Delete ${packageId} and all of its versions from the Hub?`)) {
+      return;
+    }
+    showStatus(`Deleting ${packageId}...`);
+    try {
+      const payload = await requestJson(`${api.assets}/${encodeURIComponent(packageId)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${publishForm.publisher_token}` },
+      });
+      await refresh();
+      showStatus(`Deleted ${packageId} (${payload?.deleted_versions || 0} version(s))`);
+    } catch (err) {
+      showStatus(err?.message || err);
+    }
+  }
+
+  function editSource(item) {
+    setEditingSourceId(item?.repository_id || "");
+    setSourceForm({
+      repository_id: item?.repository_id || "",
+      title: item?.title || "",
+      base_url: item?.base_url || "https://hub.zebflow.com/api",
+      remote_owner: item?.remote_owner || "",
+      remote_project: item?.remote_project || "",
+      read_token: "",
+      enabled: item?.enabled !== false,
+    });
+  }
+
+  function resetSourceForm() {
+    setEditingSourceId("");
+    setSourceForm(blankProjectSource());
+  }
+
+  async function saveSource(event) {
+    event?.preventDefault?.();
+    if (!api.repositories) return;
+    const repositoryId = sourceForm.repository_id || slugify(sourceForm.title || "hub-source");
+    showStatus("Saving project Hub source...");
+    try {
+      await requestJson(api.repositories, {
+        method: "POST",
+        body: JSON.stringify({
+          repository_id: repositoryId,
+          title: sourceForm.title || repositoryId,
+          base_url: sourceForm.base_url,
+          remote_owner: sourceForm.remote_owner,
+          remote_project: sourceForm.remote_project,
+          read_token: sourceForm.read_token,
+          enabled: !!sourceForm.enabled,
+        }),
+      });
+      resetSourceForm();
+      await refresh();
+      showStatus("Project Hub source saved.");
+    } catch (err) {
+      showStatus(err?.message || err);
+    }
+  }
+
+  async function deleteSource(item) {
+    const repositoryId = item?.repository_id;
+    if (!repositoryId || !api.repositories || item?.editable === false) return;
+    if (!window.confirm(`Delete project Hub source ${repositoryId}?`)) return;
+    showStatus(`Deleting ${repositoryId}...`);
+    try {
+      await requestJson(`${api.repositories}/${encodeURIComponent(repositoryId)}`, { method: "DELETE" });
+      if (editingSourceId === repositoryId) resetSourceForm();
+      await refresh();
+      showStatus("Project Hub source deleted.");
+    } catch (err) {
+      showStatus(err?.message || err);
+    }
+  }
+
+  function togglePublishLibrary(name) {
+    const value = String(name || "");
+    if (!value) return;
+    const current = Array.isArray(publishForm.include_libraries) ? publishForm.include_libraries : [];
+    patchPublishForm({
+      include_libraries: current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value],
+    });
+  }
+
+  function toggleInitialDataPath(path) {
+    const value = String(path || "");
+    if (!value) return;
+    const current = Array.isArray(publishForm.initial_data_paths) ? publishForm.initial_data_paths : [];
+    const next = current.includes(value)
+      ? current.filter((item) => item !== value)
+      : [...current, value];
+    patchPublishForm({
+      initial_data_paths: next,
+      include_initial_data: next.length > 0,
+    });
+  }
+
   const selectedSource = publishSources.find((item) => item.source_ref === publishForm.source_ref) || null;
   const selectedType = SOURCE_TYPES.find((item) => item.value === publishForm.source_type) || SOURCE_TYPES[0];
+  const projectSources = hubSources.filter((item) => item?.source_scope === "project_local" || item?.editable);
+  const sharedSources = hubSources.filter((item) => item?.source_scope !== "project_local" && !item?.editable);
 
   return (
       <ProjectStudioShell
@@ -239,7 +471,7 @@ export default function Page(input) {
                 <div className="project-content-head">
                   <div>
                     <p className="project-content-title">Project Hub</p>
-                    <p className="project-content-copy">Install hub packages into this project, or publish from this project with a scoped publisher token. Hub service enablement and office placement live in Home &gt; Hub.</p>
+                    <p className="project-content-copy">Add Hub packages into this project, or publish from this project with a scoped publisher token. Hub service enablement and office placement live in Home &gt; Hub. Added packages become editable project source; Hub does not track them as managed installs.</p>
                   </div>
                   <Button type="button" variant="outline" onClick={() => refresh().then(() => showStatus("Refreshed")).catch((err) => showStatus(err?.message || err))}>
                     Refresh
@@ -256,39 +488,170 @@ export default function Page(input) {
                   ) : null}
 
                   {tabFlags?.packs ? (
-                    <StudioTable>
-                      <StudioThead>
-                        <tr>
-                          <StudioTh>Package</StudioTh>
-                          <StudioTh>Kind</StudioTh>
-                          <StudioTh>Version</StudioTh>
-                          <StudioTh>Publisher</StudioTh>
-                          <StudioTh>Repository</StudioTh>
-                          <StudioTh>Visibility</StudioTh>
-                          <StudioTh>Action</StudioTh>
-                        </tr>
-                      </StudioThead>
-                      <tbody>
-                        {packs.map((item, index) => (
-                          <tr key={`${item?.package_id ?? "asset"}-${index}`}>
-                            <StudioTd>{item?.package_id}</StudioTd>
-                            <StudioTd>{item?.asset_kind}</StudioTd>
-                            <StudioTd>{item?.latest_version || "-"}</StudioTd>
-                            <StudioTd>{item?.publisher_display_name || item?.publisher_id || "-"}</StudioTd>
-                            <StudioTd>{item?.repository_title || "Local"}</StudioTd>
-                            <StudioTd>{item?.visibility}</StudioTd>
-                            <StudioTd>
-                              <Button type="button" variant="ghost" size="sm" onClick={() => addAsset(item)}>
-                                Add
-                              </Button>
-                            </StudioTd>
+                    <>
+                      <section className="rounded-xl border border-ui-border bg-ui-bg p-4">
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <p className="project-content-subtitle">Hub Sources</p>
+                            <p className="text-sm text-ui-text-soft">Project sources are private to this project. Shared sources are granted from Home &gt; Hub and are read-only here.</p>
+                          </div>
+                          <Button type="button" variant="outline" size="sm" onClick={resetSourceForm}>
+                            New Project Source
+                          </Button>
+                        </div>
+
+                        <form className="mt-4 grid gap-3 md:grid-cols-2" onSubmit={saveSource}>
+                          <Field label="Source ID">
+                            <Input
+                              value={sourceForm.repository_id}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, repository_id: slugify(e.currentTarget.value) }))}
+                              placeholder="my-private-hub"
+                            />
+                          </Field>
+                          <Field label="Title">
+                            <Input
+                              value={sourceForm.title}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, title: e.currentTarget.value }))}
+                              placeholder="My Private Hub"
+                            />
+                          </Field>
+                          <Field label="Base URL">
+                            <Input
+                              value={sourceForm.base_url}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, base_url: e.currentTarget.value }))}
+                              placeholder="https://hub.zebflow.com/api"
+                            />
+                          </Field>
+                          <Field label="Read Token">
+                            <Input
+                              type="password"
+                              value={sourceForm.read_token}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, read_token: e.currentTarget.value }))}
+                              placeholder={editingSourceId ? "Leave blank to keep existing token" : "Optional"}
+                            />
+                          </Field>
+                          <Field label="Remote owner">
+                            <Input
+                              value={sourceForm.remote_owner}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, remote_owner: e.currentTarget.value }))}
+                              placeholder="Only for legacy project-coordinate Hub"
+                            />
+                          </Field>
+                          <Field label="Remote project">
+                            <Input
+                              value={sourceForm.remote_project}
+                              onInput={(e) => setSourceForm((prev) => ({ ...prev, remote_project: e.currentTarget.value }))}
+                              placeholder="Only for legacy project-coordinate Hub"
+                            />
+                          </Field>
+                          <label className="flex items-center gap-2 text-sm text-ui-text-soft">
+                            <input
+                              type="checkbox"
+                              checked={!!sourceForm.enabled}
+                              onChange={(e) => setSourceForm((prev) => ({ ...prev, enabled: e.currentTarget.checked }))}
+                            />
+                            <span>Enabled</span>
+                          </label>
+                          <div className="flex items-center justify-end gap-2">
+                            {editingSourceId ? <Button type="button" variant="outline" size="sm" onClick={resetSourceForm}>Cancel Edit</Button> : null}
+                            <Button type="submit" size="sm" variant="primary">{editingSourceId ? "Save Source" : "Add Project Source"}</Button>
+                          </div>
+                        </form>
+
+                        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20">
+                            <div className="border-b border-ui-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-ui-text-soft">
+                              Project sources
+                            </div>
+                            <div className="divide-y divide-ui-border/60">
+                              {projectSources.map((item) => (
+                                <div key={`project-${item.repository_id}`} className="flex items-start justify-between gap-3 px-3 py-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate text-sm font-medium text-ui-text">{item.title || item.repository_id}</span>
+                                      <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">{item.enabled ? "enabled" : "off"}</span>
+                                    </div>
+                                    <p className="m-0 mt-1 truncate text-xs text-ui-text-soft">{item.base_url}</p>
+                                    <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                      {item.repository_id}{item.has_read_token ? " · token set" : ""}
+                                    </p>
+                                  </div>
+                                  <div className="flex shrink-0 gap-1">
+                                    <Button type="button" variant="ghost" size="sm" onClick={() => editSource(item)}>Edit</Button>
+                                    <Button type="button" variant="ghost" size="sm" onClick={() => deleteSource(item)}>Delete</Button>
+                                  </div>
+                                </div>
+                              ))}
+                              {!projectSources.length ? (
+                                <div className="px-3 py-4 text-sm text-ui-text-soft">No project-local Hub sources.</div>
+                              ) : null}
+                            </div>
+                          </div>
+
+                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20">
+                            <div className="border-b border-ui-border px-3 py-2 text-xs font-medium uppercase tracking-wider text-ui-text-soft">
+                              Shared from platform
+                            </div>
+                            <div className="divide-y divide-ui-border/60">
+                              {sharedSources.map((item) => (
+                                <div key={`shared-${item.repository_id}`} className="px-3 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="truncate text-sm font-medium text-ui-text">{item.title || item.repository_id}</span>
+                                    <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">read-only</span>
+                                  </div>
+                                  <p className="m-0 mt-1 truncate text-xs text-ui-text-soft">{item.base_url}</p>
+                                  <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                    {item.repository_id}{item.has_read_token ? " · token set" : ""}
+                                  </p>
+                                </div>
+                              ))}
+                              {!sharedSources.length ? (
+                                <div className="px-3 py-4 text-sm text-ui-text-soft">No platform-granted Hub sources.</div>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <StudioTable>
+                        <StudioThead>
+                          <tr>
+                            <StudioTh>Package</StudioTh>
+                            <StudioTh>Kind</StudioTh>
+                            <StudioTh>Version</StudioTh>
+                            <StudioTh>Publisher</StudioTh>
+                            <StudioTh>Repository</StudioTh>
+                            <StudioTh>Visibility</StudioTh>
+                            <StudioTh>Action</StudioTh>
                           </tr>
-                        ))}
-                        {!packs.length ? (
-                          <tr><StudioTd colSpan={7}>No hub packages yet.</StudioTd></tr>
-                        ) : null}
-                      </tbody>
-                    </StudioTable>
+                        </StudioThead>
+                        <tbody>
+                          {packs.map((item, index) => (
+                            <tr key={`${item?.package_id ?? "asset"}-${index}`}>
+                              <StudioTd>
+                                <div className="flex items-center gap-3">
+                                  {item?.image_url ? <img src={item.image_url} alt="" className="h-10 w-14 rounded-md object-cover border border-ui-border" /> : null}
+                                  <span>{item?.package_id}</span>
+                                </div>
+                              </StudioTd>
+                              <StudioTd>{item?.asset_kind}</StudioTd>
+                              <StudioTd>{item?.latest_version || "-"}</StudioTd>
+                              <StudioTd>{item?.publisher_display_name || item?.publisher_id || "-"}</StudioTd>
+                              <StudioTd>{item?.repository_title || "Local"}</StudioTd>
+                              <StudioTd>{item?.visibility}</StudioTd>
+                              <StudioTd>
+                                <Button type="button" variant="ghost" size="sm" onClick={() => addAsset(item)}>
+                                  Add
+                                </Button>
+                              </StudioTd>
+                            </tr>
+                          ))}
+                          {!packs.length ? (
+                            <tr><StudioTd colSpan={7}>No Hub packages yet.</StudioTd></tr>
+                          ) : null}
+                        </tbody>
+                      </StudioTable>
+                    </>
                   ) : null}
 
                   {tabFlags?.my_packs ? (
@@ -301,21 +664,32 @@ export default function Page(input) {
                           <StudioTh>Version</StudioTh>
                           <StudioTh>Visibility</StudioTh>
                           <StudioTh>Updated</StudioTh>
+                          <StudioTh>Action</StudioTh>
                         </tr>
                       </StudioThead>
                       <tbody>
                         {myPacks.map((item, index) => (
                           <tr key={`${item?.package_id ?? "mine"}-${index}`}>
-                            <StudioTd>{item?.package_id}</StudioTd>
+                            <StudioTd>
+                              <div className="flex items-center gap-3">
+                                {item?.image_url ? <img src={item.image_url} alt="" className="h-10 w-14 rounded-md object-cover border border-ui-border" /> : null}
+                                <span>{item?.package_id}</span>
+                              </div>
+                            </StudioTd>
                             <StudioTd>{item?.title}</StudioTd>
                             <StudioTd>{item?.asset_kind}</StudioTd>
                             <StudioTd>{item?.latest_version || "-"}</StudioTd>
                             <StudioTd>{item?.visibility}</StudioTd>
                             <StudioTd>{fmtTs(item?.updated_at)}</StudioTd>
+                            <StudioTd>
+                              <Button type="button" variant="ghost" size="sm" onClick={() => deleteAsset(item)}>
+                                Delete
+                              </Button>
+                            </StudioTd>
                           </tr>
                         ))}
                         {!myPacks.length ? (
-                          <tr><StudioTd colSpan={6}>You have not published any packs yet.</StudioTd></tr>
+                          <tr><StudioTd colSpan={7}>You have not published any packages yet.</StudioTd></tr>
                         ) : null}
                       </tbody>
                     </StudioTable>
@@ -332,7 +706,7 @@ export default function Page(input) {
                           <select
                             className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2"
                             value={publishForm.source_type}
-                            onChange={(e) => setPublishForm((prev) => ({ ...prev, source_type: e.target.value, source_ref: "" }))}
+                            onChange={(e) => patchPublishForm({ source_type: e.target.value, source_ref: "" })}
                           >
                             {SOURCE_TYPES.map((item) => (
                               <option key={item.value} value={item.value}>{item.label}</option>
@@ -353,7 +727,7 @@ export default function Page(input) {
                           <select
                             className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2"
                             value={publishForm.source_ref}
-                            onChange={(e) => setPublishForm((prev) => ({ ...prev, source_ref: e.target.value }))}
+                            onChange={(e) => patchPublishForm({ source_ref: e.target.value })}
                           >
                             <option value="">Select item</option>
                             {publishSources.map((item, index) => (
@@ -390,7 +764,7 @@ export default function Page(input) {
                           <>
                             <div className="grid gap-3 md:grid-cols-4 rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-3 text-sm">
                               <div>
-                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Asset kind</div>
+                                <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Package kind</div>
                                 <div className="mt-1 text-ui-text">{publishPreview.asset_kind}</div>
                               </div>
                               <div>
@@ -403,7 +777,7 @@ export default function Page(input) {
                               </div>
                               <div>
                                 <div className="text-ui-text-soft uppercase tracking-wider text-[11px]">Bytes</div>
-                                <div className="mt-1 text-ui-text">{publishPreview.total_bytes}</div>
+                                <div className="mt-1 text-ui-text">{formatBytes(publishPreview.total_bytes)}</div>
                               </div>
                             </div>
 
@@ -444,40 +818,207 @@ export default function Page(input) {
                       <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">4. Publish Package</p>
-                          <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Hub. This project cannot create publishers, tokens, or hub sources.</p>
+                          <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Hub. Project sources can be added on the Browse tab; publishers and tokens stay in Home &gt; Hub.</p>
                         </div>
+                        {publishForm.source_type === "project_files" ? (
+                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
+                            <div>
+                              <p className="m-0 text-sm font-medium text-ui-text">Project bundle initialization</p>
+                              <p className="m-0 mt-1 text-xs text-ui-text-soft">Choose the schema and runtime settings that the installed project should initialize from.</p>
+                            </div>
+                            <label className={`flex items-start gap-2 text-sm ${sekejapSchemaAvailable ? "text-ui-text" : "text-ui-text-soft"}`}>
+                              <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={!!publishForm.include_sekejap_schema}
+                                disabled={!sekejapSchemaAvailable}
+                                onChange={(e) => patchPublishForm({ include_sekejap_schema: e.target.checked })}
+                              />
+                              <span>
+                                Include Sekejap schema
+                                <span className="block text-xs text-ui-text-soft">
+                                  {sekejapSchemaAvailable ? `${publishOptions?.sekejap_schema?.table_count || 0} managed table schema(s)` : "No Sekejap schema found in this project"}
+                                </span>
+                              </span>
+                            </label>
+                            <label className={`flex items-start gap-2 text-sm ${sqliteSchemaAvailable ? "text-ui-text" : "text-ui-text-soft"}`}>
+                              <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={!!publishForm.include_sqlite_schema}
+                                disabled={!sqliteSchemaAvailable}
+                                onChange={(e) => patchPublishForm({ include_sqlite_schema: e.target.checked })}
+                              />
+                              <span>
+                                Include SQLite schema
+                                <span className="block text-xs text-ui-text-soft">
+                                  {sqliteSchemaAvailable ? "Local SQLite DDL will be exported as schemas/sqlite/schema.sql" : "No SQLite schema found in local.db"}
+                                </span>
+                              </span>
+                            </label>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="m-0 text-xs font-medium uppercase tracking-wider text-ui-text-soft">Initial data</p>
+                                  <p className="m-0 text-xs text-ui-text-soft">Selected SQL files execute during install after schemas are applied.</p>
+                                </div>
+                                <input
+                                  type="checkbox"
+                                  checked={!!publishForm.include_initial_data}
+                                  disabled={!initialDataAvailable}
+                                  onChange={(e) => patchPublishForm({
+                                    include_initial_data: e.target.checked,
+                                    initial_data_paths: e.target.checked ? initialDataItems.map((item) => item.path).filter(Boolean) : [],
+                                  })}
+                                />
+                              </div>
+                              {initialDataAvailable ? (
+                                <div className="grid gap-2">
+                                  {initialDataItems.map((item) => {
+                                    const path = item?.path || "";
+                                    const checked = (Array.isArray(publishForm.initial_data_paths) ? publishForm.initial_data_paths : []).includes(path);
+                                    return (
+                                      <label key={path} className="flex items-center justify-between gap-3 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-sm text-ui-text">
+                                        <span className="min-w-0">
+                                          <code className="block truncate text-xs">{path}</code>
+                                          <span className="block text-xs text-ui-text-soft">{item?.engine || "data"} · {item?.statement_count || 0} statement(s) · {formatBytes(item?.size_bytes || 0)}</span>
+                                        </span>
+                                        <input type="checkbox" checked={checked} onChange={() => toggleInitialDataPath(path)} />
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="m-0 text-xs text-ui-text-soft">No initial data SQL files found under initial-data, init, or seeds.</p>
+                              )}
+                            </div>
+                            <div className="space-y-2">
+                              <p className="m-0 text-xs font-medium uppercase tracking-wider text-ui-text-soft">Installed libraries</p>
+                              {availableLibraries.length ? (
+                                <div className="grid gap-2">
+                                  {availableLibraries.map((item) => {
+                                    const name = item?.name || "";
+                                    const checked = (Array.isArray(publishForm.include_libraries) ? publishForm.include_libraries : []).includes(name);
+                                    return (
+                                      <label key={name} className="flex items-center justify-between gap-3 rounded-md border border-ui-border bg-ui-bg px-3 py-2 text-sm text-ui-text">
+                                        <span className="min-w-0">
+                                          <span className="block truncate">{name}</span>
+                                          <span className="block text-xs text-ui-text-soft">{item?.version || "default"} · {item?.source || "offline"}</span>
+                                        </span>
+                                        <input type="checkbox" checked={checked} onChange={() => togglePublishLibrary(name)} />
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="m-0 text-xs text-ui-text-soft">No project-enabled RWE libraries.</p>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
                         <Field label="Publisher Token">
-                          <Input type="password" value={publishForm.publisher_token} onInput={(e) => setPublishForm((prev) => ({ ...prev, publisher_token: e.target.value }))} placeholder="zfmt_..." />
+                          <Input type="password" value={publishForm.publisher_token} onInput={(e) => patchPublishForm({ publisher_token: e.target.value })} placeholder="zfmt_..." />
                         </Field>
                         <div className="grid gap-3 md:grid-cols-2">
                           <Field label="Package ID">
-                            <Input value={publishForm.package_id} onInput={(e) => setPublishForm((prev) => ({ ...prev, package_id: e.target.value }))} placeholder="ev-charging-demo" />
+                            <Input value={publishForm.package_id} onInput={(e) => patchPublishForm({ package_id: e.target.value })} placeholder="ev-charging-demo" />
                           </Field>
                           <Field label="Version">
-                            <Input value={publishForm.version} onInput={(e) => setPublishForm((prev) => ({ ...prev, version: e.target.value }))} placeholder="0.1.0" />
+                            <Input value={publishForm.version} onInput={(e) => patchPublishForm({ version: e.target.value })} placeholder="0.1.0" />
                           </Field>
                         </div>
                         <Field label="Title">
-                          <Input value={publishForm.title} onInput={(e) => setPublishForm((prev) => ({ ...prev, title: e.target.value }))} placeholder="EV Charging Demo Pipeline" />
+                          <Input value={publishForm.title} onInput={(e) => patchPublishForm({ title: e.target.value })} placeholder="EV Charging Demo Pipeline" />
                         </Field>
                         <Field label="Description">
-                          <Input value={publishForm.description} onInput={(e) => setPublishForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Short summary" />
+                          <Input value={publishForm.description} onInput={(e) => patchPublishForm({ description: e.target.value })} placeholder="Short summary" />
+                        </Field>
+                        <Field label="Package image from Files">
+                          <div className="space-y-2">
+                            <Input value={publishForm.image_file_path} onInput={(e) => patchPublishForm({ image_file_path: e.target.value })} placeholder="hub-media/cover.png" />
+                            <div className="flex items-center gap-2">
+                              <label className="inline-flex items-center">
+                                <input className="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={uploadCoverImage} disabled={imageUploadBusy} />
+                                <span className="zf-btn zf-btn-outline zf-btn-sm cursor-pointer">{imageUploadBusy ? "Uploading..." : "Upload image"}</span>
+                              </label>
+                              <span className="text-xs text-ui-text-soft">Uploaded images are stored in Files and normalized to WebP in the Hub package.</span>
+                            </div>
+                          </div>
                         </Field>
                         <div className="grid gap-3 md:grid-cols-2">
                           <Field label="Visibility">
-                            <select className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2" value={publishForm.visibility} onChange={(e) => setPublishForm((prev) => ({ ...prev, visibility: e.target.value }))}>
+                            <select className="w-full rounded-md border border-ui-border bg-ui-bg px-3 py-2" value={publishForm.visibility} onChange={(e) => patchPublishForm({ visibility: e.target.value })}>
                               <option value="private">private</option>
                               <option value="public">public</option>
                               <option value="unlisted">unlisted</option>
                             </select>
                           </Field>
                           <Field label="Tags">
-                            <Input value={publishForm.tags_csv} onInput={(e) => setPublishForm((prev) => ({ ...prev, tags_csv: e.target.value }))} placeholder="ev, mobility, demo" />
+                            <Input value={publishForm.tags_csv} onInput={(e) => patchPublishForm({ tags_csv: e.target.value })} placeholder="ev, mobility, demo" />
                           </Field>
                         </div>
-                        <div>
-                          <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token}>Publish Pack</Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button type="button" variant="outline" onClick={reviewPublish} disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token}>
+                            {publishReviewDirty ? "Review Package" : "Review Again"}
+                          </Button>
+                          <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty}>Publish Package</Button>
                         </div>
+                        {publishReview ? (
+                          <div className="rounded-xl border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="m-0 text-sm font-semibold text-ui-text">Publish Review</p>
+                                <p className="m-0 mt-1 text-xs text-ui-text-soft">
+                                  {publishReview.package_id}@{publishReview.version} · {publishReview.asset_kind} · risk {publishReview.risk_level}
+                                </p>
+                              </div>
+                              {publishReviewDirty ? <span className="rounded-full border border-amber-400/40 px-2 py-0.5 text-[10px] uppercase text-amber-100">stale</span> : <span className="rounded-full border border-ui-border px-2 py-0.5 text-[10px] uppercase text-ui-text-soft">ready</span>}
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-4 text-sm">
+                              <div><div className="text-[11px] uppercase text-ui-text-soft">Files</div><div>{publishReview.total_files}</div></div>
+                              <div><div className="text-[11px] uppercase text-ui-text-soft">Bytes</div><div>{formatBytes(publishReview.total_bytes)}</div></div>
+                              <div><div className="text-[11px] uppercase text-ui-text-soft">Visibility</div><div>{publishReview.visibility}</div></div>
+                              <div><div className="text-[11px] uppercase text-ui-text-soft">Cover</div><div>{publishReview.media?.[0]?.name || "None"}</div></div>
+                            </div>
+                            {publishReview.media?.length ? (
+                              <div className="rounded-lg border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
+                                Cover will be published as <code>{publishReview.media[0].name}</code> ({publishReview.media[0].content_type}, {formatBytes(publishReview.media[0].size_bytes)}).
+                              </div>
+                            ) : null}
+                            {publishReview.asset_kind === "project_bundle" ? (
+                              <div className="rounded-lg border border-ui-border bg-ui-bg px-3 py-2 text-xs text-ui-text-soft">
+                                <div className="font-medium text-ui-text">Initialization</div>
+                                <div className="mt-1">Sekejap schema: {publishReview.project_initialization?.include_sekejap_schema ? "included" : "not included"}</div>
+                                <div>SQLite schema: {publishReview.project_initialization?.include_sqlite_schema ? "included" : "not included"}</div>
+                                <div>Libraries: {(publishReview.project_initialization?.libraries || []).length ? publishReview.project_initialization.libraries.join(", ") : "none"}</div>
+                                <div className="mt-2 font-medium text-ui-text">Initial data to execute</div>
+                                {(publishReview.project_initialization?.initial_data || []).length ? (
+                                  <ul className="m-0 mt-1 space-y-1 pl-4">
+                                    {publishReview.project_initialization.initial_data.map((item, index) => (
+                                      <li key={`${item.path}-${index}`}>
+                                        <code>{item.path}</code> · {item.engine} · {item.statement_count || 0} statement(s)
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div>none</div>
+                                )}
+                              </div>
+                            ) : null}
+                            <div className="grid gap-2 text-xs md:grid-cols-2">
+                              <ReviewList title="Nodes" items={publishReview.nodes_used} />
+                              <ReviewList title="Credentials" items={publishReview.credentials_required} danger />
+                              <ReviewList title="External URLs" items={publishReview.external_urls} danger />
+                              <ReviewList title="Database effects" items={publishReview.database_effects} danger />
+                              <ReviewList title="Filesystem effects" items={publishReview.filesystem_effects} />
+                              <ReviewList title="Public endpoints" items={publishReview.public_endpoints} danger />
+                              <ReviewList title="Schedules" items={publishReview.schedules} danger />
+                              <ReviewList title="Large files" items={publishReview.large_files} />
+                              <ReviewList title="Seed/demo data" items={publishReview.seed_data} />
+                              <ReviewList title="Warnings" items={publishReview.warnings} danger />
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </form>
                   ) : null}
