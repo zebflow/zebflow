@@ -94,6 +94,99 @@ return { ok: true };
 }
 
 #[test]
+fn deno_sandbox_runtime_hides_deno_core_from_user_code() {
+    let engine = DenoSandboxEngine::default();
+    let source = r#"
+return {
+  denoType: typeof globalThis.Deno,
+  hasCore: !!(globalThis.Deno && globalThis.Deno.core)
+};
+"#;
+
+    let out = engine
+        .run_script(source, &json!({}), None)
+        .expect("script should run without exposing Deno.core");
+
+    assert_eq!(
+        out.get("denoType").and_then(|v| v.as_str()),
+        Some("undefined")
+    );
+    assert_eq!(out.get("hasCore").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn deno_sandbox_runtime_blocks_direct_host_file_op_access() {
+    let engine = DenoSandboxEngine::default();
+    let source = r#"
+const deno = globalThis["Deno"];
+return deno["core"]["ops"]["op_read_local_file"]("/etc/passwd");
+"#;
+
+    let err = engine
+        .run_script(source, &json!({}), None)
+        .expect_err("Deno.core host ops must not be reachable from user code");
+
+    assert_eq!(err.code, "LANG_DENO_RUN");
+    assert!(
+        err.message.contains("undefined") || err.message.contains("null"),
+        "unexpected error: {}",
+        err.message
+    );
+}
+
+#[test]
+fn deno_sandbox_runtime_blocks_local_fetch_escape_paths() {
+    let dir = make_temp_dir("zebflow_deno_fetch_escape");
+    let outside = dir
+        .parent()
+        .expect("temp dir parent")
+        .join("zebflow_deno_fetch_escape_secret.txt");
+    fs::write(&outside, b"secret").expect("write outside file");
+
+    let engine = DenoSandboxEngine::default();
+    let source = r#"
+const response = await fetch("/../zebflow_deno_fetch_escape_secret.txt");
+return { status: response.status, text: await response.text() };
+"#;
+    let patch = DenoSandboxConfigPatch {
+        local_fetch_root: Some(dir.display().to_string()),
+        ..Default::default()
+    };
+
+    let err = engine
+        .run_script(source, &json!({}), Some(&patch))
+        .expect_err("local fetch must reject path traversal");
+
+    assert!(
+        err.message.contains("local fetch path invalid"),
+        "unexpected error: {}",
+        err.message
+    );
+
+    let _ = fs::remove_file(outside);
+    let _ = fs::remove_dir(dir);
+}
+
+#[test]
+fn deno_sandbox_runtime_terminates_busy_loops_with_budget() {
+    let engine = DenoSandboxEngine::default();
+    let patch = DenoSandboxConfigPatch {
+        max_ops: Some(10),
+        timeout_ms: Some(1_000),
+        ..Default::default()
+    };
+    let err = engine
+        .run_script("while (true) {}", &json!({}), Some(&patch))
+        .expect_err("busy loop should hit the sandbox op budget");
+
+    assert!(
+        err.message.contains("op budget exceeded"),
+        "unexpected error: {}",
+        err.message
+    );
+}
+
+#[test]
 fn deno_sandbox_runtime_runs_proper_script() {
     let engine = DenoSandboxEngine::default();
     let source = r#"

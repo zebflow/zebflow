@@ -45,7 +45,7 @@ export default function Page(input) {
     let compile_resp = CompileTemplateResponse {
         meta: decoded.meta.clone(),
         compiled: zebflow::rwe::CompiledTemplate {
-            engine_id: "rwe.noop".to_string(),
+            engine_id: "rwe".to_string(),
             template_id: "page.api".to_string(),
             html_ir: "<html></html>".to_string(),
             control_script_source: Some("return { state: {} };".to_string()),
@@ -60,10 +60,12 @@ export default function Page(input) {
             tailwind_variant_exact_tokens: Vec::new(),
             tailwind_variant_patterns: Vec::new(),
             options: Default::default(),
+            engine_payload: None,
+            dependency_paths: Default::default(),
         },
     };
     let compile_resp_json = serde_json::to_string(&compile_resp).expect("encode compile response");
-    assert!(compile_resp_json.contains("rwe.noop"));
+    assert!(compile_resp_json.contains("\"rwe\""));
 
     let render_req = RenderTemplateRequest {
         meta: compile_resp.meta.clone(),
@@ -73,6 +75,7 @@ export default function Page(input) {
             route: "/api-preview".to_string(),
             request_id: "req-adapter-1".to_string(),
             metadata: json!({ "from": "fastapi" }),
+            enabled_libraries: Vec::new(),
         },
     };
     let render_req_json = serde_json::to_value(&render_req).expect("encode render request");
@@ -88,8 +91,9 @@ export default function Page(input) {
         meta: render_req.meta.clone(),
         output: zebflow::rwe::RenderOutput {
             html: "<h1>Hello Adapter</h1>".to_string(),
+            compiled_scripts: Vec::new(),
             hydration_payload: json!({ "input": { "title": "Hello Adapter" } }),
-            trace: vec!["engine=rwe.noop".to_string()],
+            trace: vec!["engine=rwe".to_string()],
         },
     };
     let render_resp_json = serde_json::to_string(&render_resp).expect("encode render response");

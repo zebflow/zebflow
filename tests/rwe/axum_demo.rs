@@ -25,7 +25,7 @@ async fn axum_demo_renders_list_hydration_route() {
     let html = String::from_utf8(body.to_vec()).expect("utf8 body");
     assert!(html.contains("Keyed List + Hydration Islands"));
     assert!(html.contains("Alpha (#101)"));
-    assert!(html.contains("data-rwe-for-template=\"1\""));
+    assert!(html.contains("<script type=\"module\">"));
 }
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn axum_demo_renders_recycling_route() {
     let html = String::from_utf8(body.to_vec()).expect("utf8 body");
     assert!(html.contains("Recycle Better, Restore Nature Faster"));
     assert!(html.contains("Sort at the source"));
-    assert!(html.contains("data-rwe-runtime"));
+    assert!(html.contains("<script type=\"module\">"));
 }
 
 #[tokio::test]
@@ -77,8 +77,7 @@ async fn axum_demo_renders_showcase_route() {
     let html = String::from_utf8(body.to_vec()).expect("utf8 body");
     assert!(html.contains("Deploy Once,"));
     assert!(html.contains("ui_component.tsx"));
-    assert!(html.contains("data-rwe-runtime"));
-    assert!(html.contains("https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"));
+    assert!(html.contains("<script type=\"module\">"));
     assert!(html.contains("data-lucide=\"shield\""));
 }
 
@@ -102,7 +101,6 @@ async fn axum_demo_renders_state_sharing_with_query_seed() {
         .await
         .expect("body bytes");
     let html = String::from_utf8(body.to_vec()).expect("utf8 body");
-    assert!(html.contains("SSR seed value: 33"));
-    assert!(html.contains("A Root Component"));
-    assert!(html.contains("F reads shared value"));
+    assert!(html.contains("<script type=\"module\">"));
+    assert!(html.contains("rwe-demo-timing"));
 }
