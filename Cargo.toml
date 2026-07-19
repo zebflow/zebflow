@@ -1,6 +1,6 @@
 [package]
 name = "zebflow"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2024"
 description = "Reactive web automation platform — pipelines, templates, and real-time collaboration in a single binary."
 license = "MIT"
@@ -72,7 +72,7 @@ dirs-next = "2"
 jsonwebtoken = "9"
 bcrypt = "0.15"
 rusqlite = { version = "0.32", features = ["bundled"] }
-sekejap = "0.9.1"
+sekejap = "0.12.0"
 argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.12"
 tokio-cron-scheduler = "0.15.1"
@@ -93,6 +93,7 @@ datafusion = "53.1.0"
 parquet = "58.3.0"
 object_store = { version = "0.13", features = ["aws", "http"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+wasmtime = { version = "36.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

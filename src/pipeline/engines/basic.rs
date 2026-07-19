@@ -17,7 +17,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use base64::Engine as _;
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
@@ -30,6 +32,7 @@ use crate::pipeline::model::{
     ExecuteOptions, NodeTraceEntry, PipelineContext, PipelineError, PipelineGraph, PipelineNode,
     PipelineOutput, Signal,
 };
+use crate::pipeline::nodes::basic::file_ref::{BACKEND_ZEBFS, FILE_REF_TYPE, LIFECYCLE_DURABLE};
 use crate::pipeline::nodes::basic::{
     agent, ai_tts, auth_token_create, browser_run, crypto, fs_compress, fs_decompress, fs_object,
     fs_pdf_convert, fs_save, fs_thumbnail, function_call, geo_convert, geo_inspect, http_request,
@@ -47,6 +50,7 @@ use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput, NodeHandle
 use crate::platform::services::CredentialService;
 use crate::platform::services::PlatformService;
 use crate::rwe::{ReactiveWebEngine, TemplateSource, resolve_engine_or_default};
+use crate::zebfs::LocalZebFs;
 
 /// A single entry in the template compile cache.
 /// Pairs the compiled page artifact with the set of component files it depends on,
@@ -114,6 +118,7 @@ struct NodesRetentionPlan {
 }
 
 const RETRY_STATE_KEY: &str = "__zf_retry";
+const MAX_NODE_OUTPUT_FILE_BYTES: usize = 256 * 1024 * 1024;
 
 fn hash_markup(s: &str) -> u64 {
     let mut h = DefaultHasher::new();
@@ -695,6 +700,258 @@ fn sanitized_trace_value(value: &Value) -> Value {
         redact_json_value(&payload, &tokens, &except_paths, &[])
     };
     summarize_trace_value(&redacted)
+}
+
+fn materialize_node_output_files(
+    platform: Option<&Arc<PlatformService>>,
+    ctx: &PipelineContext,
+    node_kind: &str,
+    mut payload: Value,
+) -> Result<Value, PipelineError> {
+    let Some(files) = take_node_output_files(&mut payload) else {
+        return Ok(payload);
+    };
+    if files.is_empty() {
+        return Ok(payload);
+    }
+    let platform = platform.ok_or_else(|| {
+        PipelineError::new(
+            "FW_NODE_OUTPUT_FILE_CONTEXT",
+            "node output files require platform storage context",
+        )
+    })?;
+    let layout = platform
+        .file
+        .ensure_project_layout(&ctx.owner, &ctx.project)
+        .map_err(|err| PipelineError::new("FW_NODE_OUTPUT_FILE", err.to_string()))?;
+    let zebfs = LocalZebFs::new(layout.files_dir);
+    let request_id = sanitize_path_part(&ctx.request_id);
+    let kind_part = sanitize_path_part(node_kind);
+    let mut refs = Map::new();
+
+    for (idx, file) in files.iter().enumerate() {
+        let descriptor = file.as_object().ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_OUTPUT_FILE",
+                format!("node output file {idx} must be an object"),
+            )
+        })?;
+        let name = descriptor
+            .get("name")
+            .and_then(Value::as_str)
+            .map(sanitize_filename)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("file-{idx}.json"));
+        let content_type = descriptor
+            .get("content_type")
+            .or_else(|| descriptor.get("mime"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("application/octet-stream");
+        let encoding = descriptor
+            .get("encoding")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("json");
+        let data = descriptor.get("data").ok_or_else(|| {
+            PipelineError::new(
+                "FW_NODE_OUTPUT_FILE",
+                format!("node output file '{name}' is missing data"),
+            )
+        })?;
+        let bytes = node_output_file_bytes(node_kind, &name, encoding, data)?;
+        if bytes.len() > MAX_NODE_OUTPUT_FILE_BYTES {
+            return Err(PipelineError::new(
+                "FW_NODE_OUTPUT_FILE_TOO_LARGE",
+                format!(
+                    "node '{node_kind}' output file '{name}' is {} bytes; limit is {MAX_NODE_OUTPUT_FILE_BYTES}",
+                    bytes.len()
+                ),
+            ));
+        }
+        let rel_path = format!("artifacts/nodes/{kind_part}/{request_id}/{name}");
+        let stat = zebfs
+            .put(&rel_path, &bytes)
+            .map_err(|err| PipelineError::new("FW_NODE_OUTPUT_FILE_WRITE", err.to_string()))?;
+        let file_ref = json!({
+            "__zf_type": FILE_REF_TYPE,
+            "backend": BACKEND_ZEBFS,
+            "ref": stat.path,
+            "path": stat.path,
+            "url": format!("/fs/{}/{}/{}", ctx.owner, ctx.project, stat.path),
+            "filename": name,
+            "name": name,
+            "mime": content_type,
+            "content_type": content_type,
+            "size": bytes.len(),
+            "sha256": format!("sha256:{:x}", Sha256::digest(&bytes)),
+            "kind": infer_output_file_kind(content_type, &rel_path),
+            "lifecycle": LIFECYCLE_DURABLE,
+            "origin": "node-output",
+            "trust": "generated",
+        });
+        refs.insert(name, file_ref);
+    }
+
+    let refs_value = Value::Object(refs);
+    replace_file_placeholders(&mut payload, &refs_value);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("file_refs".to_string(), refs_value);
+    }
+    Ok(payload)
+}
+
+fn take_node_output_files(payload: &mut Value) -> Option<Vec<Value>> {
+    let map = payload.as_object_mut()?;
+    let raw = map
+        .remove("__zf_files")
+        .or_else(|| map.remove("artifacts"))?;
+    match raw {
+        Value::Array(files) => Some(files),
+        other => Some(vec![other]),
+    }
+}
+
+fn node_output_file_bytes(
+    node_kind: &str,
+    name: &str,
+    encoding: &str,
+    data: &Value,
+) -> Result<Vec<u8>, PipelineError> {
+    match encoding {
+        "json" => serde_json::to_vec(data).map_err(|err| {
+            PipelineError::new(
+                "FW_NODE_OUTPUT_FILE_JSON",
+                format!("node '{node_kind}' output file '{name}' JSON serialization failed: {err}"),
+            )
+        }),
+        "text" | "utf8" => Ok(data
+            .as_str()
+            .map(str::as_bytes)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| data.to_string().into_bytes())),
+        "base64" => {
+            let encoded = data.as_str().ok_or_else(|| {
+                PipelineError::new(
+                    "FW_NODE_OUTPUT_FILE_BASE64",
+                    format!("node '{node_kind}' output file '{name}' base64 data must be a string"),
+                )
+            })?;
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .map_err(|err| {
+                    PipelineError::new(
+                        "FW_NODE_OUTPUT_FILE_BASE64",
+                        format!(
+                            "node '{node_kind}' output file '{name}' base64 decode failed: {err}"
+                        ),
+                    )
+                })
+        }
+        other => Err(PipelineError::new(
+            "FW_NODE_OUTPUT_FILE_ENCODING",
+            format!("node '{node_kind}' output file '{name}' uses unsupported encoding '{other}'"),
+        )),
+    }
+}
+
+fn replace_file_placeholders(value: &mut Value, refs: &Value) {
+    match value {
+        Value::String(text) => {
+            if let Some(name) = exact_file_placeholder(text)
+                && let Some(file_ref) = refs.get(name)
+            {
+                *value = file_ref.clone();
+                return;
+            }
+            let mut replaced = text.clone();
+            if let Some(map) = refs.as_object() {
+                for (name, file_ref) in map {
+                    let url = file_ref
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    replaced = replaced.replace(&format!("{{{{file:{name}}}}}"), url);
+                    replaced = replaced.replace(&format!("{{{{artifact:{name}}}}}"), url);
+                }
+            }
+            *text = replaced;
+        }
+        Value::Array(items) => {
+            for item in items {
+                replace_file_placeholders(item, refs);
+            }
+        }
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                replace_file_placeholders(child, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn exact_file_placeholder(value: &str) -> Option<&str> {
+    value
+        .strip_prefix("{{file:")
+        .or_else(|| value.strip_prefix("{{artifact:"))
+        .and_then(|rest| rest.strip_suffix("}}"))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn sanitize_filename(raw: &str) -> String {
+    let name = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+            out.push(ch);
+        } else if ch.is_whitespace() {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches(['.', '-']).to_string();
+    if trimmed.is_empty() {
+        "file.bin".to_string()
+    } else {
+        trimmed
+    }
+}
+
+fn sanitize_path_part(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            out.push(ch);
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "run".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn infer_output_file_kind(content_type: &str, path: &str) -> &'static str {
+    let mime = content_type.split(';').next().unwrap_or("").trim();
+    let ext = path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match (mime, ext.as_str()) {
+        ("application/json", _) | (_, "json") => "json",
+        ("application/geo+json", _) | (_, "geojson") => "geojson",
+        ("text/csv", _) | (_, "csv") => "csv",
+        ("text/plain", _) | (_, "txt") => "text",
+        ("application/vnd.apache.parquet", _) | (_, "parquet") => "parquet",
+        ("image/jpeg" | "image/png" | "image/webp" | "image/gif", _) => "image",
+        _ => "binary",
+    }
 }
 
 /// Main framework engine used for real pipeline execution.
@@ -1435,9 +1692,22 @@ impl BasicPipelineEngine {
                     platform: platform.clone(),
                 })
             }
-            other if other.starts_with("n.wasm.") => Ok(NodeDispatch::WasmNodeStub {
-                kind: other.to_string(),
-            }),
+            other if other.starts_with("n.wasm.") => {
+                let Some(platform) = &self.platform else {
+                    return Err(PipelineError::new(
+                        "FW_NODE_WASM_NO_PLATFORM",
+                        format!(
+                            "WASM node '{}': platform service not injected into engine",
+                            other
+                        ),
+                    ));
+                };
+                Ok(NodeDispatch::WasmNode {
+                    kind: other.to_string(),
+                    config: node.config.clone(),
+                    platform: platform.clone(),
+                })
+            }
             other => Err(PipelineError::new(
                 "FW_NODE_KIND_UNSUPPORTED",
                 format!("unsupported node kind '{}'", other),
@@ -2417,14 +2687,14 @@ impl PipelineEngine for BasicPipelineEngine {
                         execute_composite_node(&kind, &config, &platform, vec![input_for_exec])
                             .await
                     }
-                    NodeDispatch::WasmNodeStub { kind } => Err(PipelineError::new(
-                        "FW_NODE_WASM_UNAVAILABLE",
-                        format!(
-                            "WASM runtime not available. Node '{}' requires Extism, \
-                             planned for a future release.",
-                            kind
-                        ),
-                    )),
+                    NodeDispatch::WasmNode {
+                        kind,
+                        config,
+                        platform,
+                    } => {
+                        super::wasm_host::execute_wasm_node(kind, config, platform, input_for_exec)
+                            .await
+                    }
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -2454,6 +2724,12 @@ impl PipelineEngine for BasicPipelineEngine {
                     let trace_input = sanitized_trace_value(&input_snapshot);
 
                     for out in &mut outs {
+                        out.payload = materialize_node_output_files(
+                            self.platform.as_ref(),
+                            ctx,
+                            &trace_node_kind,
+                            out.payload.clone(),
+                        )?;
                         let mut output_payload = out.payload.clone();
                         let payload_redact_tokens = take_private_redact_tokens(&mut output_payload);
                         let payload_redact_except_paths =
@@ -3041,6 +3317,69 @@ mod tests {
         assert!(zebfs.head("qa/fs/prefix").is_ok());
         assert!(zebfs.head("qa/fs/hello.txt").is_err());
         assert!(zebfs.head("qa/fs/copy.txt").is_err());
+    }
+
+    #[tokio::test]
+    async fn node_output_files_materialize_for_any_node_output() {
+        let data_root = tempfile::tempdir().expect("temp data root");
+        let owner = "superadmin";
+        let project = "node_output_files_e2e";
+        let platform = Arc::new(
+            PlatformService::from_config(PlatformConfig {
+                data_root: data_root.path().to_path_buf(),
+                default_password: "secret".to_string(),
+                default_project: project.to_string(),
+                ..Default::default()
+            })
+            .expect("platform"),
+        );
+
+        let dsl = r#"
+[a] trigger.manual
+[b] script -- "return { ok: true, state_sequence: '{{file:state-sequence.json}}', __zf_files: [{ name: 'state-sequence.json', content_type: 'application/json', encoding: 'json', data: { frames: [1, 2, 3] } }] };"
+[c] script -- "return input;"
+
+[a] -> [b]
+[b] -> [c]
+"#;
+
+        let graph = build_pipeline_graph("node-output-files-e2e", dsl).expect("graph");
+        let engine = BasicPipelineEngine::default().with_platform(platform.clone());
+        let out = engine
+            .execute_async(
+                &graph,
+                &PipelineContext {
+                    owner: owner.to_string(),
+                    project: project.to_string(),
+                    pipeline: "node-output-files-e2e".to_string(),
+                    request_id: "req-node-output-files".to_string(),
+                    route: String::new(),
+                    input: json!({}),
+                    trigger: None,
+                    placeholder: None,
+                },
+            )
+            .await
+            .expect("execute");
+
+        let file_ref = &out.value["state_sequence"];
+        assert_eq!(file_ref["__zf_type"], "file_ref");
+        assert_eq!(file_ref["content_type"], "application/json");
+        assert!(out.value.get("__zf_files").is_none());
+        assert_eq!(
+            out.value["file_refs"]["state-sequence.json"]["path"],
+            file_ref["path"]
+        );
+
+        let rel_path = file_ref["path"].as_str().expect("file ref path");
+        let layout = platform
+            .file
+            .ensure_project_layout(owner, project)
+            .expect("project layout");
+        let zebfs = LocalZebFs::new(layout.files_dir);
+        let object = zebfs.get(rel_path).expect("materialized object");
+        let stored: serde_json::Value = serde_json::from_slice(&object.bytes).expect("json file");
+        assert_eq!(stored, json!({ "frames": [1, 2, 3] }));
     }
 
     #[tokio::test]
@@ -3744,9 +4083,11 @@ enum NodeDispatch {
         config: serde_json::Value,
         platform: std::sync::Arc<crate::platform::services::PlatformService>,
     },
-    /// WASM node stub: returns a clear error until WASM runtime is available.
-    WasmNodeStub {
+    /// WASM node package installed under the project's node registry.
+    WasmNode {
         kind: String,
+        config: serde_json::Value,
+        platform: std::sync::Arc<crate::platform::services::PlatformService>,
     },
 }
 

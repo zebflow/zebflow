@@ -395,6 +395,41 @@ pub struct PlatformHubRepository {
     pub updated_at: i64,
 }
 
+/// One explicit grant from a platform-owned Hub access source to projects.
+///
+/// Registering a Hub source only records where the Hub lives. A grant is the
+/// separate policy row that lets projects use that access for read/publish/manage
+/// workflows. This keeps internal/private Hubs explicit instead of inherited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubAccessGrant {
+    /// Stable grant id.
+    pub grant_id: String,
+    /// Platform owner that owns the Hub source.
+    pub source_owner: String,
+    /// Stable platform Hub source id.
+    pub source_id: String,
+    /// Human-facing repository id for the Hub source.
+    pub repository_id: String,
+    /// Grant scope: `all_projects` or `selected_project`.
+    pub grant_scope: String,
+    /// Target owner for selected-project grants. Empty for all-project grants.
+    pub target_owner: String,
+    /// Target project for selected-project grants. Empty for all-project grants.
+    pub target_project: String,
+    /// Whether this grant allows browsing/installing from the source.
+    pub can_read: bool,
+    /// Whether this grant allows publishing through the access.
+    pub can_publish: bool,
+    /// Whether this grant allows managing the access.
+    pub can_manage: bool,
+    /// Whether the grant is active.
+    pub enabled: bool,
+    /// Unix timestamp seconds.
+    pub created_at: i64,
+    /// Unix timestamp seconds.
+    pub updated_at: i64,
+}
+
 /// One explicit hub authority row.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HubAuthority {
@@ -576,6 +611,9 @@ pub struct HubAssetPackage {
     pub title: String,
     /// Optional human-readable description.
     pub description: String,
+    /// Public package image URL resolved from Hub artifact media.
+    #[serde(default)]
+    pub image_url: String,
     /// Visibility (`public`, `private`, `unlisted`).
     pub visibility: String,
     /// Search tags.
@@ -1942,6 +1980,9 @@ pub struct MultiNodePackageDefinition {
     /// Function name → relative pipeline file path.
     #[serde(default)]
     pub functions: HashMap<String, String>,
+    /// WASM runtime config shared by WASM node entries in this package.
+    #[serde(default, rename = "wasm")]
+    pub wasm_runtime: Option<WasmNodeRuntime>,
     /// Node entries.
     pub nodes: Vec<MultiNodeEntry>,
 }

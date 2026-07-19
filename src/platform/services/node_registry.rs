@@ -50,6 +50,7 @@ fn explode_multi_node_package(
 ) -> Vec<NodePackageManifest> {
     let mut manifests = Vec::new();
     for node in &pkg.nodes {
+        let is_wasm = node.kind.starts_with("n.wasm.");
         let definition = crate::pipeline::NodeDefinition {
             kind: node.kind.clone(),
             title: node.title.clone(),
@@ -65,16 +66,32 @@ fn explode_multi_node_package(
             ..Default::default()
         };
         manifests.push(NodePackageManifest {
-            source: NodePackageSource::Composite,
+            source: if is_wasm {
+                NodePackageSource::Wasm
+            } else {
+                NodePackageSource::Composite
+            },
             version: pkg.version.clone(),
             definition,
             credentials: pkg.credentials.clone(),
             runtime: None,
-            wasm_runtime: None,
-            functions: pkg.functions.clone(),
-            main_function: node.main.clone(),
-            trigger: node.trigger.clone(),
-            lifecycle: node.lifecycle.clone(),
+            wasm_runtime: if is_wasm {
+                pkg.wasm_runtime.clone()
+            } else {
+                None
+            },
+            functions: if is_wasm {
+                HashMap::new()
+            } else {
+                pkg.functions.clone()
+            },
+            main_function: if is_wasm { None } else { node.main.clone() },
+            trigger: if is_wasm { None } else { node.trigger.clone() },
+            lifecycle: if is_wasm {
+                None
+            } else {
+                node.lifecycle.clone()
+            },
             package_slug: slug.to_string(),
         });
     }
@@ -1009,5 +1026,98 @@ mod tests {
             super::validate_manifest(&manifest, &builtin_kinds)
                 .unwrap_or_else(|err| panic!("{}: {}", manifest.definition.kind, err.message));
         }
+    }
+
+    #[test]
+    fn multi_node_definition_can_describe_wasm_nodes() {
+        let raw = r#"
+{
+  "format": "zebflow-package-v2",
+  "package": "wasm-test-add",
+  "version": "0.1.0",
+  "title": "WASM Test Add",
+  "description": "Tiny local WASM node package smoke test.",
+  "icon": "icon.svg",
+  "wasm": {
+    "module": "module.wasm",
+    "abi": "zebflow-wasm-json-v1",
+    "exports": {
+      "main": "zebflow_add"
+    }
+  },
+  "nodes": [
+    {
+      "kind": "n.wasm.test.add",
+      "title": "WASM Test Add",
+      "description": "Run a tiny WASM addition function for local node package smoke tests.",
+      "icon": "icon.svg",
+      "ui_category": "wasm.test",
+      "ui_category_label": "WASM Test",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {
+          "type": "object",
+          "properties": {
+            "a": { "type": "integer" },
+            "b": { "type": "integer" }
+          }
+        },
+        "dsl_flags": [
+          {
+            "flag": "--a",
+            "config_key": "a",
+            "kind": "scalar",
+            "required": false,
+            "description": "Left integer operand."
+          },
+          {
+            "flag": "--b",
+            "config_key": "b",
+            "kind": "scalar",
+            "required": false,
+            "description": "Right integer operand."
+          }
+        ],
+        "fields": [
+          {
+            "name": "a",
+            "label": "A",
+            "type": "number",
+            "help": "Left integer operand."
+          },
+          {
+            "name": "b",
+            "label": "B",
+            "type": "number",
+            "help": "Right integer operand."
+          }
+        ],
+        "layout": ["a", "b"]
+      }
+    }
+  ]
+}
+"#;
+        let pkg: crate::platform::model::MultiNodePackageDefinition =
+            serde_json::from_str(raw).expect("definition");
+        let manifests = super::explode_multi_node_package(&pkg, "wasm-test-add");
+        assert_eq!(manifests.len(), 1);
+        let manifest = &manifests[0];
+        assert_eq!(
+            manifest.source,
+            crate::platform::model::NodePackageSource::Wasm
+        );
+        assert_eq!(manifest.definition.kind, "n.wasm.test.add");
+        assert_eq!(
+            manifest.wasm_runtime.as_ref().expect("wasm runtime").module,
+            "module.wasm"
+        );
+
+        let builtin_kinds: HashSet<String> = crate::pipeline::nodes::builtin_node_definitions()
+            .iter()
+            .map(|def| def.kind.clone())
+            .collect();
+        super::validate_manifest(manifest, &builtin_kinds).expect("valid wasm manifest");
     }
 }
