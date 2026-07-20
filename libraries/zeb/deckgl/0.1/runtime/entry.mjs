@@ -829,6 +829,18 @@ export function createDeckMapRuntime(host, options = {}) {
     return deckProps;
   }
 
+  function ensureCanvasAttached(deck) {
+    if (deck.canvas && !deck.canvas.isConnected) {
+      host.appendChild(deck.canvas);
+    }
+  }
+
+  function retryCanvasAttach(deck, attempts = 600) {
+    ensureCanvasAttached(deck);
+    if (attempts <= 0 || deck.canvas?.isConnected) return;
+    setTimeout(() => retryCanvasAttach(deck, attempts - 1), 50);
+  }
+
   let currentOptions = normalizeOptions(options);
   applyHostStyles(currentOptions);
 
@@ -836,6 +848,10 @@ export function createDeckMapRuntime(host, options = {}) {
     parent: host,
     ...buildDeckProps(currentOptions),
   });
+  ensureCanvasAttached(deck);
+  requestAnimationFrame?.(() => ensureCanvasAttached(deck));
+  setTimeout(() => ensureCanvasAttached(deck), 0);
+  retryCanvasAttach(deck);
 
   bindStateListener(currentOptions, deck);
 
@@ -860,6 +876,9 @@ export function createDeckMapRuntime(host, options = {}) {
       applyHostStyles(currentOptions);
       bindStateListener(currentOptions, deck);
       deck.setProps(buildDeckProps(currentOptions));
+      ensureCanvasAttached(deck);
+      requestAnimationFrame?.(() => ensureCanvasAttached(deck));
+      retryCanvasAttach(deck, 200);
     },
     destroy() {
       if (stateListener) {
