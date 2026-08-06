@@ -38,7 +38,7 @@ So the product is modeled as:
 
 This stance avoids the conceptual weakness of `master/worker`, because offices are not merely
 subordinate executors. An office hosts runtime, state, draft source, and project-local mutation.
-It also hosts platform service embodiments such as marketplace.
+It also hosts platform service embodiments such as hub.
 
 Formal stance:
 
@@ -143,14 +143,14 @@ created_at
 updated_at
 ```
 
-Marketplace instance example:
+Hub instance example:
 
 ```text
-service_instance_id: marketplace-default
-service_kind: marketplace
+service_instance_id: hub-default
+service_kind: hub
 host_office_id: office-market-01
 state_office_id: office-market-01
-public_base_url: https://market.zebflow.com/api
+public_base_url: https://hub.zebflow.com/api
 ```
 
 ## 4. Management Domain And Local Runtime Domain
@@ -186,7 +186,7 @@ Runtime must not require live controller availability in steady-state operation.
 
 Platform service instances include:
 
-- marketplace service
+- hub service
 - future artifact registry
 - future scheduler or queue service
 - future model runner or agent execution service
@@ -498,16 +498,16 @@ Effect:
 This is the Mongol caravanserai scenario from section 2a: the building does not move, the trade
 routes do not change, only the ownership record is updated.
 
-Marketplace operation kinds include:
+Hub operation kinds include:
 
-- `marketplace.publisher.create`
-- `marketplace.publisher.update`
-- `marketplace.publisher.disable`
-- `marketplace.token.create`
-- `marketplace.token.revoke`
-- `marketplace.package.publish`
-- `marketplace.package.unpublish`
-- `marketplace.package.install`
+- `hub.publisher.create`
+- `hub.publisher.update`
+- `hub.publisher.disable`
+- `hub.token.create`
+- `hub.token.revoke`
+- `hub.package.publish`
+- `hub.package.unpublish`
+- `hub.package.install`
 
 ## 11. Project Mobility Versus Office Sovereignty
 
@@ -546,14 +546,14 @@ Current code approximates this model as follows:
   runtime sync
 - runtime execution can already happen directly on an office without controller participation in the
   request hot path
-- marketplace is still being formalized as a platform service instance rather
+- hub is still being formalized as a platform service instance rather
   than a project-hosted authority
 
 Known mismatch with the target model:
 
 - Project Studio authoring is still controller-first in the current slice
 - the stronger office-first authoring model is still to be completed
-- marketplace persistence and placement are not yet fully modeled as
+- hub persistence and placement are not yet fully modeled as
   office-hosted service state
 - `transfer_project_owner` (10.6) is not yet implemented — after controller dissolution,
   projects owned by shadow users cannot be reassigned to local users

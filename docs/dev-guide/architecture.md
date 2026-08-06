@@ -38,11 +38,13 @@ Quick reference for developers — what is live, what is partial, what is a stub
 | K8s health probes | ✅ Done | `GET /health` (liveness) + `GET /ready` (readiness, checks V8 pool) |
 | RWE Tailwind processor | 🚧 Partial | `dark:` / `placeholder:` / some variants unsupported — see §14 |
 | RWE SSR runtime injection | 🚧 Partial | `data-rwe-runtime` / `data-rwe-for-template` attrs not yet injected |
+| Mapserver core (`resolve / publish / infra`) | 🚧 Partial | `src/mapserver/` — GeoJSON/GeoParquet resolve, `n.ms.*` CRUD nodes, filter DSL, data-driven styling |
 | `infra/storage` | 🚧 Stub | declared in `src/infra/mod.rs`, no implementation |
 | `infra/scheduler` sub-modules | 🚧 Stub | only `mod.rs` exists; no sub-module split yet |
 | `n.ai.agent` node (direct + strategic) | ✅ Done | `src/pipeline/nodes/basic/agent.rs` — see §26 |
 | Four intelligence surfaces model | ✅ Documented | REST / MCP / Web Assistant / n.ai.agent — see §27 |
 | `n.assistant` bridge node (Telegram, WhatsApp, etc.) | 🚧 Planned | §27e — routes external triggers into existing web assistant |
+| General pipeline step events | 🚧 Partial | `StepEvent` + `ExecuteOptions::step_tx`; currently emitted by `n.ai.agent`, not yet surfaced consistently |
 | Async execution handle pattern | 🚧 Planned | §25 — execution_id, threshold detection, SSE stream, ETL progress |
 
 ---
@@ -79,6 +81,10 @@ Quick reference for developers — what is live, what is partial, what is a stub
 ```
 src/
 ├── lib.rs               ZebflowEngineKit composition root
+├── mapserver/           Lightweight spatial publish/resolve engine
+│   ├── resolve/         runtime brain: request resolution, bbox query, cache hooks
+│   ├── publish/         published layer manifests / registration surface
+│   └── infra/           source adapters, bbox helpers, HTTP parsing glue
 ├── pipeline/            PipelineEngine trait, BasicPipelineEngine, nodes, DSL model
 │   ├── interface.rs     PipelineEngine trait
 │   ├── model.rs         PipelineGraph, PipelineNode, PipelineContext, PipelineError
@@ -224,6 +230,7 @@ POST   /api/projects/{owner}/{project}/assets/prepare
 ANY    /api/projects/{owner}/{project}/mcp              ← MCP protocol (nested router, see §19)
 
 ANY  /wh/{owner}/{project}/{*tail}   ← webhook ingress (pipeline trigger)
+GET  /ms/{owner}/{project}/{*tail}   ← mapserver ingress (published spatial feature query)
 GET  /ws/{owner}/{project}/rooms/{room_id}  ← WebSocket upgrade
 
 GET  /assets/branding/{asset}
@@ -238,6 +245,37 @@ GET  /p/{owner}/{project}/lib/{*path}             ← project library bundles (z
 All platform pages (login, home, project pages) are pre-compiled at startup by
 `build_frontend()` → `compile_page()` → `rwe.compile_template()`. Results stored
 in `PlatformFrontend.pages` (BTreeMap). Rendering at request time is SSR-only.
+
+---
+
+## 2a. Mapserver Architecture
+
+`src/mapserver/` follows a strict first-principle split:
+
+1. `resolve`
+   The soul of mapserver. Answers: *for this spatial request, what exactly should
+   be returned, as fast as possible?* It owns query, cache selection, bbox/zoom
+   interpretation, response shaping, and fast-path decisions.
+
+2. `publish`
+   The producer side. Answers: *what spatial resources exist, and how are they
+   exposed?* It owns published-layer manifests, registry semantics, and import /
+   publication contracts.
+
+3. `infra`
+   Everything that supports `resolve` and `publish`: source adapters, bbox math,
+   codecs, filesystem access, HTTP parsing glue, and future storage bridges
+   (Sekejap, PostGIS-like sources, shapefile imports).
+
+Layers are published via `n.ms.publish` pipeline nodes and served at
+`GET /ms/{owner}/{project}/{*tail}`. The layer registry replaces the earlier
+`n.trigger.mapserver` trigger approach (now removed).
+
+- 3 source kinds: GeoJSON file, GeoJSON artifact, GeoParquet
+- Dual output: GeoJSON (WFS) + PNG tiles (WMS) via `?format=image/png`
+- Data-driven styling via `?style=` DSL, attribute filtering via `?filter=` DSL
+- `n.ms.*` CRUD nodes: publish, unpublish, get, list
+- Cold-zero by design: no always-on daemon, files read on demand per request.
 
 ---
 
@@ -854,7 +892,7 @@ External scripts (CDN / third-party):
 
 NEVER:
   ✗ import { render } from "npm:preact" — never call render() manually
-  ✗ relative imports (../../components/...) — use @/ alias
+  ✓ relative imports (../../components/...) — allowed when they stay inside template_root
   ✗ import anything from outside "zeb", "zeb/*", "@/"
   ✗ CSS variable colors like bg-indigo-600 in user project templates
       → platform's --zebflow-color-* vars are not available in user project context
@@ -2224,7 +2262,60 @@ GET /api/projects/{owner}/{project}/executions/{execution_id}/stream
 The existing `ChainStep` / `StepEvent` system in `ZebtuneAgent` and `BasicPipelineEngine`
 feeds directly into the SSE stream with no new concepts required.
 
-### 25d. Execution Store
+### 25d. StepEvent Contract
+
+`StepEvent` is the general execution-event channel for a pipeline run. It is not an
+HTTP response primitive and it must not be coupled to `n.web.response`.
+
+The current runtime shape is:
+
+```rust
+pub struct StepEvent {
+    pub step: String,
+    pub description: String,
+    pub at: String,
+}
+
+pub struct ExecuteOptions {
+    pub step_tx: Option<tokio::sync::mpsc::UnboundedSender<StepEvent>>,
+}
+```
+
+Runtime rules:
+
+- `step_tx` is owned by the execution caller and passed through `ExecuteOptions`.
+- Nodes may emit `StepEvent` when useful, especially long-running or externally
+  blocking nodes.
+- Events describe progress, decisions, tool calls, row batches, retries, render
+  stages, or other observable work inside the run.
+- Events are advisory observability data; they do not change graph routing,
+  payload merge semantics, or node output pins.
+- Consumers may forward events to HTTP SSE, WebSocket, MCP streaming, logs,
+  traces, execution records, or a UI progress panel.
+- A consumer must be able to ignore events without changing the final pipeline
+  result.
+
+HTTP response streaming should therefore be implemented as a transport adapter:
+the webhook/API caller creates `step_tx`, executes the pipeline with options,
+and forwards `StepEvent` values to the HTTP client when the request explicitly
+asks for a stream. The pipeline engine and node contract stay transport-neutral.
+
+For webhooks, the explicit first version should be:
+
+```text
+request Accept: text/event-stream
+  -> create step channel
+  -> run selected webhook pipeline with ExecuteOptions { step_tx: Some(tx) }
+  -> emit event: step for StepEvent values
+  -> emit event: done with the final web response envelope
+  -> close stream
+```
+
+This is different from true token/chunk streaming. True chunked response bodies
+would require a separate output contract, because chunks are part of the
+terminal HTTP body. `StepEvent` remains for execution progress.
+
+### 25e. Execution Store
 
 Two tiers based on pipeline type:
 
@@ -2261,7 +2352,7 @@ pub struct ExecutionProgress {
 }
 ```
 
-### 25e. ETL / Data Engineering Integration
+### 25f. ETL / Data Engineering Integration
 
 For data engineering pipelines (ETL, large batch transforms), the execution handle pattern
 extends naturally with:
@@ -2276,7 +2367,7 @@ extends naturally with:
 - **Pause / Resume** — execution task checks a cancellation token before each batch; a
   `POST /executions/{id}/pause` sets the token; `resume` clears it.
 
-### 25f. MCP Tool Integration
+### 25g. MCP Tool Integration
 
 The MCP `pipeline_run` tool behavior changes to:
 1. Try synchronous for the threshold duration
@@ -2285,7 +2376,7 @@ The MCP `pipeline_run` tool behavior changes to:
 4. New MCP tool `pipeline_execution_get` → poll result
 5. New MCP tool `pipeline_execution_stream` → SSE (if MCP transport supports it)
 
-### 25g. Planned Routes
+### 25h. Planned Routes
 
 ```
 GET    /api/projects/{owner}/{project}/executions
@@ -2296,7 +2387,7 @@ POST   /api/projects/{owner}/{project}/executions/{execution_id}/pause
 POST   /api/projects/{owner}/{project}/executions/{execution_id}/resume
 ```
 
-### 25h. Implementation Phases
+### 25i. Implementation Phases
 
 | Phase | Scope | Status |
 |-------|-------|--------|

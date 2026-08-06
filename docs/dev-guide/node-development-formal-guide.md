@@ -15,8 +15,85 @@ Three formal sources. All produce the same `NodeDefinition` contract.
 | Source | Namespace | What it is | Update model |
 |--------|-----------|------------|--------------|
 | Native | `n.*` | Compiled Rust module | Binary update |
-| Composite | `n.c.*` | Function pipeline + manifest | Hot-update, project/marketplace artifact |
+| Composite | `n.c.*` | Function pipeline + manifest | Hot-update, project/hub artifact |
 | WASM | `n.wasm.*` | Sandboxed binary module | Hot-update, signed package |
+
+## Node Package Contract
+
+Node package format is paramount. Every package source must pass the same
+strict parser and validator before it can become available in the node catalog.
+Invalid shape, missing definition fields, namespace mistakes, unknown runtime
+references, missing files, and ambiguous versions must fail during install.
+
+There are two contracts:
+
+1. **Source package format** — what Hub, Git, Local, Built-in, or any future
+   installer source provides.
+2. **Installed node format** — what Zebflow materializes under `repo/nodes/`
+   and indexes at runtime.
+
+All installer sources normalize into the installed node format. No source is
+allowed to bypass validation.
+
+### Source package format
+
+Source packages always use `definition.json`, even for one node. A single-node
+package is a package whose `nodes` array has length `1`.
+
+```
+{package-slug}/
+├── definition.json              # package manifest: one or more nodes
+├── icon.svg                     # optional package icon
+├── icons/
+│   └── {node}.svg               # optional per-node icons
+├── functions/
+│   └── *.zf.json                # composite implementation functions
+├── wasm/
+│   └── *.wasm                   # WASM implementation modules
+└── README.md                    # optional human docs
+```
+
+`definition.json` uses a single package format:
+
+```json
+{
+  "format": "zebflow-package-v2",
+  "package": "sim",
+  "version": "0.1.0",
+  "title": "Simulation",
+  "description": "Simulation nodes.",
+  "icon": "icon.svg",
+  "credentials": [],
+  "functions": {},
+  "wasm": {},
+  "nodes": []
+}
+```
+
+Version nomenclature:
+
+- `format` is the package manifest format id. Use letters and numbers exactly:
+  `"zebflow-package-v2"`.
+- `version` is the package release version. Use SemVer numbers:
+  `"0.1.0"`, `"1.0.0"`, `"1.2.3"`.
+- Node kind versions are not encoded in `kind`. A kind stays stable; package
+  `version` changes.
+
+### Installed node format
+
+The installed format is Zebflow-owned. Users and Hub packages should not rely on
+authoring it directly.
+
+```
+repo/nodes/{node-slug}/
+├── node.json                    # canonical single-node manifest
+├── icon.svg                     # resolved node icon, if provided
+├── pipeline.zf.json             # composite only
+└── module.wasm                  # WASM only
+```
+
+Multi-node source packages are exploded into one installed node folder per
+visible node. Runtime indexing reads only validated installed nodes.
 
 ---
 
@@ -48,20 +125,14 @@ Native nodes cover: triggers, HTTP, database clients, filesystem, web response, 
 
 A composite node package is a collection of related nodes built from function pipelines. One package can contain multiple nodes sharing credentials, lifecycle hooks, and reusable functions. The package uses the same field vocabulary as native Rust nodes.
 
-### Package format (v2)
+### Source package shape
 
 ```
-composites/{package-slug}/
-├── definition.json                # manifest: nodes + credentials + functions
-├── icon.svg                    # package icon (catalog listing)
-├── icons/
-│   ├── trigger.svg             # per-node icons
-│   ├── send.svg
-│   └── ...
-└── functions/
-    ├── send-message.zf.json    # reusable function pipelines
-    ├── register-webhook.zf.json
-    └── ...
+{package-slug}/
+├── definition.json
+├── icon.svg
+├── icons/*.svg
+└── functions/*.zf.json
 ```
 
 ### definition.json
@@ -97,6 +168,7 @@ composites/{package-slug}/
   "nodes": [
     {
       "kind": "n.c.trigger.tg",
+      "source": "composite",
       "title": "Telegram Trigger",
       "description": "Receive Telegram bot updates.",
       "icon": "icons/trigger.svg",
@@ -119,6 +191,7 @@ composites/{package-slug}/
     },
     {
       "kind": "n.c.tg.send",
+      "source": "composite",
       "title": "Telegram Send Message",
       "icon": "icons/send.svg",
       "main": "send-message",
@@ -273,7 +346,7 @@ Composite inner pipelines run in a restricted sandbox. The sandbox is enforced b
 | Auth (`n.auth.*`) | Token minting — project pipeline concern |
 | Platform internals | Never available to composites |
 
-**Design principle:** if a composite needs database or filesystem access, it's not a node — it's an app. Composite nodes talk to external APIs and transform data. Apps are a separate marketplace type that can access everything.
+**Design principle:** if a composite needs database or filesystem access, it's not a node — it's an app. Composite nodes talk to external APIs and transform data. Apps are a separate hub type that can access everything.
 
 The platform validates all function pipeline files on install. If any inner pipeline uses a blocked node kind, installation is rejected.
 
@@ -345,15 +418,18 @@ Inside composite inner pipelines:
 - Error propagation: inner pipeline failure routes to `error` output pin. If no `error` pin declared, the composite node itself fails with `PipelineError`.
 - Versioning: packages carry a `version` field. Update replaces the catalog entry. No hot-swap mid-execution.
 
-### Legacy v1 format
+### Legacy installed-node manifest
 
-The single-node `node.json` format (v1) is still supported for backwards compatibility. The platform detects format by checking for `"format": "zebflow-package-v2"` in the manifest. V1 packages are treated as a single-node package with one function.
+The existing runtime can still read project-local `repo/nodes/{node-slug}/node.json`
+because that is the installed node manifest. New source packages should not use
+`node.json`; all source packages should use `definition.json` with a `nodes`
+array.
 
 ### Open design items
 
 1. **`$placeholder` as expression variable** — ✅ **DONE**. Resolved at runtime by `build_composite_placeholder_map()` in `src/pipeline/engines/basic.rs`. Script sandbox receives placeholders through `ctx.placeholder`.
 
-2. **Installation mechanism** — API endpoint for uploading packages (zip/tar). Security scan validates sandbox compliance (no blocked nodes). MCP tool `node_install` follows. UI: marketplace page with upload + browse.
+2. **Installation mechanism** — API endpoint for uploading packages (zip/tar). Security scan validates sandbox compliance (no blocked nodes). MCP tool `node_install` follows. UI: hub page with upload + browse.
 
 3. **Storage location** — project-level composites stored under `repo/nodes/{package-slug}/`. Official composites embedded in the binary via `PLATFORM_COMPOSITE_NODE_ASSETS`. Both use identical package format.
 
@@ -654,51 +730,121 @@ Projects can add custom header names or prefixes to the forwarding whitelist via
 
 Sandboxed binary nodes via Extism. For capabilities that need custom code outside native + composite reach.
 
-### Package format
+### Source package shape
 
 ```
-nodes/{node-slug}/
-├── node.json           # manifest: definition + runtime + permissions + limits
-├── module.wasm         # compiled Extism module
-└── icon.svg
+{package-slug}/
+├── definition.json
+├── icon.svg
+├── icons/*.svg
+└── wasm/*.wasm
 ```
 
-### node.json
+One WASM module can serve many nodes. The package declares modules once, then
+each node points at a module and export.
 
-Same `definition` shape as composite. Different `runtime`:
+### definition.json
 
 ```json
 {
-  "source": "wasm",
-  "version": "1.0.0",
-  "definition": { /* same NodeDefinition shape, same field vocabulary */ },
-  "credentials": [ /* same credential type declarations */ ],
-  "runtime": {
-    "module": "module.wasm",
-    "abi": "extism-json-v1",
-    "exports": { "execute": "execute" }
+  "format": "zebflow-package-v2",
+  "package": "sim",
+  "version": "0.1.0",
+  "title": "Simulation",
+  "description": "Simulation nodes.",
+  "icon": "icon.svg",
+  "credentials": [],
+  "functions": {},
+  "wasm": {
+    "core": {
+      "module": "wasm/sim_core.wasm",
+      "runtime": "zebflow-wasm-json-v1",
+      "exports": {
+        "des": "sim_des_run",
+        "queue": "sim_queue_run"
+      }
+    }
   },
-  "permissions": {
-    "host_functions": ["log"],
-    "network": false,
-    "filesystem": "none"
-  },
-  "limits": {
-    "timeout_ms": 1000,
-    "memory_mb": 64,
-    "max_input_bytes": 1048576
-  }
+  "nodes": [
+    {
+      "kind": "n.wasm.sim.des",
+      "source": "wasm",
+      "wasm": "core",
+      "export": "des",
+      "title": "DES Simulation",
+      "description": "Runs a deterministic discrete-event simulation kernel.",
+      "icon": "icons/des.svg",
+      "definition": {
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config_schema": {},
+        "input_schema": {},
+        "output_schema": {},
+        "fields": [],
+        "layout": [],
+        "dsl_flags": [],
+        "ui_category": "simulation",
+        "ui_category_label": "Simulation"
+      }
+    }
+  ]
 }
 ```
 
 ### Key rules
 
 - Kind must be `n.wasm.*` and globally unique.
-- Module must pass signature/hash verification.
-- WASM starts with zero host capabilities. Every host function must be declared in `permissions`.
-- Runtime limits are mandatory.
-- Host capabilities: `log`, `http_request`, `read_file`, `write_file`.
+- The referenced `wasm.{name}.module` file must exist.
+- The referenced node `wasm` and `export` must exist.
+- The same `NodeDefinition` fields drive catalog indexing, DSL flags, forms, docs, and LLM context.
+- WASM starts with zero host capabilities. Any future host function must be declared by package policy and validated before install.
 - WASM modules access credentials through the same placeholder model as composites — `$placeholder.NAME` resolved by the host, never raw secret values.
+
+### WASM data movement strategy
+
+Native, composite, and WASM nodes must expose the same visible node I/O
+contract. The node slug (`n.*`, `n.c.*`, `n.wasm.*`) identifies the
+implementation, not a different user-facing data model. The engine owns
+normalization under the hood.
+
+| Data size / node kind | Native `n.*` | Composite `n.c.*` | WASM `n.wasm.*` |
+|---|---|---|---|
+| Small JSON / control data | Inline JSON is fine. Native nodes run in the engine process and can handle ordinary payload values directly. | Inline JSON is fine. A composite boundary should not change the visible payload shape. | Inline JSON is fine through `zebflow-wasm-json-v1`. One host/guest copy is acceptable for small control data. |
+| Large or file-like data | Prefer FileRef, ZebFS paths, table/geo storage, or node output files. Native nodes should stream/read from storage when the data is file-like. | Prefer FileRef/ZebFS paths through the composite boundary. Inner graphs should not expand file-like data into huge JSON unless the workflow explicitly asks for rows/previews. | Prefer FileRef metadata plus WASM host read/write strategy. Do not use giant JSON as the long-term bulk-data path. |
+
+Current supported lanes:
+
+- Inline JSON for small WASM inputs and outputs.
+- Generic node output files via `__zf_files`; the engine materializes those
+  entries into ZebFS and downstream nodes receive FileRef JSON.
+
+Near-term WASM homework:
+
+- Define host read calls so WASM can read FileRef/PayloadHandle data by chunks
+  or byte ranges, similar to S3 range/object-store reads.
+- Define host write calls so WASM can write large generated output directly to
+  ZebFS/FileRef without returning the whole body through the JSON ABI.
+- Keep emit/stream as TODO until the read/write path is stable.
+
+Warning: `__zf_files` is a useful bridge, not the final large-WASM-data
+solution. It prevents downstream payload amplification, but the file body still
+returns through the JSON ABI once. Truly large WASM output needs host file-write
+calls.
+
+### Script-level contract
+
+Script usage is not a separate package format. If a node wants to expose script
+helpers, it must declare that in the same `NodeDefinition` contract:
+
+- `script_available`
+- `script_bridge`
+- `ai_tool`
+- `dsl_flags`
+- `fields`
+
+Native, composite, and WASM nodes all appear in one node contract document. If a
+capability is not declared there, scripts, agents, DSL tooling, and UI must treat
+it as unavailable.
 
 ---
 
@@ -724,7 +870,7 @@ Same `definition` shape as composite. Different `runtime`:
 
 ### Custom credential type definition
 
-Composite and WASM packages declare custom credential types in `node.json → credentials[]`:
+Composite and WASM packages declare custom credential types in `definition.json → credentials[]`:
 
 ```json
 {
@@ -953,24 +1099,24 @@ Platform developers creating reusable pipeline-based nodes that ship with the bi
 
 ### Steps
 
-1. Create a package directory at `composites/{slug}/` (e.g. `composites/telegram-send/`).
-2. Add three files:
-   - `node.json` — manifest (same format as community composites, see [Package format](#package-format) above).
-   - `pipeline.zf.json` — the inner function pipeline.
-   - `icon.svg` — node catalog icon.
+1. Create a package directory at `composites/{slug}/` (e.g. `composites/telegram/`).
+2. Add package files:
+   - `definition.json` — source package manifest.
+   - `functions/*.zf.json` — inner function pipelines.
+   - `icon.svg` and `icons/*.svg` — package and node catalog icons.
 3. Add `include_bytes!()` entries to `PLATFORM_COMPOSITE_NODE_ASSETS` in `src/platform/web/embedded.rs`:
 
 ```rust
-EmbeddedAsset { path: "telegram-send/node.json", bytes: include_bytes!("../../../composites/telegram-send/node.json") },
-EmbeddedAsset { path: "telegram-send/pipeline.zf.json", bytes: include_bytes!("../../../composites/telegram-send/pipeline.zf.json") },
-EmbeddedAsset { path: "telegram-send/icon.svg", bytes: include_bytes!("../../../composites/telegram-send/icon.svg") },
+EmbeddedAsset { path: "telegram/definition.json", bytes: include_bytes!("../../../composites/telegram/definition.json") },
+EmbeddedAsset { path: "telegram/icon.svg", bytes: include_bytes!("../../../composites/telegram/icon.svg") },
+EmbeddedAsset { path: "telegram/functions/send-message.zf.json", bytes: include_bytes!("../../../composites/telegram/functions/send-message.zf.json") },
 ```
 
 4. `cargo check` — the embedded composite is loaded at startup by `NodeRegistryService::load_embedded_composites()`.
 
 ### Key properties
 
-- Same package format as community composites — identical `node.json` + `pipeline.zf.json` + `icon.svg`.
+- Same source package format as community composites — `definition.json` plus declared artifacts.
 - Cannot be uninstalled (protected by `NodeRegistryService::is_official()`).
 - Merged into the node catalog alongside native builtins — appears in Project Studio node picker.
 - Inner pipeline uses `$placeholder` for credential secrets — same security model as community composites.
@@ -984,8 +1130,9 @@ Community developers creating composite or WASM nodes installed per-project.
 ### Steps
 
 1. Create the package:
-   - **Composite (CC)**: `node.json` + `pipeline.zf.json` + `icon.svg` (see [Package format](#package-format)).
-   - **WASM (CW)**: `node.json` + `module.wasm` + `icon.svg` (see [WASM Nodes](#wasm-nodes)).
+   - **Composite (CC)**: `definition.json` + `functions/*.zf.json` + icons.
+   - **WASM (CW)**: `definition.json` + `wasm/*.wasm` + icons.
+   - Mixed packages may contain both composite and WASM nodes.
 2. Install via API:
 
 ```bash
@@ -998,9 +1145,7 @@ curl -X POST -H "Content-Type: application/json" \
 Payload shape:
 ```json
 {
-  "manifest": { /* NodePackageManifest — same as node.json contents */ },
-  "pipeline_source": "{ /* pipeline.zf.json contents as string */ }",
-  "icon_svg": "<svg>...</svg>"
+  "package": { /* parsed definition.json and package artifacts */ }
 }
 ```
 

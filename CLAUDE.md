@@ -1,5 +1,21 @@
 # Zebflow – Claude Code Guide
 
+## Absolute Zebflow Mutation Rule
+
+- Zebflow project resources **must be changed through Zebflow APIs, MCP tools, or platform service methods**.
+- Do **not** create, edit, move, or delete project resources by writing directly into mounted project internals such as `users/{owner}/{project}/repo/`, `data/`, or `files/` unless the task is explicitly about repairing storage internals.
+- Pipelines must be created or updated through `POST /api/projects/{owner}/{project}/pipelines/definition`, MCP `pipeline_register` / `pipeline_patch`, or `PlatformService.projects.upsert_pipeline_definition`.
+- Templates, docs, credentials, storage objects, hub assets, and settings must use their matching API/MCP/service boundary.
+- Before giving a UI link to a created resource, verify it through the matching read API, for example `pipelines/by-id` for a pipeline.
+- If an agent is unsure which API/MCP/service owns a resource, it must stop and inspect the platform route/service first. Guessing by filesystem layout is a bug.
+
+## Absolute UI Rule
+
+- For Zebflow UI work, use **Zeb React** and **Zeb Tailwind** only.
+- Do **not** bypass Zeb/RWE behavior with page-local hacks, DOM workarounds, `globalThis` hook aliases, or non-standard fallback patterns.
+- If even one strange behavior appears in a Zeb/RWE flow that should normally work, treat it as a **foundational RWE problem**.
+- When that happens: **report it immediately, stop the workaround path, isolate the root cause, and fix the foundation first**.
+
 ## How to Test Changes
 
 ### 1. Start the dev server

@@ -2,14 +2,21 @@
 
 This folder contains current engineering references for Zebflow.
 
+## Absolute UI Rule
+
+- Zebflow UI must use **Zeb React** and **Zeb Tailwind**.
+- If a Zeb/RWE UI path behaves strangely, treat it as a **foundational RWE issue**, not a page-level exception.
+- Stop workaround attempts, report the anomaly, and fix the underlying RWE/Zeb behavior first.
+
 ## Normative Order
 
 Read these in order when making structural changes:
 
 1. [Project Contract](./project-contract.md)
 2. [Office Federation Contract](./office-federation-contract.md)
-3. [Architecture](./architecture.md)
-4. [Office Federation Model](./office-federation-model.md)
+3. [Mounted Data Root](./architecture/mounted-data-root.md)
+4. [Architecture](./architecture.md)
+5. [Office Federation Model](./office-federation-model.md)
 
 ## Current Supporting Docs
 

@@ -108,12 +108,12 @@ It contains:
 
 ### 5.3 `files/`
 
-`files/` is the project-owned public/private file artifact area.
+`files/` is the project-owned Zebflow FS artifact area.
 
 It contains:
 
-- generated public outputs
-- private file outputs
+- generated outputs
+- uploaded files
 - static-generation results
 - future object-store mirror sources if later enabled
 
@@ -210,40 +210,36 @@ Future versions **May** add sibling runtime-owned subdirectories under
 
 ## 8. Stable Files Structure
 
-The following `files/` structure is normative:
+The `files/` root is the local Zebflow FS backend for the project.
 
-- `files/public/`
-- `files/private/`
+Zebflow FS object paths are relative to `files/`:
 
-### 8.1 `files/public/`
+- `uploads/avatar.jpg`
+- `static/site/index.html`
+- `mapserver/roads.geojson`
+- `audio/tts-demo.wav`
 
-Publicly servable generated or user-managed artifacts belong here.
+The path itself does not encode public/private visibility. Objects are private
+by default; public exposure is a Zebflow FS policy concern, not a folder naming
+convention.
 
-Examples:
+### 8.1 Common Prefixes
 
-- generated static pages
-- public downloads
-- published assets
+Common prefixes are conventions only:
 
-### 8.2 `files/private/`
-
-Non-public project-owned artifacts belong here.
-
-Examples:
-
-- internal exports
-- private generation outputs
-- later private object-store staging
+- `uploads/`
+- `static/`
+- `mapserver/`
+- `audio/`
+- `archives/`
+- `extracted/`
+- `pdf/`
+- `thumbnails/`
 
 ### 8.3 Static Generation Rule
 
-Any future static generation feature **Must** target either:
-
-- `files/public/...`
-- `files/private/...`
-
-or an explicitly documented external publish backend that mirrors this logical
-split.
+Any future static generation feature **Must** write Zebflow FS object paths under
+`files/`, or an explicitly documented external publish backend.
 
 ## 9. Reserved vs Extensible Namespaces
 
@@ -262,8 +258,7 @@ project business logic:
 - `repo/zebflow.json`
 - `repo/zeb.lock`
 - `data/runtime/`
-- `files/public/`
-- `files/private/`
+- `files/`
 
 ### 9.2 Extensible Namespaces
 
@@ -345,8 +340,7 @@ Project export/import **Must** be explicit and versioned.
   - `data/`
   - `manifest`
 - `project.files`
-  - `files/public/`
-  - `files/private/`
+  - `files/`
 
 ### Manifest minimum fields
 
@@ -414,7 +408,7 @@ treated as such.
 ### Breaking Unless Migrated Explicitly
 
 - moving all templates out of `repo/pipelines/` to another root
-- reusing `files/public/` for private outputs
+- reintroducing public/private meaning through FS folder names
 - changing `data/runtime/` to mean arbitrary project data
 - requiring the controller database to rebuild `repo/`
 
@@ -457,8 +451,9 @@ Those belong to other contracts.
 │   └── runtime/
 │       └── pipelines/
 └── files/
-    ├── public/
-    └── private/
+    ├── uploads/
+    ├── static/
+    └── mapserver/
 ```
 
 ## 19. Compliance Test

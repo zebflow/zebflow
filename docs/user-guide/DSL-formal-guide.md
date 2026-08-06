@@ -184,7 +184,7 @@ Examples:
 Rule:
 
 - `--x` means literal config
-- `--x-expr` means evaluated expression
+- `--x-expr` means evaluated expression. Expressions are raw JS/Deno expressions, not `{{ }}` templates.
 - list flags may be written in either style:
   - repeated: `--cases create --cases update`
   - compact: `--cases create,update`
@@ -359,7 +359,7 @@ The stable first-principle model should be:
 - dispatch policy belongs here, not in the coordination ontology
 - examples:
   - `dispatch=sequential`
-  - `dispatch=parallel`
+  - `dispatch=parallel` (planned; current `foreach` runtime is sequential)
 
 5. **Resilience / feedback**
 - explicit resilience layer, for example `retry`
@@ -516,7 +516,7 @@ Meaning:
 
 ```zf
 [a] trigger.manual
-[b] logic.foreach --items-path /entries --dispatch parallel --concurrency 8
+[b] logic.foreach --items-expr "$input.entries" --dispatch seq
 [c] web.static.generate --template pages/musicsite/lyric.tsx --site-root static/musicsite --output-path-expr "$item.slug + '/index.html'"
 
 [a] -> [b]
@@ -526,13 +526,14 @@ Meaning:
 Meaning:
 
 - one collection becomes many emitted runs
-- dispatch policy is explicit on `foreach`
+- `--items-expr` is a raw expression returning an array
+- current dispatch is sequential; parallel dispatch is planned
 
 ### 10.7 `reduce`
 
 ```zf
 [a] trigger.manual
-[b] logic.foreach --items-path /rows --dispatch seq
+[b] logic.foreach --items-expr "$input.rows" --dispatch seq
 [c] script -- "
 return { amount: input.item.amount };
 "
@@ -577,6 +578,8 @@ Typical need:
 ### `foreach`
 - one source emits many downstream runs
 - may be plain collection emission or larger batch emission
+- source is selected with `--items-expr`, for example `$input.rows`, `$nodes.fetch.rows`, or `$trigger.query.items`
+- current runtime dispatch is sequential
 
 Typical need:
 - process many rows/items

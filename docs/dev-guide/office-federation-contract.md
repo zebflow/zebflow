@@ -13,7 +13,7 @@ The Office Federation Contract exists to make Zebflow scale from:
 - one self-managed office on a laptop or Raspberry Pi
 - one controller office with multiple managed offices
 - Kubernetes multi-node deployments
-- office-hosted platform services such as marketplace
+- office-hosted platform services such as hub
 - future agent-heavy offices with multiple managed execution capabilities
 
 without changing the meaning of:
@@ -85,7 +85,7 @@ A Platform Service Instance is a platform-level service embodied in one office.
 
 Examples include:
 
-- marketplace
+- hub
 - future artifact registry
 - future scheduler or queue
 - future model or agent runner
@@ -107,14 +107,14 @@ Minimum identity fields:
 - `created_at`
 - `updated_at`
 
-For the default marketplace service:
+For the default hub service:
 
 ```text
-service_instance_id: marketplace-default
-service_kind: marketplace
+service_instance_id: hub-default
+service_kind: hub
 host_office_id: {office_id}
 state_office_id: {office_id}
-public_base_url: https://market.zebflow.com/api
+public_base_url: https://hub.zebflow.com/api
 ```
 
 `host_office_id` and `state_office_id` **Must** be equal in the base `0.2.x`
@@ -378,9 +378,9 @@ Runtime-critical platform service state for a service hosted by an office
 **Must** be local enough for that office to serve the service without per-request
 controller lookups.
 
-For marketplace, materialized state **May** include:
+For hub, materialized state **May** include:
 
-- marketplace service configuration
+- hub service configuration
 - publisher records
 - token hashes and revocation state
 - package metadata
@@ -446,8 +446,8 @@ The managing office is authoritative for:
 - governance
 - migration orchestration
 
-For marketplace, this means the selected host office owns the marketplace
-database and artifact/media storage while it hosts the marketplace service.
+For hub, this means the selected host office owns the hub
+database and artifact/media storage while it hosts the hub service.
 
 ### 16b. Platform Service Lifecycle
 
@@ -471,16 +471,16 @@ Minimum operations:
 - `service.rotate_secrets`
 - `service.rebuild_public_projection`
 
-Marketplace-specific operations:
+Hub-specific operations:
 
-- `marketplace.publisher.create`
-- `marketplace.publisher.update`
-- `marketplace.publisher.disable`
-- `marketplace.token.create`
-- `marketplace.token.revoke`
-- `marketplace.package.publish`
-- `marketplace.package.unpublish`
-- `marketplace.package.install`
+- `hub.publisher.create`
+- `hub.publisher.update`
+- `hub.publisher.disable`
+- `hub.token.create`
+- `hub.token.revoke`
+- `hub.package.publish`
+- `hub.package.unpublish`
+- `hub.package.install`
 
 Each operation record **Must** include:
 
@@ -497,9 +497,9 @@ Each operation record **Must** include:
 
 The host office owns the service's operational state while it hosts the service.
 
-For marketplace, operational state includes:
+For hub, operational state includes:
 
-- marketplace configuration
+- hub configuration
 - publisher records
 - token hashes and revocation state
 - package records

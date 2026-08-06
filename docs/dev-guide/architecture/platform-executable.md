@@ -48,7 +48,7 @@ Target commands:
 - `zebflow`
 - `zebflow standalone`
 - `zebflow desktop`
-- `zebflow run <project-or-marketplace-asset-url>`
+- `zebflow run <project-or-hub-asset-url>`
 - `zebflow controller`
 - `zebflow office`
 
@@ -96,14 +96,14 @@ Important note:
   - open app route
   - open Studio route
 
-### `zebflow run <project-or-marketplace-asset-url>`
+### `zebflow run <project-or-hub-asset-url>`
 
 Project runtime entry.
 
 Meaning:
 
 - run a local installed project as an app
-- or fetch/materialize a project app from a marketplace asset URL first
+- or fetch/materialize a project app from a hub asset URL first
 - ensure runtime/bootstrap is active
 - expose the project's public app route locally
 
@@ -111,8 +111,8 @@ Current implementation direction:
 
 - local project:
   - `zebflow run my-project`
-- remote marketplace asset:
-  - `zebflow run http://host/api/projects/{owner}/{project}/marketplace/remote/assets/{package}/{version}`
+- remote hub asset:
+  - `zebflow run http://host/api/projects/{owner}/{project}/hub/remote/assets/{package}/{version}`
 
 If project is not installed yet, this command may later auto-install it first.
 
@@ -152,7 +152,7 @@ Desktop responsibilities:
 - route users into:
   - Run
   - Studio
-  - Marketplace
+  - Hub
 
 Desktop should not duplicate Studio logic.
 
@@ -176,7 +176,7 @@ Current lightweight implementation direction:
 3. See launcher:
    - Run App
    - Open Studio
-   - Open Marketplace
+   - Open Hub
 4. Install or open a project locally
 5. Run it locally
 6. Optionally open it in Studio
@@ -186,7 +186,7 @@ Current lightweight implementation direction:
 1. Install Zebflow CLI
 2. Run:
    - `zebflow run <project>`
-   - or `zebflow run <marketplace-asset-url>`
+   - or `zebflow run <hub-asset-url>`
 3. Optionally open:
    - `zebflow`
 

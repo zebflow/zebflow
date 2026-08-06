@@ -8,7 +8,7 @@ Scope:
 - multi-project
 - multi-office
 - runtime management
-- marketplace management
+- hub management
 
 Rules:
 
@@ -45,14 +45,14 @@ Rules:
 - [x] Normalize `project_runtime_placements` onto office/node ids
 - [x] Normalize `project_operations` onto project/office ids
 
-## Marketplace
+## Hub
 
-- [x] Introduce explicit `marketplace_authorities`
+- [x] Introduce explicit `hub_authorities`
 - [x] Normalize publishers onto authority ids
-- [x] Normalize marketplace tokens onto authority id + publisher pk
+- [x] Normalize hub tokens onto authority id + publisher pk
 - [x] Normalize packages onto authority id + publisher pk
 - [x] Normalize package versions onto package pk
-- [x] Normalize platform marketplace browsing sources onto stable ids
+- [x] Normalize platform hub browsing sources onto stable ids
 
 ## Constraints / Hardening
 

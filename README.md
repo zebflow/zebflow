@@ -1,51 +1,116 @@
-# zebflow
+# Zebflow
 
-**[zebflow.com](https://zebflow.com)** · [Docs Index](docs/README.md) · [User Guide](docs/user-guide/README.md) · [Dev Guide](docs/dev-guide/README.md)
+**[zebflow.com](https://zebflow.com)** · [Docs](docs/README.md) · [Usage](docs/usage/README.md) · [Developer Guide](docs/developer/README.md)
 
-> Full-stack reactive web automation.
+> One runtime for building and running full-stack apps.
 
-Zebflow is a full-stack reactive web automation platform. Build SSR pages, SPA flows, APIs, real-time rooms and games, and various automations in one running system using Pipelines and Templates.
+Zebflow helps you build web apps, APIs, workflows, maps, databases, realtime features, and AI tools from one running system.
 
-Deploy once, evolve continuously. Write TSX directly in the running instance, compose behavior with pipelines, and build reactive frontend on the fly without a separate frontend build toolchain.
+It is for people who want to turn ideas into working software without managing many separate stacks. You can write pages, create backend logic, store data, publish files, build maps, run agents, and share reusable work from the same project.
 
-It is designed to grow from one local office to multi-user, multi-project, multi-office deployments. MCP and BYOK agent console flows are first-class at project scope.
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
 [![Docker](https://img.shields.io/badge/docker-zebflow%2Fzebflow-informational.svg)](https://hub.docker.com/r/zebflow/zebflow)
 
-## Overview
+## Why Zebflow Exists
 
-Zebflow combines two authoring surfaces:
+Modern apps often need too many separate parts:
 
-- **Templates**
-  TSX pages and components rendered through the Reactive Web Engine without a separate build step.
-- **Pipelines**
-  Triggered automation graphs for webhooks, functions, schedules, data access, HTTP, AI, state, and rendering.
+- frontend build tools
+- backend APIs
+- databases
+- file storage
+- workflow runners
+- map servers
+- realtime servers
+- credentials
+- logs and traces
+- deployment scripts
+- AI tools
 
-Those two surfaces stay inside the same project workspace, so a project can serve:
+Zebflow brings these parts into one project runtime. You can start small on your laptop, then move the same project toward a server, office, worker, or cluster setup when needed.
 
-- SSR pages
-- SPA-like navigation
-- JSON or form APIs
-- webhook handlers
-- WebSocket or realtime room flows
-- static generated outputs
-- operator and agent automation
+## What You Can Build
 
-## Walkthroughs
+- Internal tools and dashboards
+- Data apps
+- GIS and map apps
+- Research demos
+- AI-assisted workflows
+- Realtime apps and games
+- Webhook and API automation
+- Project websites and admin panels
 
-Add short GIF walkthroughs here before the next public-facing release:
+## What Is Inside
 
-1. create a page and pipeline in Project Studio
-2. connect MCP or agent console to one project
-3. place a project onto a remote office
+### Project Studio
+
+The browser UI where you edit pages, pipelines, files, databases, Hub packages, and project settings.
+
+### Reactive Web Templates
+
+Write TSX pages directly in Zebflow. You do not need a separate frontend app or npm build step for project UI.
+
+### Pipelines
+
+Create backend logic as graph workflows: webhooks, APIs, schedules, functions, file processing, database queries, AI calls, and map publishing.
+
+### Sekejap DB
+
+Every project gets an embedded multi-model database. You can store normal records, graph links, spatial data, vectors, and text search data without installing an external database.
+
+### Files and Storage
+
+Upload, save, publish, and process project files through Zebflow's file system.
+
+### Mapserver and GIS
+
+Publish GeoJSON, GeoParquet, map tiles, map layers, point queries, statistics, and function-backed live map data.
+
+### MCP and AI Tools
+
+Expose project actions to AI agents through MCP. Agents can inspect, edit, run, and debug project work through project-scoped tools.
+
+### Hub
+
+Share and add reusable packages: templates, pipelines, libraries, components, examples, and node bundles.
 
 ## Install
 
+Choose the path that fits your machine.
+
+### npm
+
+Many users already have Node.js installed. This is the shortest path when you want a familiar command:
+
+```bash
+npm install -g zebflow
+zebflow
+```
+
+Then open:
+
+```text
+http://localhost:10610/login
+```
+
+### pip
+
+Python users can install Zebflow with pip:
+
+```bash
+pip install zebflow
+zebflow
+```
+
+Then open:
+
+```text
+http://localhost:10610/login
+```
+
 ### Docker
 
-Current stable install path:
+Docker is useful for servers and repeatable deployments:
 
 ```bash
 export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$(openssl rand -base64 32)"
@@ -58,29 +123,39 @@ docker run --name zebflow \
 
 Then open:
 
-- `http://localhost:10610/login`
+```text
+http://localhost:10610/login
+```
 
 ### Source Build
+
+Rust users can run from source:
 
 ```bash
 export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="$(openssl rand -base64 32)"
 cargo run --bin zebflow
 ```
 
-### Other Distribution Channels
+## Quick Start
 
-The following channels are planned, but they are not published as stable install
-channels yet:
+1. Run Zebflow.
+2. Open Project Studio.
+3. Create a project.
+4. Add a page or pipeline.
+5. Run it.
+6. Share reusable work through Hub when it is ready.
 
-- `npm install zebflow`
-- `pip install zebflow`
-- single-binary release downloads
+## Examples
 
-The README keeps them separate on purpose so install instructions stay honest.
+Examples should be runnable projects. They are used for learning, testing, demos, and Hub publishing.
+
+Start here:
+
+- [Examples](docs/examples/README.md)
 
 ## Runtime Modes
 
-One binary, different roles:
+One binary can run in different roles:
 
 ```bash
 zebflow
@@ -88,51 +163,24 @@ zebflow controller
 zebflow office
 ```
 
-- `zebflow`
-  standalone controller + office
-- `zebflow controller`
-  management-oriented office
-- `zebflow office`
-  execution-oriented office joined under a managing office
+- `zebflow` starts a standalone runtime.
+- `zebflow controller` starts the control-plane role.
+- `zebflow office` starts the execution/worker role.
 
-## Features
-
-- **Reactive Web Engine**
-  Write TSX directly in the running project. SSR, SPA-style navigation, client hydration, and library loading happen without a separate Vite/Webpack-style build.
-- **Pipeline + Template composition**
-  Build web pages, APIs, webhooks, scheduled jobs, functions, and automation from the same project workspace.
-- **Agentic tools from project nodes and functions**
-  Project functions and pipeline nodes act as tool surfaces for agentic work. The built-in agent node supports two modes: `direct` for immediate task execution and `strategic` for higher-level planning and delegated reasoning.
-- **Real-time runtime**
-  Native WebSocket rooms and event-driven flows for collaborative tools, dashboards, simulations, or realtime game mechanics.
-- **Static generation into project files**
-  Generate durable outputs into `files/public` or `files/private` from pipeline execution.
-- **Project-scoped MCP and agent console**
-  Each project can expose MCP and BYOK assistant workflows as first-class management surfaces.
-- **Git-synced workspace**
-  Source lives on disk, stays reviewable, and can be exported, imported, and versioned as a real project workspace.
-- **Installable libraries, UI components, and examples**
-  The running system can install reusable project assets instead of forcing every project to bootstrap from scratch.
-- **Multi-user, multi-project operation**
-  One office can host multiple projects and multiple operators while preserving project scope.
-- **Office federation**
-  Zebflow can scale from one office to controller-plus-office federation and future multi-office deployments.
-- **Single binary deployment model**
-  The same binary is intended to work on a laptop, Raspberry Pi, one server, or Kubernetes with role-based configuration.
+Most users should start with plain `zebflow`.
 
 ## Documentation
 
-- [Docs Index](docs/README.md)
-- [User Guide](docs/user-guide/README.md)
-- [Dev Guide](docs/dev-guide/README.md)
-- [Project Contract](docs/dev-guide/project-contract.md)
-- [Office Federation Contract](docs/dev-guide/office-federation-contract.md)
-- [Architecture](docs/dev-guide/architecture.md)
+- [Docs Home](docs/README.md)
+- [Usage Guide](docs/usage/README.md)
+- [Developer Guide](docs/developer/README.md)
+- [Operations Guide](docs/operations/README.md)
+- [Examples](docs/examples/README.md)
 
-## UI Engineering Rule
+## Design Rule
 
-Zebflow UI work is expected to use **Zeb React** and **Zeb Tailwind**. If a normal Zeb/RWE UI flow behaves strangely, that should be treated as a **foundational RWE issue** and fixed at the root instead of being bypassed with page-local hacks or DOM workarounds.
+Zebflow UI work should use Zeb React and Zeb Tailwind. If a normal Zeb/RWE UI flow behaves strangely, fix the root RWE behavior instead of adding page-local workarounds.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT.

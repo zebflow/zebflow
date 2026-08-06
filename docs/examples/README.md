@@ -8,7 +8,3 @@ Structure:
 - [apps/](./apps/)
 - [templates/](./templates/)
 - [pipelines/](./pipelines/)
-
-Older example-like material currently lives in:
-
-- [../unused/conventions/](../unused/conventions/)

@@ -3,6 +3,8 @@
 ## Purpose
 
 This document defines the **long-term Zebflow platform storage contract**.
+The mounted root itself is defined in
+[Mounted Data Root](./mounted-data-root.md).
 
 It is optimized for:
 
@@ -10,7 +12,7 @@ It is optimized for:
 - multi-project management
 - multi-office control
 - runtime management
-- marketplace management
+- hub management
 
 It is intentionally **not** the contract for:
 
@@ -23,17 +25,23 @@ Those belong in project storage, not in the platform catalog.
 
 ## Core Principle
 
-Zebflow storage is split into two layers:
+Zebflow storage is split into three storage domains:
 
 1. **Platform control-plane storage**
    - one global SQLite catalog
    - path: `{data_root}/platform/catalog.db`
-   - purpose: identities, ownership, access, office topology, runtime placement, marketplace authority, operations
+   - purpose: identities, ownership, access, office topology, runtime placement, hub authority, operations
 
 2. **Project storage**
    - isolated per project under:
      - `{data_root}/users/{owner}/{project}/`
    - purpose: source repo, runtime state, project files, project-local DB engines
+
+3. **Platform service storage**
+   - isolated per platform service under:
+     - `{data_root}/services/{service_instance_id}/`
+   - purpose: service-owned runtime state, artifacts, indexes, media, audit, and
+     service-local databases
 
 This means:
 
@@ -41,6 +49,48 @@ This means:
 - project business/runtime payload does **not** belong in `catalog.db`
 - `repo/zebflow.json` is the durable project contract
 - project-local mutable data lives under `data/` and `files/`
+- `{data_root}` is the mounted persistence root. Do not create another
+  `mounted/` directory inside it.
+- service-owned payload lives under `services/`, not under `platform/` and not
+  under a project.
+
+## Root File Layout
+
+The mounted persistence root is `{data_root}`.
+See [Mounted Data Root](./mounted-data-root.md) for the canonical full
+hierarchy.
+
+```text
+{data_root}/
+  platform/
+    catalog.db
+    operations/
+    cache/
+
+  users/
+    {owner}/
+      {project}/
+        repo/
+        data/
+        files/
+
+  services/
+    hub-default/
+      service.json
+      hub.db
+      packages/
+      publishers/
+      tokens/
+      audit/
+      cache/
+
+  libraries/
+    catalog.db
+    installed/
+    indexes/
+    downloads/
+    cache/
+```
 
 ## Security Principles
 
@@ -99,8 +149,36 @@ Important derived paths:
 | `data/runtime/pipelines/` | active pipeline runtime snapshots |
 | `data/local.db` | project-local SQLite runtime DB |
 | `data/sekejap/` | project-local Sekejap store |
-| `files/public/` | public project file payloads |
-| `files/private/` | private project file payloads |
+| `files/` | project Zebflow FS object payloads |
+
+## Platform Service Layout
+
+Platform services are rooted at:
+
+- `{data_root}/services/{service_instance_id}/`
+
+For the default hub service:
+
+```text
+{data_root}/services/hub-default/
+  hub.db
+  packages/
+    {package_id}/
+      versions/
+        {version}/
+          artifact.json
+```
+
+Rules:
+
+- no owner slug in service storage paths
+- no project slug in service storage paths
+- `platform/catalog.db` may reference service metadata, but service payload
+  belongs under `services/{service_instance_id}/`
+- hub package artifacts use
+  `services/hub-default/packages/{package_id}/versions/{version}/artifact.json`
+- hub package/publisher/token rows are stored in
+  `services/hub-default/hub.db`, not in `platform/catalog.db`
 
 ## Platform SQLite
 
@@ -131,11 +209,11 @@ It is the authoritative storage for:
 - offices and nodes
 - runtime placement
 - project operations
-- marketplace authorities
+- hub authorities
 - publishers
-- marketplace tokens
+- hub tokens
 - packages and published versions
-- platform marketplace browsing sources
+- platform hub browsing sources
 
 ## Migration Contract
 
@@ -393,18 +471,24 @@ Rules:
 - this is control-plane audit, not business logging
 - retention policy should be defined separately
 
-## Marketplace Management
+## Hub Management
 
-Marketplace authority remains **project-hosted**, but explicitly modeled.
+Hub authority is an office-hosted platform service. The platform catalog
+stores service placement and configuration; hub operational rows live in
+the selected office's service-local DB.
 
-### `marketplace_authorities`
+```text
+{data_root}/services/hub-default/hub.db
+```
 
-Project-hosted marketplace producer authorities.
+### `hub_authorities`
+
+Internal hub service authority rows.
 
 | Column | Meaning |
 | --- | --- |
 | `authority_id` | primary key |
-| `host_project_id` | unique foreign key to `projects` |
+| `host_project_id` | legacy/internal host reference; service authority uses the host office id |
 | `enabled` | whether producer mode is enabled |
 | `public_base_url` | public producer API base |
 | `created_at` | created timestamp |
@@ -415,14 +499,14 @@ Constraints:
 - primary key: `authority_id`
 - unique: `(host_project_id)`
 
-### `marketplace_publishers`
+### `hub_publishers`
 
-Stable publisher identities inside one marketplace authority.
+Stable publisher identities inside one hub authority.
 
 | Column | Meaning |
 | --- | --- |
 | `publisher_pk` | primary key |
-| `authority_id` | foreign key to `marketplace_authorities` |
+| `authority_id` | foreign key to `hub_authorities` |
 | `publisher_id` | stable public publisher id |
 | `display_name` | publisher display name |
 | `publisher_url` | stable public publisher URL |
@@ -440,15 +524,15 @@ Constraints:
 - primary key: `publisher_pk`
 - unique: `(authority_id, publisher_id)`
 
-### `marketplace_tokens`
+### `hub_tokens`
 
 Revocable credentials bound to one publisher identity.
 
 | Column | Meaning |
 | --- | --- |
 | `token_id` | primary key |
-| `authority_id` | foreign key to `marketplace_authorities` |
-| `publisher_pk` | foreign key to `marketplace_publishers` |
+| `authority_id` | foreign key to `hub_authorities` |
+| `publisher_pk` | foreign key to `hub_publishers` |
 | `title` | display title |
 | `secret_hash` | token secret hash |
 | `scope_read` | read permission flag |
@@ -468,52 +552,73 @@ Rules:
 - publisher is the identity
 - token is only a revocable credential
 
-### `marketplace_packages`
+### `hub_asset_packages`
 
 Published package-level metadata.
 
 | Column | Meaning |
 | --- | --- |
-| `package_pk` | primary key |
-| `authority_id` | foreign key to `marketplace_authorities` |
-| `publisher_pk` | foreign key to `marketplace_publishers` |
+| `package_pk` | stable internal package key |
+| `authority_id` | foreign key to `hub_authorities` |
+| `publisher_pk` | foreign key to `hub_publishers` |
 | `package_id` | stable package id within one authority |
-| `asset_kind` | project / pipeline / template / script / folder |
+| `asset_kind` | canonical asset kind |
 | `title` | display title |
 | `description` | description |
 | `visibility` | public / private / unlisted |
 | `tags_json` | extensible tags payload |
-| `status` | active / disabled / archived |
 | `created_at` | created timestamp |
 | `updated_at` | updated timestamp |
 
 Constraints:
 
-- primary key: `package_pk`
-- unique: `(authority_id, package_id)`
+- primary key: `package_id`
+- unique: `package_pk`
 
-### `marketplace_package_versions`
+Canonical `asset_kind` values:
+
+- `pipeline_bundle`
+- `template_bundle`
+- `folder_bundle`
+- `project_bundle`
+- `node_bundle`
+
+### `hub_asset_versions`
 
 Immutable published versions of packages.
 
 | Column | Meaning |
 | --- | --- |
-| `package_pk` | foreign key to `marketplace_packages` |
+| `package_pk` | foreign key to `hub_asset_packages` |
+| `package_id` | stable package id |
 | `version` | package version |
-| `source_project_id` | nullable foreign key to `projects` |
+| `source_owner` | internal source owner slug |
+| `source_project` | internal source project slug |
 | `source_kind` | source kind |
 | `source_ref` | source reference |
-| `artifact_rel_path` | artifact path under platform storage |
+| `artifact_rel_path` | relative artifact path under data root |
 | `artifact_sha256` | artifact content hash |
 | `manifest_json` | version manifest payload |
-| `created_by_user_id` | foreign key to `users` |
 | `created_at` | created timestamp |
 
 Constraints:
 
-- primary key: `(package_pk, version)`
+- primary key: `(package_id, version)`
 
-### `platform_marketplace_sources`
+Artifact storage:
+
+```text
+services/hub-default/packages/{package_id}/versions/{version}/artifact.json
+```
+
+Update rule:
+
+- publishing an existing `package_id` with a new `version` creates/replaces that
+  version and refreshes package metadata
+- old versions remain until retention policy or package deletion
+- package deletion removes all versions and their artifact files
+
+### `platform_hub_sources`
 
 Platform-home browsing sources for installing apps/packages.
 
@@ -522,7 +627,7 @@ Platform-home browsing sources for installing apps/packages.
 | `source_id` | primary key |
 | `owner_user_id` | foreign key to `users` |
 | `title` | display title |
-| `base_url` | remote marketplace API URL |
+| `base_url` | remote hub API URL |
 | `read_token_secret` | optional read credential or credential reference |
 | `enabled` | active / disabled |
 | `created_at` | created timestamp |
@@ -556,7 +661,7 @@ This schema is considered long-term only if these rules are kept:
    - projects
    - offices
    - runtime management
-   - marketplace management
+   - hub management
 
 2. project contract remains in `repo/zebflow.json`
 
@@ -568,7 +673,7 @@ This schema is considered long-term only if these rules are kept:
 
 6. tokens rotate, publisher identities do not
 
-7. project-hosted marketplace authority may evolve operationally, but publisher/package identity remains stable
+7. office-hosted hub authority may evolve operationally, but publisher/package identity remains stable
 
 ## Lifecycle Rules
 
@@ -584,29 +689,29 @@ Destructive delete is not the normal path for long-lived entities.
 ### Projects
 
 - default operation: `status = archived` or `status = disabled`
-- hard delete is exceptional and only safe after runtime placement, marketplace authority, credentials, and project storage cleanup are complete
+- hard delete is exceptional and only safe after runtime placement, hub authority, credentials, and project storage cleanup are complete
 
 ### Offices
 
 - default operation: `status = disabled`
 - hard delete is only safe after placements and node registrations have been drained
 
-### Marketplace Authorities
+### Hub Authorities
 
 - default operation: `enabled = false`
 - disabling the authority must preserve publisher, package, and version history
 
-### Marketplace Publishers
+### Hub Publishers
 
 - default operation: `enabled = false`
 - disabling a publisher must preserve package attribution and published history
 
-### Marketplace Tokens
+### Hub Tokens
 
 - default operation: `revoked_at = <timestamp>`
 - tokens are revocable credentials, not durable identity
 
-### Marketplace Packages
+### Hub Packages
 
 - default operation: `visibility = private` or `status = archived`
 - historical versions and attribution should remain intact
@@ -653,7 +758,7 @@ The schema contract from this line onward is migration-backed.
 - production rollout should validate:
   - catalog boot on a clean volume
   - migration boot on a known current local-dev catalog
-  - marketplace default base URL wiring
+  - hub default base URL wiring
   - foreign key integrity after boot
 
 ## Summary

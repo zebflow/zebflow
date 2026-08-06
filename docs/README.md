@@ -1,31 +1,28 @@
-# Zebflow Docs
+# Zebflow Documentation
 
-This folder is intentionally split by audience and authority.
+Zebflow documentation is split by audience.
 
-## Structure
+- [Usage](./usage/README.md) is for people building apps, APIs, maps, workflows, databases, and AI tools with Zebflow.
+- [Developer](./developer/README.md) is for people extending Zebflow itself or creating reusable nodes and packages.
+- [Operations](./operations/README.md) is for people running Zebflow on a machine, server, or cluster.
+- [Examples](./examples/README.md) is for runnable examples that can also become Hub packages.
 
-- [dev-guide/](./dev-guide/README.md)
-  Current engineering and architecture references. This is where normative
-  system contracts live.
-- [user-guide/](./user-guide/README.md)
-  End-user and operator-facing documentation.
-- [examples/](./examples/README.md)
-  Reserved for curated example material.
-- [unused/](./unused/)
-  Older or superseded notes kept temporarily so they can be reviewed and
-  deleted later.
+## Existing Reference Docs
 
-## Normative Docs
+Some detailed material still lives in the older folders while the docs are being reshaped:
 
-For current contract work, start here:
+- [User Guide](./user-guide/README.md)
+- [Developer Guide](./dev-guide/README.md)
+- [Project Contract](./dev-guide/project-contract.md)
+- [Office Federation Contract](./dev-guide/office-federation-contract.md)
+- [Architecture](./dev-guide/architecture.md)
+- [Hub Formal Guide](./user-guide/hub-formal-guide.md)
+- [Storage Formal Guide](./user-guide/storage-formal-guide.md)
 
-1. [Project Contract](./dev-guide/project-contract.md)
-2. [Office Federation Contract](./dev-guide/office-federation-contract.md)
-3. [Architecture](./dev-guide/architecture.md)
-4. [Office Federation Model](./dev-guide/office-federation-model.md)
+## Writing Rule
 
-The rule for future edits is simple:
+Write Zebflow docs for global users first: clear words, short examples, and practical steps. Put deep architecture details in the developer guide, not in the first page a new user reads.
 
-- current truth goes into `dev-guide/`
-- user-facing how-to material goes into `user-guide/`
-- stale or superseded notes move into `unused/`
+## Coverage Map
+
+Use [Coverage Map](./coverage-map.md) to check where each major Zebflow source area is documented. If a new top-level module, project surface, route family, node family, package type, or runtime subsystem is added, update that map in the same change.

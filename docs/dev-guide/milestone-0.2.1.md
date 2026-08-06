@@ -38,8 +38,7 @@ Start with two export artifacts:
   - `data/`
   - `manifest.json`
 - `project.files.tar.zst`
-  - `files/public/`
-  - `files/private/`
+  - `files/`
 
 ### Requirements
 

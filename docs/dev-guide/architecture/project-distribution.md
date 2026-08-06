@@ -87,7 +87,7 @@ it should be
     }
   }
   distribution: {
-    marketplace: {}
+    hub: {}
   }
 }
 
@@ -121,7 +121,7 @@ Current settings coverage under the proposed shape:
 | `configs.data` | Reserved place for durable project-level data configuration. No dedicated `zebflow.json` data section is stored yet. |
 | `configs.files.uploads.max_asset_size_mb` | Max upload size for one asset file. Currently stored today as `assets.max_asset_size_mb`. |
 | `configs.files.uploads.max_file_size_mb` | Reserved place for broader file upload policy. Not stored yet in current `zebflow.json`. |
-| `distribution.marketplace` | Reserved place for project marketplace/distribution contract. Not stored yet in current `zebflow.json`. |
+| `distribution.hub` | Reserved place for project hub/distribution contract. Not stored yet in current `zebflow.json`. |
 
 Important note:
 
@@ -149,7 +149,7 @@ Important note:
 
 Important note:
 
-- if a project is distributed through Git sync, marketplace, or project export,
+- if a project is distributed through Git sync, hub, or project export,
   `repo/zebflow.json` is part of the project definition and should be treated as
   first-class source content.
 
@@ -180,13 +180,12 @@ It is used for stored file payloads that are not part of the source workspace.
 
 Key contents:
 
-- `files/public/`
-- `files/private/`
+- Zebflow FS object paths under `files/`
 
 Important notes:
 
-- `files/public/` contains files that may be exposed through public interfaces.
-- `files/private/` contains files intended for internal/project-only use.
+- object paths do not encode public/private visibility.
+- objects are private by default; public exposure is managed by Zebflow FS policy.
 - `files/` is distinct from `repo/pipelines/assets/`.
   - `repo/pipelines/assets/` belongs to the source workspace.
   - `files/` belongs to project file storage.
@@ -200,7 +199,7 @@ The three roots have different responsibilities:
 - `files/` = stored file payloads
 
 This split is the first formal basis for Git sync, backup, transfer, and
-marketplace behavior.
+hub behavior.
 
 ## Distribution Capabilities
 
@@ -213,12 +212,12 @@ Legend:
 - `~` partial / conditional / evolving
 - `-` not the intended mechanism
 
-| Capability | Git | Marketplace | Import / Export | Transfer |
+| Capability | Git | Hub | Import / Export | Transfer |
 | --- | --- | --- | --- | --- |
 | Versioned source code in `repo/` | ✓ | ~ | ✓ | ✓ |
 | Pipelines only | ~ | ✓ | ~ | ~ |
 | Templates / UI pieces only | ~ | ✓ | ~ | ~ |
-| Reusable packs / partial project material | - | ✓ | ~ | ~ |
+| Reusable packages / partial project material | - | ✓ | ~ | ~ |
 | Full project-wide source workspace | ✓ | ~ | ✓ | ✓ |
 | Runtime `data/` | - | - | ✓ | ✓ |
 | Stored `files/` payloads | - | ~ | ✓ | ✓ |
@@ -237,55 +236,68 @@ Git is the source sync and versioning mechanism for the project workspace.
 It is authoritative for `repo/`, but it is not the mechanism for moving
 runtime `data/` or stored `files/`.
 
-#### Marketplace
+#### Hub
 
-Marketplace is the share, clone, and reuse mechanism. It is strongest for
-packs, reusable project material, and forkable project distribution. It is not
-the primary mechanism for moving full runtime state.
+Hub is the share, clone, and reuse mechanism. It is strongest for
+packages, reusable project material, and forkable project distribution. It is
+not the primary mechanism for moving full runtime state.
+
+Add+ is the project-side add surface. Hub is one Add+ source adapter, not the
+entire Add+ system.
+
+Canonical Add+ source adapters:
+
+- built-in catalog: offline first-party material embedded in the Zebflow binary
+- Hub: packages from configured Zebflow Hub sources
+- Git: GitHub, GitLab, or another git remote
+- Local: local folders and user-selected archive files, including zip packages
+
+Zip is local when the user selects it from their machine. If a zip is fetched
+from a remote URL, the source adapter is that remote system.
 
 ##### Authority Model
 
-Marketplace authority remains project-based.
+Hub authority remains project-based.
 
-Formal marketplace authority URL:
+Formal hub authority URL:
 
-- `/api/projects/{owner}/{project}/marketplace`
+- `/api/projects/{owner}/{project}/hub`
 
-This means a marketplace authority is hosted by one project, not by the
+This means a hub authority is hosted by one project, not by the
 platform Home surface.
 
-However, marketplace producer behavior is not open by default.
+However, hub producer behavior is not open by default.
 
 Formal producer rule:
 
-- project marketplace producer mode is disabled by default
-- ordinary projects may consume marketplace packages without becoming producers
+- project hub producer mode is disabled by default
+- ordinary projects may consume hub packages without becoming producers
 - only explicitly enabled projects may expose producer APIs
 
 Current target policy:
 
-- only curated `superadmin`-owned projects may enable marketplace producer mode
+- only curated `superadmin`-owned projects may enable hub producer mode
 
-This keeps current Zebflow marketplace URLs and storage intact while avoiding a
-world where every project becomes a public marketplace authority.
+This keeps current Zebflow hub URLs and storage intact while avoiding a
+world where every project becomes a public hub authority.
 
 ##### Consumer vs Producer
 
-Marketplace use splits into two modes:
+Hub use splits into two modes:
 
 - consumer
 - producer
 
 Consumer meaning:
 
-- browse configured marketplace sources
+- browse configured hub sources
 - install project/app packages
-- install project-scoped reusable packs
+- add project-scoped reusable packages
 
 Producer meaning:
 
-- host a marketplace authority URL
-- issue marketplace tokens
+- host a hub authority URL
+- issue hub tokens
 - publish packages
 - manage publisher identities
 
@@ -296,7 +308,7 @@ Formal rule:
 
 ##### Identity Model
 
-Marketplace should not treat platform users as public publisher identity.
+Hub should not treat platform users as public publisher identity.
 
 Formal identity split:
 
@@ -304,15 +316,15 @@ Formal identity split:
   - authenticated internal actor
   - used for login, access control, and audit trail
 - `producer project`
-  - project that hosts one marketplace authority
+  - project that hosts one hub authority
 - `publisher_id`
-  - stable public publishing identity inside that marketplace authority
+  - stable public publishing identity inside that hub authority
 - `token`
   - revocable credential that authorizes publish/read/manage operations
 
 Formal rule:
 
-- a platform user does not automatically become a marketplace publisher
+- a platform user does not automatically become a hub publisher
 - publishing should happen as one explicit `publisher_id`
 - tokens should be bound to publisher identity, not used as the identity itself
 
@@ -321,7 +333,7 @@ identity.
 
 ##### Publisher Contract
 
-Inside one producer marketplace authority, publisher identity should be formal
+Inside one producer hub authority, publisher identity should be formal
 and stable.
 
 Minimum publisher fields:
@@ -344,7 +356,7 @@ Formal meaning:
 - `display_name`
   - human-facing alias, for example `Zebflow Official`
 - `publisher_url`
-  - stable public publisher route inside that marketplace authority
+  - stable public publisher route inside that hub authority
 - `email`
   - stable publisher contact channel for support, revocation requests, and trust
 - token
@@ -355,14 +367,14 @@ alias and publisher URL remain stable.
 
 ##### Package Display and Attribution
 
-Marketplace packages should support display-oriented metadata without changing
+Hub packages should support display-oriented metadata without changing
 the authority or publish-token mechanism.
 
 Formal rule:
 
 - package display metadata is optional
 - package display metadata is not the same as package authority
-- documentation and attribution content may be shown in marketplace list/detail
+- documentation and attribution content may be shown in hub list/detail
   views
 
 Recommended package display fields:
@@ -380,7 +392,7 @@ Formal meaning:
 - `license_ref`
   - a repo-relative license or attribution document reference
 - `attribution_text`
-  - short human-readable attribution shown directly in marketplace surfaces
+  - short human-readable attribution shown directly in hub surfaces
 - `authors`
   - author list for package/project provenance
 - `homepage_url`
@@ -388,13 +400,13 @@ Formal meaning:
 
 Recommended convention for project bundles:
 
-- if a root `README.md` exists, marketplace may use it as the default
+- if a root `README.md` exists, hub may use it as the default
   `readme_ref`
 
 Formal purpose:
 
 - preserve attribution when projects are installed, forked, or republished
-- show usage notes and context in marketplace search/detail surfaces
+- show usage notes and context in hub search/detail surfaces
 - keep provenance visible without changing package installation behavior
 
 ##### Producer Activation
@@ -409,21 +421,21 @@ Formal rule:
 
 ##### Visibility Model
 
-Project visibility and marketplace visibility are different concerns.
+Project visibility and hub visibility are different concerns.
 
 Formal rule:
 
 - platform Home shows projects visible to the current user
-- marketplace browsing shows packages visible from configured marketplace
+- hub browsing shows packages visible from configured hub
   sources
 
-This means a user may browse marketplace packages without automatically seeing
+This means a user may browse hub packages without automatically seeing
 all projects on the platform, and may see local projects without owning any
 publisher identity.
 
 ##### Share Types
 
-Marketplace should distribute typed packages, not arbitrary file dumps.
+Hub should distribute typed packages, not arbitrary file dumps.
 
 Formal share types:
 
@@ -450,7 +462,7 @@ Formal meaning:
 
 ##### Packaging Rules
 
-Every marketplace package should have:
+Every hub package should have:
 
 - one formal `kind`
 - one formal `root_ref`
@@ -480,7 +492,7 @@ Optional attached payloads:
 
 Formal principle:
 
-- Marketplace distributes portable source packages.
+- Hub distributes portable source packages.
 - Runtime state is excluded by default unless a payload type is explicitly
   defined for it.
 

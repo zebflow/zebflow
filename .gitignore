@@ -1,5 +1,6 @@
 /target
 **/target/
+.ignored/
 
 # package managers
 node_modules/
