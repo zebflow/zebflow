@@ -84,6 +84,11 @@ const PUBLIC_FS_PROXY_HEADER: &str = "x-zebflow-public-fs-proxy";
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
+const BRAND_FAVICON_SVG: &[u8] = include_bytes!("assets/branding/favicon.svg");
+const BRAND_FAVICON_ICO: &[u8] = include_bytes!("assets/branding/favicon.ico");
+const BRAND_FAVICON_16_PNG: &[u8] = include_bytes!("assets/branding/favicon-16.png");
+const BRAND_FAVICON_32_PNG: &[u8] = include_bytes!("assets/branding/favicon-32.png");
+const BRAND_APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("assets/branding/apple-touch-icon.png");
 /// Global tokens + shared UI; studio rules are concatenated from `pages/project-studio/styles.css` (one HTTP stylesheet).
 const PLATFORM_MAIN_CSS: &str = concat!(
     include_str!("templates/styles/main.css"),
@@ -353,6 +358,11 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         // OAuth2 credential callback — unauthenticated (provider redirects browser here).
         .route("/oauth/callback", get(oauth2_callback_handler))
         .route("/", get(root_redirect))
+        .route("/favicon.ico", get(favicon_ico_asset))
+        .route("/favicon.svg", get(favicon_svg_asset))
+        .route("/favicon-16.png", get(favicon_16_asset))
+        .route("/favicon-32.png", get(favicon_32_asset))
+        .route("/apple-touch-icon.png", get(apple_touch_icon_asset))
         .route("/assets/branding/{asset}", get(branding_asset))
         .route("/assets/platform/{asset}", get(platform_asset))
         .route("/assets/node-icons/{*path}", get(node_icon_asset))
@@ -759,6 +769,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/rwe/cache/clear",
             post(api_rwe_cache_clear),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/editor/completion-catalog",
+            get(api_editor_completion_catalog),
         )
         .route(
             "/api/projects/{owner}/{project}/assistant/chat",
@@ -1449,6 +1463,7 @@ fn render_page(
 
     // All platform pages depend on shared design tokens and reset CSS.
     html = ensure_stylesheet_link(html, "/assets/platform/main.css");
+    html = ensure_favicon_links(html);
     // DB suite pages require dedicated layout rules.
     if html.contains("data-db-suite=\"true\"") {
         html = ensure_stylesheet_link(html, "/assets/platform/db-suite.css");
@@ -1498,6 +1513,23 @@ fn ensure_stylesheet_link(mut html: String, href: &str) -> String {
         return html;
     }
     format!("{link}{html}")
+}
+
+fn ensure_favicon_links(mut html: String) -> String {
+    if html.contains("/favicon.svg") || html.contains("/apple-touch-icon.png") {
+        return html;
+    }
+    let links = concat!(
+        "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">",
+        "<link rel=\"icon\" href=\"/favicon-32.png\" sizes=\"32x32\" type=\"image/png\">",
+        "<link rel=\"icon\" href=\"/favicon-16.png\" sizes=\"16x16\" type=\"image/png\">",
+        "<link rel=\"apple-touch-icon\" href=\"/apple-touch-icon.png\" sizes=\"180x180\">",
+    );
+    if let Some(pos) = html.find("</head>") {
+        html.insert_str(pos, links);
+        return html;
+    }
+    format!("{links}{html}")
 }
 
 fn insert_project_theme_block(mut html: String, style_block: &str) -> String {
@@ -1878,8 +1910,33 @@ async fn branding_asset(Path(asset): Path<String>) -> Response {
     match asset.as_str() {
         "logo.svg" => asset_response("image/svg+xml; charset=utf-8", BRAND_LOGO_SVG),
         "logo.png" => asset_response("image/png", BRAND_LOGO_PNG),
+        "favicon.svg" => asset_response("image/svg+xml; charset=utf-8", BRAND_FAVICON_SVG),
+        "favicon.ico" => asset_response("image/x-icon", BRAND_FAVICON_ICO),
+        "favicon-16.png" => asset_response("image/png", BRAND_FAVICON_16_PNG),
+        "favicon-32.png" => asset_response("image/png", BRAND_FAVICON_32_PNG),
+        "apple-touch-icon.png" => asset_response("image/png", BRAND_APPLE_TOUCH_ICON_PNG),
         _ => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
+}
+
+async fn favicon_ico_asset() -> Response {
+    asset_response("image/x-icon", BRAND_FAVICON_ICO)
+}
+
+async fn favicon_svg_asset() -> Response {
+    asset_response("image/svg+xml; charset=utf-8", BRAND_FAVICON_SVG)
+}
+
+async fn favicon_16_asset() -> Response {
+    asset_response("image/png", BRAND_FAVICON_16_PNG)
+}
+
+async fn favicon_32_asset() -> Response {
+    asset_response("image/png", BRAND_FAVICON_32_PNG)
+}
+
+async fn apple_touch_icon_asset() -> Response {
+    asset_response("image/png", BRAND_APPLE_TOUCH_ICON_PNG)
 }
 
 async fn platform_asset(Path(asset): Path<String>) -> Response {
@@ -24401,6 +24458,301 @@ async fn ws_dispatch_event(
             let _ = engine.execute_async(&graph, &ctx).await;
         });
     }
+}
+
+// ── Editor API handlers ────────────────────────────────────────────────────────
+
+fn editor_class_completion(label: &str, section: &str, detail: &str) -> Value {
+    json!({
+        "label": label,
+        "type": "constant",
+        "detail": detail,
+        "section": { "name": section },
+    })
+}
+
+fn editor_push_class_completions(
+    completions: &mut Vec<Value>,
+    labels: &[&str],
+    section: &str,
+    detail: &str,
+) {
+    for label in labels {
+        completions.push(editor_class_completion(label, section, detail));
+    }
+}
+
+fn editor_push_tailwind_spacing_completions(completions: &mut Vec<Value>) {
+    let steps = [
+        "0", "px", "0.5", "1", "1.5", "2", "2.5", "3", "3.5", "4", "5", "6", "7", "8", "9", "10",
+        "11", "12", "14", "16", "20", "24", "28", "32", "36", "40", "44", "48", "52", "56", "60",
+        "64", "72", "80", "96",
+    ];
+    let positive_prefixes = [
+        "p", "px", "py", "pt", "pr", "pb", "pl", "gap", "gap-x", "gap-y", "space-x", "space-y",
+    ];
+    let margin_prefixes = ["m", "mx", "my", "mt", "mr", "mb", "ml"];
+
+    for prefix in positive_prefixes {
+        for step in steps {
+            completions.push(editor_class_completion(
+                &format!("{prefix}-{step}"),
+                "Spacing",
+                "Tailwind spacing",
+            ));
+        }
+    }
+    for prefix in margin_prefixes {
+        completions.push(editor_class_completion(
+            &format!("{prefix}-auto"),
+            "Spacing",
+            "Tailwind spacing",
+        ));
+        for step in steps {
+            completions.push(editor_class_completion(
+                &format!("{prefix}-{step}"),
+                "Spacing",
+                "Tailwind spacing",
+            ));
+            if step != "0" {
+                completions.push(editor_class_completion(
+                    &format!("-{prefix}-{step}"),
+                    "Spacing",
+                    "Tailwind spacing",
+                ));
+            }
+        }
+    }
+}
+
+fn editor_completion_catalog() -> Value {
+    let layout = [
+        "block",
+        "inline",
+        "inline-block",
+        "flex",
+        "inline-flex",
+        "grid",
+        "hidden",
+        "relative",
+        "absolute",
+        "fixed",
+        "sticky",
+        "inset-0",
+        "w-full",
+        "w-screen",
+        "h-full",
+        "h-screen",
+        "min-w-0",
+        "min-h-0",
+        "min-h-screen",
+        "max-w-sm",
+        "max-w-md",
+        "max-w-lg",
+        "max-w-xl",
+        "max-w-2xl",
+        "max-w-3xl",
+        "max-w-4xl",
+        "max-w-5xl",
+        "max-w-6xl",
+        "max-w-7xl",
+        "max-w-none",
+        "overflow-hidden",
+        "overflow-auto",
+        "overflow-x-auto",
+        "overflow-y-auto",
+        "truncate",
+        "whitespace-nowrap",
+    ];
+    let flex_grid = [
+        "flex-row",
+        "flex-col",
+        "flex-wrap",
+        "flex-nowrap",
+        "flex-1",
+        "shrink-0",
+        "grow",
+        "grow-0",
+        "items-start",
+        "items-center",
+        "items-end",
+        "items-baseline",
+        "items-stretch",
+        "justify-start",
+        "justify-center",
+        "justify-end",
+        "justify-between",
+        "justify-around",
+        "justify-evenly",
+        "place-items-center",
+        "grid-cols-1",
+        "grid-cols-2",
+        "grid-cols-3",
+        "grid-cols-4",
+        "grid-cols-6",
+        "grid-cols-12",
+        "gap-1",
+        "gap-1.5",
+        "gap-2",
+        "gap-3",
+        "gap-4",
+        "gap-5",
+        "gap-6",
+        "gap-8",
+    ];
+    let visual = [
+        "rounded",
+        "rounded-sm",
+        "rounded-md",
+        "rounded-lg",
+        "rounded-xl",
+        "rounded-full",
+        "border",
+        "border-0",
+        "border-t",
+        "border-b",
+        "shadow",
+        "shadow-sm",
+        "shadow-md",
+        "shadow-lg",
+        "ring-1",
+        "ring-2",
+        "opacity-50",
+        "opacity-60",
+        "opacity-70",
+        "opacity-100",
+        "transition",
+        "transition-colors",
+        "duration-150",
+        "duration-200",
+    ];
+    let tokens = [
+        "bg-bg",
+        "bg-surface",
+        "bg-surface-2",
+        "bg-surface-3",
+        "bg-ui-bg",
+        "bg-ui-bg-subtle",
+        "bg-ui-bg-muted",
+        "bg-accent",
+        "bg-brand-orange",
+        "bg-brand-blue",
+        "text-body",
+        "text-body-soft",
+        "text-body-muted",
+        "text-ui-text",
+        "text-ui-text-soft",
+        "text-ui-text-muted",
+        "text-accent",
+        "text-brand-orange",
+        "text-brand-blue",
+        "border-border",
+        "border-border-soft",
+        "border-accent",
+        "border-ui-border",
+        "ring-accent",
+    ];
+    let typography = [
+        "text-xs",
+        "text-sm",
+        "text-base",
+        "text-lg",
+        "text-xl",
+        "text-2xl",
+        "text-3xl",
+        "text-4xl",
+        "font-sans",
+        "font-mono",
+        "font-display",
+        "font-normal",
+        "font-medium",
+        "font-semibold",
+        "font-bold",
+        "font-black",
+        "leading-none",
+        "leading-tight",
+        "leading-snug",
+        "leading-normal",
+        "tracking-wide",
+        "uppercase",
+    ];
+    let variants = [
+        "hover:bg-surface-2",
+        "hover:bg-surface-3",
+        "hover:text-body",
+        "hover:text-accent",
+        "focus:outline-none",
+        "focus:ring-2",
+        "disabled:opacity-50",
+        "disabled:pointer-events-none",
+        "sm:flex",
+        "md:flex",
+        "lg:flex",
+        "sm:grid-cols-2",
+        "md:grid-cols-2",
+        "lg:grid-cols-2",
+        "lg:grid-cols-3",
+    ];
+
+    let mut completions = Vec::new();
+    editor_push_class_completions(&mut completions, &layout, "Layout", "Tailwind layout");
+    editor_push_class_completions(
+        &mut completions,
+        &flex_grid,
+        "Flex/Grid",
+        "Tailwind flex/grid",
+    );
+    editor_push_tailwind_spacing_completions(&mut completions);
+    editor_push_class_completions(&mut completions, &visual, "Visual", "Tailwind visual");
+    editor_push_class_completions(&mut completions, &tokens, "Zebflow Tokens", "Zebflow token");
+    editor_push_class_completions(
+        &mut completions,
+        &typography,
+        "Typography",
+        "Tailwind typography",
+    );
+    editor_push_class_completions(&mut completions, &variants, "Variants", "Tailwind variant");
+
+    json!({
+        "version": "zebflow-editor-catalog-v1",
+        "class_completions": completions,
+        "variants": ["hover", "focus", "active", "disabled", "sm", "md", "lg", "xl", "dark", "group-hover", "peer-focus"],
+        "components": [],
+    })
+}
+
+async fn api_editor_completion_catalog(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(r) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::PipelinesRead,
+    ) {
+        return r;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+
+    Json(json!({ "ok": true, "catalog": editor_completion_catalog() })).into_response()
 }
 
 // ── Catalog API handlers ───────────────────────────────────────────────────────

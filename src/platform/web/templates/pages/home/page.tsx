@@ -18,13 +18,15 @@ const GITLAB_TOKEN_HELP =
   "In GitLab: User Settings → Access Tokens. Create a token with read_repository + write_repository scopes.";
 const GITHUB_TOKEN_HELP =
   "In GitHub: Settings → Developer settings → Personal access tokens → Tokens (classic). Select the repo scope.";
+const SELECT_CLASS =
+  "h-10 w-full rounded-md border border-ui-border bg-ui-bg px-3 text-sm text-ui-text shadow-sm transition-all focus:border-brand-blue/40 focus:outline-none focus:ring-1 focus:ring-brand-blue/40";
 
 export const page = {
   html: {
     lang: "en",
   },
   body: {
-    className: "min-h-screen bg-zinc-50 text-gray-900 font-sans",
+    className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans",
   },
   navigation: "history",
 };
@@ -36,6 +38,127 @@ export function getPage(input) {
       description: input?.seo?.description ?? "",
     },
   };
+}
+
+function SectionHeading({ title, description }) {
+  return (
+    <header className="mb-5">
+      <h2 className="text-[26px] font-semibold leading-tight tracking-tight text-ui-text">{title}</h2>
+      <p className="mt-1 max-w-2xl text-[15px] leading-6 text-ui-text-soft">{description}</p>
+    </header>
+  );
+}
+
+function DetailRow({ label, children, mono = false }) {
+  return (
+    <p className={mono ? "truncate font-mono text-[11.5px] text-ui-text-muted" : "text-[13.5px] leading-7 text-ui-text-soft"}>
+      <span className={mono ? "font-sans font-semibold text-ui-text" : "font-semibold text-ui-text"}>{label}:</span>{" "}
+      {children}
+    </p>
+  );
+}
+
+function ProjectCard({ item, index }) {
+  const accent = item?.is_app ? "var(--color-brand-orange)" : index % 3 === 2 ? "var(--color-brand-blue)" : "var(--color-ui-text-muted)";
+  const primaryAction = item?.open_app_path ? "Play" : "Edit";
+  const primaryHref = item?.open_app_path || item?.edit_path || item?.path || "#";
+
+  return (
+    <Card className="relative overflow-hidden rounded-[14px] transition-all hover:border-ui-border-strong hover:shadow-md">
+      {item?.is_app ? (
+        <div aria-hidden="true" className="pointer-events-none absolute right-0 top-0 h-16 w-32 opacity-35">
+          <svg width="128" height="64" viewBox="0 0 128 64" fill="none">
+            <path d="M0 42 C 32 42, 42 16, 74 16 S 116 38, 128 24" stroke="var(--color-brand-orange)" strokeWidth="1.5" strokeDasharray="2 7" />
+          </svg>
+        </div>
+      ) : null}
+      <CardContent className="relative p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-[21px] font-semibold leading-tight">{item?.title}</CardTitle>
+            <CardDescription className="mt-1 truncate font-mono text-xs">{item?.project}</CardDescription>
+          </div>
+          <span className="mt-1 h-[9px] w-[9px] shrink-0 rounded-[3px]" style={{ backgroundColor: accent }} />
+        </div>
+
+        <div className="mt-[18px]">
+          <DetailRow label="Runtime">
+            {item?.runtime_mode || "shared"} · {item?.runtime_summary || "Local office"}
+          </DetailRow>
+          <DetailRow label="Office">{item?.office_label || "Local office"}</DetailRow>
+          <DetailRow label="Address" mono>
+            {item?.office_url || "Uses the current office address"}
+          </DetailRow>
+        </div>
+
+        <div className="mt-5 flex flex-wrap gap-2">
+          <Link href={primaryHref} className="inline-flex hover:no-underline">
+            <Button as="span" variant="primary" size="sm">
+              {primaryAction}
+            </Button>
+          </Link>
+          {item?.open_app_path ? (
+            <Link href={item?.edit_path ?? item?.path ?? "#"} className="inline-flex hover:no-underline">
+              <Button as="span" variant="outline" size="sm">
+                Edit
+              </Button>
+            </Link>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusBadge({ status }) {
+  const value = String(status || "unknown");
+  const tone =
+    value === "online"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+      : value === "dangling"
+        ? "border-amber-200 bg-amber-50 text-amber-700"
+        : "border-ui-border bg-ui-bg-muted text-ui-text-soft";
+  return (
+    <span className={`inline-flex rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] ${tone}`}>
+      {value}
+    </span>
+  );
+}
+
+function OfficeCard({ office, index }) {
+  const projects = Array.isArray(office?.hosted_projects) ? office.hosted_projects : [];
+  const capabilities = Array.isArray(office?.capabilities) ? office.capabilities : [];
+
+  return (
+    <Card key={`${office?.id ?? "office"}-${index}`} className="rounded-[14px]">
+      <CardContent className="p-[22px]">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <CardTitle className="truncate text-[19px] font-semibold leading-tight">{office?.label || office?.id}</CardTitle>
+            <CardDescription className="mt-1 text-[13px]">{office?.role || "Office"}</CardDescription>
+          </div>
+          <StatusBadge status={office?.availability} />
+        </div>
+        <div className="my-4 h-px bg-ui-border" />
+        <div>
+          <DetailRow label="State">{office?.resource_state || "unknown"}</DetailRow>
+          <DetailRow label="Address" mono>
+            {office?.address || "No advertised address"}
+          </DetailRow>
+          <DetailRow label="Version">{office?.version || "unknown"}</DetailRow>
+          <DetailRow label="Last seen">{office?.last_seen || "unknown"}</DetailRow>
+          <DetailRow label="Hosted projects">{office?.hosted_project_count ?? 0}</DetailRow>
+          <DetailRow label="Capabilities">{capabilities.length > 0 ? capabilities.join(", ") : "none declared"}</DetailRow>
+          {projects.length > 0 ? (
+            <DetailRow label="Examples">
+              {projects.slice(0, 3).join(", ")}
+              {projects.length > 3 ? ` +${projects.length - 3} more` : ""}
+            </DetailRow>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function Page(input) {
@@ -92,21 +215,21 @@ export default function Page(input) {
     <>
       <ChromeHeader />
 
-      <main className="pb-16 pt-24">
-        <section className="mx-auto max-w-6xl px-6">
-          <header className="mb-10 flex flex-col gap-4 border-b border-gray-200 pb-4 sm:flex-row sm:items-end sm:justify-between">
+      <main className="pb-20 pt-28">
+        <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">
+          <header className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h1 className="text-3xl font-black tracking-tighter text-gray-900">
-                Projects for {input.owner}
+              <h1 className="text-[40px] font-semibold leading-none tracking-tight text-ui-text">
+                Projects for <span className="text-brand-orange">{input.owner}</span>
               </h1>
-              <p className="mt-2 text-sm text-gray-500">
+              <p className="mt-3 max-w-2xl text-base leading-6 text-ui-text-soft">
                 Create and manage automation projects inside this office.
               </p>
               {input?.app_version ? (
-                <p className="mt-1 text-[0.7rem] text-gray-400 tracking-wide">v{input.app_version}</p>
+                <p className="mt-1.5 font-mono text-[11px] tracking-wide text-ui-text-muted">v{input.app_version}</p>
               ) : null}
             </div>
-            <div className="flex shrink-0 flex-wrap gap-2">
+            <div className="flex shrink-0 flex-wrap gap-3">
               <Button type="button" variant="primary" onClick={() => setCreateOpen(true)}>
                 Create project
               </Button>
@@ -119,123 +242,23 @@ export default function Page(input) {
             </div>
           </header>
 
+          <div className="my-8 h-px bg-ui-border" />
+
           <section className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
             {projects.map((item, index) => (
-              <Card key={`${item?.project ?? "project"}-${index}`} className="transition-all hover:border-gray-300 hover:shadow-md">
-                <CardContent className="py-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <CardTitle className="text-lg">{item?.title}</CardTitle>
-                      <CardDescription className="mt-1">{item?.project}</CardDescription>
-                    </div>
-                    {item?.is_app ? (
-                      <span className="inline-flex rounded-full bg-emerald-50 px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-wide text-emerald-700">
-                        App
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="mt-4 space-y-1 text-xs text-gray-500">
-                    <p>
-                      <span className="font-medium text-gray-700">Runtime:</span>{" "}
-                      {item?.runtime_mode || "shared"} · {item?.runtime_summary || "Local office"}
-                    </p>
-                    <p>
-                      <span className="font-medium text-gray-700">Office:</span>{" "}
-                      {item?.office_label || "Local office"}
-                    </p>
-                    <p className="truncate">
-                      <span className="font-medium text-gray-700">Address:</span>{" "}
-                      {item?.office_url || "Uses the current office address"}
-                    </p>
-                  </div>
-                  <div className="mt-5 flex flex-wrap gap-2">
-                    {item?.open_app_path ? (
-                      <Link href={item.open_app_path} className="inline-flex hover:no-underline">
-                        <Button as="span" variant="primary" size="sm">
-                          Play
-                        </Button>
-                      </Link>
-                    ) : null}
-                    <Link href={item?.edit_path ?? item?.path ?? "#"} className="inline-flex hover:no-underline">
-                      <Button as="span" variant={item?.open_app_path ? "outline" : "primary"} size="sm">
-                        Edit
-                      </Button>
-                    </Link>
-                  </div>
-                </CardContent>
-              </Card>
+              <ProjectCard key={`${item?.project ?? "project"}-${index}`} item={item} index={index} />
             ))}
           </section>
 
-          <section className="mt-12">
-            <header className="mb-4">
-              <h2 className="text-xl font-black tracking-tight text-gray-900">Office status</h2>
-              <p className="mt-1 text-sm text-gray-500">
-                Current office inventory, runtime availability, and placement health.
-              </p>
-            </header>
+          <section className="mt-14">
+            <SectionHeading
+              title="Office status"
+              description="Current office inventory, runtime availability, and placement health."
+            />
             <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
-              {offices.map((office, index) => {
-                const availability = String(office?.availability || "unknown");
-                const availabilityTone =
-                  availability === "online"
-                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                    : availability === "dangling"
-                      ? "bg-amber-50 text-amber-700 border-amber-200"
-                      : "bg-gray-100 text-gray-700 border-gray-200";
-                const projects = Array.isArray(office?.hosted_projects) ? office.hosted_projects : [];
-                const capabilities = Array.isArray(office?.capabilities) ? office.capabilities : [];
-                return (
-                  <Card key={`${office?.id ?? "office"}-${index}`}>
-                    <CardContent className="py-5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <CardTitle className="text-lg">{office?.label || office?.id}</CardTitle>
-                          <CardDescription className="mt-1">{office?.role || "Office"}</CardDescription>
-                        </div>
-                        <span
-                          className={`inline-flex rounded-full border px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-wide ${availabilityTone}`}
-                        >
-                          {availability}
-                        </span>
-                      </div>
-                      <div className="mt-4 space-y-1 text-xs text-gray-500">
-                        <p>
-                          <span className="font-medium text-gray-700">State:</span>{" "}
-                          {office?.resource_state || "unknown"}
-                        </p>
-                        <p className="truncate">
-                          <span className="font-medium text-gray-700">Address:</span>{" "}
-                          {office?.address || "No advertised address"}
-                        </p>
-                        <p>
-                          <span className="font-medium text-gray-700">Version:</span>{" "}
-                          {office?.version || "unknown"}
-                        </p>
-                        <p>
-                          <span className="font-medium text-gray-700">Last seen:</span>{" "}
-                          {office?.last_seen || "unknown"}
-                        </p>
-                        <p>
-                          <span className="font-medium text-gray-700">Hosted projects:</span>{" "}
-                          {office?.hosted_project_count ?? 0}
-                        </p>
-                        <p className="truncate">
-                          <span className="font-medium text-gray-700">Capabilities:</span>{" "}
-                          {capabilities.length > 0 ? capabilities.join(", ") : "none declared"}
-                        </p>
-                        {projects.length > 0 ? (
-                          <p className="truncate">
-                            <span className="font-medium text-gray-700">Examples:</span>{" "}
-                            {projects.slice(0, 3).join(", ")}
-                            {projects.length > 3 ? ` +${projects.length - 3} more` : ""}
-                          </p>
-                        ) : null}
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+              {offices.map((office, index) => (
+                <OfficeCard key={`${office?.id ?? "office"}-${index}`} office={office} index={index} />
+              ))}
             </div>
           </section>
         </section>
@@ -279,7 +302,7 @@ export default function Page(input) {
                     name="runtime_mode"
                     value={createRuntimeMode}
                     onChange={(e) => setCreateRuntimeMode(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
+                    className={SELECT_CLASS}
                   >
                     <option value="shared">Shared</option>
                     <option value="pinned">Pinned</option>
@@ -296,7 +319,7 @@ export default function Page(input) {
                     name="placement_worker_id"
                     value={createPlacementWorker}
                     onChange={(e) => setCreatePlacementWorker(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
+                    className={SELECT_CLASS}
                   >
                     {runtimeTargets.map((item) => (
                       <option key={item.value} value={item.value}>
@@ -423,7 +446,7 @@ export default function Page(input) {
                     name="runtime_mode"
                     value={cloneRuntimeMode}
                     onChange={(e) => setCloneRuntimeMode(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
+                    className={SELECT_CLASS}
                   >
                     <option value="shared">Shared</option>
                     <option value="pinned">Pinned</option>
@@ -441,7 +464,7 @@ export default function Page(input) {
                     name="placement_worker_id"
                     value={clonePlacementWorker}
                     onChange={(e) => setClonePlacementWorker(e.target.value)}
-                    className="h-10 w-full rounded-xl border border-gray-300 bg-white px-3 text-sm text-gray-900"
+                    className={SELECT_CLASS}
                   >
                     {runtimeTargets.map((item) => (
                       <option key={item.value} value={item.value}>

@@ -7,7 +7,7 @@
 import { useEffect, useState, Link, cx } from "zeb";
 import PlatformSidebar from "@/pages/project-studio/components/platform-sidebar";
 import Button from "@/components/ui/button";
-import { HelpIcon, HomeIcon, MoonIcon, PreferencesIcon, SunIcon, TerminalIcon } from "@/pages/project-studio/components/icons";
+import { HelpIcon, HomeIcon, MoonIcon, PreferencesIcon, SunIcon, TerminalIcon, UserIcon } from "@/pages/project-studio/components/icons";
 import { GitRepoPanel } from "@/pages/project-studio/components/git-repo-panel";
 import { SessionPanel } from "@/pages/project-studio/components/session-panel";
 import { AutoOverlay } from "@/pages/project-studio/components/auto-overlay";
@@ -37,8 +37,10 @@ function TerminalToggleButton({ isLight }) {
     <button
       type="button"
       className={cx(
-        isLight ? "bg-gray-200 text-gray-700" : "bg-dark-accent3 !text-dark-menus",
-        "flex h-9 w-9 items-center justify-center rounded-none",
+        isLight
+          ? "bg-[#e9904e] text-white hover:bg-[#f6863c]"
+          : "bg-[#e9904e] text-white hover:bg-[#f6863c]",
+        "flex h-9 items-center justify-center gap-1.5 rounded-none px-2.5 font-mono text-[0.68rem] font-semibold tracking-widest",
       )}
       onClick={() => {
         setActivePanel(null);
@@ -47,7 +49,8 @@ function TerminalToggleButton({ isLight }) {
       aria-label="Toggle console"
       title="Console"
     >
-      <TerminalIcon />
+      <TerminalIcon className="h-4 w-4" />
+      <span>CMD</span>
     </button>
   );
 }
@@ -102,18 +105,18 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
       />
       <div
         className={cx(
-          "relative flex h-[min(82vh,54rem)] w-[min(92vw,72rem)] overflow-hidden rounded-2xl border shadow-2xl",
+          "relative flex h-[min(84vh,54rem)] w-[min(92vw,72rem)] overflow-hidden rounded-lg border shadow-2xl",
           isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
         )}
       >
         <aside
           className={cx(
-            "flex w-64 shrink-0 flex-col border-r",
+            "flex w-60 shrink-0 flex-col border-r",
             isLight ? "border-gray-200 bg-gray-50" : "border-dark-border bg-dark-menus/60",
           )}
         >
-          <div className="border-b border-inherit px-4 py-3">
-            <p className={cx("text-sm font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>Help</p>
+          <div className="border-b border-inherit px-3.5 py-2.5">
+            <p className={cx("text-[0.82rem] font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>Help</p>
           </div>
           <div className="flex-1 overflow-auto px-2 py-2">
             {sections.map((section) => (
@@ -201,7 +204,7 @@ function HelpTreeNode({ node, level, activeId, isLight, onSelect }) {
         type="button"
         onClick={() => onSelect(node?.id)}
         className={cx(
-          "flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors",
+              "flex w-full items-center rounded-md px-3 py-1.5 text-left text-[0.78rem] transition-colors",
           level === 0 ? "font-semibold" : level === 1 ? "font-medium" : "",
           active
             ? isLight
@@ -315,44 +318,34 @@ export default function ProjectStudioShell(props) {
                 </nav>
 
                 <div className="flex items-center gap-0.5">
+                  <SessionPanel owner={owner} project={project} />
+                  <GitRepoPanel owner={owner} project={project} />
+                  <TerminalToggleButton isLight={isLight} />
                   <button
                     type="button"
-                    className="flex h-9 w-9 items-center justify-center rounded-none bg-orange-500 text-white transition-colors hover:bg-orange-400"
-                    onClick={() => setPreferencesOpen(true)}
-                    aria-label="Open preferences"
-                    title="Preferences"
-                  >
-                    <PreferencesIcon className="h-5 w-5" />
-                  </button>
-                  <button
-                    type="button"
-                    className={cx(
-                      isLight
-                        ? "bg-gray-200 text-gray-700"
-                        : "bg-dark-accent3 !text-dark-menus",
-                      "flex items-center justify-center h-9 w-9 rounded-none",
-                    )}
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.05] text-white transition-colors hover:bg-white/[0.1]"
                     onClick={() => setHelpOpen(true)}
                     aria-label="Open help"
                     title="Help"
                   >
                     <HelpIcon className="w-5 h-5" />
                   </button>
-                  <TerminalToggleButton isLight={isLight} />
-
-                  <GitRepoPanel owner={owner} project={project} />
-                  <SessionPanel owner={owner} project={project} />
+                  <button
+                    type="button"
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.1] text-white transition-colors hover:bg-white/[0.15]"
+                    onClick={() => setPreferencesOpen(true)}
+                    aria-label="Open preferences"
+                    title="Preferences"
+                  >
+                    <PreferencesIcon className="h-5 w-5" />
+                  </button>
                   <a
                     href="/profile"
-                    className={cx(
-                      isLight
-                        ? "bg-gray-200 text-gray-700 hover:bg-gray-300"
-                        : "bg-dark-accent3 !text-dark-menus hover:bg-dark-accent4",
-                      "flex h-9 items-center px-3 text-xs font-medium hover:no-underline",
-                    )}
+                    className="flex h-9 w-9 items-center justify-center rounded-none bg-white/[0.15] text-white transition-colors hover:bg-white/[0.2] hover:no-underline"
+                    aria-label="Profile"
                     title="Profile"
                   >
-                    Profile
+                    <UserIcon className="h-[18px] w-[18px]" />
                   </a>
                 </div>
               </div>
@@ -373,7 +366,7 @@ export default function ProjectStudioShell(props) {
               <DialogTitle>Preferences</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 px-6 pb-6">
-              <label className="flex items-start gap-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
+              <label className="flex items-start gap-3 rounded-lg border border-border bg-surface-2 px-4 py-3">
                 <input
                   type="checkbox"
                   checked={!!editorPreferences.vim}

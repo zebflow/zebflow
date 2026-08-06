@@ -119,6 +119,70 @@ const TOOL_MEMBER_OPTIONS = {
   ],
 };
 
+const TAILWIND_SPACING_STEPS = [
+  "0", "px", "0.5", "1", "1.5", "2", "2.5", "3", "3.5", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+  "14", "16", "20", "24", "28", "32", "36", "40", "44", "48", "52", "56", "60", "64", "72", "80", "96",
+];
+
+function makeTailwindSpacingClassCompletions() {
+  const classes = [];
+  const positiveSpacingPrefixes = ["p", "px", "py", "pt", "pr", "pb", "pl", "gap", "gap-x", "gap-y", "space-x", "space-y"];
+  const marginPrefixes = ["m", "mx", "my", "mt", "mr", "mb", "ml"];
+
+  for (const prefix of positiveSpacingPrefixes) {
+    for (const step of TAILWIND_SPACING_STEPS) {
+      classes.push(`${prefix}-${step}`);
+    }
+  }
+  for (const prefix of marginPrefixes) {
+    classes.push(`${prefix}-auto`);
+    for (const step of TAILWIND_SPACING_STEPS) {
+      classes.push(`${prefix}-${step}`);
+      if (step !== "0") {
+        classes.push(`-${prefix}-${step}`);
+      }
+    }
+  }
+
+  return classes;
+}
+
+const DEFAULT_CLASS_COMPLETIONS = [
+  "block", "inline", "inline-block", "flex", "inline-flex", "grid", "hidden", "contents",
+  "relative", "absolute", "fixed", "sticky", "static", "inset-0", "top-0", "right-0", "bottom-0", "left-0",
+  "z-0", "z-10", "z-20", "z-30", "z-40", "z-50",
+  "w-full", "w-screen", "w-auto", "w-fit", "w-max", "w-min", "h-full", "h-screen", "h-auto", "h-fit",
+  "min-w-0", "min-w-full", "min-h-0", "min-h-screen", "max-w-xs", "max-w-sm", "max-w-md", "max-w-lg",
+  "max-w-xl", "max-w-2xl", "max-w-3xl", "max-w-4xl", "max-w-5xl", "max-w-6xl", "max-w-7xl", "max-w-none",
+  "overflow-hidden", "overflow-auto", "overflow-y-auto", "overflow-x-auto", "truncate", "whitespace-nowrap",
+  "flex-row", "flex-col", "flex-wrap", "flex-nowrap", "flex-1", "shrink-0", "grow", "grow-0",
+  "items-start", "items-center", "items-end", "items-baseline", "items-stretch",
+  "justify-start", "justify-center", "justify-end", "justify-between", "justify-around", "justify-evenly",
+  "content-center", "self-start", "self-center", "self-end", "place-items-center",
+  "grid-cols-1", "grid-cols-2", "grid-cols-3", "grid-cols-4", "grid-cols-5", "grid-cols-6", "grid-cols-12",
+  ...makeTailwindSpacingClassCompletions(),
+  "rounded", "rounded-sm", "rounded-md", "rounded-lg", "rounded-xl", "rounded-full",
+  "border", "border-0", "border-t", "border-r", "border-b", "border-l",
+  "bg-bg", "bg-surface", "bg-surface-2", "bg-surface-3", "bg-ui-bg", "bg-ui-bg-subtle", "bg-ui-bg-muted",
+  "bg-accent", "bg-brand-orange", "bg-brand-blue", "bg-white", "bg-black", "bg-transparent",
+  "text-body", "text-body-soft", "text-body-muted", "text-ui-text", "text-ui-text-soft", "text-ui-text-muted",
+  "text-accent", "text-brand-orange", "text-brand-blue", "text-white", "text-black",
+  "border-border", "border-border-soft", "border-accent", "border-ui-border",
+  "text-xs", "text-sm", "text-base", "text-lg", "text-xl", "text-2xl", "text-3xl", "text-4xl",
+  "font-sans", "font-mono", "font-display", "font-normal", "font-medium", "font-semibold", "font-bold", "font-black",
+  "leading-none", "leading-tight", "leading-snug", "leading-normal", "tracking-wide", "uppercase",
+  "opacity-0", "opacity-50", "opacity-60", "opacity-70", "opacity-80", "opacity-100",
+  "shadow", "shadow-sm", "shadow-md", "shadow-lg", "ring-1", "ring-2", "ring-accent",
+  "transition", "transition-colors", "duration-150", "duration-200", "ease-out",
+  "cursor-pointer", "cursor-default", "select-none", "pointer-events-none", "disabled:opacity-50",
+  "hover:bg-surface-2", "hover:bg-surface-3", "hover:text-body", "hover:text-accent", "focus:outline-none", "focus:ring-2",
+  "sm:flex", "md:flex", "lg:flex", "sm:grid-cols-2", "md:grid-cols-2", "lg:grid-cols-2", "lg:grid-cols-3",
+].map((label) => ({
+  label,
+  type: "constant",
+  detail: "className",
+}));
+
 function normalizeLanguageKind(kind) {
   return String(kind || "").trim().toLowerCase();
 }
@@ -1707,9 +1771,98 @@ function createToolCompletionSource() {
   };
 }
 
+function normalizeClassCompletionOptions(catalog) {
+  const raw = Array.isArray(catalog?.class_completions)
+    ? catalog.class_completions
+    : [];
+  const seen = new Set();
+  const options = [];
+
+  for (const item of [...raw, ...DEFAULT_CLASS_COMPLETIONS]) {
+    const label = typeof item === "string" ? item : String(item?.label || "");
+    if (!label || seen.has(label)) {
+      continue;
+    }
+    seen.add(label);
+    options.push({
+      label,
+      type: item?.type || "constant",
+      detail: item?.detail || "className",
+      info: item?.info || item?.description || undefined,
+      section: item?.section || undefined,
+      boost: typeof item?.boost === "number" ? item.boost : undefined,
+    });
+  }
+
+  return options;
+}
+
+function findJsxClassStringContext(context) {
+  const line = context.state.doc.lineAt(context.pos);
+  const before = line.text.slice(0, context.pos - line.from);
+  const quoteIndex = Math.max(
+    before.lastIndexOf('"'),
+    before.lastIndexOf("'"),
+    before.lastIndexOf("`")
+  );
+  if (quoteIndex < 0) {
+    return null;
+  }
+
+  const attrNameIndex = Math.max(
+    before.lastIndexOf("className"),
+    before.lastIndexOf("class")
+  );
+  if (attrNameIndex < 0 || attrNameIndex > quoteIndex) {
+    return null;
+  }
+
+  const attrPrefix = before.slice(attrNameIndex, quoteIndex);
+  if (/[>\n;]/.test(attrPrefix)) {
+    return null;
+  }
+  if (!/(?:className|class)\s*=/.test(attrPrefix)) {
+    return null;
+  }
+
+  const inside = before.slice(quoteIndex + 1);
+  const tokenMatch = inside.match(/(?:^|\s)([^\s"'`{}]*)$/);
+  const token = tokenMatch ? tokenMatch[1] : "";
+  if (!token && !context.explicit) {
+    return null;
+  }
+
+  return {
+    from: context.pos - token.length,
+    token,
+  };
+}
+
+function createClassNameCompletionSource(options = {}) {
+  return (context) => {
+    const classContext = findJsxClassStringContext(context);
+    if (!classContext) {
+      return null;
+    }
+
+    const completionOptions = normalizeClassCompletionOptions(options.completionCatalog);
+    if (!completionOptions.length) {
+      return null;
+    }
+
+    return {
+      from: classContext.from,
+      options: completionOptions,
+      validFor: /[^\s"'`{}]*/,
+      filter: true,
+    };
+  };
+}
+
 function createZebflowCompletionSource(options = {}) {
   const importSource = createImportCompletionSource(options);
   const importSymbolSource = createImportSymbolCompletionSource(options);
+  const classNameSource = createClassNameCompletionSource(options);
   const toolSource = createToolCompletionSource();
 
   return async (context) => {
@@ -1720,6 +1873,10 @@ function createZebflowCompletionSource(options = {}) {
     const importSymbolResult = importSymbolSource ? await importSymbolSource(context) : null;
     if (importSymbolResult) {
       return importSymbolResult;
+    }
+    const classNameResult = classNameSource(context);
+    if (classNameResult) {
+      return classNameResult;
     }
     return toolSource(context);
   };

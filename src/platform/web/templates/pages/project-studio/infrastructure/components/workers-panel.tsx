@@ -1,3 +1,14 @@
+import {
+  StudioChip,
+  StudioEmptyState,
+  StudioMetric,
+  StudioMetricGrid,
+  StudioPanel,
+  StudioPanelBody,
+  StudioPanelHeader,
+  StudioStatusBadge,
+} from "@/pages/project-studio/components/studio-panel";
+
 function formatTs(value) {
   if (!value) return "Never";
   try {
@@ -20,66 +31,51 @@ export function WorkersPanel({ workers }) {
   const items = Array.isArray(workers) ? workers : [];
 
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-5 shadow-sm">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">Offices</h2>
-          <p className="text-sm text-gray-600">
-            Execution-plane offices registered to this controller.
-          </p>
-        </div>
-        <span className="rounded border border-gray-200 px-3 py-1 text-xs font-medium uppercase tracking-[0.18em] text-gray-500">
+    <StudioPanel>
+      <StudioPanelHeader
+        title="Offices"
+        description="Execution-plane offices registered to this controller."
+        trailing={
+          <span className="rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-[0.64rem] font-medium uppercase tracking-[0.14em] text-body-muted">
           {items.length} node{items.length === 1 ? "" : "s"}
-        </span>
-      </div>
+          </span>
+        }
+      />
+      <StudioPanelBody>
       {items.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-4 text-sm leading-6 text-gray-600">
+        <StudioEmptyState>
           No remote offices are currently registered.
-        </div>
+        </StudioEmptyState>
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           {items.map((worker) => {
             const caps = capabilityLabels(worker?.capabilities);
             return (
             <article
               key={worker.node_id}
-              className="rounded-lg border border-gray-200 bg-gray-50 p-4"
+              className="rounded-md border border-border-soft bg-surface-2 p-3"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900">
+                <div className="min-w-0">
+                  <h3 className="truncate text-[0.82rem] font-semibold text-body">
                     {worker.label || worker.node_id}
                   </h3>
-                  <p className="text-xs text-gray-500">{worker.node_id}</p>
+                  <p className="truncate font-mono text-[0.68rem] text-body-muted">{worker.node_id}</p>
                 </div>
-                <span className="rounded bg-emerald-100 px-2.5 py-1 text-[0.7rem] font-medium uppercase tracking-[0.16em] text-emerald-700">
-                  {worker.status || "online"}
-                </span>
+                <StudioStatusBadge status={worker.status || "online"} />
               </div>
-              <dl className="mt-3 grid gap-3 text-sm text-gray-600 md:grid-cols-2">
-                <div>
-                  <dt className="text-xs uppercase tracking-[0.16em] text-gray-500">Base URL</dt>
-                  <dd className="mt-1 break-all text-gray-900">{worker.base_url || "Not advertised"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs uppercase tracking-[0.16em] text-gray-500">Last heartbeat</dt>
-                  <dd className="mt-1 text-gray-900">{formatTs(worker.last_heartbeat_at)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs uppercase tracking-[0.16em] text-gray-500">Registered</dt>
-                  <dd className="mt-1 text-gray-900">{formatTs(worker.registered_at)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs uppercase tracking-[0.16em] text-gray-500">Office ID</dt>
-                  <dd className="mt-1 text-gray-900">{worker.office_id || worker.node_id}</dd>
-                </div>
-              </dl>
+              <StudioMetricGrid className="mt-3">
+                <StudioMetric label="Base URL" value={worker.base_url || "Not advertised"} mono />
+                <StudioMetric label="Last heartbeat" value={formatTs(worker.last_heartbeat_at)} />
+                <StudioMetric label="Registered" value={formatTs(worker.registered_at)} />
+                <StudioMetric label="Office ID" value={worker.office_id || worker.node_id} mono />
+              </StudioMetricGrid>
               {caps.length ? (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {caps.map((cap) => (
-                    <span key={cap} className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600">
+                    <StudioChip key={cap}>
                       {cap}
-                    </span>
+                    </StudioChip>
                   ))}
                 </div>
               ) : null}
@@ -88,6 +84,7 @@ export function WorkersPanel({ workers }) {
           })}
         </div>
       )}
-    </section>
+      </StudioPanelBody>
+    </StudioPanel>
   );
 }

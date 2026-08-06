@@ -6,51 +6,51 @@
 
 [data-studio-theme="dark"] {
   --color-bg: var(--color-dark-background);
-  --color-surface: #161616;
-  --color-surface-2: #1b1b1b;
-  --color-surface-3: #242424;
+  --color-surface: var(--color-zeb-dark-2);
+  --color-surface-2: var(--color-zeb-dark-3);
+  --color-surface-3: #222831;
   --color-border: var(--color-dark-border);
-  --color-border-soft: #202020;
-  --color-body: #f3f4f6;
-  --color-body-soft: #9ca3af;
-  --color-body-muted: #6b7280;
+  --color-border-soft: var(--color-zeb-dark-border-2);
+  --color-body: #e9edf3;
+  --color-body-soft: #8e9cad;
+  --color-body-muted: #6b7785;
   --color-accent: var(--color-brand-orange);
   --color-accent-strong: var(--color-brand-orange-ink);
   --color-accent-alt: var(--color-brand-blue);
   --color-accent-alt-strong: var(--color-brand-blue-ink);
   --color-ui-bg: var(--color-dark-menus);
-  --color-ui-bg-subtle: #111111;
-  --color-ui-bg-muted: #1a1a1a;
+  --color-ui-bg-subtle: var(--color-zeb-dark);
+  --color-ui-bg-muted: var(--color-zeb-dark-3);
   --color-ui-border: var(--color-dark-border);
-  --color-ui-border-subtle: #202020;
-  --color-ui-text: #f3f4f6;
-  --color-ui-text-soft: #9ca3af;
-  --color-ui-text-muted: #9ca3af;
+  --color-ui-border-subtle: var(--color-zeb-dark-border-2);
+  --color-ui-text: #e9edf3;
+  --color-ui-text-soft: #8e9cad;
+  --color-ui-text-muted: #6b7785;
   color: var(--color-ui-text);
 }
 
 [data-studio-theme="light"] {
-  --color-bg: rgb(249 250 251);
+  --color-bg: var(--color-zeb-bg);
   --color-surface: rgb(255 255 255);
-  --color-surface-2: rgb(249 250 251);
-  --color-surface-3: rgb(243 244 246);
-  --color-border: rgb(229 231 235);
-  --color-border-soft: rgb(243 244 246);
-  --color-body: rgb(17 24 39);
-  --color-body-soft: rgb(75 85 99);
-  --color-body-muted: rgb(107 114 128);
+  --color-surface-2: var(--color-zeb-bg-soft);
+  --color-surface-3: var(--color-zeb-bg);
+  --color-border: var(--color-zeb-border);
+  --color-border-soft: var(--color-zeb-border);
+  --color-body: var(--color-zeb-ink);
+  --color-body-soft: var(--color-zeb-ink-soft);
+  --color-body-muted: var(--color-zeb-ink-muted);
   --color-accent: var(--color-brand-orange);
   --color-accent-strong: var(--color-brand-orange-ink);
   --color-accent-alt: var(--color-brand-blue);
   --color-accent-alt-strong: var(--color-brand-blue-ink);
   --color-ui-bg: #ffffff;
-  --color-ui-bg-subtle: #f9fafb;
-  --color-ui-bg-muted: #f3f4f6;
-  --color-ui-border: #e5e7eb;
-  --color-ui-border-subtle: #f3f4f6;
-  --color-ui-text: #111827;
-  --color-ui-text-soft: #4b5563;
-  --color-ui-text-muted: #6b7280;
+  --color-ui-bg-subtle: var(--color-zeb-bg-soft);
+  --color-ui-bg-muted: var(--color-zeb-bg);
+  --color-ui-border: var(--color-zeb-border);
+  --color-ui-border-subtle: var(--color-zeb-border);
+  --color-ui-text: var(--color-zeb-ink);
+  --color-ui-text-soft: var(--color-zeb-ink-soft);
+  --color-ui-text-muted: var(--color-zeb-ink-muted);
   color: var(--color-ui-text);
 }
 
@@ -751,7 +751,7 @@ button.pipeline-editor-item:hover {
 }
 
 .pipeline-editor-indicator-trigger[data-trigger-kind="function"]::before {
-  background: #a855f7;
+  background: #c46255;
 }
 
 .pipeline-editor-indicator-lock[data-tone="ok"]::before,
@@ -1423,7 +1423,7 @@ button.pipeline-editor-item:hover {
 .dash-bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-accent, #6366f1);
+  background: var(--color-accent, #ed752e);
   width: 0%;
   transition: width 0.4s ease;
 }
@@ -1690,12 +1690,12 @@ button.pipeline-editor-item:hover {
 
 .registry-folder-styles .pipeline-registry-row-icon,
 .registry-folder-styles .pipeline-registry-row-name {
-  color: #a855f7; /* purple-500 */
+  color: #e9904e;
 }
 
 .registry-folder-styles:hover .pipeline-registry-row-icon,
 .registry-folder-styles:hover .pipeline-registry-row-name {
-  color: #9333ea; /* purple-600 */
+  color: #ed752e;
 }
 
 .registry-folder-docs .pipeline-registry-row-icon,
@@ -1715,9 +1715,9 @@ button.pipeline-editor-item:hover {
 .registry-folder-assets:hover .pipeline-editor-nav-label { color: #16a34a; }
 
 .registry-folder-styles .pipeline-editor-nav-icon,
-.registry-folder-styles .pipeline-editor-nav-label { color: #a855f7; }
+.registry-folder-styles .pipeline-editor-nav-label { color: #e9904e; }
 .registry-folder-styles:hover .pipeline-editor-nav-icon,
-.registry-folder-styles:hover .pipeline-editor-nav-label { color: #9333ea; }
+.registry-folder-styles:hover .pipeline-editor-nav-label { color: #ed752e; }
 
 .registry-folder-docs .pipeline-editor-nav-icon,
 .registry-folder-docs .pipeline-editor-nav-label { color: #3b82f6; }

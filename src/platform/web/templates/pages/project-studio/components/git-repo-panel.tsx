@@ -242,9 +242,10 @@ export function GitRepoPanel({ owner, project }) {
       <button
         onClick={toggle}
         title={count > 0 ? `${count} file${count !== 1 ? "s" : ""} to commit` : "Git — working tree clean"}
-        className="relative flex items-center justify-center h-9 w-9 rounded-none bg-dark-accent5 !text-dark-menus"
+        className="relative flex h-9 items-center justify-center gap-1.5 rounded-none bg-[#c46255] px-2.5 font-mono text-[0.68rem] font-semibold tracking-widest text-white hover:bg-[#ad5149]"
       >
-        <GitBranchIcon />
+        <GitBranchIcon className="h-4 w-4" />
+        <span>GIT</span>
         {count > 0 && (
           <span className="absolute bottom-0 right-0 min-w-[14px] h-[13px] px-[2px] text-[8px] font-bold leading-[13px] text-center bg-orange-500 text-white pointer-events-none">
             {count}

@@ -148,10 +148,10 @@ function TokensSection() {
 
       <SubHeading title="Brand Colors" />
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-10">
-        <ColorSwatch name="--zf-color-brand-blue" value="#005b9a" />
-        <ColorSwatch name="--zf-color-brand-blue-ink" value="#004a7a" />
-        <ColorSwatch name="--zf-color-brand-orange" value="#ff5c00" />
-        <ColorSwatch name="--zf-color-brand-orange-ink" value="#db4f00" />
+        <ColorSwatch name="--color-brand-blue" value="#1E66D6" />
+        <ColorSwatch name="--color-brand-blue-ink" value="#035FAB" />
+        <ColorSwatch name="--color-brand-orange" value="#EA5A0C" />
+        <ColorSwatch name="--color-brand-orange-ink" value="#D24F08" />
       </div>
 
       <SubHeading title="Studio Theme (Dark)" />
@@ -160,21 +160,21 @@ function TokensSection() {
         developer pages wrap content in this class. Never hardcode their hex values — always use the var().
       </RuleAlert>
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 mb-10">
-        <ColorSwatch name="--studio-bg" value="#0b1120" />
-        <ColorSwatch name="--studio-panel" value="#111827" />
-        <ColorSwatch name="--studio-panel-2" value="#172033" />
-        <ColorSwatch name="--studio-panel-3" value="#1e293b" />
-        <ColorSwatch name="--studio-border" value="#2b3648" />
-        <ColorSwatch name="--studio-text" value="#e5edf7" />
-        <ColorSwatch name="--studio-text-soft" value="#93a4ba" />
-        <ColorSwatch name="--studio-accent" value="#ff5c00" />
+        <ColorSwatch name="--studio-bg" value="#14171B" />
+        <ColorSwatch name="--studio-panel" value="#16191E" />
+        <ColorSwatch name="--studio-panel-2" value="#1B2026" />
+        <ColorSwatch name="--studio-panel-3" value="#222831" />
+        <ColorSwatch name="--studio-border" value="#232932" />
+        <ColorSwatch name="--studio-text" value="#E9EDF3" />
+        <ColorSwatch name="--studio-text-soft" value="#8E9CAD" />
+        <ColorSwatch name="--studio-accent" value="#EA5A0C" />
       </div>
 
       <SubHeading title="Typography" />
       <div className="space-y-6 mb-10">
         <div>
           <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
-            --zf-font-display · Pathway Extreme + Roboto
+            --zf-font-display · Space Grotesk
           </p>
           <p
             className="text-3xl font-black tracking-tight text-body"
@@ -185,7 +185,7 @@ function TokensSection() {
         </div>
         <div>
           <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
-            --zf-font-sans · Roboto (body default)
+            --zf-font-sans · Space Grotesk + Hanken Grotesk
           </p>
           <p className="text-base text-body" style={{ fontFamily: "var(--font-sans)" }}>
             The quick brown fox jumps over the lazy dog. 0123456789 AaBbCc
@@ -193,7 +193,7 @@ function TokensSection() {
         </div>
         <div>
           <p className="text-[0.68rem] font-mono text-body-soft uppercase tracking-widest mb-2">
-            --zf-font-mono · Roboto Mono (code + CLI)
+            --zf-font-mono · JetBrains Mono
           </p>
           <p className="text-sm text-body" style={{ fontFamily: "var(--font-mono)" }}>
             register blog-api | trigger.webhook --path /api --method GET | pg.query --credential main-db

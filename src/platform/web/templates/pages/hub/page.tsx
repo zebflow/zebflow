@@ -12,7 +12,7 @@ import DialogFooter from "@/components/ui/dialog-footer";
 
 export const page = {
   html: { lang: "en" },
-  body: { className: "min-h-screen bg-zinc-50 text-gray-900 font-sans" },
+  body: { className: "min-h-screen bg-ui-bg-muted text-ui-text font-sans" },
   navigation: "history",
 };
 
@@ -409,12 +409,12 @@ export default function Page(input) {
   return (
     <>
       <ChromeHeader />
-      <main className="pb-16 pt-24">
-        <section className="mx-auto max-w-6xl px-6">
-          <div className="mb-6 flex flex-col gap-4 border-b border-gray-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
+      <main className="pb-20 pt-28">
+        <section className="mx-auto w-full max-w-[1960px] px-6 sm:px-10">
+          <div className="mb-8 flex flex-col gap-6 border-b border-ui-border pb-5 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Platform Home</p>
-              <h1 className="mt-1 text-3xl font-black text-gray-900">Hub</h1>
+              <p className="font-mono text-xs font-semibold uppercase tracking-wide text-ui-text-muted">Platform Home</p>
+              <h1 className="mt-1 text-[40px] font-semibold leading-none tracking-tight text-ui-text">Hub</h1>
             </div>
             <Button as="a" href="/home" variant="outline">Home</Button>
           </div>
@@ -456,7 +456,7 @@ export default function Page(input) {
               </div>
 
               {apps.length ? (
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
                   {apps.map((item, index) => {
                     const source = sourceById[item?.repository_id] || {};
                     return (
@@ -491,7 +491,7 @@ export default function Page(input) {
               )}
             </section>
           ) : (
-            <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
               <div className="space-y-5">
                 <section className="rounded-lg border border-gray-200 bg-white p-5">
                   <h2 className="text-lg font-semibold text-gray-900">Hub Service</h2>
@@ -540,7 +540,7 @@ export default function Page(input) {
                     <Button type="button" variant="outline" onClick={startNewPublisher}>New Publisher</Button>
                   </div>
 
-                  <div className="mt-5 grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
+                  <div className="mt-5 grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
                     <aside className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                       <div className="mb-3 flex items-center justify-between gap-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Publishers</p>

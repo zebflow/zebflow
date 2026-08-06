@@ -11,7 +11,7 @@ export default function DialogContent({ className, children, _isOpen, _onClose, 
         aria-modal="true"
         className={cx(
           "relative z-50 w-full max-w-lg",
-          "border border-border bg-[var(--color-surface,#161616)] text-body",
+          "border border-[var(--color-border,var(--color-ui-border))] bg-[var(--color-surface,var(--color-ui-bg))] text-[var(--color-body,var(--color-ui-text))]",
           "rounded-[0.65rem] shadow-[0_24px_55px_rgba(2,6,23,0.32)]",
           "flex flex-col",
           "max-h-[calc(100vh-2rem)] overflow-y-auto",
@@ -19,7 +19,7 @@ export default function DialogContent({ className, children, _isOpen, _onClose, 
         )}
         style={{
           ...(style || {}),
-          backgroundColor: style?.backgroundColor || "var(--color-surface, #161616)",
+          backgroundColor: style?.backgroundColor || "var(--color-surface, var(--color-ui-bg))",
           opacity: 1,
         }}
         {...rest}
@@ -28,7 +28,7 @@ export default function DialogContent({ className, children, _isOpen, _onClose, 
         <button
           type="button"
           onClick={_onClose}
-          className="absolute right-4 top-4 z-10 rounded-sm text-body-soft opacity-70 transition-opacity hover:opacity-100 hover:text-body"
+          className="absolute right-4 top-4 z-10 rounded-sm text-[var(--color-body-soft,var(--color-ui-text-soft))] opacity-70 transition-opacity hover:opacity-100 hover:text-[var(--color-body,var(--color-ui-text))]"
           aria-label="Close"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

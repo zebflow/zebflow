@@ -8,6 +8,11 @@ pub struct EmbeddedAsset {
 
 const BRAND_LOGO_SVG: &[u8] = include_bytes!("assets/branding/logo.svg");
 const BRAND_LOGO_PNG: &[u8] = include_bytes!("assets/branding/logo.png");
+const BRAND_FAVICON_SVG: &[u8] = include_bytes!("assets/branding/favicon.svg");
+const BRAND_FAVICON_ICO: &[u8] = include_bytes!("assets/branding/favicon.ico");
+const BRAND_FAVICON_16_PNG: &[u8] = include_bytes!("assets/branding/favicon-16.png");
+const BRAND_FAVICON_32_PNG: &[u8] = include_bytes!("assets/branding/favicon-32.png");
+const BRAND_APPLE_TOUCH_ICON_PNG: &[u8] = include_bytes!("assets/branding/apple-touch-icon.png");
 const PLATFORM_MAIN_CSS: &str = concat!(
     include_str!("templates/styles/main.css"),
     "\n\n",
@@ -682,6 +687,11 @@ pub fn platform_public_asset(path: &str) -> Option<&'static [u8]> {
     match path.trim_start_matches('/').replace('\\', "/").as_str() {
         "branding/logo.svg" => Some(BRAND_LOGO_SVG),
         "branding/logo.png" => Some(BRAND_LOGO_PNG),
+        "branding/favicon.svg" => Some(BRAND_FAVICON_SVG),
+        "branding/favicon.ico" => Some(BRAND_FAVICON_ICO),
+        "branding/favicon-16.png" => Some(BRAND_FAVICON_16_PNG),
+        "branding/favicon-32.png" => Some(BRAND_FAVICON_32_PNG),
+        "branding/apple-touch-icon.png" => Some(BRAND_APPLE_TOUCH_ICON_PNG),
         "platform/main.css" => Some(PLATFORM_MAIN_CSS.as_bytes()),
         "platform/db-suite.css" => Some(PLATFORM_DB_SUITE_CSS.as_bytes()),
         "platform/db-connections.css" => Some(PLATFORM_DB_CONNECTIONS_CSS.as_bytes()),

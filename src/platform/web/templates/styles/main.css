@@ -1,41 +1,58 @@
-@import url("https://fonts.googleapis.com/css2?family=Pathway+Extreme:ital,opsz,wght@0,8..144,100..900;1,8..144,100..900&family=Roboto:wght@400;500;700;900&family=Roboto+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap");
 
 :root {
+  /* Zebflow design direction: Melbourne gray-blue + signal orange. */
+  --color-zeb-ink:          #1b1f24;
+  --color-zeb-ink-soft:     #525d68;
+  --color-zeb-ink-muted:    #8e9cad;
+  --color-zeb-bg:           #e9edf3;
+  --color-zeb-bg-soft:      #f4f6f9;
+  --color-zeb-border:       #dce3ec;
+  --color-zeb-border-strong:#cdd6e1;
+  --color-zeb-grid:         #dde3eb;
+  --color-zeb-dark:         #14171b;
+  --color-zeb-dark-2:       #16191e;
+  --color-zeb-dark-3:       #1b2026;
+  --color-zeb-dark-border:  #232932;
+  --color-zeb-dark-border-2:#2a313c;
+
   /* Brand colors */
-  --color-brand-orange:     #e2a35b;
-  --color-brand-orange-ink: #e59068;
-  --color-brand-blue:       #005b9a;
-  --color-brand-blue-ink:   #004a7a;
-  --color-dark-menus: #020202;
-  --color-dark-background: #101010;
-  --color-dark-border: #2a2a2a;
-  --color-dark-accent1: #e59068;
-  --color-dark-accent2: #e2a35b;
-  --color-dark-accent3: #ba6f61;
-  --color-dark-accent4: #c4333b;
-  --color-dark-accent5: #d27f64;
-  --color-dark-text1: #808080;
+  --color-brand-orange:     #ea5a0c;
+  --color-brand-orange-ink: #d24f08;
+  --color-brand-blue:       #1e66d6;
+  --color-brand-blue-ink:   #035fab;
+  --color-dark-menus:       #0f1115;
+  --color-dark-background:  var(--color-zeb-dark);
+  --color-dark-border:      var(--color-zeb-dark-border);
+  --color-dark-accent1:     var(--color-brand-orange);
+  --color-dark-accent2:     var(--color-brand-blue);
+  --color-dark-accent3:     #7cd3a0;
+  --color-dark-accent4:     #f2a33d;
+  --color-dark-accent5:     #c46255;
+  --color-dark-text1:       #6b7785;
 
   /* Fonts */
   --font-display:
-    "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    "Space Grotesk", "Hanken Grotesk", system-ui, -apple-system, sans-serif;
   --font-sans:
-    "Roboto", "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    "Space Grotesk", "Hanken Grotesk", system-ui, -apple-system, sans-serif;
+  --font-text:
+    "Hanken Grotesk", "Space Grotesk", system-ui, -apple-system, sans-serif;
   --font-mono:
-    "Roboto Mono", "JetBrains Mono", "SFMono-Regular", monospace;
+    "JetBrains Mono", "SFMono-Regular", "Roboto Mono", monospace;
 
-  --radius-panel: 1.25rem;
+  --radius-panel: 0.875rem;
   --rwe-nav-color: var(--color-brand-blue);
 
   /* Global UI component tokens — light defaults, overridden by [data-studio-theme] */
   --color-ui-bg:            #ffffff;
-  --color-ui-bg-subtle:     #f9fafb;
-  --color-ui-bg-muted:      #f3f4f6;
-  --color-ui-border:        #e5e7eb;
-  --color-ui-border-subtle: #f3f4f6;
-  --color-ui-text:          #111827;
-  --color-ui-text-soft:     #4b5563;
-  --color-ui-text-muted:    #6b7280;
+  --color-ui-bg-subtle:     var(--color-zeb-bg-soft);
+  --color-ui-bg-muted:      var(--color-zeb-bg);
+  --color-ui-border:        var(--color-zeb-border);
+  --color-ui-border-subtle: var(--color-zeb-border);
+  --color-ui-text:          var(--color-zeb-ink);
+  --color-ui-text-soft:     var(--color-zeb-ink-soft);
+  --color-ui-text-muted:    var(--color-zeb-ink-muted);
 }
 
 :root[data-theme="dark"] {
@@ -66,8 +83,8 @@ h6 {
 }
 
 ::selection {
-  background: #d1d5db;
-  color: #111827;
+  background: var(--color-zeb-border-strong);
+  color: var(--color-zeb-ink);
 }
 
 a {

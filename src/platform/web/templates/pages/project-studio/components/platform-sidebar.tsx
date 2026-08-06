@@ -3,7 +3,7 @@ import { cx, Link, useState } from "zeb";
 function navRowCx(expanded: boolean, isLight: boolean, routeClass: string) {
   const active = routeClass?.includes("is-active");
   return cx(
-    "group flex items-center gap-3 px-3 py-2 text-sm transition-colors",
+    "group flex items-center gap-3 px-3 py-1.5 text-[0.78rem] transition-colors",
     expanded ? "justify-start" : "justify-center",
     !active &&
       (isLight
@@ -36,7 +36,7 @@ export default function PlatformSidebar(props) {
       >
         <div
           className={cx(
-            "flex items-center gap-3 border-b px-3 py-3",
+            "flex items-center gap-3 border-b px-3 py-2.5",
             isLight ? "border-gray-200" : "border-dark-border",
             expanded ? "justify-between" : "justify-center",
           )}
@@ -50,10 +50,10 @@ export default function PlatformSidebar(props) {
           >
             <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="h-9 w-9 shrink-0" />
             <span className={cx("min-w-0", !expanded && "hidden")}>
-              <span className="block text-base font-black tracking-tight text-body">
-                ZEBFLOW
+              <span className="block text-[0.95rem] font-semibold tracking-tight text-body">
+                zebflow
               </span>
-              <span className="block font-mono text-[10px] uppercase tracking-[0.18em] text-body-soft">
+              <span className="block font-mono text-[9.5px] uppercase tracking-[0.16em] text-body-soft">
                 Project Studio
               </span>
             </span>

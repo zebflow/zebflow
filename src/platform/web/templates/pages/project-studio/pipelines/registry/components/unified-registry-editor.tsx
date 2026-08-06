@@ -22,6 +22,7 @@ import {
 import { RegistryInstallCatalog } from "@/pages/project-studio/pipelines/registry/components/registry-install-catalog";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import { subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
+import { loadEditorCompletionCatalog, refreshEditorCompletionCatalog } from "@/pages/project-studio/components/editor-catalog";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
 
 // ── Asset Manager ─────────────────────────────────────────────────────────────
@@ -540,6 +541,7 @@ export default function UnifiedRegistryEditor(input) {
       readonly: !!editorOptions.readonly,
       projectFiles: editorOptions.projectFiles || [],
       templateOutlineUrl: editorOptions.templateOutlineUrl || "",
+      completionCatalog: editorOptions.completionCatalog || null,
       onOpenImport: editorOptions.onOpenImport,
       onSave: () => { void handleSaveTemplate(); },
       onDocumentChange: (update) => {
@@ -571,7 +573,10 @@ export default function UnifiedRegistryEditor(input) {
           rt = await loadEditorRuntime();
           templateRuntimeRef.current = rt;
         }
-        const workspace = await requestJson(`${projectApiBase}/templates/workspace`).catch(() => null);
+        const [workspace, completionCatalog] = await Promise.all([
+          requestJson(`${projectApiBase}/templates/workspace`).catch(() => null),
+          loadEditorCompletionCatalog(projectApiBase),
+        ]);
         const projectFiles = Array.isArray(workspace?.items)
           ? workspace.items
               .filter((item: any) => item?.kind !== "folder" && typeof item?.rel_path === "string")
@@ -580,6 +585,7 @@ export default function UnifiedRegistryEditor(input) {
         mountTemplateEditor(content, fileKind, rt, {
           projectFiles,
           templateOutlineUrl,
+          completionCatalog,
           readonly: selectedTemplateLocked,
           initialLine: selectedLine,
           onOpenImport: (target: any) => {
@@ -606,6 +612,7 @@ export default function UnifiedRegistryEditor(input) {
         body: JSON.stringify({ rel_path: template?.rel_path ?? "", content }),
       });
       setTemplateSaveState("Saved");
+      void refreshEditorCompletionCatalog(projectApiBase);
       notifyStudioRepoChanged();
     } catch (err) {
       setTemplateSaveState("Error");
@@ -717,6 +724,7 @@ export default function UnifiedRegistryEditor(input) {
         setUiReviewDirty(false);
         setInstallResult(parts.join(" · ") || "Done.");
         if (installed.length > 0) {
+          void refreshEditorCompletionCatalog(projectApiBase);
           setTimeout(() => {
             setInstallOpen(false);
             nav(`${editorBase}?path=${encodeURIComponent(currentPath)}`);
@@ -825,6 +833,7 @@ export default function UnifiedRegistryEditor(input) {
       const result = json?.result || {};
       setHubInstallReview(null);
       setPendingHubAdd(null);
+      void refreshEditorCompletionCatalog(projectApiBase);
       setInstallResult(`Added ${result.files_written || 0} file(s) into ${result.install_root || "project"} workspace`);
       setTimeout(() => {
         setInstallOpen(false);

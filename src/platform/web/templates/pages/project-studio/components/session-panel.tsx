@@ -310,13 +310,14 @@ export function SessionPanel({ owner, project }) {
   return (
     <details ref={sessionDetailsRef} className="relative inline-block group" data-dropdown-menu="true">
       <summary
-        className="list-none cursor-pointer outline-none relative flex items-center justify-center h-9 w-9 rounded-none bg-dark-accent1 !text-dark-menus"
+        className="list-none cursor-pointer outline-none relative flex h-9 items-center justify-center gap-1.5 rounded-none bg-[#ed752e] px-2.5 font-mono text-[0.68rem] font-semibold tracking-widest text-white hover:bg-[#f6863c]"
         onClick={() => {
           if (!open) openHeaderPanel("session");
           setOpen((o) => !o);
         }}
       >
-        <SessionIcon />
+        <SessionIcon className="h-4 w-4" />
+        <span>MCP</span>
         {enabled && <span className="absolute bottom-0 right-0 w-[7px] h-[7px] bg-green-500 pointer-events-none" />}
       </summary>
 

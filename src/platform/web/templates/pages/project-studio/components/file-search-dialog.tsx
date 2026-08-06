@@ -136,7 +136,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
     >
       <div className="absolute inset-0 bg-black/60" />
       <div
-        className="relative z-10 w-full max-w-xl mx-4 rounded-xl border border-dark-border bg-dark-background shadow-2xl overflow-hidden"
+        className="relative z-10 w-full max-w-xl mx-4 rounded-lg border border-dark-border bg-dark-background shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Input */}
@@ -200,7 +200,7 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
                   <span className="text-sm font-medium truncate flex-1">{r.label}</span>
                   <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
                     isPipeline
-                      ? "bg-violet-500/20 text-violet-400"
+                      ? "bg-[#c46255]/20 text-[#f6863c]"
                       : "bg-sky-500/20 text-sky-400"
                   }`}>
                     {isPipeline ? "pipeline" : "template"}

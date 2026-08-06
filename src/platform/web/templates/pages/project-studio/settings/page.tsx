@@ -594,7 +594,7 @@ function AssistantPanel({ api, credentials, initialConfig }) {
   }
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
         <div>
           <h3 className="project-card-title">Project Assistant</h3>
@@ -737,7 +737,7 @@ function LibrariesPanel({ items, api }) {
         <p className="text-[0.72rem] text-red-300">{errorMsg}</p>
       ) : null}
       {libs.map((lib) => (
-        <article key={lib.name} className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+        <article key={lib.name} className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
           <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
@@ -1111,7 +1111,7 @@ function NodeRegistryPanel({ groups, count }) {
   );
 
   return (
-    <div className="border border-border rounded-xl bg-surface overflow-hidden">
+    <div className="border border-border rounded-lg bg-surface overflow-hidden">
       {/* Toolbar */}
       <div className="flex flex-row items-center gap-[0.55rem] px-3 pt-[0.7rem] pb-[0.6rem]">
         <Input
@@ -1308,7 +1308,7 @@ function LoggingPanel({ api, invocationsApi, initialConfig }) {
   const dbTotal = Number(stats?.db_bytes || 0) + Number(stats?.wal_bytes || 0) + Number(stats?.shm_bytes || 0);
 
   return (
-    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
       <CommitDialog
         open={commitOpen}
         section="logging"
@@ -1903,7 +1903,7 @@ export default function Page(input) {
                       initialConfig={assistant?.config ?? {}}
                     />
 
-                    <article className="border border-border rounded-xl bg-surface p-[0.85rem] mb-[0.9rem]">
+                    <article className="border border-border rounded-lg bg-surface p-[0.85rem] mb-[0.9rem]">
                       <header className="flex items-start justify-between gap-3 mb-[0.65rem]">
                         <div>
                           <h3 className="project-card-title">MCP Session</h3>

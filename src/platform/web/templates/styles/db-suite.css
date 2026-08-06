@@ -595,14 +595,14 @@
 }
 
 .db-suite-attr-idx-label:hover {
-  border-color: #6366f1;
+  border-color: #ed752e;
   color: var(--color-body);
 }
 
 .db-suite-attr-idx-label input[type="checkbox"] {
   margin: 0;
   cursor: pointer;
-  accent-color: #6366f1;
+  accent-color: #ed752e;
   width: 11px;
   height: 11px;
 }
@@ -711,8 +711,8 @@
   display: inline-block;
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
-  background: #312e81;
-  color: #a5b4fc;
+  background: #4a2418;
+  color: #ebbe7d;
   font-size: 0.65rem;
   font-weight: 600;
 }
@@ -723,8 +723,8 @@
 }
 
 .db-suite-schema-idx-vec {
-  background: #1a1a2e;
-  color: #c084fc;
+  background: #3b2018;
+  color: #f6863c;
 }
 
 .db-suite-schema-idx-geo {

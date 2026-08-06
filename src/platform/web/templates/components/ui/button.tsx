@@ -1,10 +1,10 @@
 import { cx } from "zeb";
 
 const VARIANT_CLASSES = {
-  primary: "border border-dark-accent1 bg-dark-accent1 !text-black hover:opacity-90",
-  outline: "border border-dark-border bg-transparent hover:bg-dark-border !text-body",
-  secondary: "border border-dark-border bg-dark-border !text-body hover:bg-dark-background",
-  ghost: "!text-body-soft hover:bg-dark-border hover:!text-body",
+  primary: "border border-brand-orange bg-brand-orange text-white hover:opacity-90",
+  outline: "border border-[var(--color-border,var(--color-ui-border))] bg-transparent text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))]",
+  secondary: "border border-[var(--color-border,var(--color-ui-border))] bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-3,var(--color-ui-bg-muted))]",
+  ghost: "text-[var(--color-body-soft,var(--color-ui-text-soft))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] hover:text-[var(--color-body,var(--color-ui-text))]",
   destructive: "bg-red-500/10 !text-red-500 border border-red-500/20 hover:bg-red-500/20",
   link: "!text-brand-blue underline-offset-4 hover:underline",
   live: "bg-green-600 !text-white hover:bg-green-700 border border-green-600",
@@ -38,7 +38,7 @@ export default function Button({
     <>
       <span
         hidden
-        tw-variants="border border-dark-accent1 bg-dark-accent1 !text-black hover:opacity-90 border-dark-border bg-transparent hover:bg-dark-border !text-body bg-dark-border hover:bg-dark-background !text-body-soft hover:!text-body bg-red-500/10 !text-red-500 border border-red-500/20 hover:bg-red-500/20 !text-brand-blue underline-offset-4 hover:underline bg-green-600 !text-white hover:bg-green-700 border border-green-600"
+        tw-variants="border border-brand-orange bg-brand-orange text-white hover:opacity-90 border-[var(--color-border,var(--color-ui-border))] bg-transparent text-[var(--color-body,var(--color-ui-text))] hover:bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] bg-[var(--color-surface-2,var(--color-ui-bg-subtle))] hover:bg-[var(--color-surface-3,var(--color-ui-bg-muted))] text-[var(--color-body-soft,var(--color-ui-text-soft))] hover:text-[var(--color-body,var(--color-ui-text))] bg-red-500/10 !text-red-500 border border-red-500/20 hover:bg-red-500/20 !text-brand-blue underline-offset-4 hover:underline bg-green-600 !text-white hover:bg-green-700 border border-green-600"
       />
       <Element
         type={Element === "button" ? type : undefined}

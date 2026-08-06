@@ -21,7 +21,7 @@ const LINE_STYLES: Record<string, string> = {
   "cli-muted": "text-gray-500",
   "cli-blank": "block h-[0.6em]",
   "cli-ai": "text-sky-300 whitespace-pre-wrap break-words",
-  "cli-tool": "text-indigo-400 italic",
+  "cli-tool": "text-[#ebbe7d] italic",
   "cli-thinking": "text-gray-600 italic",
   "cli-nav": "",
 };

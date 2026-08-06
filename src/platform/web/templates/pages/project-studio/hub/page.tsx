@@ -482,14 +482,14 @@ export default function Page(input) {
               <section className="project-content-section">
                 <div className="project-content-body space-y-4">
                   {status ? (
-                    <div className="rounded-xl border border-ui-border bg-ui-bg-muted/30 px-4 py-3 text-sm text-ui-text-soft">
+                    <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-4 py-3 text-sm text-ui-text-soft">
                       <span className="font-medium text-ui-text">Status:</span> {status}
                     </div>
                   ) : null}
 
                   {tabFlags?.packs ? (
                     <>
-                      <section className="rounded-xl border border-ui-border bg-ui-bg p-4">
+                      <section className="rounded-lg border border-ui-border bg-ui-bg p-4">
                         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                           <div>
                             <p className="project-content-subtitle">Hub Sources</p>
@@ -697,7 +697,7 @@ export default function Page(input) {
 
                   {tabFlags?.publish ? (
                     <form className="space-y-4" onSubmit={publishAsset}>
-                      <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">1. Choose Source Type</p>
                           <p className="text-sm text-ui-text-soft">Pick the export scope first, then choose the specific item and review the final file tree.</p>
@@ -718,7 +718,7 @@ export default function Page(input) {
                         </div>
                       </div>
 
-                      <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">2. Select Item</p>
                           <p className="text-sm text-ui-text-soft">Only name, description, and path are shown here. The actual export set is resolved in the preview step below.</p>
@@ -755,7 +755,7 @@ export default function Page(input) {
                         ) : null}
                       </div>
 
-                      <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">3. Export Tree Preview</p>
                           <p className="text-sm text-ui-text-soft">This is the exact file set that will be packed and published.</p>
@@ -815,7 +815,7 @@ export default function Page(input) {
                         )}
                       </div>
 
-                      <div className="rounded-xl border border-ui-border bg-ui-bg p-4 space-y-4">
+                      <div className="rounded-lg border border-ui-border bg-ui-bg p-4 space-y-4">
                         <div>
                           <p className="project-content-subtitle">4. Publish Package</p>
                           <p className="text-sm text-ui-text-soft">Use a publisher token issued from Home &gt; Hub. Project sources can be added on the Browse tab; publishers and tokens stay in Home &gt; Hub.</p>
@@ -964,7 +964,7 @@ export default function Page(input) {
                           <Button type="submit" disabled={!publishForm.source_ref || !publishPreview?.entries?.length || !publishForm.publisher_token || !publishReview || publishReviewDirty}>Publish Package</Button>
                         </div>
                         {publishReview ? (
-                          <div className="rounded-xl border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
+                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 p-3 space-y-3">
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <p className="m-0 text-sm font-semibold text-ui-text">Publish Review</p>

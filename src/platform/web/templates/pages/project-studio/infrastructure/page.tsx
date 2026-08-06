@@ -31,20 +31,20 @@ export default function Page(input) {
       nav={input?.nav}
     >
       <main className="flex-1 min-h-0 overflow-auto">
-        <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
-          <header className="space-y-2">
-            <p className="text-xs uppercase tracking-[0.24em] text-gray-500">
+        <div className="flex min-h-full flex-col gap-3 px-3.5 py-3">
+          <header className="border-b border-border pb-3">
+            <p className="font-mono text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-body-muted">
               Infrastructure
             </p>
-            <h1 className="text-3xl font-semibold text-gray-900">
+            <h1 className="mt-1 text-[1.05rem] font-semibold leading-tight text-body">
               Controller and office topology
             </h1>
-            <p className="max-w-3xl text-sm leading-6 text-gray-600">
+            <p className="mt-1 max-w-3xl text-[0.78rem] leading-5 text-body-soft">
               Current office inventory, project runtime placement, and controller
               registration state for this project.
             </p>
           </header>
-          <section className="grid gap-6 lg:grid-cols-[1.25fr_0.95fr]">
+          <section className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(22rem,0.8fr)]">
             <WorkersPanel workers={runtime.workers} />
             <ProjectRuntimePanel
               placement={runtime.placement}

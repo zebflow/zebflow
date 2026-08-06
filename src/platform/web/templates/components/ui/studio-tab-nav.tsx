@@ -1,8 +1,8 @@
 export function StudioTabNav({ children }: any) {
   return (
-    <nav className="shrink-0 flex items-stretch border-b border-border bg-dark-menus px-[0.625rem]">
+    <nav className="shrink-0 flex items-stretch border-b border-border bg-surface px-[0.625rem]">
       {/* tw-variants hint: active StudioTabLink classes always scanned by RWE Tailwind engine */}
-      <span hidden tw-variants="text-dark-accent1 border-dark-accent1 bg-dark-accent1/10" />
+      <span hidden tw-variants="text-dark-accent1 border-dark-accent1 bg-dark-accent1/10 bg-surface border-transparent" />
       {children}
     </nav>
   );
@@ -17,7 +17,7 @@ export function StudioTabLink({ href, active, children }: any) {
         "text-xs font-mono uppercase tracking-widest",
         active
           ? "text-dark-accent1 border-dark-accent1 bg-dark-accent1/10 font-medium"
-          : "text-body-soft border-dark-menus hover:text-dark-accent1 hover:border-dark-accent1 hover:bg-dark-accent1/10"
+          : "text-body-soft border-transparent hover:text-dark-accent1 hover:border-dark-accent1 hover:bg-dark-accent1/10"
       )}
     >
       {children}

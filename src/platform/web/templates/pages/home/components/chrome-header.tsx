@@ -1,6 +1,15 @@
 import { Link } from "zeb";
 import Button from "@/components/ui/button";
 
+function ProfileIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="h-[18px] w-[18px]">
+      <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5 20a7 7 0 0 1 14 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /**
  * Fixed top bar for authenticated platform pages outside the project studio.
  * Home uses the hub dialog directly on `/home`.
@@ -14,11 +23,24 @@ export default function ChromeHeader(props) {
       props.children
     ) : (
       <>
-        <Button as={Link} href="/profile" size="sm" variant="outline" className="rounded-md">
-          Profile
+        <Button
+          as={Link}
+          href="/profile"
+          size="icon"
+          variant="outline"
+          className="rounded-md border-[#c46255] bg-[#c46255] text-white hover:bg-[#ad5149]"
+          aria-label="Profile"
+          title="Profile"
+        >
+          <ProfileIcon />
         </Button>
         <form method="post" action="/logout">
-          <Button type="submit" size="sm" variant="primary" className="rounded-md">
+          <Button
+            type="submit"
+            size="sm"
+            variant="primary"
+            className="rounded-md border-[#ed752e] bg-[#ed752e] text-white hover:bg-[#f6863c]"
+          >
             Logout
           </Button>
         </form>
@@ -26,15 +48,16 @@ export default function ChromeHeader(props) {
     );
 
   return (
-    <nav className="fixed top-0 z-50 w-full border-b border-gray-200 bg-white/95 py-3 shadow-sm backdrop-blur-sm">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6">
+    <nav className="fixed top-0 z-50 w-full border-b border-ui-border bg-ui-bg/95 py-3 shadow-sm backdrop-blur-sm">
+      <div className="mx-auto flex w-full max-w-[1960px] items-center justify-between gap-4 px-6 sm:px-10">
         <Link
           href="/home"
-          className="flex items-center gap-3 text-xl font-bold tracking-tight text-gray-900 hover:no-underline"
+          className="flex items-center gap-3 text-lg font-semibold tracking-tight text-ui-text hover:no-underline"
         >
           <img src="/assets/branding/logo.svg" alt="Zebflow logo" className="h-9 w-9 shrink-0" />
-          <span>
-            ZEBFLOW <span className="ml-2 text-sm text-gray-400">Platform</span>
+          <span className="flex items-baseline gap-2">
+            <span>zebflow</span>
+            <span className="text-xs font-medium text-ui-text-muted">Platform</span>
           </span>
         </Link>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{trailing}</div>

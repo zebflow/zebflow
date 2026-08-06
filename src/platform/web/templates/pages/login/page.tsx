@@ -4,7 +4,7 @@ export const page = {
   },
   body: {
     className:
-      "min-h-screen flex flex-col items-center justify-center px-4 py-5 bg-zinc-50 text-gray-900 font-sans",
+      "min-h-screen overflow-hidden bg-ui-bg-muted text-ui-text font-sans",
   },
   navigation: "history",
 };
@@ -20,50 +20,79 @@ export function getPage(input) {
 
 export default function Page(input) {
   return (
-    <div className="flex w-full max-w-xs flex-col items-center">
-      <div className="flex flex-col items-center gap-2">
-        <img
-          src="/assets/branding/logo.svg"
-          alt="Zebflow"
-          className="h-14 w-14 shrink-0"
-        />
-        <span className="text-xl font-bold tracking-tight text-gray-900">ZEBFLOW</span>
-      </div>
+    <main
+      className="relative flex min-h-screen w-full items-center justify-center px-5 py-8"
+      style={{
+        backgroundColor: "var(--color-zeb-bg)",
+        fontFamily: "var(--font-sans)",
+      }}
+    >
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0"
+        style={{
+          backgroundImage:
+            "linear-gradient(var(--color-zeb-grid) 1px, transparent 1px), linear-gradient(90deg, var(--color-zeb-grid) 1px, transparent 1px)",
+          backgroundSize: "64px 64px",
+          opacity: 0.45,
+        }}
+      />
       <form
         method="post"
         action="/login"
-        className="mt-6 flex w-full flex-col gap-2"
+        className="relative w-full max-w-[340px]"
       >
+        <div className="mb-10 flex items-center justify-center gap-3 text-center">
+          <img
+            src="/assets/branding/logo.svg"
+            alt="Zebflow"
+            className="h-11 w-11 shrink-0"
+          />
+          <span className="text-[22px] font-bold leading-none tracking-[-0.01em] text-ui-text">
+            zebflow
+          </span>
+        </div>
         {input?.error ? (
-          <p className="text-center text-sm text-red-600">{input.error}</p>
+          <p className="mb-3 rounded-[10px] border border-red-200 bg-red-50 px-4 py-3 text-center text-sm font-medium text-red-700">
+            {input.error}
+          </p>
         ) : null}
-        <input
-          type="text"
-          name="identifier"
-          placeholder="Username"
-          defaultValue={input?.default_identifier ?? ""}
-          required
-          autoComplete="username"
-          className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-gray-400"
-        />
-        <input
-          type="password"
-          name="password"
-          placeholder="Password"
-          required
-          autoComplete="current-password"
-          className="h-9 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-gray-400"
-        />
+        <div>
+          <input
+            type="text"
+            name="identifier"
+            placeholder="Username"
+            defaultValue={input?.default_identifier ?? ""}
+            required
+            autoComplete="username"
+            className="w-full rounded-[10px] border border-ui-border bg-ui-bg px-4 py-3.5 text-[15px] text-ui-text outline-none transition-colors placeholder:text-ui-text-muted focus:border-brand-blue"
+          />
+        </div>
+        <div className="mt-3">
+          <input
+            type="password"
+            name="password"
+            placeholder="Password"
+            required
+            autoComplete="current-password"
+            className="w-full rounded-[10px] border border-ui-border bg-ui-bg px-4 py-3.5 text-[15px] text-ui-text outline-none transition-colors placeholder:text-ui-text-muted focus:border-brand-blue"
+          />
+        </div>
         <button
           type="submit"
-          className="h-10 w-full rounded-lg bg-gray-900 text-sm font-medium text-white hover:opacity-90"
+          className="mt-4 block w-full rounded-[10px] bg-dark-background px-4 py-3.5 text-center text-[15.5px] font-semibold text-white transition-colors hover:bg-dark-menus"
         >
           Sign in
         </button>
+        {input?.app_version ? (
+          <p
+            className="mt-7 text-center text-[11px] text-ui-text-muted"
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            v{input.app_version}
+          </p>
+        ) : null}
       </form>
-      {input?.app_version ? (
-        <p className="mt-6 text-[0.7rem] text-gray-400 tracking-wide">v{input.app_version}</p>
-      ) : null}
-    </div>
+    </main>
   );
 }
