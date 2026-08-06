@@ -516,6 +516,7 @@ fn field_type_to_kind(ty: &sekejap::sql::FieldType) -> &'static str {
         sekejap::sql::FieldType::Text => "string",
         sekejap::sql::FieldType::Integer => "number",
         sekejap::sql::FieldType::Real => "number",
+        sekejap::sql::FieldType::Bool => "boolean",
         sekejap::sql::FieldType::Timestamptz => "number",
         sekejap::sql::FieldType::Geo => "geo",
         sekejap::sql::FieldType::Vector => "vector",
@@ -2629,14 +2630,8 @@ pub fn bulk_insert(
         let from_slug = format!("{}/{}", edge.from_target.trim(), edge.from_key.trim());
         let to_slug = format!("{}/{}", edge.to_target.trim(), edge.to_key.trim());
         let meta_json = Value::Object(edge.fields).to_string();
-        db.link_meta(
-            &from_slug,
-            &to_slug,
-            edge.edge_type.trim(),
-            edge.strength,
-            &meta_json,
-        )
-        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
+        db.link_meta(&from_slug, &to_slug, edge.edge_type.trim(), &meta_json)
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
     }
     drop(db);
     record_project_write(data_root, owner, project, edge_count);
@@ -2680,6 +2675,13 @@ fn classify_schema_value(
                 Ok(SchemaWriteValue::Payload(value))
             } else {
                 Err(schema_type_error(collection, field, "REAL", &value))
+            }
+        }
+        sekejap::FieldType::Bool => {
+            if value.is_boolean() {
+                Ok(SchemaWriteValue::Payload(value))
+            } else {
+                Err(schema_type_error(collection, field, "BOOLEAN", &value))
             }
         }
         sekejap::FieldType::Timestamptz => {

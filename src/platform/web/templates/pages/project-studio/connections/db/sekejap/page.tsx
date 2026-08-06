@@ -442,11 +442,11 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
                         <span>{formatGeoValue(displayValue)}</span>
                       </span>
                     ) : compactVector ? (
-                      <span className="font-mono text-[0.73rem] text-violet-300/90">
+                      <span className="font-mono text-[0.73rem] text-[#ebbe7d]">
                         {formatVectorPreview(displayValue)}
                       </span>
                     ) : (displayValue == null || displayValue === "") && isVectorCol ? (
-                      <span className="inline-flex items-center gap-1 text-violet-400/70">
+                      <span className="inline-flex items-center gap-1 text-[#e9904e]">
                         <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
                           <circle cx="3" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
                           <circle cx="6" cy="3" r="1.5" fill="currentColor" opacity="0.8"/>
