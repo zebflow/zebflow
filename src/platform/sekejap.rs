@@ -2568,19 +2568,23 @@ pub fn bulk_write_records(
         );
         payload.insert("_key".to_string(), Value::String(key));
         payload.insert("_id".to_string(), Value::String(slug.clone()));
-        let payload_json = Value::Object(payload).to_string();
-        prepared.push((slug, payload_json, native_values));
+        prepared.push((slug, Value::Object(payload), native_values));
     }
 
     let affected_rows = prepared.len();
-    for (slug, payload_json, native_values) in prepared {
-        db.put(&slug, &payload_json)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
+    let mut payload_rows = Vec::with_capacity(prepared.len());
+    let mut vector_rows = Vec::new();
+    for (slug, payload, native_values) in prepared {
+        payload_rows.push((slug.clone(), payload));
         for (field, vector) in native_values {
-            db.put_vector(&slug, &field, &vector).map_err(|err| {
-                PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string())
-            })?;
+            vector_rows.push((slug.clone(), field, vector));
         }
+    }
+    db.put_value_bulk(payload_rows)
+        .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
+    for (slug, field, vector) in vector_rows {
+        db.put_vector(&slug, &field, &vector)
+            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_FAILED", err.to_string()))?;
     }
     drop(db);
     record_project_write(data_root, owner, project, affected_rows);
@@ -2626,13 +2630,23 @@ pub fn bulk_insert(
     let db_arc = get_db(data_root, owner, project)?;
     let mut db = db_arc.write().unwrap();
     let edge_count = edges.len();
+    let mut prepared_edges = Vec::with_capacity(edge_count);
     for edge in edges {
         let from_slug = format!("{}/{}", edge.from_target.trim(), edge.from_key.trim());
         let to_slug = format!("{}/{}", edge.to_target.trim(), edge.to_key.trim());
+        let edge_type = edge.edge_type.trim().to_string();
         let meta_json = Value::Object(edge.fields).to_string();
-        db.link_meta(&from_slug, &to_slug, edge.edge_type.trim(), &meta_json)
-            .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
+        prepared_edges.push((from_slug, to_slug, edge_type, meta_json));
     }
+    db.link_meta_many(prepared_edges.iter().map(|(from, to, edge_type, meta)| {
+        (
+            from.as_str(),
+            to.as_str(),
+            edge_type.as_str(),
+            Some(meta.as_str()),
+        )
+    }))
+    .map_err(|err| PlatformError::new("PLATFORM_SEKEJAP_INSERT_EDGE", err.to_string()))?;
     drop(db);
     record_project_write(data_root, owner, project, edge_count);
 

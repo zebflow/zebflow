@@ -6192,9 +6192,9 @@ dependencies = [
 
 [[package]]
 name = "sekejap"
-version = "0.16.1"
+version = "0.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5c5572b9c62a61f27f488202a6908b39969b0bff91e7d6243a545bf0c24b95f"
+checksum = "6fa4ee5d055de47dd9e18fbea536529b543f0337983c111f4e4338b69962b72b"
 dependencies = [
  "chrono",
  "crc32fast",
@@ -8795,7 +8795,7 @@ dependencies = [
 
 [[package]]
 name = "zebflow"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "arc-swap",
  "argon2",
