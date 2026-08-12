@@ -131,93 +131,95 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
 
   return (
     <div
-      className="fixed inset-0 z-[200] flex items-start justify-center pt-[10vh]"
+      className="fixed inset-0 z-[200] overflow-y-auto overscroll-contain px-4 py-6 sm:py-8"
       onClick={onClose}
     >
-      <div className="absolute inset-0 bg-black/60" />
-      <div
-        className="relative z-10 w-full max-w-xl mx-4 rounded-lg border border-dark-border bg-dark-background shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Input */}
-        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-dark-border">
-          <DlgSearchIcon />
-          <input
-            ref={inputRef}
-            value={query}
-            onInput={(e: any) => setQuery(e.target.value)}
-            placeholder={mode === "files" ? "Find file by name…" : "Search file contents…"}
-            className="flex-1 min-w-0 bg-transparent text-sm text-dark-text1 placeholder-dark-text1/40 outline-none"
-          />
-          {loading && <DlgSpinIcon />}
-        </div>
-        {/* Mode tabs */}
-        <div className="flex gap-1.5 px-3 py-2 border-b border-dark-border">
-          <button
-            onClick={() => { setMode("files"); setQuery(""); }}
-            className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
-              mode === "files"
-                ? "bg-blue-600 text-white"
-                : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
-            }`}
-          >
-            Files
-          </button>
-          <button
-            onClick={() => { setMode("search"); setQuery(""); }}
-            className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
-              mode === "search"
-                ? "bg-blue-600 text-white"
-                : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
-            }`}
-          >
-            Search
-          </button>
-        </div>
-        {/* Results */}
-        <div ref={listRef} className="max-h-64 overflow-y-auto">
-          {results.length === 0 && !loading && (
-            <p className="py-5 text-center text-xs text-dark-text1/40">
-              {mode === "files"
-                ? query.trim() ? "No files match" : "Type to filter files"
-                : query.trim() ? "No matches found" : "Type to search file contents"}
-            </p>
-          )}
-          {results.map((r, i) => {
-            const isPipeline = r.relPath.endsWith(".zf.json");
-            return (
-              <button
-                key={`result-${i}`}
-                data-idx={i}
-                onClick={() => { onSelect(r.relPath); onClose(); }}
-                className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors ${
-                  i === cursor
-                    ? "bg-blue-600/20 text-dark-text1"
-                    : "text-dark-text1/80 hover:bg-dark-accent3 hover:text-dark-text1"
-                }`}
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm font-medium truncate flex-1">{r.label}</span>
-                  <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                    isPipeline
-                      ? "bg-[#c46255]/20 text-[#f6863c]"
-                      : "bg-sky-500/20 text-sky-400"
-                  }`}>
-                    {isPipeline ? "pipeline" : "template"}
-                  </span>
-                </div>
-                {r.sub && r.sub !== r.label && (
-                  <span className="text-xs text-dark-text1/40 truncate">{r.sub}</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-        {/* Footer hints */}
-        <div className="flex items-center gap-3 px-3 py-1.5 border-t border-dark-border text-[11px] text-dark-text1/30 select-none">
-          <span>↑↓ navigate</span>
-          <span>↵ select</span>
-          <span>Esc close</span>
+      <div className="fixed inset-0 bg-black/60" />
+      <div className="relative z-10 flex min-h-full items-center justify-center">
+        <div
+          className="relative w-full max-w-xl rounded-lg border border-dark-border bg-dark-background shadow-2xl overflow-hidden max-h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-4rem)] flex flex-col"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Input */}
+          <div className="flex items-center gap-2 px-3 py-2.5 border-b border-dark-border">
+            <DlgSearchIcon />
+            <input
+              ref={inputRef}
+              value={query}
+              onInput={(e: any) => setQuery(e.target.value)}
+              placeholder={mode === "files" ? "Find file by name…" : "Search file contents…"}
+              className="flex-1 min-w-0 bg-transparent text-sm text-dark-text1 placeholder-dark-text1/40 outline-none"
+            />
+            {loading && <DlgSpinIcon />}
+          </div>
+          {/* Mode tabs */}
+          <div className="flex gap-1.5 px-3 py-2 border-b border-dark-border">
+            <button
+              onClick={() => { setMode("files"); setQuery(""); }}
+              className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
+                mode === "files"
+                  ? "bg-blue-600 text-white"
+                  : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
+              }`}
+            >
+              Files
+            </button>
+            <button
+              onClick={() => { setMode("search"); setQuery(""); }}
+              className={`text-xs px-2.5 py-0.5 rounded-full transition-colors ${
+                mode === "search"
+                  ? "bg-blue-600 text-white"
+                  : "text-dark-text1/60 hover:bg-dark-accent3 hover:text-dark-text1"
+              }`}
+            >
+              Search
+            </button>
+          </div>
+          {/* Results */}
+          <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
+            {results.length === 0 && !loading && (
+              <p className="py-5 text-center text-xs text-dark-text1/40">
+                {mode === "files"
+                  ? query.trim() ? "No files match" : "Type to filter files"
+                  : query.trim() ? "No matches found" : "Type to search file contents"}
+              </p>
+            )}
+            {results.map((r, i) => {
+              const isPipeline = r.relPath.endsWith(".zf.json");
+              return (
+                <button
+                  key={`result-${i}`}
+                  data-idx={i}
+                  onClick={() => { onSelect(r.relPath); onClose(); }}
+                  className={`w-full text-left px-3 py-2 flex flex-col gap-0.5 transition-colors ${
+                    i === cursor
+                      ? "bg-blue-600/20 text-dark-text1"
+                      : "text-dark-text1/80 hover:bg-dark-accent3 hover:text-dark-text1"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium truncate flex-1">{r.label}</span>
+                    <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      isPipeline
+                        ? "bg-[#c46255]/20 text-[#f6863c]"
+                        : "bg-sky-500/20 text-sky-400"
+                    }`}>
+                      {isPipeline ? "pipeline" : "template"}
+                    </span>
+                  </div>
+                  {r.sub && r.sub !== r.label && (
+                    <span className="text-xs text-dark-text1/40 truncate">{r.sub}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {/* Footer hints */}
+          <div className="flex items-center gap-3 px-3 py-1.5 border-t border-dark-border text-[11px] text-dark-text1/30 select-none">
+            <span>↑↓ navigate</span>
+            <span>↵ select</span>
+            <span>Esc close</span>
+          </div>
         </div>
       </div>
     </div>

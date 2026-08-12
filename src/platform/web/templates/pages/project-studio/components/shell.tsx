@@ -96,73 +96,77 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
   const active = findHelpSectionById(sections, activeSection) || sections[0] || null;
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[120] overflow-y-auto overscroll-contain px-4 py-6 sm:py-8">
       <button
         type="button"
-        className="absolute inset-0 bg-black/55 backdrop-blur-[1px]"
+        className="fixed inset-0 bg-black/55 backdrop-blur-[1px]"
         onClick={onClose}
         aria-label="Close help"
       />
-      <div
-        className={cx(
-          "relative flex h-[min(84vh,54rem)] w-[min(92vw,72rem)] overflow-hidden rounded-lg border shadow-2xl",
-          isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
-        )}
-      >
-        <aside
+      <div className="relative z-10 flex min-h-full items-center justify-center">
+        <div
+          role="dialog"
+          aria-modal="true"
           className={cx(
-            "flex w-60 shrink-0 flex-col border-r",
-            isLight ? "border-gray-200 bg-gray-50" : "border-dark-border bg-dark-menus/60",
+            "relative flex h-[min(calc(100dvh-3rem),54rem)] w-[min(92vw,72rem)] overflow-hidden rounded-lg border shadow-2xl sm:h-[min(calc(100dvh-4rem),54rem)]",
+            isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
           )}
         >
-          <div className="border-b border-inherit px-3.5 py-2.5">
-            <p className={cx("text-[0.82rem] font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>Help</p>
-          </div>
-          <div className="flex-1 overflow-auto px-2 py-2">
-            {sections.map((section) => (
-              <HelpTreeNode
-                key={section?.id}
-                node={section}
-                level={0}
-                activeId={active?.id}
-                isLight={isLight}
-                onSelect={setActiveSection}
-              />
-            ))}
-          </div>
-        </aside>
-
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div
+          <aside
             className={cx(
-              "flex items-center justify-between border-b px-5 py-3",
-              isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
+              "flex w-60 shrink-0 flex-col border-r",
+              isLight ? "border-gray-200 bg-gray-50" : "border-dark-border bg-dark-menus/60",
             )}
           >
-            <div>
-              <p className={cx("text-base font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>
-                {active?.title || "Help"}
-              </p>
+            <div className="border-b border-inherit px-3.5 py-2.5">
+              <p className={cx("text-[0.82rem] font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>Help</p>
             </div>
-            <Button type="button" variant="ghost" size="sm" onClick={onClose}>Close</Button>
-          </div>
+            <div className="flex-1 overflow-auto px-2 py-2">
+              {sections.map((section) => (
+                <HelpTreeNode
+                  key={section?.id}
+                  node={section}
+                  level={0}
+                  activeId={active?.id}
+                  isLight={isLight}
+                  onSelect={setActiveSection}
+                />
+              ))}
+            </div>
+          </aside>
 
-          <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
-            {loading ? (
-              <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>Loading help…</p>
-            ) : error ? (
-              <p className="text-sm text-red-400">{error}</p>
-            ) : active ? (
-              <div
-                className={cx(
-                  "max-w-none prose prose-sm",
-                  isLight ? "" : "prose-invert",
-                )}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(active?.content || "") }}
-              />
-            ) : (
-              <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>No help content available.</p>
-            )}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div
+              className={cx(
+                "flex items-center justify-between border-b px-5 py-3",
+                isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
+              )}
+            >
+              <div>
+                <p className={cx("text-base font-semibold", isLight ? "text-gray-900" : "text-dark-text1")}>
+                  {active?.title || "Help"}
+                </p>
+              </div>
+              <Button type="button" variant="ghost" size="sm" onClick={onClose}>Close</Button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+              {loading ? (
+                <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>Loading help…</p>
+              ) : error ? (
+                <p className="text-sm text-red-400">{error}</p>
+              ) : active ? (
+                <div
+                  className={cx(
+                    "max-w-none prose prose-sm",
+                    isLight ? "" : "prose-invert",
+                  )}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(active?.content || "") }}
+                />
+              ) : (
+                <p className={cx("text-sm", isLight ? "text-gray-600" : "text-dark-text1")}>No help content available.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>

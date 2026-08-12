@@ -955,14 +955,15 @@ button.pipeline-editor-item:hover {
   color: var(--color-body);
   opacity: 1;
   width: min(680px, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 3rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
   box-shadow: 0 24px 55px rgba(2, 6, 23, 0.32);
 }
 
 .pipeline-editor-dialog.credential-dialog {
   width: min(640px, calc(100vw - 2rem));
-  max-height: calc(100vh - 3rem);
+  max-height: calc(100dvh - 4rem);
   overflow: hidden;
 }
 
@@ -971,7 +972,7 @@ button.pipeline-editor-item:hover {
   display: flex;
   flex-direction: column;
   height: 100%;
-  max-height: calc(100vh - 3rem);
+  max-height: calc(100dvh - 4rem);
 }
 .credential-dialog-header {
   display: flex;
@@ -1014,6 +1015,7 @@ button.pipeline-editor-item:hover {
 .credential-dialog-body {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.85rem 1rem;
   display: flex;
   flex-direction: column;
@@ -1774,6 +1776,9 @@ button.pipeline-editor-item:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1.5rem 1rem;
 }
 
 .pipeline-delete-backdrop {
@@ -1787,6 +1792,7 @@ button.pipeline-editor-item:hover {
   position: relative;
   z-index: 1;
   width: min(28rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 3rem);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 0.65rem;
@@ -1795,6 +1801,8 @@ button.pipeline-editor-item:hover {
   flex-direction: column;
   gap: 0.75rem;
   box-shadow: 0 20px 50px rgba(2, 6, 23, 0.4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .pipeline-delete-title {
@@ -1849,6 +1857,9 @@ button.pipeline-editor-item:hover {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1.5rem 1rem;
 }
 
 .git-commit-backdrop {
@@ -1862,7 +1873,7 @@ button.pipeline-editor-item:hover {
   position: relative;
   z-index: 1;
   width: min(38rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 4rem);
+  max-height: calc(100dvh - 3rem);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 0.65rem;
@@ -1871,7 +1882,8 @@ button.pipeline-editor-item:hover {
   gap: 0.75rem;
   padding: 1.25rem 1.5rem;
   box-shadow: 0 24px 55px rgba(2, 6, 23, 0.4);
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* Install UI Components catalog (registry + editor): wide box, flex middle, scrollable grid */
