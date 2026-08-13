@@ -1,6 +1,6 @@
 # Zebflow
 
-**[zebflow.com](https://zebflow.com)** · [Docs](docs/README.md) · [Usage](docs/usage/README.md) · [Developer Guide](docs/developer/README.md)
+**[zebflow.com](https://zebflow.com)** · [Docs](docs/README.md) · [Usage](docs/usage/README.md) · [Developer](docs/developer/README.md)
 
 > One runtime for building and running full-stack apps.
 
@@ -149,9 +149,8 @@ cargo run --bin zebflow
 
 Examples should be runnable projects. They are used for learning, testing, demos, and Hub publishing.
 
-Start here:
-
-- [Examples](docs/examples/README.md)
+Curated examples will be added only after their behavior and package format are
+verified against the stable contracts.
 
 ## Runtime Modes
 
@@ -174,8 +173,9 @@ Most users should start with plain `zebflow`.
 - [Docs Home](docs/README.md)
 - [Usage Guide](docs/usage/README.md)
 - [Developer Guide](docs/developer/README.md)
-- [Operations Guide](docs/operations/README.md)
-- [Examples](docs/examples/README.md)
+- [Platform Contract](docs/contracts/platform.md)
+- [Project Contract](docs/contracts/project.md)
+- [Versioning Contract](docs/contracts/versioning.md)
 
 ## Design Rule
 

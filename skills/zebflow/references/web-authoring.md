@@ -11,10 +11,12 @@ Authoritative code and docs:
 - `src/platform/help/web/hooks.md`
 - `libraries/`
 
-User-facing docs:
+Contract boundary:
 
-- `docs/usage/templates.md`
-- `docs/usage/project-studio.md`
+- `docs/usage/web.md`
+- `docs/developer/rwe.md`
+- `docs/contracts/project.md`
+- `docs/contracts/versioning.md`
 
 Rules:
 

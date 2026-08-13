@@ -10,11 +10,14 @@ Authoritative code and docs:
 - `src/platform/help/pipeline/dsl.md`
 - `src/platform/help/pipeline/authoring.md`
 
-User-facing docs:
+Contract boundary:
 
 - `docs/usage/pipelines.md`
-- `docs/usage/pipeline-language.md`
-- `docs/usage/pipeline-examples.md`
+- `docs/reference/pipeline-language.md`
+- `docs/reference/expressions.md`
+- `docs/reference/nodes.md`
+- `docs/contracts/project.md`
+- `docs/contracts/versioning.md`
 
 Pipeline formats:
 

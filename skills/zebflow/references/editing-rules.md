@@ -24,7 +24,8 @@ For UI:
 For docs:
 
 - Main README should stay concise and user-facing.
-- Put usage docs under `docs/usage/`.
-- Put extension/runtime contracts under `docs/developer/`.
-- Put server and operational material under `docs/operations/`.
-- Keep deeper historical material linked until it is deliberately cleaned up.
+- Treat `docs/contracts/` as the stable public authority.
+- Add one verified subject at a time; do not restore archived documentation in bulk.
+- Put proposals, experiments, stale material, and conversation notes under `.ignored/`.
+- Do not link active docs or skills to archived documentation.
+- Update the relevant contract when changing a stable public surface.

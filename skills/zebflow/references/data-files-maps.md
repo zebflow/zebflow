@@ -18,11 +18,15 @@ Authoritative code and docs:
 - `src/platform/help/db/`
 - `src/platform/help/guide/mapserver.md`
 
-User-facing docs:
+Contract boundary:
 
-- `docs/usage/sekejap-db.md`
-- `docs/usage/files-storage.md`
-- `docs/usage/mapserver-gis.md`
+- `docs/usage/databases.md`
+- `docs/usage/files.md`
+- `docs/usage/maps.md`
+- `docs/developer/storage.md`
+- `docs/contracts/project.md`
+- `docs/contracts/formats.md`
+- `docs/contracts/versioning.md`
 
 Database surfaces:
 

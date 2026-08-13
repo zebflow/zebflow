@@ -7,6 +7,13 @@ description: Work on Zebflow projects, runtime code, pages, pipelines, Hub packa
 
 Use this skill when working inside a Zebflow repository or project workspace.
 
+## Stable Knowledge
+
+- Read `docs/usage/README.md` for project work.
+- Read `docs/developer/README.md` for Zebflow platform work.
+- Read `docs/contracts/README.md` for stable rules shared by both.
+- Read `docs/reference/README.md` for exact names and formats.
+
 ## First Read
 
 Open only the reference that matches the task:

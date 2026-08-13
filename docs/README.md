@@ -1,28 +1,42 @@
 # Zebflow Documentation
 
-Zebflow documentation is split by audience.
+This directory contains the main long term knowledge for Zebflow users and
+platform developers.
 
-- [Usage](./usage/README.md) is for people building apps, APIs, maps, workflows, databases, and AI tools with Zebflow.
-- [Developer](./developer/README.md) is for people extending Zebflow itself or creating reusable nodes and packages.
-- [Operations](./operations/README.md) is for people running Zebflow on a machine, server, or cluster.
-- [Examples](./examples/README.md) is for runnable examples that can also become Hub packages.
+The previous documentation set is preserved outside the active knowledge tree at
+`.ignored/legacy-2026-08-14-docs/`. It is historical material, not an authority
+for current behavior.
 
-## Existing Reference Docs
+## Documentation Scopes
 
-Some detailed material still lives in the older folders while the docs are being reshaped:
+Zebflow has two audiences:
 
-- [User Guide](./user-guide/README.md)
-- [Developer Guide](./dev-guide/README.md)
-- [Project Contract](./dev-guide/project-contract.md)
-- [Office Federation Contract](./dev-guide/office-federation-contract.md)
-- [Architecture](./dev-guide/architecture.md)
-- [Hub Formal Guide](./user-guide/hub-formal-guide.md)
-- [Storage Formal Guide](./user-guide/storage-formal-guide.md)
+1. **Users** install and use Zebflow. This includes authoring projects,
+   pipelines, pages, composite nodes, WASM nodes, and Hub packages.
+2. **Platform developers** change Zebflow itself, including its Rust runtime,
+   built-in nodes, RWE engine, storage, platform services, and release process.
 
-## Writing Rule
+Documentation is organized by purpose:
 
-Write Zebflow docs for global users first: clear words, short examples, and practical steps. Put deep architecture details in the developer guide, not in the first page a new user reads.
+- [Usage](./usage/README.md) teaches users how to build with Zebflow.
+- [Developer](./developer/README.md) explains how Zebflow itself works.
+- [Contracts](./contracts/README.md) defines rules both audiences may rely on.
+- [Reference](./reference/README.md) contains exact schemas, commands, and APIs.
+- [Examples](./examples/README.md) contains verified, runnable examples.
 
-## Coverage Map
+## Authority
 
-Use [Coverage Map](./coverage-map.md) to check where each major Zebflow source area is documented. If a new top-level module, project surface, route family, node family, package type, or runtime subsystem is added, update that map in the same change.
+The contracts define stable meaning and compatibility. Machine-readable source
+definitions define exact fields, types, defaults, and validation rules. User
+guides and examples may explain those contracts, but may not redefine them.
+
+When documentation, generated help, and implementation disagree, the mismatch
+is a defect. It must be resolved at the source of truth rather than documented as
+an exception.
+
+## Growth Rule
+
+New documentation is added one verified subject at a time. A document enters
+this directory only when it describes current behavior or an approved contract
+rule. Conversation notes, experiments, proposals, and obsolete
+material belong under `.ignored/`, not here.

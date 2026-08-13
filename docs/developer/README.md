@@ -1,22 +1,18 @@
-# Zebflow Developer Guide
+# Developing Zebflow
 
-This guide is for extending Zebflow.
+This section is for people who change the Zebflow platform itself.
 
-Start here:
+- [Repository structure](./repository-structure.md)
+- [Architecture](./architecture.md)
+- [Pipeline runtime](./pipeline-runtime.md)
+- [Node system](./node-system.md)
+- [Native nodes](./native-nodes.md)
+- [RWE](./rwe.md)
+- [Storage](./storage.md)
+- [Platform services](./platform.md)
+- [Testing](./testing.md)
+- [Release](./release.md)
 
-1. [Node Definitions](./node-definitions.md)
-2. [Composite Nodes](./composite-nodes.md)
-3. [WASM Nodes](./wasm-nodes.md)
-4. [Hub Package Format](./hub-package-format.md)
-5. [Runtime Modules](./runtime-modules.md)
-6. [Pipeline Runtime](./pipeline-runtime.md)
-7. [Platform Internals](./platform-internals.md)
-8. [Policy](./policy.md)
-9. [MCP Contract](./mcp-contract.md)
-
-Existing deeper references:
-
-- [Formal Node Development Guide](../dev-guide/node-development-formal-guide.md)
-- [Project Contract](../dev-guide/project-contract.md)
-- [Platform Data Structure](../dev-guide/architecture/platform-data-structure.md)
-- [Project Distribution](../dev-guide/architecture/project-distribution.md)
+Start with the repository structure, then read the page for the part you plan to
+change. Public behavior is governed by the [contracts](../contracts/README.md).
+User extension work belongs in the [usage guide](../usage/README.md).

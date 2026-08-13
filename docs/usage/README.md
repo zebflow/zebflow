@@ -1,21 +1,34 @@
-# Zebflow Usage
+# Using Zebflow
 
-This guide is for building with Zebflow.
+This guide is for people who install Zebflow and build projects with it.
 
-Start here:
+You are a Zebflow user when you:
 
-1. [Install](./install.md)
-2. [Quick Start](./quick-start.md)
-3. [Project Studio](./project-studio.md)
-4. [Reactive Web Templates](./templates.md)
-5. [Pipelines](./pipelines.md)
-6. [Pipeline Language](./pipeline-language.md)
-7. [Pipeline Examples](./pipeline-examples.md)
-8. [Sekejap DB](./sekejap-db.md)
-9. [Files and Storage](./files-storage.md)
-10. [Mapserver and GIS](./mapserver-gis.md)
-11. [MCP](./mcp.md)
-12. [Hub](./hub.md)
-13. [Deployment](./deployment.md)
+- create pages, APIs, and pipelines
+- store or query data
+- work with files and maps
+- create composite or WASM nodes
+- publish or add Hub packages
+- run Zebflow on a laptop, server, or cluster
 
-Zebflow is meant to feel like one place to build and run full-stack software. You can start with a page, add a database, expose a webhook, publish a map, connect an AI agent, and share the result as a package without creating many separate projects.
+You do not need to know how the Rust runtime is built. That information is in
+the [developer guide](../developer/README.md).
+
+## Start Here
+
+1. [Install Zebflow](./installation.md)
+2. [Understand projects](./projects.md)
+3. [Build pipelines](./pipelines.md)
+4. [Build web pages](./web.md)
+5. [Use databases](./databases.md)
+6. [Use files](./files.md)
+
+## More Capabilities
+
+- [Maps](./maps.md)
+- [Hub](./hub.md)
+- [Deployment](./deployment.md)
+- [Node authoring](./nodes/README.md)
+
+Use the [reference](../reference/README.md) when you need exact names, fields,
+schemas, or error codes.

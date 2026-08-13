@@ -12,11 +12,13 @@ Authoritative modules:
 - `src/provision/`
 - `src/bin/zebflow.rs`
 
-Developer docs:
+Contract boundary:
 
-- `docs/developer/platform-internals.md`
-- `docs/developer/runtime-modules.md`
-- `docs/developer/policy.md`
+- `docs/developer/repository-structure.md`
+- `docs/developer/architecture.md`
+- `docs/developer/platform.md`
+- `docs/contracts/platform.md`
+- `docs/contracts/versioning.md`
 
 Responsibilities:
 
