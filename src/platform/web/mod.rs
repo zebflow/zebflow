@@ -6282,7 +6282,7 @@ async fn project_db_suite_page(
     }
 
     let tab_key = match tab.as_str() {
-        "tables" | "query" | "schema" | "mart" => tab,
+        "tables" | "query" | "graph" | "schema" | "mart" | "maintenance" => tab,
         "layers" | "publish" | "test" => tab,
         _ => {
             return (StatusCode::NOT_FOUND, Html("db tab not found".to_string())).into_response();
@@ -6400,6 +6400,13 @@ async fn project_db_suite_page(
                 )
                     .into_response();
             }
+            if tab_key == "maintenance" && connection_info.database_kind != "sekejap" {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Html("db tab not found".to_string()),
+                )
+                    .into_response();
+            }
             let nav = nav_classes(&owner, &project, "databases", Some("connections"));
             let route = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}/{tab_key}");
             let table_page_key = match connection_info.database_kind.as_str() {
@@ -6424,7 +6431,7 @@ async fn project_db_suite_page(
                 format!("?table={selected_table}")
             };
             let base = format!("/projects/{owner}/{project}/db/{db_kind}/{connection}");
-            let suite_tabs = vec![
+            let mut suite_tabs = vec![
                 json!({
                     "label": "Tables",
                     "href": format!("{base}/tables{table_query}"),
@@ -6434,6 +6441,11 @@ async fn project_db_suite_page(
                     "label": "Query",
                     "href": format!("{base}/query{table_query}"),
                     "classes": if tab_key == "query" { "is-active" } else { "" },
+                }),
+                json!({
+                    "label": "Graph",
+                    "href": format!("{base}/graph{table_query}"),
+                    "classes": if tab_key == "graph" { "is-active" } else { "" },
                 }),
                 json!({
                     "label": "Schema",
@@ -6446,6 +6458,13 @@ async fn project_db_suite_page(
                     "classes": if tab_key == "mart" { "is-active" } else { "" },
                 }),
             ];
+            if connection_info.database_kind == "sekejap" {
+                suite_tabs.push(json!({
+                    "label": "Maintenance",
+                    "href": format!("{base}/maintenance{table_query}"),
+                    "classes": if tab_key == "maintenance" { "is-active" } else { "" },
+                }));
+            }
 
             let input = json!({
                 "seo": {
@@ -6486,8 +6505,10 @@ async fn project_db_suite_page(
                 "tab_flags": {
                     "tables": tab_key == "tables",
                     "query": tab_key == "query",
+                    "graph": tab_key == "graph",
                     "schema": tab_key == "schema",
                     "mart": tab_key == "mart",
+                    "maintenance": tab_key == "maintenance",
                 },
                 "nav": nav,
             });

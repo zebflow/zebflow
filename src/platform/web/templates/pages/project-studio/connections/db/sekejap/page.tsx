@@ -13,6 +13,7 @@ import Input from "@/components/ui/input";
 import Textarea from "@/components/ui/textarea";
 import { Select, SelectOption } from "@/components/ui/select";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
+import MapPicker from "@/components/ui/map-picker";
 import DeckMap from "zeb/deckgl";
 
 export const page = {
@@ -157,6 +158,10 @@ function isVectorColumn(vectorFields, colName) {
   return Array.isArray(vectorFields) && vectorFields.includes(colName);
 }
 
+function isGeoColumn(geoFields, colName) {
+  return Array.isArray(geoFields) && geoFields.includes(colName);
+}
+
 function vectorArrayFromCell(cell) {
   if (Array.isArray(cell)) return cell;
   if (cell && typeof cell === "object") {
@@ -250,7 +255,7 @@ function autoSizeColumns(columns, rows, vectorFields) {
   return widths;
 }
 
-function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject, editingCell, pendingEdits, onEditingCellChange, onCellEdit, vectorFields }) {
+function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellInspect, mapRowToObject, editingCell, pendingEdits, onEditingCellChange, onCellEdit, vectorFields, geoFields, onGeoPick }) {
   const [colWidths, setColWidths] = useState({});
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
@@ -380,6 +385,7 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
                 const hasPending = colName in rowPending;
                 const displayValue = hasPending ? rowPending[colName] : cell;
                 const isVectorCol = isVectorColumn(vectorFields, colName);
+                const isGeoCol = isGeoColumn(geoFields, colName);
                 const compactVector = shouldCompactVectorCell(displayValue, colName, vectorFields);
                 return (
                   <td
@@ -434,28 +440,55 @@ function ResizableDataGrid({ columns, rows, selectedRowKey, onRowSelect, onCellI
                           }
                         }}
                       />
-                    ) : isGeoJsonPoint(displayValue) ? (
-                      <span className="inline-flex items-center gap-1">
-                        <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0 opacity-50">
-                          <path d="M6 1C4.067 1 2.5 2.567 2.5 4.5C2.5 7.25 6 11 6 11s3.5-3.75 3.5-6.5C9.5 2.567 7.933 1 6 1Zm0 4.75a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5Z" fill="currentColor"/>
-                        </svg>
-                        <span>{formatGeoValue(displayValue)}</span>
+                    ) : (
+                      <span className={cx("inline-flex max-w-full items-center gap-1", isGeoCol ? "w-full" : "")}>
+                        <span className="min-w-0 overflow-hidden text-ellipsis">
+                          {isGeoJsonPoint(displayValue) ? (
+                            <span className="inline-flex items-center gap-1">
+                              <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0 opacity-50">
+                                <path d="M6 1C4.067 1 2.5 2.567 2.5 4.5C2.5 7.25 6 11 6 11s3.5-3.75 3.5-6.5C9.5 2.567 7.933 1 6 1Zm0 4.75a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5Z" fill="currentColor"/>
+                              </svg>
+                              <span>{formatGeoValue(displayValue)}</span>
+                            </span>
+                          ) : compactVector ? (
+                            <span className="font-mono text-[0.73rem] text-[#ebbe7d]">
+                              {formatVectorPreview(displayValue)}
+                            </span>
+                          ) : (displayValue == null || displayValue === "") && isVectorCol ? (
+                            <span className="inline-flex items-center gap-1 text-[#e9904e]">
+                              <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
+                                <circle cx="3" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
+                                <circle cx="6" cy="3" r="1.5" fill="currentColor" opacity="0.8"/>
+                                <circle cx="9" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
+                                <circle cx="6" cy="9" r="1.5" fill="currentColor" opacity="0.4"/>
+                              </svg>
+                              <span className="text-[11px]">vector</span>
+                            </span>
+                          ) : (displayValue == null || displayValue === "") && isGeoCol ? (
+                            <span className="text-[11px] text-[#e9904e]">geo</span>
+                          ) : stringifyCell(displayValue)}
+                        </span>
+                        {isGeoCol && !isSystemCol ? (
+                          <button
+                            type="button"
+                            title="Pick geometry on map"
+                            className="ml-auto inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-ui-border/70 bg-ui-bg text-ui-text-soft hover:border-[#f6863c] hover:text-[#f6863c]"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              onRowSelect(rowKey, record);
+                              onCellInspect(colName, rowIndex, cell);
+                              onGeoPick?.({ rowKey, colName, value: displayValue, rowIndex, colIndex: cellIndex, record });
+                            }}
+                          >
+                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
+                              <path d="M8 1.75c-2.07 0-3.75 1.68-3.75 3.75 0 2.95 3.75 8.75 3.75 8.75s3.75-5.8 3.75-8.75c0-2.07-1.68-3.75-3.75-3.75Z"/>
+                              <circle cx="8" cy="5.5" r="1.25"/>
+                            </svg>
+                          </button>
+                        ) : null}
                       </span>
-                    ) : compactVector ? (
-                      <span className="font-mono text-[0.73rem] text-[#ebbe7d]">
-                        {formatVectorPreview(displayValue)}
-                      </span>
-                    ) : (displayValue == null || displayValue === "") && isVectorCol ? (
-                      <span className="inline-flex items-center gap-1 text-[#e9904e]">
-                        <svg viewBox="0 0 12 12" fill="none" className="w-3 h-3 shrink-0">
-                          <circle cx="3" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
-                          <circle cx="6" cy="3" r="1.5" fill="currentColor" opacity="0.8"/>
-                          <circle cx="9" cy="6" r="1.5" fill="currentColor" opacity="0.6"/>
-                          <circle cx="6" cy="9" r="1.5" fill="currentColor" opacity="0.4"/>
-                        </svg>
-                        <span className="text-[11px]">vector</span>
-                      </span>
-                    ) : stringifyCell(displayValue)}
+                    )}
                   </td>
                 );
               })}
@@ -635,7 +668,10 @@ function relationNodeSlug(record, fallbackCollection = "") {
 function relationNodeLabel(record, fallbackCollection = "") {
   return (
     String(record?.title || "").trim() ||
+    String(record?.fullname || "").trim() ||
+    String(record?.full_name || "").trim() ||
     String(record?.name || "").trim() ||
+    String(record?.label || "").trim() ||
     String(record?.post_id || "").trim() ||
     String(record?._key || "").trim() ||
     relationNodeSlug(record, fallbackCollection)
@@ -647,6 +683,161 @@ function normalizeRelationType(value) {
     .trim()
     .replace(/[^A-Za-z0-9_]+/g, "_")
     .replace(/^_+|_+$/g, "");
+}
+
+function orderedDataColumns(columns) {
+  const trailing = ["_created_unix", "_updated_unix"];
+  const seen = new Set();
+  const unique = (columns || []).map(String).filter((name) => {
+    if (!name || seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+  return [
+    ...unique.filter((name) => !trailing.includes(name)),
+    ...trailing.filter((name) => unique.includes(name)),
+  ];
+}
+
+function reorderRowsForColumns(sourceColumns, rows, targetColumns) {
+  const indexByName = new Map((sourceColumns || []).map((name, index) => [String(name), index]));
+  return (rows || []).map((row) =>
+    targetColumns.map((name) => {
+      const sourceIndex = indexByName.get(name);
+      return Array.isArray(row) && sourceIndex !== undefined ? row[sourceIndex] : null;
+    })
+  );
+}
+
+function fieldKindForColumn(table, colName) {
+  const name = String(colName || "");
+  const attr = (table?.attributes || []).find((item) => String(item?.name || "") === name);
+  if (attr?.kind) return String(attr.kind);
+  if ((table?.spatialFields || []).includes(name)) return "geo";
+  if ((table?.vectorFields || []).includes(name)) return "vector";
+  return "";
+}
+
+function parseGeoJsonGeometry(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { ok: true, empty: true };
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    return {
+      ok: false,
+      title: "Invalid GeoJSON",
+      message: "Geo fields must be valid GeoJSON geometry JSON.",
+      example: '{"type":"Point","coordinates":[144.9631,-37.8136]}',
+    };
+  }
+  const validTypes = new Set(["Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon", "GeometryCollection"]);
+  if (!parsed || typeof parsed !== "object" || !validTypes.has(parsed.type)) {
+    return {
+      ok: false,
+      title: "Invalid GeoJSON Geometry",
+      message: "Geo fields need a GeoJSON geometry object with a supported type.",
+      example: '{"type":"Point","coordinates":[144.9631,-37.8136]}',
+    };
+  }
+  if (parsed.type === "GeometryCollection") {
+    if (!Array.isArray(parsed.geometries)) {
+      return {
+        ok: false,
+        title: "Invalid GeometryCollection",
+        message: "GeometryCollection values must include a geometries array.",
+        example: '{"type":"GeometryCollection","geometries":[{"type":"Point","coordinates":[144.9631,-37.8136]}]}',
+      };
+    }
+  } else if (!Array.isArray(parsed.coordinates)) {
+    return {
+      ok: false,
+      title: "Missing Coordinates",
+      message: "GeoJSON geometries except GeometryCollection must include a coordinates array.",
+      example: '{"type":"Point","coordinates":[144.9631,-37.8136]}',
+    };
+  }
+  return { ok: true, parsed };
+}
+
+function validateCellEditValue(table, colName, value) {
+  const kind = fieldKindForColumn(table, colName);
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (kind === "geo") {
+    const geo = parseGeoJsonGeometry(text);
+    if (!geo.ok) {
+      return {
+        title: geo.title,
+        message: `${geo.message} Column: ${colName}. Coordinates use [longitude, latitude].`,
+        example: geo.example,
+      };
+    }
+  }
+  if (kind === "number" && Number.isNaN(Number(text))) {
+    return {
+      title: "Invalid Number",
+      message: `Column ${colName} expects a number. Use plain numeric values such as 12, 12.5, or -3.`,
+      example: "12.5",
+    };
+  }
+  if (kind === "json") {
+    try {
+      JSON.parse(text);
+    } catch (_) {
+      return {
+        title: "Invalid JSON",
+        message: `Column ${colName} expects valid JSON.`,
+        example: '{"status":"active","tags":["demo"]}',
+      };
+    }
+  }
+  if (kind === "vector") {
+    try {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "number" && Number.isFinite(item))) {
+        throw new Error("vector must be numeric array");
+      }
+    } catch (_) {
+      return {
+        title: "Invalid Vector",
+        message: `Column ${colName} expects a JSON array of numbers.`,
+        example: "[0.12, 0.34, 0.56]",
+      };
+    }
+  }
+  return null;
+}
+
+function relationSlugParts(slug) {
+  const text = String(slug || "").trim();
+  const [collection, key, ...rest] = text.split("/");
+  if (!collection || !key || rest.length) return null;
+  return { collection, key };
+}
+
+function uniqueRelationDefs(defs) {
+  const seen = new Set();
+  return (defs || [])
+    .map((item) => ({
+      from: String(item?.from || "").trim(),
+      to: String(item?.to || "").trim(),
+      type: String(item?.type || "").trim(),
+    }))
+    .filter((item) => item.from && item.to && item.type)
+    .filter((item) => {
+      const key = `${item.from}:${item.type}:${item.to}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function relationCountFromRows(rows) {
+  const first = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : null;
+  const count = Number(first);
+  return Number.isFinite(count) ? count : null;
 }
 
 function groupTablesBySchema(tables) {
@@ -664,6 +855,29 @@ function selectedTableDefinition(tables, selectedTable) {
   return (tables || []).find((item) => item.key === selectedTable) || null;
 }
 
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  const fixed = amount >= 100 || unit === 0 ? 0 : amount >= 10 ? 1 : 2;
+  return `${amount.toFixed(fixed)} ${units[unit]}`;
+}
+
+function maintenanceDelta(report, key) {
+  if (!report?.before || !report?.after) return "";
+  const before = Number(report.before?.[key] || 0);
+  const after = Number(report.after?.[key] || 0);
+  const diff = after - before;
+  if (!diff) return "";
+  return `${diff > 0 ? "+" : "-"}${formatBytes(Math.abs(diff))}`;
+}
+
 function indexBadgesForAttribute(tableItem, attrName) {
   const badges = [];
   if ((tableItem?.hashIndexed || []).includes(attrName)) badges.push({ key: "hash", label: "exact" });
@@ -674,56 +888,143 @@ function indexBadgesForAttribute(tableItem, attrName) {
   return badges;
 }
 
+function SekejapMaintenancePanel({ health, report, busy, status, onRefresh, onSync, onCompact }) {
+  const walBytes = Number(health?.wal_bytes || 0);
+  const shouldCompact = walBytes >= 64 * 1024 * 1024;
+  const statItems = [
+    { label: "Nodes", value: Number(health?.node_count || 0).toLocaleString() },
+    { label: "Edges", value: Number(health?.edge_count || 0).toLocaleString() },
+    { label: "WAL", value: formatBytes(health?.wal_bytes), delta: maintenanceDelta(report, "wal_bytes") },
+    { label: "Snapshot", value: formatBytes(health?.snapshot_bytes), delta: maintenanceDelta(report, "snapshot_bytes") },
+    { label: "Payload", value: formatBytes(health?.payload_bytes), delta: maintenanceDelta(report, "payload_bytes") },
+    { label: "Indexes", value: formatBytes(health?.sidecar_bytes), delta: maintenanceDelta(report, "sidecar_bytes") },
+    { label: "Check Time", value: `${Number(health?.duration_ms || 0)} ms` },
+    { label: "Root", value: health?.root ? String(health.root) : "Not loaded", mono: true },
+  ];
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-ui-text">Sekejap Store Maintenance</p>
+          <p className="mt-1 max-w-2xl text-xs text-ui-text-soft">
+            Inspect the project-local store, flush pending WAL writes, and compact the snapshot during low-traffic windows.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onRefresh}>
+            Refresh
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onSync}>
+            Sync WAL
+          </Button>
+          <Button type="button" size="sm" disabled={busy} onClick={onCompact}>
+            Compact
+          </Button>
+        </div>
+      </div>
+
+      {status ? (
+        <div
+          className={cx(
+            "mb-4 rounded-md border px-3 py-2 text-xs",
+            status.startsWith("Error")
+              ? "border-red-300/70 bg-red-50/50 text-red-700 dark:border-red-800/60 dark:bg-red-950/20 dark:text-red-400"
+              : "border-ui-border/80 bg-ui-bg-muted/30 text-ui-text-soft"
+          )}
+        >
+          {status}
+        </div>
+      ) : null}
+
+      {shouldCompact ? (
+        <div className="mb-4 rounded-md border border-amber-300/70 bg-amber-50/50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/20 dark:text-amber-300">
+          WAL is above 64 MB. Compacting will checkpoint the store into a clean snapshot and truncate replay data.
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {statItems.map((item) => (
+          <div key={item.label} className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/20 p-3">
+            <p className="text-[0.68rem] font-medium uppercase tracking-[0.14em] text-ui-text-soft">{item.label}</p>
+            <p className={cx("mt-1 truncate text-sm font-medium text-ui-text", item.mono ? "font-mono text-[0.72rem]" : "")} title={item.value}>
+              {item.value}
+            </p>
+            {item.delta ? (
+              <p className="mt-1 text-[0.68rem] tabular-nums text-ui-text-soft">{item.delta}</p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      {report ? (
+        <div className="mt-4 rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
+          <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Last Operation</p>
+          <p className="mt-2 text-sm text-ui-text">
+            {report.operation} completed in {Number(report.duration_ms || 0)} ms.
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AttributeEditorRow({ item, onChange, onRemove }) {
   const options = INDEX_OPTIONS_BY_KIND[item?.kind] || [];
 
   return (
-    <div className="grid gap-2 rounded-lg border border-ui-border/80 bg-ui-bg-muted/40 p-3 md:grid-cols-[minmax(0,1.4fr)_150px_minmax(0,0.8fr)_minmax(0,1fr)_auto]">
-      <Input
-        value={item?.name || ""}
-        onInput={(event) => onChange({ ...item, name: event?.target?.value || "" })}
-        placeholder="field_name"
-      />
-      <Select value={item?.kind || "string"} onChange={(event) => onChange({ ...item, kind: event?.target?.value || "string", index_types: [] })}>
-        {Object.keys(INDEX_OPTIONS_BY_KIND).map((kind) => (
-          <SelectOption key={kind} value={kind} label={kind} />
-        ))}
-      </Select>
-      <Input
-        value={item?.default_value || ""}
-        onInput={(event) => onChange({ ...item, default_value: event?.target?.value || "" })}
-        placeholder="e.g. UUIDV4()"
-      />
-      <div className="flex min-h-9 flex-wrap items-center gap-2 rounded-md border border-dashed border-ui-border px-3 py-2">
-        {options.length ? (
-          options.map((option) => {
-            const checked = Array.isArray(item?.index_types) && item.index_types.includes(option.id);
-            return (
-              <label key={option.id} className="inline-flex items-center gap-2 text-xs text-ui-text-soft">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(event) => {
-                    const next = new Set(Array.isArray(item?.index_types) ? item.index_types : []);
-                    if (event?.target?.checked) {
-                      next.add(option.id);
-                    } else {
-                      next.delete(option.id);
-                    }
-                    onChange({ ...item, index_types: Array.from(next) });
-                  }}
-                />
-                <span>{option.label}</span>
-              </label>
-            );
-          })
-        ) : (
-          <span className="text-xs text-ui-text-muted">No index</span>
-        )}
+    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-ui-border/80 bg-ui-bg-muted/40 p-3">
+      <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_11rem_minmax(0,1fr)]">
+        <Input
+          className="min-w-0"
+          value={item?.name || ""}
+          onInput={(event) => onChange({ ...item, name: event?.target?.value || "" })}
+          placeholder="field_name"
+        />
+        <Select className="min-w-0" value={item?.kind || "string"} onChange={(event) => onChange({ ...item, kind: event?.target?.value || "string", index_types: [] })}>
+          {Object.keys(INDEX_OPTIONS_BY_KIND).map((kind) => (
+            <SelectOption key={kind} value={kind} label={kind} />
+          ))}
+        </Select>
+        <Input
+          className="min-w-0"
+          value={item?.default_value || ""}
+          onInput={(event) => onChange({ ...item, default_value: event?.target?.value || "" })}
+          placeholder="e.g. UUIDV4()"
+        />
       </div>
-      <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
-        Remove
-      </Button>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-3 rounded-md border border-dashed border-ui-border px-3 py-2">
+          {options.length ? (
+            options.map((option) => {
+              const checked = Array.isArray(item?.index_types) && item.index_types.includes(option.id);
+              return (
+                <label key={option.id} className="inline-flex items-center gap-2 text-xs text-ui-text-soft">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) => {
+                      const next = new Set(Array.isArray(item?.index_types) ? item.index_types : []);
+                      if (event?.target?.checked) {
+                        next.add(option.id);
+                      } else {
+                        next.delete(option.id);
+                      }
+                      onChange({ ...item, index_types: Array.from(next) });
+                    }}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              );
+            })
+          ) : (
+            <span className="text-xs text-ui-text-muted">No index</span>
+          )}
+        </div>
+        <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={onRemove}>
+          Remove
+        </Button>
+      </div>
     </div>
   );
 }
@@ -751,15 +1052,15 @@ function CreateTableDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-3xl border-border bg-surface text-body">
-          <DialogHeader className="px-6 pt-6">
-            <DialogTitle>Create Table</DialogTitle>
-            <p className="text-sm text-body-soft">
-              Define a sekejap table and its attributes. Index options change based on the selected kind.
-            </p>
-            <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-body-soft")}>
-              {status}
-            </p>
+      <DialogContent size="wide" className="border-border bg-surface text-body">
+        <DialogHeader className="px-6 pt-6">
+          <DialogTitle>Create Table</DialogTitle>
+          <p className="text-sm text-body-soft">
+            Define a sekejap table and its attributes. Index options change based on the selected kind.
+          </p>
+          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-body-soft")}>
+            {status}
+          </p>
         </DialogHeader>
 
         <form
@@ -797,7 +1098,7 @@ function CreateTableDialog({
                 />
               ))}
               <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-ui-border px-3 py-2">
-                <p className="text-xs text-ui-text-soft">Add only the attributes you want to predeclare. Sejekap still accepts dynamic JSON payloads.</p>
+                <p className="text-xs text-ui-text-soft">Add only the attributes you want to predeclare. Sekejap still accepts dynamic JSON payloads.</p>
                 <Button
                   type="button"
                   variant="outline"
@@ -906,6 +1207,9 @@ function RelationDialog({
   relatedNodeSlug,
   setRelatedNodeSlug,
   currentNodeSlug,
+  relationTypeOptions,
+  relatedSlugWarning,
+  onOpenTargetSearch,
   onSubmit,
 }) {
   return (
@@ -914,7 +1218,7 @@ function RelationDialog({
         <DialogHeader className="px-6 pt-6">
           <DialogTitle>Create Relation</DialogTitle>
           <p className="text-sm text-body-soft">
-            Link the current node to another node in the Sejekap store.
+            Link the current node to another node in the Sekejap store.
           </p>
           <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : status.startsWith("Created") ? "text-success" : "text-body-soft")}>
             {status}
@@ -934,28 +1238,46 @@ function RelationDialog({
               </Select>
             </Field>
             <Field label="Relation Type">
-              <Input
-                value={relationType}
-                onInput={(event) => setRelationType(event?.target?.value || "")}
-                placeholder="references"
-                required
-                disabled={busy}
-              />
+              <div className="flex flex-col gap-2">
+                {relationTypeOptions?.length ? (
+                  <Select value={relationTypeOptions.includes(relationType) ? relationType : ""} onChange={(event) => setRelationType(event?.target?.value || "")} disabled={busy}>
+                    <SelectOption value="" label="New or custom type" />
+                    {relationTypeOptions.map((type) => (
+                      <SelectOption key={type} value={type} label={type} />
+                    ))}
+                  </Select>
+                ) : null}
+                <Input
+                  value={relationType}
+                  onInput={(event) => setRelationType(event?.target?.value || "")}
+                  placeholder="references"
+                  required
+                  disabled={busy}
+                />
+              </div>
             </Field>
           </div>
 
           <Field label={direction === "outgoing" ? "Target Node Slug" : "Source Node Slug"}>
-            <Input
-              value={relatedNodeSlug}
-              onInput={(event) => setRelatedNodeSlug(event?.target?.value || "")}
-              placeholder="people/alice"
-              required
-              disabled={busy}
-            />
+            <div className="flex gap-2">
+              <Input
+                value={relatedNodeSlug}
+                onInput={(event) => setRelatedNodeSlug(event?.target?.value || "")}
+                placeholder="people/alice"
+                required
+                disabled={busy}
+              />
+              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onOpenTargetSearch}>
+                Search
+              </Button>
+            </div>
+            {relatedSlugWarning ? (
+              <p className="mt-1 text-xs text-amber-500">{relatedSlugWarning}</p>
+            ) : null}
           </Field>
 
           <p className="text-xs text-body-soft">
-            Use the Sejekap node slug format: <span className="font-mono">collection/key</span>.
+            Use the Sekejap node slug format: <span className="font-mono">collection/key</span>.
           </p>
 
           <DialogFooter>
@@ -972,6 +1294,177 @@ function RelationDialog({
   );
 }
 
+function DataWarningDialog({ notice, onClose }) {
+  return (
+    <Dialog open={!!notice} onOpenChange={(value) => { if (!value) onClose(); }}>
+      <DialogContent className="max-w-xl border-border bg-surface text-body">
+        <DialogHeader className="px-6 pt-6">
+          <DialogTitle>{notice?.title || "Invalid Input"}</DialogTitle>
+          <p className="text-sm text-body-soft">{notice?.message || ""}</p>
+        </DialogHeader>
+        {notice?.example ? (
+          <div className="px-6 py-2">
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.14em] text-body-soft">Example</p>
+            <pre className="overflow-auto rounded-md border border-ui-border/70 bg-ui-bg-muted/30 p-3 text-xs text-body">{notice.example}</pre>
+          </div>
+        ) : null}
+        <DialogFooter className="px-6 pb-6">
+          <Button type="button" size="sm" onClick={onClose}>OK</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RelationTargetSearchDialog({ open, onOpenChange, tables, onSearch, onSelect }) {
+  const [collection, setCollection] = useState("");
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [status, setStatus] = useState("Choose a collection and search existing nodes.");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const first = tables?.[0]?.table || "";
+    setCollection((current) => current || first);
+    setQuery("");
+    setResults([]);
+    setStatus("Choose a collection and search existing nodes.");
+  }, [open, tables?.length]);
+
+  async function runSearch() {
+    if (!collection) return;
+    setBusy(true);
+    setStatus("Searching…");
+    try {
+      const items = await onSearch(collection, query);
+      setResults(items);
+      setStatus(`${items.length} node(s) found.`);
+    } catch (error) {
+      setResults([]);
+      setStatus(`Error · ${String(error?.message || error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent size="wide" className="border-border bg-surface text-body">
+        <DialogHeader className="px-6 pt-6">
+          <DialogTitle>Search Node</DialogTitle>
+          <p className="text-sm text-body-soft">Select an existing node for the relation target.</p>
+          <p className={cx("text-xs", status.startsWith("Error") ? "text-danger" : "text-body-soft")}>{status}</p>
+        </DialogHeader>
+        <div className="flex flex-col gap-3 px-6 py-4">
+          <div className="grid gap-3 md:grid-cols-[12rem_minmax(0,1fr)_auto]">
+            <Select value={collection} onChange={(event) => setCollection(event?.target?.value || "")} disabled={busy}>
+              {(tables || []).map((table) => (
+                <SelectOption key={table.table} value={table.table} label={table.table} />
+              ))}
+            </Select>
+            <Input value={query} onInput={(event) => setQuery(event?.target?.value || "")} placeholder="Search by _key, title, name, slug…" disabled={busy} />
+            <Button type="button" size="sm" disabled={busy || !collection} onClick={runSearch}>Search</Button>
+          </div>
+          <div className="max-h-96 overflow-auto rounded-md border border-ui-border/70">
+            {results.length ? (
+              <StudioTable>
+                <StudioThead>
+                  <tr>
+                    <StudioTh>Node</StudioTh>
+                    <StudioTh>Label</StudioTh>
+                    <StudioTh></StudioTh>
+                  </tr>
+                </StudioThead>
+                <tbody>
+                  {results.map((item) => (
+                    <tr key={item.slug}>
+                      <StudioTd>{item.slug}</StudioTd>
+                      <StudioTd>{item.label}</StudioTd>
+                      <StudioTd>
+                        <Button type="button" variant="outline" size="sm" onClick={() => { onSelect(item.slug); onOpenChange(false); }}>
+                          Use
+                        </Button>
+                      </StudioTd>
+                    </tr>
+                  ))}
+                </tbody>
+              </StudioTable>
+            ) : (
+              <p className="px-3 py-6 text-center text-sm text-ui-text-soft">No nodes loaded yet.</p>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function RelationStatsList({ title, items, emptyText, peerKey }) {
+  return (
+    <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">{title}</p>
+        <span className="text-xs text-ui-text-soft">{items?.length || 0}</span>
+      </div>
+      {items?.length ? (
+        <div className="space-y-2">
+          {items.map((item, index) => (
+            <div key={`${title}-${item.type}-${item.from}-${item.to}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-md border border-ui-border/70 bg-ui-bg px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-ui-text">{item.type}</p>
+                <p className="truncate text-xs text-ui-text-soft">{peerKey === "to" ? `to ${item.to}` : `from ${item.from}`}</p>
+                {item.countError ? (
+                  <p className="mt-1 text-[11px] text-amber-500">Count unavailable</p>
+                ) : null}
+              </div>
+              <div className="text-right">
+                <p className="font-mono text-sm font-semibold tabular-nums text-ui-text">
+                  {item.count === null || item.count === undefined ? "n/a" : Number(item.count).toLocaleString()}
+                </p>
+                <p className="text-[11px] uppercase tracking-[0.12em] text-ui-text-soft">edges</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-ui-text-soft">{emptyText}</p>
+      )}
+    </div>
+  );
+}
+
+function RowRelationList({ title, items, emptyText, onDelete }) {
+  return (
+    <div className="rounded-lg border border-ui-border/80 bg-ui-bg-muted/10 p-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">{title}</p>
+        <span className="text-xs text-ui-text-soft">{items?.length || 0}</span>
+      </div>
+      {items?.length ? (
+        <div className="space-y-2">
+          {items.map((entry, index) => (
+            <div key={`${title}-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-ui-border/70 bg-ui-bg px-3 py-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-ui-text">{entry.type}</p>
+                  <p className="truncate text-xs text-ui-text-soft">{entry.otherLabel}</p>
+                  <p className="truncate text-[11px] text-ui-text-muted">{entry.otherSlug}</p>
+                </div>
+                <Button type="button" variant="ghost" size="sm" onClick={() => onDelete(entry)}>
+                  Delete
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-ui-text-soft">{emptyText}</p>
+      )}
+    </div>
+  );
+}
+
 export default function Page(input) {
   const navLinks = input?.nav?.links ?? {};
   const suiteTabs = Array.isArray(input?.suite_tabs) ? input.suite_tabs : [];
@@ -979,9 +1472,11 @@ export default function Page(input) {
   const preview = input?.preview ?? { columns: [], rows: [], empty: true };
   const connection = input?.connection ?? {};
   const dbApi = input?.db_runtime_api ?? {};
-  const simpleTablesApi = `/api/projects/${encodeURIComponent(input?.owner || "")}/${encodeURIComponent(input?.project || "")}/tables`;
+  const projectApiBase = `/api/projects/${encodeURIComponent(input?.owner || "")}/${encodeURIComponent(input?.project || "")}`;
+  const simpleTablesApi = `${projectApiBase}/tables`;
   const sekejapSchemaExportApi = `${simpleTablesApi}/schema/export`;
   const sekejapSchemaSyncApi = `${simpleTablesApi}/schema/sync`;
+  const sekejapMaintenanceApi = `${projectApiBase}/db/sekejap/maintenance`;
   const initialTable = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("table") || "" : "";
 
   const [schemas, setSchemas] = useState([]);
@@ -1015,12 +1510,19 @@ export default function Page(input) {
   const [incomingRelations, setIncomingRelations] = useState([]);
   const [relationsBusy, setRelationsBusy] = useState(false);
   const [relationsError, setRelationsError] = useState("");
+  const [outgoingRelationStats, setOutgoingRelationStats] = useState([]);
+  const [incomingRelationStats, setIncomingRelationStats] = useState([]);
+  const [relationStatsBusy, setRelationStatsBusy] = useState(false);
+  const [relationStatsError, setRelationStatsError] = useState("");
   const [relationCreateOpen, setRelationCreateOpen] = useState(false);
   const [relationCreateBusy, setRelationCreateBusy] = useState(false);
   const [relationCreateStatus, setRelationCreateStatus] = useState("Choose the direction, relation type, and related node slug.");
   const [relationDirection, setRelationDirection] = useState("outgoing");
   const [relationType, setRelationType] = useState("");
   const [relatedNodeSlug, setRelatedNodeSlug] = useState("");
+  const [relationTypeOptions, setRelationTypeOptions] = useState([]);
+  const [relationTargetSearchOpen, setRelationTargetSearchOpen] = useState(false);
+  const [validationNotice, setValidationNotice] = useState(null);
   const [pendingRelationDelete, setPendingRelationDelete] = useState(null);
   const [contentTab, setContentTab] = useState("data");
   const [propsTitle, setPropsTitle] = useState("");
@@ -1029,6 +1531,11 @@ export default function Page(input) {
   const [propsStatus, setPropsStatus] = useState("");
   const [schemaSyncBusy, setSchemaSyncBusy] = useState(false);
   const [schemaSyncStatus, setSchemaSyncStatus] = useState("");
+  const [maintenanceHealth, setMaintenanceHealth] = useState(null);
+  const [maintenanceReport, setMaintenanceReport] = useState(null);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const [maintenanceStatus, setMaintenanceStatus] = useState("");
+  const [pendingMaintenanceAction, setPendingMaintenanceAction] = useState("");
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleteConfirmInput, setDeleteConfirmInput] = useState("");
   const [deleteBusy, setDeleteBusy] = useState(false);
@@ -1037,10 +1544,12 @@ export default function Page(input) {
   const activeTable = selectedTableDefinition(tables, selectedTable);
   const declaredCols = (activeTable?.attributes || []).map((a) => String(a.name || "")).filter(Boolean);
   const extraCols = declaredCols.filter((name) => !previewColumns.includes(name));
-  const mergedColumns = [...previewColumns, ...extraCols];
-  const mergedRows = extraCols.length
+  const rawMergedColumns = [...previewColumns, ...extraCols];
+  const rawMergedRows = extraCols.length
     ? previewRows.map((row) => [...(Array.isArray(row) ? row : []), ...extraCols.map(() => null)])
     : previewRows;
+  const mergedColumns = orderedDataColumns(rawMergedColumns);
+  const mergedRows = reorderRowsForColumns(rawMergedColumns, rawMergedRows, mergedColumns);
 
   async function loadTreeData(preferredTable = "") {
     const [schemasPayload, tablesPayload] = await Promise.all([
@@ -1073,6 +1582,10 @@ export default function Page(input) {
       active = false;
     };
   }, [dbApi.schemas, dbApi.tables, reloadToken]);
+
+  useEffect(() => {
+    loadMaintenanceHealth({ silent: true });
+  }, [sekejapMaintenanceApi, reloadToken]);
 
   async function loadPreviewData(table) {
     if (!dbApi.preview || !table) return { columns: [], rows: [] };
@@ -1199,6 +1712,55 @@ export default function Page(input) {
     };
   }
 
+  async function loadRelationSummaryForTable(tableName) {
+    if (!dbApi.query || !tableName) {
+      setOutgoingRelationStats([]);
+      setIncomingRelationStats([]);
+      setRelationStatsError("");
+      return;
+    }
+
+    setRelationStatsBusy(true);
+    setRelationStatsError("");
+    try {
+      const show = await runDbQuery("SHOW EDGES", { readOnly: true, tableName, limit: 500 });
+      const edgeDefs = uniqueRelationDefs(show.objects);
+      const allTypes = edgeDefs
+        .map((item) => item.type)
+        .filter((item, index, arr) => item && arr.indexOf(item) === index)
+        .sort((a, b) => a.localeCompare(b));
+      setRelationTypeOptions(allTypes);
+
+      const outgoingDefs = edgeDefs.filter((item) => item.from === tableName);
+      const incomingDefs = edgeDefs.filter((item) => item.to === tableName);
+
+      async function withCount(def, direction) {
+        const query = direction === "outgoing"
+          ? `SELECT COUNT(*) AS count FROM MATCH (a:${def.from})-[:${def.type}]->(b:${def.to})`
+          : `SELECT COUNT(*) AS count FROM MATCH (a:${def.from})-[:${def.type}]->(b:${def.to})`;
+        try {
+          const counted = await runDbQuery(query, { readOnly: true, tableName, limit: 1 });
+          return { ...def, direction, count: relationCountFromRows(counted.rows), countError: "" };
+        } catch (error) {
+          return { ...def, direction, count: null, countError: String(error?.message || error) };
+        }
+      }
+
+      const [outgoing, incoming] = await Promise.all([
+        Promise.all(outgoingDefs.map((def) => withCount(def, "outgoing"))),
+        Promise.all(incomingDefs.map((def) => withCount(def, "incoming"))),
+      ]);
+      setOutgoingRelationStats(outgoing.sort((a, b) => `${a.type}:${a.to}`.localeCompare(`${b.type}:${b.to}`)));
+      setIncomingRelationStats(incoming.sort((a, b) => `${a.type}:${a.from}`.localeCompare(`${b.type}:${b.from}`)));
+    } catch (error) {
+      setOutgoingRelationStats([]);
+      setIncomingRelationStats([]);
+      setRelationStatsError(String(error?.message || error));
+    } finally {
+      setRelationStatsBusy(false);
+    }
+  }
+
   async function loadRelationsForNode(tableName, record) {
     const nodeKey = String(record?._key || "").trim();
     if (!tableName || !nodeKey) {
@@ -1212,7 +1774,14 @@ export default function Page(input) {
     setRelationsError("");
     try {
       const show = await runDbQuery("SHOW EDGES", { readOnly: true, tableName, limit: 500 });
-      const edgeDefs = show.objects;
+      const edgeDefs = uniqueRelationDefs(show.objects);
+      setRelationTypeOptions(
+        edgeDefs
+          .map((item) => String(item?.type || "").trim())
+          .filter(Boolean)
+          .filter((item, index, arr) => arr.indexOf(item) === index)
+          .sort((a, b) => a.localeCompare(b))
+      );
 
       const outgoingTypes = edgeDefs
         .filter((item) => String(item?.from || "") === tableName)
@@ -1377,6 +1946,7 @@ export default function Page(input) {
     const currentKey = String(selectedPreviewRowData?._key || "").trim();
     const normalizedType = normalizeRelationType(relationType);
     const otherSlug = String(relatedNodeSlug || "").trim();
+    const otherParts = relationSlugParts(otherSlug);
 
     if (!activeTable?.table || !currentNodeSlug || !currentKey) {
       setRelationCreateStatus("Error · Select a concrete row first.");
@@ -1386,8 +1956,22 @@ export default function Page(input) {
       setRelationCreateStatus("Error · Relation type is required.");
       return;
     }
-    if (!otherSlug.includes("/")) {
+    if (!otherParts) {
+      setValidationNotice({
+        title: "Invalid Node Slug",
+        message: "Related node slug must use collection/key format.",
+        example: "people/alice",
+      });
       setRelationCreateStatus("Error · Related node slug must use collection/key.");
+      return;
+    }
+    if (!tables.some((table) => table.table === otherParts.collection)) {
+      setValidationNotice({
+        title: "Unknown Collection",
+        message: `Collection '${otherParts.collection}' does not exist in this Sekejap store. Choose an existing collection before creating the relation.`,
+        example: `${activeTable.table}/${currentKey}`,
+      });
+      setRelationCreateStatus(`Error · Unknown collection '${otherParts.collection}'.`);
       return;
     }
 
@@ -1398,6 +1982,20 @@ export default function Page(input) {
     setRelationCreateBusy(true);
     setRelationCreateStatus("Creating relation…");
     try {
+      const exists = await runDbQuery(`SELECT _key FROM ${otherParts.collection} WHERE _key = '${sqlStringLiteral(otherParts.key)}'`, {
+        readOnly: true,
+        tableName: otherParts.collection,
+        limit: 1,
+      });
+      if (!exists.rows.length) {
+        setValidationNotice({
+          title: "Target Node Not Found",
+          message: `Node '${otherSlug}' does not exist. Search and select an existing node, or create the node first.`,
+          example: `${otherParts.collection}/existing_key`,
+        });
+        setRelationCreateStatus(`Error · Node '${otherSlug}' not found.`);
+        return;
+      }
       await runDbQuery(sql, { readOnly: false, tableName: activeTable.table, limit: 50 });
       setRelationCreateStatus(`Created · ${normalizedType}`);
       setRelationCreateOpen(false);
@@ -1509,6 +2107,43 @@ export default function Page(input) {
     a.click();
   }
 
+  async function loadMaintenanceHealth({ silent = false } = {}) {
+    if (!silent) {
+      setMaintenanceBusy(true);
+      setMaintenanceStatus("Checking store…");
+    }
+    try {
+      const payload = await requestJson(`${sekejapMaintenanceApi}/health`);
+      const health = payload?.health || null;
+      setMaintenanceHealth(health);
+      setMaintenanceStatus(health ? `Checked · ${Number(health?.duration_ms || 0)} ms` : "No health data returned");
+      return health;
+    } catch (error) {
+      setMaintenanceStatus(`Error · ${String(error?.message || error)}`);
+      return null;
+    } finally {
+      if (!silent) setMaintenanceBusy(false);
+    }
+  }
+
+  async function runMaintenanceOperation(operation) {
+    setMaintenanceBusy(true);
+    setMaintenanceReport(null);
+    setMaintenanceStatus(operation === "compact" ? "Compacting store…" : "Syncing WAL…");
+    try {
+      const payload = await requestJson(`${sekejapMaintenanceApi}/${operation}`, { method: "POST" });
+      const report = payload?.[operation] || null;
+      setMaintenanceReport(report);
+      setMaintenanceHealth(report?.after || null);
+      setMaintenanceStatus(`${operation === "compact" ? "Compacted" : "Synced"} · ${Number(report?.duration_ms || 0)} ms`);
+    } catch (error) {
+      setMaintenanceStatus(`Error · ${String(error?.message || error)}`);
+    } finally {
+      setMaintenanceBusy(false);
+      setPendingMaintenanceAction("");
+    }
+  }
+
   async function handleDeleteTable() {
     if (!activeTable) return;
     setDeleteBusy(true);
@@ -1531,6 +2166,8 @@ export default function Page(input) {
   const [countBusy, setCountBusy] = useState(false);
   const [pendingEdits, setPendingEdits] = useState({});
   const [editingCell, setEditingCell] = useState(null);
+  const [mapPickerOpen, setMapPickerOpen] = useState(false);
+  const [mapPickerTarget, setMapPickerTarget] = useState(null);
   const hasPendingEdits = Object.keys(pendingEdits).length > 0;
 
   async function handleRefreshData() {
@@ -1540,6 +2177,7 @@ export default function Page(input) {
     } else {
       setReloadToken((v) => v + 1);
     }
+    await loadMaintenanceHealth({ silent: true });
   }
 
   function handleCellEdit(rowKey, colName, newValue) {
@@ -1549,9 +2187,35 @@ export default function Page(input) {
     });
   }
 
+  function openMapPicker(target) {
+    if (!target?.rowKey || !target?.colName) return;
+    setMapPickerTarget(target);
+    setMapPickerOpen(true);
+    setEditingCell(null);
+  }
+
+  function handleMapPickerSave(geometry) {
+    if (!mapPickerTarget?.rowKey || !mapPickerTarget?.colName) return;
+    handleCellEdit(mapPickerTarget.rowKey, mapPickerTarget.colName, JSON.stringify(geometry));
+  }
+
+  function handleMapPickerClear() {
+    if (!mapPickerTarget?.rowKey || !mapPickerTarget?.colName) return;
+    handleCellEdit(mapPickerTarget.rowKey, mapPickerTarget.colName, "");
+  }
+
   async function handleSaveEdits() {
     if (!activeTable || !dbApi.query || !hasPendingEdits) return;
     try {
+      for (const edits of Object.values(pendingEdits)) {
+        for (const [col, val] of Object.entries(edits || {})) {
+          const warning = validateCellEditValue(activeTable, col, val);
+          if (warning) {
+            setValidationNotice(warning);
+            return;
+          }
+        }
+      }
       for (const [rowKey, edits] of Object.entries(pendingEdits)) {
         const setClauses = Object.entries(edits)
           .map(([col, val]) => {
@@ -1671,16 +2335,73 @@ export default function Page(input) {
   const hasInspectedValue = !!String(valueBody || "").trim();
   const selectedNodeSlug = relationNodeSlug(selectedPreviewRowData, activeTable?.table || "");
   const selectedNodeLabel = selectedPreviewRowData ? relationNodeLabel(selectedPreviewRowData, activeTable?.table || "") : "";
+  const relatedSlugParts = relationSlugParts(relatedNodeSlug);
+  const relatedSlugWarning = relatedNodeSlug.trim() && relatedSlugParts && !tables.some((table) => table.table === relatedSlugParts.collection)
+    ? `Unknown collection '${relatedSlugParts.collection}'.`
+    : "";
+
+  async function searchRelationTargets(collection, query) {
+    const q = String(query || "").trim();
+    const table = (tables || []).find((item) => String(item?.table || "") === String(collection || ""));
+    const candidateCols = [
+      "_collection",
+      "_key",
+      "_id",
+      ...(table?.attributes || [])
+        .filter((attr) => {
+          const kind = String(attr?.kind || "").toLowerCase();
+          return kind !== "geo" && kind !== "vector";
+        })
+        .map((attr) => String(attr?.name || "").trim())
+        .filter(Boolean),
+    ];
+    const seenCols = new Set();
+    const columns = candidateCols.filter((col) => {
+      if (!col || seenCols.has(col)) return false;
+      seenCols.add(col);
+      return true;
+    });
+    const result = await runDbQuery(
+      `SELECT ${columns.join(", ")} FROM ${collection}`,
+      { readOnly: true, tableName: collection, limit: 200 }
+    );
+    return result.objects.map((item) => ({
+      slug: relationNodeSlug(item, collection),
+      label: relationNodeLabel(item, collection),
+      searchText: Object.values(item || {}).map((value) => {
+        if (value === null || value === undefined) return "";
+        if (typeof value === "object") {
+          try { return JSON.stringify(value); } catch (_) { return ""; }
+        }
+        return String(value);
+      }).join(" "),
+    })).filter((item) => {
+      if (!item.slug) return false;
+      const needle = q.toLowerCase();
+      return !needle || item.slug.toLowerCase().includes(needle) || item.label.toLowerCase().includes(needle) || item.searchText.toLowerCase().includes(needle);
+    });
+  }
 
   useEffect(() => {
     if (!activeTable?.table || !selectedPreviewRowData?._key) {
       setOutgoingRelations([]);
       setIncomingRelations([]);
+      setRelationTypeOptions([]);
       setRelationsError("");
       return;
     }
     loadRelationsForNode(activeTable.table, selectedPreviewRowData);
   }, [activeTable?.table, selectedPreviewRowData?._key, reloadToken]);
+
+  useEffect(() => {
+    if (!activeTable?.table) {
+      setOutgoingRelationStats([]);
+      setIncomingRelationStats([]);
+      setRelationStatsError("");
+      return;
+    }
+    loadRelationSummaryForTable(activeTable.table);
+  }, [activeTable?.table, reloadToken]);
 
   return (
     <>
@@ -1839,8 +2560,7 @@ export default function Page(input) {
                               </div>
                             ) : null}
 
-                            {activeTable ? (
-                              <div className="flex items-center gap-1 border-b border-ui-border/70 px-3">
+                            <div className="flex items-center gap-1 border-b border-ui-border/70 px-3">
                                 <button
                                   type="button"
                                   className={cx(
@@ -1855,20 +2575,64 @@ export default function Page(input) {
                                 </button>
                                 <button
                                   type="button"
+                                  disabled={!activeTable}
+                                  className={cx(
+                                    "px-3 py-1.5 text-xs font-medium transition-colors",
+                                    contentTab === "relations"
+                                      ? "border-b-2 border-ui-text text-ui-text"
+                                      : "text-ui-text-soft hover:text-ui-text",
+                                    !activeTable ? "cursor-not-allowed opacity-40" : ""
+                                  )}
+                                  onClick={() => setContentTab("relations")}
+                                >
+                                  Relations
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!activeTable}
                                   className={cx(
                                     "px-3 py-1.5 text-xs font-medium transition-colors",
                                     contentTab === "properties"
                                       ? "border-b-2 border-ui-text text-ui-text"
-                                      : "text-ui-text-soft hover:text-ui-text"
+                                      : "text-ui-text-soft hover:text-ui-text",
+                                    !activeTable ? "cursor-not-allowed opacity-40" : ""
                                   )}
                                   onClick={() => setContentTab("properties")}
                                 >
                                   Properties
                                 </button>
                               </div>
-                            ) : null}
 
-                            {contentTab === "properties" && activeTable ? (
+                            {contentTab === "relations" && activeTable ? (
+                              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-semibold text-ui-text">Relations</p>
+                                    <p className="mt-1 text-xs text-ui-text-soft">
+                                      Collection-level relation patterns for {activeTable.table}.
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {relationStatsBusy ? <p className="text-xs text-ui-text-soft">Loading relation statistics…</p> : null}
+                                {relationStatsError ? <p className="text-xs text-danger">Failed to load relation statistics: {relationStatsError}</p> : null}
+
+                                <div className="grid gap-3 xl:grid-cols-2">
+                                  <RelationStatsList
+                                    title="Outbound By Type"
+                                    items={outgoingRelationStats}
+                                    emptyText="No outbound relation types are declared for this collection."
+                                    peerKey="to"
+                                  />
+                                  <RelationStatsList
+                                    title="Inbound By Type"
+                                    items={incomingRelationStats}
+                                    emptyText="No inbound relation types are declared for this collection."
+                                    peerKey="from"
+                                  />
+                                </div>
+                              </div>
+                            ) : contentTab === "properties" && activeTable ? (
                               <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4">
                                 <form onSubmit={handleUpdateTable} className="flex flex-col gap-5">
                                   <Field>
@@ -1988,7 +2752,45 @@ export default function Page(input) {
                                 ) : null}
                               </div>
                             ) : (
-                            <div className="db-suite-grid-wrap">
+                            <div className="db-suite-grid-wrap db-suite-grid-editor-wrap">
+                              {activeTable ? (
+                                <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1.5">
+                                  <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text"}`} disabled={!hasPendingEdits} onClick={handleSaveEdits}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="M13 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7.586a1 1 0 0 1 .707.293l2.414 2.414a1 1 0 0 1 .293.707V13a1 1 0 0 1-1 1Z"/><path d="M5 14V9h6v5M5 2v3h4"/></svg>
+                                    Save
+                                  </button>
+                                  <button type="button" title="Cancel changes" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!hasPendingEdits} onClick={handleCancelEdits}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+                                    Cancel
+                                  </button>
+                                  <span className="mx-0.5 h-4 w-px bg-ui-border/60" />
+                                  <button type="button" title="Add row" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text hover:bg-ui-bg-muted" onClick={handleAddRow}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 3v10M3 8h10"/></svg>
+                                    Row
+                                  </button>
+                                  <button type="button" title="Delete selected row" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-red-500 disabled:opacity-30" disabled={!selectedPreviewRowData} onClick={handleDeleteSelectedRow}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M3 8h10"/></svg>
+                                    Delete
+                                  </button>
+                                  <span className="mx-0.5 h-4 w-px bg-ui-border/60" />
+                                  <button type="button" title="Export CSV" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!mergedRows.length} onClick={handleExportCsv}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 2v8M4 7l4 4 4-4M2 13h12"/></svg>
+                                    CSV
+                                  </button>
+                                  <button type="button" title="Calculate total row count" className={cx("flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium hover:bg-ui-bg-muted", countBusy ? "animate-pulse text-ui-text" : "text-ui-text-soft hover:text-ui-text")} onClick={handleCountRows}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13 3H3v10h10V3ZM6 6h4M6 8h4M6 10h2"/></svg>
+                                    Count
+                                  </button>
+                                  <button type="button" title="Refresh" className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text" onClick={handleRefreshData}>
+                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13.5 8A5.5 5.5 0 1 1 8 2.5M13.5 2.5v3h-3"/></svg>
+                                    Refresh
+                                  </button>
+                                  <span className="ml-auto text-[10px] tabular-nums text-ui-text-soft">
+                                    {totalRowCount !== null ? `${totalRowCount} rows` : `${mergedRows.length} loaded`}
+                                  </span>
+                                </div>
+                              ) : null}
+                              <div className="db-suite-grid-scroll">
                               {!activeTable ? (
                                 <div className="flex h-full min-h-[14rem] items-center justify-center text-sm text-ui-text-soft">
                                   Select a table to inspect its data and structure.
@@ -2009,10 +2811,12 @@ export default function Page(input) {
                                   onEditingCellChange={setEditingCell}
                                   onCellEdit={handleCellEdit}
                                   vectorFields={activeTable?.vectorFields}
+                                  geoFields={activeTable?.spatialFields}
+                                  onGeoPick={openMapPicker}
                                 />
                               ) : (
                                 <div className="flex min-h-full flex-col">
-                                  <div className="border-b border-ui-border/70 px-1 pb-4">
+                                  <div className="border-b border-ui-border/70 px-3 py-4">
                                     <p className="text-sm font-medium text-ui-text">
                                       {previewError ? "Preview unavailable" : "No rows yet"}
                                     </p>
@@ -2021,8 +2825,14 @@ export default function Page(input) {
                                         ? `Failed to load preview: ${previewError}`
                                         : "This table exists, but it does not have stored rows yet. The declared structure is still available below."}
                                     </p>
+                                    {!previewError ? (
+                                      <button type="button" className="mt-3 inline-flex items-center gap-1 rounded border border-ui-border bg-ui-bg px-2.5 py-1.5 text-xs font-medium text-ui-text hover:bg-ui-bg-muted" onClick={handleAddRow}>
+                                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 3v10M3 8h10"/></svg>
+                                        Add First Row
+                                      </button>
+                                    ) : null}
                                   </div>
-                                  <div className="min-h-0 flex-1 pt-4">
+                                  <div className="min-h-0 flex-1 px-3 pt-4">
                                     <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">
                                       Structure
                                     </p>
@@ -2035,38 +2845,7 @@ export default function Page(input) {
                                   </div>
                                 </div>
                               )}
-                              {activeTable ? (
-                                <div className="flex shrink-0 items-center gap-1 border-t border-ui-border/70 bg-ui-bg-muted/30 px-2 py-1">
-                                  <button type="button" title="Save changes" className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium disabled:opacity-30 ${hasPendingEdits ? "bg-blue-600 text-white hover:bg-blue-700" : "text-ui-text-soft"}`} disabled={!hasPendingEdits} onClick={handleSaveEdits}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="M13 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7.586a1 1 0 0 1 .707.293l2.414 2.414a1 1 0 0 1 .293.707V13a1 1 0 0 1-1 1Z"/><path d="M5 14V9h6v5M5 2v3h4"/></svg>
-                                    Save
-                                  </button>
-                                  <button type="button" title="Cancel changes" className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!hasPendingEdits} onClick={handleCancelEdits}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3 w-3"><path d="m4 4 8 8M12 4l-8 8"/></svg>
-                                    Cancel
-                                  </button>
-                                  <span className="mx-0.5 h-3 w-px bg-ui-border/60" />
-                                  <button type="button" title="Add row" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text" onClick={handleAddRow}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 3v10M3 8h10"/></svg>
-                                  </button>
-                                  <button type="button" title="Delete selected row" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-red-500 disabled:opacity-30" disabled={!selectedPreviewRowData} onClick={handleDeleteSelectedRow}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M3 8h10"/></svg>
-                                  </button>
-                                  <span className="mx-0.5 h-3 w-px bg-ui-border/60" />
-                                  <button type="button" title="Export CSV" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text disabled:opacity-30" disabled={!mergedRows.length} onClick={handleExportCsv}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M8 2v8M4 7l4 4 4-4M2 13h12"/></svg>
-                                  </button>
-                                  <button type="button" title="Calculate total row count" className={cx("rounded p-1 hover:bg-ui-bg-muted", countBusy ? "animate-pulse text-ui-text" : "text-ui-text-soft hover:text-ui-text")} onClick={handleCountRows}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13 3H3v10h10V3ZM6 6h4M6 8h4M6 10h2"/></svg>
-                                  </button>
-                                  <button type="button" title="Refresh" className="rounded p-1 text-ui-text-soft hover:bg-ui-bg-muted hover:text-ui-text" onClick={handleRefreshData}>
-                                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5"><path d="M13.5 8A5.5 5.5 0 1 1 8 2.5M13.5 2.5v3h-3"/></svg>
-                                  </button>
-                                  <span className="ml-auto text-[10px] tabular-nums text-ui-text-soft">
-                                    {totalRowCount !== null ? `${totalRowCount} rows` : `${mergedRows.length} loaded`}
-                                  </span>
-                                </div>
-                              ) : null}
+                              </div>
                             </div>
                             )}
                           </div>
@@ -2126,6 +2905,26 @@ export default function Page(input) {
                                 </div>
                               ) : null}
 
+                              <div className="space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Relations</p>
+                                  {relationsBusy ? <span className="text-[11px] text-ui-text-soft">Loading…</span> : null}
+                                </div>
+                                {relationsError ? <p className="text-xs text-danger">Failed to load relations: {relationsError}</p> : null}
+                                <RowRelationList
+                                  title="Outgoing"
+                                  items={outgoingRelations}
+                                  emptyText="No outgoing relations."
+                                  onDelete={setPendingRelationDelete}
+                                />
+                                <RowRelationList
+                                  title="Incoming"
+                                  items={incomingRelations}
+                                  emptyText="No incoming relations."
+                                  onDelete={setPendingRelationDelete}
+                                />
+                              </div>
+
                               {activeTable ? (
                               <div className="grid grid-cols-2 gap-2 text-xs uppercase tracking-[0.12em] text-ui-text-soft">
                                 <span>Rows</span>
@@ -2161,62 +2960,9 @@ export default function Page(input) {
                                 )}
                               </div>
 
-                              <div className="space-y-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Outgoing Relations</p>
-                                  <span className="text-xs text-ui-text-soft">{outgoingRelations.length}</span>
-                                </div>
-                                {outgoingRelations.length ? (
-                                  <div className="space-y-2">
-                                    {outgoingRelations.map((entry, index) => (
-                                      <div key={`out-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-ui-border/70 bg-ui-bg-muted/10 px-2 py-2">
-                                        <div className="flex items-start justify-between gap-2">
-                                          <div className="min-w-0">
-                                            <p className="text-xs font-medium text-ui-text">{entry.type}</p>
-                                            <p className="truncate text-xs text-ui-text-soft">{entry.otherLabel}</p>
-                                            <p className="truncate text-[11px] text-ui-text-muted">{entry.otherSlug}</p>
-                                          </div>
-                                          <Button type="button" variant="ghost" size="sm" onClick={() => setPendingRelationDelete(entry)}>
-                                            Delete
-                                          </Button>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <p className="text-sm text-ui-text-soft">No outgoing relations.</p>
-                                )}
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-medium uppercase tracking-[0.14em] text-ui-text-soft">Incoming Relations</p>
-                                  <span className="text-xs text-ui-text-soft">{incomingRelations.length}</span>
-                                </div>
-                                {incomingRelations.length ? (
-                                  <div className="space-y-2">
-                                    {incomingRelations.map((entry, index) => (
-                                      <div key={`in-${entry.type}-${entry.otherSlug}-${index}`} className="rounded-md border border-ui-border/70 bg-ui-bg-muted/10 px-2 py-2">
-                                        <div className="flex items-start justify-between gap-2">
-                                          <div className="min-w-0">
-                                            <p className="text-xs font-medium text-ui-text">{entry.type}</p>
-                                            <p className="truncate text-xs text-ui-text-soft">{entry.otherLabel}</p>
-                                            <p className="truncate text-[11px] text-ui-text-muted">{entry.otherSlug}</p>
-                                          </div>
-                                          <Button type="button" variant="ghost" size="sm" onClick={() => setPendingRelationDelete(entry)}>
-                                            Delete
-                                          </Button>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <p className="text-sm text-ui-text-soft">No incoming relations.</p>
-                                )}
-                              </div>
-
-                              {relationsBusy ? <p className="text-xs text-ui-text-soft">Loading relations…</p> : null}
-                              {relationsError ? <p className="text-xs text-danger">Failed to load relations: {relationsError}</p> : null}
+                              <p className="text-xs text-ui-text-soft">
+                                Open the Relations tab for collection-level relation statistics.
+                              </p>
                             </div>
                           ) : hasInspectedValue ? (
                             <div className="flex min-h-0 flex-col gap-3 overflow-y-auto overflow-x-hidden px-3 py-3">
@@ -2288,6 +3034,20 @@ export default function Page(input) {
                   </section>
                 ) : null}
 
+                {tabFlags?.graph ? (
+                  <section className="db-suite-panel db-suite-panel-fill">
+                    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+                      <p className="text-base font-semibold text-ui-text">Interactive Graph Inserter</p>
+                      <p className="max-w-2xl text-sm text-ui-text-soft">
+                        This workspace will let users draft multiple Sekejap nodes and native edges on a canvas, validate the graph, then commit it as one transaction.
+                      </p>
+                      <Button type="button" variant="outline" size="sm" disabled>
+                        Insert Graph
+                      </Button>
+                    </div>
+                  </section>
+                ) : null}
+
                 {tabFlags?.schema ? (
                   <section className="db-suite-panel db-suite-panel-fill">
                     <div className="flex h-full flex-col gap-4 p-6">
@@ -2344,6 +3104,20 @@ export default function Page(input) {
                     </div>
                   </section>
                 ) : null}
+
+                {tabFlags?.maintenance ? (
+                  <section className="db-suite-panel db-suite-panel-fill">
+                    <SekejapMaintenancePanel
+                      health={maintenanceHealth}
+                      report={maintenanceReport}
+                      busy={maintenanceBusy}
+                      status={maintenanceStatus}
+                      onRefresh={() => loadMaintenanceHealth()}
+                      onSync={() => runMaintenanceOperation("sync")}
+                      onCompact={() => setPendingMaintenanceAction("compact")}
+                    />
+                  </section>
+                ) : null}
               </div>
             </section>
           </section>
@@ -2373,7 +3147,29 @@ export default function Page(input) {
           relatedNodeSlug={relatedNodeSlug}
           setRelatedNodeSlug={setRelatedNodeSlug}
           currentNodeSlug={selectedNodeSlug}
+          relationTypeOptions={relationTypeOptions}
+          relatedSlugWarning={relatedSlugWarning}
+          onOpenTargetSearch={() => setRelationTargetSearchOpen(true)}
           onSubmit={handleCreateRelation}
+        />
+        <RelationTargetSearchDialog
+          open={relationTargetSearchOpen}
+          onOpenChange={setRelationTargetSearchOpen}
+          tables={tables}
+          onSearch={searchRelationTargets}
+          onSelect={setRelatedNodeSlug}
+        />
+        <MapPicker
+          open={mapPickerOpen}
+          onOpenChange={setMapPickerOpen}
+          value={mapPickerTarget?.value}
+          title={mapPickerTarget?.colName ? `Pick Geometry · ${mapPickerTarget.colName}` : "Pick Geometry"}
+          onSave={handleMapPickerSave}
+          onClear={handleMapPickerClear}
+        />
+        <DataWarningDialog
+          notice={validationNotice}
+          onClose={() => setValidationNotice(null)}
         />
         <ConfirmDialog
           open={!!pendingRelationDelete}
@@ -2391,6 +3187,14 @@ export default function Page(input) {
           }
           confirmLabel="Delete"
           variant="destructive"
+        />
+        <ConfirmDialog
+          open={pendingMaintenanceAction === "compact"}
+          onClose={() => setPendingMaintenanceAction("")}
+          onConfirm={() => runMaintenanceOperation("compact")}
+          title="Compact Sekejap Store"
+          message="Compact the project-local Sekejap store now? This checkpoints the snapshot and truncates WAL replay data. Run it during low-traffic windows for large stores."
+          confirmLabel="Compact"
         />
       </ProjectStudioShell>
     </>
