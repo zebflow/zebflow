@@ -4,10 +4,23 @@ use std::path::PathBuf;
 
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::sync::ProjectBootstrapPlan;
+use crate::infra::io::durable::{
+    JsonContract, JsonContractField, JsonContractValue, read_optional_versioned_json,
+    write_atomic_json,
+};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub, ZebflowJsonMetadata,
     ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
+};
+
+const ZEBFLOW_JSON_FIELDS: &[JsonContractField] = &[JsonContractField {
+    name: "version",
+    expected: JsonContractValue::String("1.0"),
+}];
+const ZEBFLOW_JSON_CONTRACT: JsonContract = JsonContract {
+    name: "zebflow.json",
+    fields: ZEBFLOW_JSON_FIELDS,
 };
 
 /// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
@@ -36,13 +49,21 @@ impl ZebflowJsonService {
             .join("zebflow.json")
     }
 
-    /// Reads zebflow.json, returns default if missing.
-    pub fn read_or_default(&self, owner: &str, project: &str) -> ZebflowJson {
+    /// Reads `zebflow.json`, returning defaults only when the file is missing.
+    ///
+    /// Malformed and unsupported files are rejected so runtime behavior never
+    /// silently changes because an authoritative project file is damaged.
+    pub fn read_or_default(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ZebflowJson, PlatformError> {
         let path = self.json_path(owner, project);
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            return ZebflowJson::default();
-        };
-        serde_json::from_str(&raw).unwrap_or_default()
+        read_optional_versioned_json(&path, ZEBFLOW_JSON_CONTRACT)
+            .map(|config| config.unwrap_or_default())
+            .map_err(|err| {
+                PlatformError::new("ZEBFLOW_JSON_READ", format!("{} ({})", err, err.category()))
+            })
     }
 
     /// Writes zebflow.json atomically (best-effort).
@@ -53,14 +74,12 @@ impl ZebflowJsonService {
         config: &ZebflowJson,
     ) -> Result<(), PlatformError> {
         let path = self.json_path(owner, project);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let serialized = serde_json::to_string_pretty(config)
-            .map_err(|e| PlatformError::new("ZEBFLOW_JSON_SERIALIZE", e.to_string()))?;
-        std::fs::write(&path, serialized)
-            .map_err(|e| PlatformError::new("ZEBFLOW_JSON_WRITE", e.to_string()))?;
-        Ok(())
+        write_atomic_json(&path, config, ZEBFLOW_JSON_CONTRACT).map_err(|err| {
+            PlatformError::new(
+                "ZEBFLOW_JSON_WRITE",
+                format!("{} ({})", err, err.category()),
+            )
+        })
     }
 
     /// Reads zebflow.json, applies a mutation, and writes it back.
@@ -68,7 +87,7 @@ impl ZebflowJsonService {
     where
         F: FnOnce(&mut ZebflowJson),
     {
-        let mut cfg = self.read_or_default(owner, project);
+        let mut cfg = self.read_or_default(owner, project)?;
         f(&mut cfg);
         self.write(owner, project, &cfg)?;
         Ok(cfg)
@@ -88,18 +107,22 @@ impl ZebflowJsonService {
     }
 
     /// Gets the project title from zebflow.json, falling back to the project slug.
-    pub fn get_project_title(&self, owner: &str, project: &str) -> String {
-        let cfg = self.read_or_default(owner, project);
+    pub fn get_project_title(&self, owner: &str, project: &str) -> Result<String, PlatformError> {
+        let cfg = self.read_or_default(owner, project)?;
         if cfg.metadata.title.trim().is_empty() {
-            project.replace('-', " ")
+            Ok(project.replace('-', " "))
         } else {
-            cfg.metadata.title.clone()
+            Ok(cfg.metadata.title.clone())
         }
     }
 
     /// Returns the hub distribution contract for one project.
-    pub fn get_hub_distribution(&self, owner: &str, project: &str) -> ZebflowJsonDistributionHub {
-        self.read_or_default(owner, project).distribution.hub
+    pub fn get_hub_distribution(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ZebflowJsonDistributionHub, PlatformError> {
+        Ok(self.read_or_default(owner, project)?.distribution.hub)
     }
 
     pub fn set_hub_distribution(
@@ -115,13 +138,21 @@ impl ZebflowJsonService {
     }
 
     /// Returns the assistant section of zebflow.json.
-    pub fn get_assistant(&self, owner: &str, project: &str) -> ZebflowJsonAssistant {
-        self.read_or_default(owner, project).configs.assistant
+    pub fn get_assistant(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ZebflowJsonAssistant, PlatformError> {
+        Ok(self.read_or_default(owner, project)?.configs.assistant)
     }
 
     /// Returns the portable runtime profile section of `zebflow.json`.
-    pub fn get_runtime_profile(&self, owner: &str, project: &str) -> ProjectRuntimeProfile {
-        self.read_or_default(owner, project).configs.runtime
+    pub fn get_runtime_profile(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectRuntimeProfile, PlatformError> {
+        Ok(self.read_or_default(owner, project)?.configs.runtime)
     }
 
     /// Sets the portable runtime profile section of `zebflow.json`, preserving other fields.
@@ -138,8 +169,12 @@ impl ZebflowJsonService {
     }
 
     /// Returns the bootstrap/activation plan section of `zebflow.json`.
-    pub fn get_bootstrap(&self, owner: &str, project: &str) -> ProjectBootstrapPlan {
-        self.read_or_default(owner, project).configs.bootstrap
+    pub fn get_bootstrap(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectBootstrapPlan, PlatformError> {
+        Ok(self.read_or_default(owner, project)?.configs.bootstrap)
     }
 
     /// Sets the bootstrap/activation plan section of `zebflow.json`, preserving other fields.
@@ -174,7 +209,7 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJsonRweLibraries, PlatformError> {
-        Ok(self.read_or_default(owner, project).configs.rwe.libraries)
+        Ok(self.read_or_default(owner, project)?.configs.rwe.libraries)
     }
 
     /// Adds or updates one enabled library entry in `rwe.libraries`.
@@ -218,7 +253,7 @@ impl ZebflowJsonService {
         project: &str,
         rel_path: &str,
     ) -> Result<bool, PlatformError> {
-        let cfg = self.read_or_default(owner, project);
+        let cfg = self.read_or_default(owner, project)?;
         Ok(is_template_path_locked(
             &cfg.configs.locks.templates,
             rel_path,
@@ -252,7 +287,11 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> Result<Vec<String>, PlatformError> {
-        Ok(self.read_or_default(owner, project).configs.locks.templates)
+        Ok(self
+            .read_or_default(owner, project)?
+            .configs
+            .locks
+            .templates)
     }
 
     /// Initializes zebflow.json with defaults if it doesn't already exist.
@@ -265,7 +304,7 @@ impl ZebflowJsonService {
         let path = self.json_path(owner, project);
         if path.exists() {
             // Only update title if currently blank
-            let mut cfg = self.read_or_default(owner, project);
+            let mut cfg = self.read_or_default(owner, project)?;
             if cfg.metadata.title.trim().is_empty() && !title.trim().is_empty() {
                 cfg.metadata.title = title.to_string();
                 self.write(owner, project, &cfg)?;
@@ -280,5 +319,68 @@ impl ZebflowJsonService {
             ..Default::default()
         };
         self.write(owner, project, &cfg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_config_defaults_but_malformed_and_future_configs_fail() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ZebflowJsonService::new(root.path().join("users"));
+        assert_eq!(
+            service.read_or_default("owner", "project").unwrap().version,
+            "1.0"
+        );
+
+        let path = service.json_path("owner", "project");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"not-json").unwrap();
+        assert_eq!(
+            service
+                .read_or_default("owner", "project")
+                .unwrap_err()
+                .code,
+            "ZEBFLOW_JSON_READ"
+        );
+
+        std::fs::write(&path, br#"{"version":"2.0"}"#).unwrap();
+        assert_eq!(
+            service
+                .read_or_default("owner", "project")
+                .unwrap_err()
+                .code,
+            "ZEBFLOW_JSON_READ"
+        );
+    }
+
+    #[test]
+    fn config_write_is_strict_and_roundtrips() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ZebflowJsonService::new(root.path().join("users"));
+        let mut config = ZebflowJson::default();
+        config.metadata.title = "Stable".to_string();
+        service.write("owner", "project", &config).unwrap();
+        assert_eq!(
+            service
+                .read_or_default("owner", "project")
+                .unwrap()
+                .metadata
+                .title,
+            "Stable"
+        );
+
+        config.version = "2.0".to_string();
+        assert!(service.write("owner", "project", &config).is_err());
+        assert_eq!(
+            service
+                .read_or_default("owner", "project")
+                .unwrap()
+                .metadata
+                .title,
+            "Stable"
+        );
     }
 }

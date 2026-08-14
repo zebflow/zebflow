@@ -8,6 +8,7 @@
 //!
 //! This module does not embed script VM internals or template rendering logic.
 
+pub mod contract;
 pub mod engines;
 pub mod expr;
 pub mod interface;
@@ -18,6 +19,7 @@ pub mod prototypes;
 pub mod registry;
 pub mod security;
 
+pub use contract::parse_pipeline_graph;
 pub use engines::{BasicPipelineEngine, NoopPipelineEngine, build_composite_placeholder_map};
 pub use interface::PipelineEngine;
 pub use layout::auto_tidy_pipeline_graph;

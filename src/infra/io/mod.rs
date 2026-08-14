@@ -16,6 +16,7 @@
 //! | [`runtime_data`] | Per-project runtime data roots and engines |
 //! | [`state`] | Shared KV/pubsub/lease semantics |
 //! | [`cache`] | Generic cache contracts and implementations |
+//! | [`durable`] | Strict versioned JSON and crash-safe local file replacement |
 //!
 //! # Boundary rule
 //!
@@ -24,6 +25,7 @@
 
 pub mod cache;
 pub mod catalog;
+pub mod durable;
 pub mod object;
 pub mod runtime_data;
 pub mod state;

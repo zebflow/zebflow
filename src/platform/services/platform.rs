@@ -368,7 +368,10 @@ impl PlatformService {
         let file_rel_path = compiled.file_rel_path.clone();
 
         // Retention settings for invocation log.
-        let project_cfg = self.zebflow_cfg.read_or_default(owner, project);
+        let project_cfg = self
+            .zebflow_cfg
+            .read_or_default(owner, project)
+            .map_err(|err| crate::pipeline::PipelineError::new(err.code, err.message))?;
         let max_invocations = project_cfg
             .configs
             .pipelines

@@ -116,7 +116,7 @@ impl ProjectTransferService {
             source_office_id: source_office_id.map(ToString::to_string),
             source_controller_id: source_controller_id.map(ToString::to_string),
             exported_at: now_ts(),
-            runtime_profile: self.zebflow_cfg.get_runtime_profile(&owner, &project),
+            runtime_profile: self.zebflow_cfg.get_runtime_profile(&owner, &project)?,
             placement,
             repo_file_count: 0,
             data_file_count: 0,

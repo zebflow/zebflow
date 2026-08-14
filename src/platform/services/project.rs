@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::pipeline::PipelineGraph;
+use crate::infra::io::durable::atomic_write;
+use crate::pipeline::{PipelineGraph, parse_pipeline_graph};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
@@ -223,10 +224,10 @@ fn parse_and_validate_pipeline_source_with_options(
     source: &str,
     allow_empty: bool,
 ) -> Result<PipelineGraph, PlatformError> {
-    let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
+    let graph: PipelineGraph = parse_pipeline_graph(source.as_bytes()).map_err(|err| {
         PlatformError::new(
             "PLATFORM_PIPELINE_PARSE",
-            format!("failed parsing pipeline source: {err}"),
+            format!("failed parsing pipeline source: {err} ({})", err.category()),
         )
     })?;
     validate_pipeline_graph_structure(&graph, allow_empty)?;
@@ -355,7 +356,7 @@ impl ProjectService {
     pub fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
         let mut projects = self.data.list_projects(owner)?;
         for p in &mut projects {
-            p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project);
+            p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project)?;
         }
         Ok(projects)
     }
@@ -369,7 +370,7 @@ impl ProjectService {
         let Some(mut p) = self.data.get_project(owner, project)? else {
             return Ok(None);
         };
-        p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project);
+        p.title = self.zebflow_cfg.get_project_title(&p.owner, &p.project)?;
         Ok(Some(p))
     }
 
@@ -615,7 +616,7 @@ impl ProjectService {
         if let Some(parent) = file_abs_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&file_abs_path, source)?;
+        atomic_write(&file_abs_path, source.as_bytes())?;
 
         let vpath = virtual_path_from_file_rel_path(&file_rel_path);
         let now = now_ts();
@@ -699,12 +700,7 @@ impl ProjectService {
         source: &str,
         self_file_rel_path: &str,
     ) -> Result<(), PlatformError> {
-        let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
-            PlatformError::new(
-                "PLATFORM_PIPELINE_PARSE",
-                format!("failed parsing pipeline source for webhook validation: {err}"),
-            )
-        })?;
+        let graph = parse_and_validate_pipeline_source_for_save(source)?;
         let conflicts =
             self.check_webhook_path_conflict(owner, project, &graph, self_file_rel_path)?;
         if conflicts.is_empty() {
@@ -813,19 +809,16 @@ impl ProjectService {
         parse_and_validate_pipeline_source(&source)?;
         self.ensure_webhook_paths_available(&owner, &project, &source, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
-        self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
         let snapshot_path =
             self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
-        if let Some(parent) = snapshot_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&snapshot_path, source)?;
+        atomic_write(&snapshot_path, source.as_bytes())?;
 
         meta.hash = current_hash.clone();
-        meta.active_hash = Some(current_hash);
+        meta.active_hash = Some(current_hash.clone());
         meta.activated_at = Some(now_ts());
         meta.updated_at = now_ts();
         self.data.put_pipeline_meta(&meta)?;
+        self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, Some(&current_hash))?;
         Ok(meta)
     }
 
@@ -3563,5 +3556,34 @@ mod tests {
             )
             .expect_err("create inside locked folder should fail");
         assert_eq!(err.code, "PLATFORM_TEMPLATE_LOCKED");
+    }
+
+    #[test]
+    fn pipeline_source_rejects_missing_and_future_contract_versions() {
+        let missing = r#"{
+            "kind":"zebflow.pipeline",
+            "id":"missing-version",
+            "entry_nodes":[],
+            "nodes":[],
+            "edges":[]
+        }"#;
+        let err = parse_and_validate_pipeline_source_for_save(missing).unwrap_err();
+        assert_eq!(err.code, "PLATFORM_PIPELINE_PARSE");
+        assert!(
+            err.message
+                .contains("missing required root field 'version'")
+        );
+
+        let future = r#"{
+            "kind":"zebflow.pipeline",
+            "version":"1.0",
+            "id":"future-version",
+            "entry_nodes":[],
+            "nodes":[],
+            "edges":[]
+        }"#;
+        let err = parse_and_validate_pipeline_source_for_save(future).unwrap_err();
+        assert_eq!(err.code, "PLATFORM_PIPELINE_PARSE");
+        assert!(err.message.contains("unsupported 'version'"));
     }
 }

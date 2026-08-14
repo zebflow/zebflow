@@ -238,7 +238,16 @@ impl WsClientManager {
                                                     return;
                                                 };
 
-                                                let project_cfg = zebflow_cfg.read_or_default(&owner_s, &project_s);
+                                                let project_cfg = match zebflow_cfg.read_or_default(&owner_s, &project_s) {
+                                                    Ok(config) => config,
+                                                    Err(err) => {
+                                                        eprintln!(
+                                                            "WsClient: invalid project configuration for {}/{}: {}",
+                                                            owner_s, project_s, err
+                                                        );
+                                                        return;
+                                                    }
+                                                };
                                                 let pipeline_retention =
                                                     compiled.graph.metadata.as_ref().and_then(|metadata| {
                                                         metadata.settings.invocation_retention.as_ref()

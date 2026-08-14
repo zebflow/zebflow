@@ -1875,17 +1875,17 @@ impl PipelineEngine for BasicPipelineEngine {
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
             // Priority: node config `timeout_secs` → project config → env var → default(30s).
-            let project_timeout_secs: u64 = self
+            let project_timeout_secs = self
                 .platform
                 .as_ref()
                 .map(|platform| {
                     platform
                         .zebflow_cfg
                         .read_or_default(&ctx.owner, &ctx.project)
-                        .configs
-                        .pipelines
-                        .effective_node_timeout_secs()
+                        .map(|config| config.configs.pipelines.effective_node_timeout_secs())
                 })
+                .transpose()
+                .map_err(|err| PipelineError::new(err.code, err.message))?
                 .or_else(|| {
                     std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
                         .ok()

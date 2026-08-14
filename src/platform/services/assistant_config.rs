@@ -41,7 +41,7 @@ impl AssistantConfigService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         self.ensure_project_exists(&owner, &project)?;
-        let assistant = self.zebflow_cfg.get_assistant(&owner, &project);
+        let assistant = self.zebflow_cfg.get_assistant(&owner, &project)?;
         Ok(self.assistant_to_config(&owner, &project, &assistant))
     }
 

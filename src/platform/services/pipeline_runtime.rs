@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::PipelineGraph;
+use crate::pipeline::{PipelineGraph, parse_pipeline_graph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::PipelineMeta;
 use crate::platform::services::ProjectService;
@@ -151,12 +151,14 @@ pub struct CompiledPipeline {
 impl CompiledPipeline {
     /// Builds one compiled runtime entry from active metadata and snapshot source.
     pub fn from_active_meta(meta: &PipelineMeta, source: &str) -> Result<Self, PlatformError> {
-        let graph: PipelineGraph = serde_json::from_str(source).map_err(|err| {
+        let graph: PipelineGraph = parse_pipeline_graph(source.as_bytes()).map_err(|err| {
             PlatformError::new(
                 "PLATFORM_PIPELINE_PARSE",
                 format!(
-                    "failed parsing active pipeline '{}': {}",
-                    meta.file_rel_path, err
+                    "failed parsing active pipeline '{}': {} ({})",
+                    meta.file_rel_path,
+                    err,
+                    err.category()
                 ),
             )
         })?;

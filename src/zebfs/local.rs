@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use crate::infra::io::durable::{atomic_write, read_optional_versioned_json, write_atomic_json};
+
 use super::acl::{
-    ACL_MANIFEST_PATH, ZebFsAccess, ZebFsAclManifest, ZebFsAclScope, is_reserved_acl_path,
+    ACL_MANIFEST_CONTRACT, ACL_MANIFEST_PATH, ZebFsAccess, ZebFsAclManifest, ZebFsAclScope,
+    is_reserved_acl_path,
 };
 use super::error::ZebFsError;
 use super::model::{ZebFsEntry, ZebFsEntryKind, ZebFsObject, ZebFsStat};
@@ -46,17 +49,7 @@ impl LocalZebFs {
             fs::create_dir_all(parent)?;
         }
 
-        // Local fast path with atomic same-directory replace.
-        let tmp_name = format!(
-            ".{}.{}.tmp",
-            abs.file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("object"),
-            std::process::id()
-        );
-        let tmp = abs.with_file_name(tmp_name);
-        fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, &abs)?;
+        atomic_write(&abs, bytes)?;
         self.head(&rel)
     }
 
@@ -222,24 +215,18 @@ impl LocalZebFs {
 
     fn read_acl(&self) -> Result<ZebFsAclManifest, ZebFsError> {
         let path = self.root.join(ACL_MANIFEST_PATH);
-        if !path.exists() {
-            return Ok(ZebFsAclManifest::default());
-        }
-        let bytes = fs::read(&path)?;
-        serde_json::from_slice(&bytes).map_err(|err| {
-            ZebFsError::new("ZEBFS_ACL_READ", format!("invalid ACL manifest: {err}"))
-        })
+        read_optional_versioned_json(&path, ACL_MANIFEST_CONTRACT)
+            .map(|manifest| manifest.unwrap_or_default())
+            .map_err(|err| {
+                ZebFsError::new("ZEBFS_ACL_READ", format!("{} ({})", err, err.category()))
+            })
     }
 
     fn write_acl(&self, manifest: &ZebFsAclManifest) -> Result<(), ZebFsError> {
         let path = self.root.join(ACL_MANIFEST_PATH);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let bytes = serde_json::to_vec_pretty(manifest)
-            .map_err(|err| ZebFsError::new("ZEBFS_ACL_WRITE", err.to_string()))?;
-        fs::write(path, bytes)?;
-        Ok(())
+        write_atomic_json(&path, manifest, ACL_MANIFEST_CONTRACT).map_err(|err| {
+            ZebFsError::new("ZEBFS_ACL_WRITE", format!("{} ({})", err, err.category()))
+        })
     }
 
     fn abs_path(&self, normalized_rel: &str) -> Result<PathBuf, ZebFsError> {
@@ -303,4 +290,34 @@ fn ensure_user_object_path(path: &str) -> Result<(), ZebFsError> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acl_rejects_unsupported_manifest_version() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = LocalZebFs::new(root.path().to_path_buf());
+        let acl_path = root.path().join(ACL_MANIFEST_PATH);
+        std::fs::create_dir_all(acl_path.parent().unwrap()).unwrap();
+        std::fs::write(&acl_path, br#"{"version":2,"rules":{}}"#).unwrap();
+
+        let err = fs.effective_access("public/file.txt").unwrap_err();
+        assert_eq!(err.code, "ZEBFS_ACL_READ");
+    }
+
+    #[test]
+    fn acl_and_objects_roundtrip_through_durable_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = LocalZebFs::new(root.path().to_path_buf());
+        fs.put("public/file.txt", b"first").unwrap();
+        fs.put("public/file.txt", b"second").unwrap();
+        fs.set_access("public", ZebFsAccess::PublicRead, ZebFsAclScope::Prefix)
+            .unwrap();
+
+        assert_eq!(fs.get("public/file.txt").unwrap().bytes, b"second");
+        assert!(fs.is_public_read("public/file.txt").unwrap());
+    }
 }

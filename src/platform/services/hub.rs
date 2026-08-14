@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::infra::io::durable::{
+    JsonContract, JsonContractField, JsonContractValue, atomic_write, parse_versioned_json,
+};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -42,6 +45,14 @@ pub const DEFAULT_HUB_SERVICE_INSTANCE_ID: &str = "hub-default";
 pub const HUB_SERVICE_KIND: &str = "hub";
 const HUB_SERVICE_SCOPE_OWNER: &str = "hub-service";
 const HUB_SERVICE_SCOPE_PROJECT: &str = "hub-default";
+const HUB_ARTIFACT_SCHEMA: &str = "zebflow.asset-pack.v1";
+const HUB_ARTIFACT_CONTRACT: JsonContract = JsonContract {
+    name: "Hub artifact",
+    fields: &[JsonContractField {
+        name: "schema",
+        expected: JsonContractValue::String(HUB_ARTIFACT_SCHEMA),
+    }],
+};
 const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = 25 * 1024 * 1024;
 const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
 const DEFAULT_PUBLISHER_MAX_PACKAGE_BYTES: i64 = 10 * 1024 * 1024;
@@ -1511,7 +1522,7 @@ impl HubService {
         }
         let now = now_ts();
         let manifest = HubArtifact {
-            schema: "zebflow.asset-pack.v1".to_string(),
+            schema: HUB_ARTIFACT_SCHEMA.to_string(),
             asset_kind: preview.asset_kind.clone(),
             source_type: source_type.clone(),
             source_owner: source_owner.clone(),
@@ -1562,7 +1573,7 @@ impl HubService {
             existing_package.as_ref(),
             artifact_bytes.len(),
         )?;
-        fs::write(&artifact_abs, &artifact_bytes)?;
+        atomic_write(&artifact_abs, &artifact_bytes)?;
         let package = HubAssetPackage {
             package_pk: existing_package
                 .as_ref()
@@ -1823,9 +1834,9 @@ impl HubService {
             ));
         };
         let artifact_abs = self.data_root.join(&version_row.artifact_rel_path);
-        let raw = fs::read_to_string(&artifact_abs)?;
-        let payload: HubArtifact = serde_json::from_str(&raw)
-            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+        let raw = fs::read(&artifact_abs)?;
+        verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
+        let payload = parse_hub_artifact_bytes(&raw, "HUB_INSTALL")?;
         self.install_artifact_payload(
             target_owner,
             target_project,
@@ -1854,9 +1865,9 @@ impl HubService {
             ));
         };
         let artifact_abs = self.data_root.join(&version_row.artifact_rel_path);
-        let raw = fs::read_to_string(&artifact_abs)?;
-        let payload: HubArtifact = serde_json::from_str(&raw)
-            .map_err(|err| PlatformError::new("HUB_INSTALL_REVIEW", err.to_string()))?;
+        let raw = fs::read(&artifact_abs)?;
+        verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
+        let payload = parse_hub_artifact_bytes(&raw, "HUB_INSTALL_REVIEW")?;
         self.review_artifact_payload(
             &target_owner,
             &target_project,
@@ -2003,8 +2014,18 @@ impl HubService {
                 "hub artifact exceeds maximum read size",
             ));
         }
-        let raw = fs::read_to_string(&artifact_abs)?;
-        let artifact = serde_json::from_str::<Value>(&raw)
+        let raw = fs::read(&artifact_abs)?;
+        let actual_sha256 = sha256_hex(&raw);
+        if actual_sha256 != version_row.artifact_sha256 {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_INTEGRITY",
+                format!(
+                    "hub artifact hash mismatch: expected {}, got {}",
+                    version_row.artifact_sha256, actual_sha256
+                ),
+            ));
+        }
+        let artifact = serde_json::from_slice::<Value>(&raw)
             .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
         Ok((version_row, artifact, artifact_size_bytes))
     }
@@ -2033,9 +2054,9 @@ impl HubService {
             ));
         };
         let artifact_abs = self.hub_artifact_path(&version.artifact_rel_path)?;
-        let raw = fs::read_to_string(&artifact_abs)?;
-        let artifact: HubArtifact = serde_json::from_str(&raw)
-            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+        let raw = fs::read(&artifact_abs)?;
+        verify_hub_artifact_bytes(&raw, &version.artifact_sha256)?;
+        let artifact = parse_hub_artifact_bytes(&raw, "HUB_INSTALL")?;
         let Some(media) = artifact
             .media
             .into_iter()
@@ -2108,8 +2129,7 @@ impl HubService {
         }
         let source_owner = slug_segment(&req.source_owner);
         let source_project = slug_segment(&req.source_project);
-        let mut artifact: HubArtifact = serde_json::from_value(req.artifact.clone())
-            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+        let mut artifact = parse_hub_artifact_value(req.artifact.clone(), "HUB_REMOTE_INVALID")?;
         if artifact.files.is_empty() {
             return Err(PlatformError::new(
                 "HUB_REMOTE_INVALID",
@@ -2158,7 +2178,7 @@ impl HubService {
             existing_package.as_ref(),
             artifact_bytes.len(),
         )?;
-        fs::write(&artifact_abs, &artifact_bytes)?;
+        atomic_write(&artifact_abs, &artifact_bytes)?;
         let package = HubAssetPackage {
             package_pk: existing_package
                 .as_ref()
@@ -2369,8 +2389,7 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let artifact: HubArtifact = serde_json::from_value(payload.artifact)
-            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
         self.install_artifact_payload(
             slug_segment(target_owner),
             slug_segment(target_project),
@@ -2420,8 +2439,7 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let artifact: HubArtifact = serde_json::from_value(payload.artifact)
-            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+        let artifact = parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")?;
         self.review_artifact_payload(
             &slug_segment(target_owner),
             &slug_segment(target_project),
@@ -2491,8 +2509,7 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let artifact: HubArtifact = serde_json::from_value(payload.artifact.clone())
-            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+        let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
         if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
             return Err(PlatformError::new(
                 "HUB_REMOTE_INVALID",
@@ -3903,8 +3920,36 @@ fn write_entry_content(dest_abs: &Path, entry: &HubExportEntry) -> Result<(), Pl
     } else {
         entry.content.as_bytes().to_vec()
     };
-    fs::write(dest_abs, bytes)?;
+    atomic_write(dest_abs, &bytes)?;
     Ok(())
+}
+
+fn parse_hub_artifact_bytes(
+    bytes: &[u8],
+    error_code: &'static str,
+) -> Result<HubArtifact, PlatformError> {
+    parse_versioned_json(bytes, HUB_ARTIFACT_CONTRACT)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
+}
+
+fn parse_hub_artifact_value(
+    value: Value,
+    error_code: &'static str,
+) -> Result<HubArtifact, PlatformError> {
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|err| PlatformError::new(error_code, err.to_string()))?;
+    parse_hub_artifact_bytes(&bytes, error_code)
+}
+
+fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), PlatformError> {
+    let actual = sha256_hex(bytes);
+    if actual == expected {
+        return Ok(());
+    }
+    Err(PlatformError::new(
+        "HUB_ARTIFACT_INTEGRITY",
+        format!("hub artifact hash mismatch: expected {expected}, got {actual}"),
+    ))
 }
 
 fn reindex_project_bundle_pipelines(
@@ -4142,8 +4187,7 @@ fn verify_remote_artifact_hash(payload: &RemoteHubArtifactResponse) -> Result<()
             "remote artifact response is missing artifact hash",
         ));
     }
-    let artifact: HubArtifact = serde_json::from_value(payload.artifact.clone())
-        .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
+    let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
     let bytes = serde_json::to_vec_pretty(&artifact)
         .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
     let actual = sha256_hex(&bytes);
@@ -4216,6 +4260,19 @@ fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hub_artifact_rejects_missing_and_future_schema() {
+        let missing = serde_json::json!({"asset_kind": "pipeline_bundle"});
+        let err = parse_hub_artifact_value(missing, "TEST_HUB").unwrap_err();
+        assert_eq!(err.code, "TEST_HUB");
+        assert!(err.message.contains("missing required root field 'schema'"));
+
+        let future = serde_json::json!({"schema": "zebflow.asset-pack.v2"});
+        let err = parse_hub_artifact_value(future, "TEST_HUB").unwrap_err();
+        assert_eq!(err.code, "TEST_HUB");
+        assert!(err.message.contains("unsupported 'schema'"));
+    }
 
     #[test]
     fn normalize_scopes_only_keeps_known_hub_scopes() {

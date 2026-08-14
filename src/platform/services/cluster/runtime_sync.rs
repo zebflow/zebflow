@@ -60,7 +60,7 @@ impl ClusterRuntimeSyncService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let cfg = self.zebflow_cfg.read_or_default(&owner, &project);
+        let cfg = self.zebflow_cfg.read_or_default(&owner, &project)?;
         let identity = self
             .projects
             .get_project(&owner, &project)?
@@ -113,7 +113,7 @@ impl ClusterRuntimeSyncService {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
         let layout = self.file.ensure_project_layout(&owner, &project)?;
-        let cfg = self.zebflow_cfg.read_or_default(&owner, &project);
+        let cfg = self.zebflow_cfg.read_or_default(&owner, &project)?;
         reindex_project_sources(
             self.projects.as_ref(),
             &layout.repo_pipelines_dir,

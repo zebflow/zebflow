@@ -1473,7 +1473,7 @@ fn render_page(
         html = ensure_stylesheet_link(html, "/assets/libraries/zeb/icons/0.1/runtime/devicons.css");
     }
 
-    let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None);
+    let final_html = externalize_rwe_scripts(state, html.as_str(), &out.compiled_scripts, None)?;
 
     // In debug builds: inject a tiny SSE listener that auto-reloads the page
     // whenever platform template sources change on disk.
@@ -1549,20 +1549,19 @@ fn externalize_rwe_scripts(
     html: &str,
     compiled_scripts: &[CompiledScript],
     project_scope: Option<(&str, &str)>,
-) -> String {
+) -> Result<String, PlatformError> {
     // Read deployment_asset_base up front — needed on all return paths, not
     // just when scripts are present.  When set, every `/assets/{owner}/{project}/`
     // occurrence in the final HTML is rewritten to `{base}/`, covering scripts,
     // uploaded files, images, and library chunks alike.
-    let deployment_asset_base: Option<String> = project_scope.and_then(|(owner, project)| {
-        state
+    let deployment_asset_base = match project_scope {
+        Some((owner, project)) => state
             .platform
             .zebflow_cfg
             .read_or_default(owner, project)
-            .configs
-            .rwe
-            .deployment_asset_base
-    });
+            .map(|config| config.configs.rwe.deployment_asset_base)?,
+        None => None,
+    };
 
     // Rewrite remaining `/assets/{owner}/{project}/` occurrences that were not
     // handled by the script-tag logic below (images, uploads, library chunks).
@@ -1578,10 +1577,10 @@ fn externalize_rwe_scripts(
     };
 
     let Some(cache) = &state.render_script_cache else {
-        return rewrite_assets(html.to_string());
+        return Ok(rewrite_assets(html.to_string()));
     };
     if compiled_scripts.is_empty() {
-        return rewrite_assets(html.to_string());
+        return Ok(rewrite_assets(html.to_string()));
     }
 
     let mut script_tags = String::new();
@@ -1648,11 +1647,14 @@ fn externalize_rwe_scripts(
         ));
     }
     if script_tags.is_empty() {
-        return rewrite_assets(html.to_string());
+        return Ok(rewrite_assets(html.to_string()));
     }
 
     let stripped = strip_inline_runtime_bundle(html);
-    rewrite_assets(inject_before_body_end(&stripped, &script_tags))
+    Ok(rewrite_assets(inject_before_body_end(
+        &stripped,
+        &script_tags,
+    )))
 }
 
 fn strip_inline_runtime_bundle(html: &str) -> String {
@@ -2828,10 +2830,14 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                         description: "Run inside the current self-controlled office.".to_string(),
                     }]
                 });
-            let projects = items
+            let projects = match items
                 .into_iter()
                 .map(|item| home_project_card_json(&state, &owner, &item))
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(projects) => projects,
+                Err(err) => return internal_error(err),
+            };
             match render_page(
                 &state,
                 "platform-home",
@@ -2906,20 +2912,26 @@ async fn platform_hub_page(State(state): State<PlatformAppState>, headers: Heade
         Err(_) => Vec::new(),
     };
     let projects = match state.platform.projects.list_projects(&owner) {
-        Ok(items) => items
+        Ok(items) => match items
             .into_iter()
             .map(|item| {
-                let producer_enabled =
-                    is_project_hub_producer_enabled(&state, &owner, &item.project);
-                json!({
-                    "owner": item.owner,
-                    "project": item.project,
-                    "title": item.title,
-                    "hub_href": format!("/projects/{owner}/{}/hub", item.project),
-                    "producer_enabled": producer_enabled,
-                })
+                is_project_hub_producer_enabled(&state, &owner, &item.project).map(
+                    |producer_enabled| {
+                        json!({
+                            "owner": item.owner,
+                            "project": item.project,
+                            "title": item.title,
+                            "hub_href": format!("/projects/{owner}/{}/hub", item.project),
+                            "producer_enabled": producer_enabled,
+                        })
+                    },
+                )
             })
-            .collect::<Vec<_>>(),
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(projects) => projects,
+            Err(err) => return internal_error(err),
+        },
         Err(err) => return internal_error(err),
     };
     let publishers = if is_superadmin {
@@ -2999,7 +3011,7 @@ fn home_project_card_json(
     state: &PlatformAppState,
     owner: &str,
     item: &crate::platform::model::PlatformProject,
-) -> Value {
+) -> Result<Value, PlatformError> {
     let item_owner = if item.owner.trim().is_empty() {
         owner.to_string()
     } else {
@@ -3011,17 +3023,15 @@ fn home_project_card_json(
         .get(&item_owner, &item.project)
         .ok()
         .flatten();
-    let runtime_mode = placement
-        .as_ref()
-        .map(|value| value.mode.to_string())
-        .unwrap_or_else(|| {
-            state
-                .platform
-                .zebflow_cfg
-                .get_runtime_profile(&item_owner, &item.project)
-                .mode
-                .to_string()
-        });
+    let runtime_mode = match placement.as_ref() {
+        Some(value) => value.mode.to_string(),
+        None => state
+            .platform
+            .zebflow_cfg
+            .get_runtime_profile(&item_owner, &item.project)?
+            .mode
+            .to_string(),
+    };
     let runtime_summary = state
         .platform
         .cluster_placement
@@ -3056,14 +3066,14 @@ fn home_project_card_json(
     let hub_cfg = state
         .platform
         .zebflow_cfg
-        .get_hub_distribution(&item_owner, &item.project);
+        .get_hub_distribution(&item_owner, &item.project)?;
     let open_app_path = resolve_project_hub_entry_path(
         &item_owner,
         &item.project,
         &hub_cfg.entry_url,
         hub_cfg.as_app,
     );
-    json!({
+    Ok(json!({
         "owner": item_owner,
         "project": item.project,
         "title": item.title,
@@ -3075,7 +3085,7 @@ fn home_project_card_json(
         "runtime_summary": runtime_summary,
         "office_label": office_label,
         "office_url": office_url,
-    })
+    }))
 }
 
 fn platform_office_rows(state: &PlatformAppState) -> Vec<Value> {
@@ -3122,12 +3132,16 @@ fn resolve_project_hub_entry_path(
     Some(format!("/wh/{owner}/{project}{suffix}"))
 }
 
-fn is_project_hub_producer_enabled(state: &PlatformAppState, owner: &str, project: &str) -> bool {
+fn is_project_hub_producer_enabled(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+) -> Result<bool, PlatformError> {
     let cfg = state
         .platform
         .zebflow_cfg
-        .get_hub_distribution(owner, project);
-    cfg.producer_enabled && owner == state.platform.config.default_owner
+        .get_hub_distribution(owner, project)?;
+    Ok(cfg.producer_enabled && owner == state.platform.config.default_owner)
 }
 
 fn can_manage_project_hub_producer(state: &PlatformAppState, owner: &str) -> bool {
@@ -3139,7 +3153,7 @@ fn require_project_hub_producer(
     owner: &str,
     project: &str,
 ) -> Result<(), Response> {
-    if is_project_hub_producer_enabled(state, owner, project) {
+    if is_project_hub_producer_enabled(state, owner, project).map_err(internal_error)? {
         Ok(())
     } else {
         Err((
@@ -3640,7 +3654,7 @@ async fn finalize_project_runtime_setup(
     let runtime_profile = state
         .platform
         .zebflow_cfg
-        .get_runtime_profile(owner, project);
+        .get_runtime_profile(owner, project)?;
     let placement = state.platform.cluster_placement.assign_for_project(
         owner,
         project,
@@ -4983,11 +4997,13 @@ async fn render_project_pipelines_with_tab(
                     })
                     .cloned()
                     .collect::<Vec<_>>();
+                let project_config =
+                    match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+                        Ok(config) => config,
+                        Err(err) => return internal_error(err),
+                    };
                 let pipeline_logging_defaults = json!({
-                    "max_invocations": state
-                        .platform
-                        .zebflow_cfg
-                        .read_or_default(&owner, &project)
+                    "max_invocations": project_config
                         .configs
                         .pipelines
                         .logging
@@ -6401,10 +6417,7 @@ async fn project_db_suite_page(
                     .into_response();
             }
             if tab_key == "maintenance" && connection_info.database_kind != "sekejap" {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Html("db tab not found".to_string()),
-                )
+                return (StatusCode::NOT_FOUND, Html("db tab not found".to_string()))
                     .into_response();
             }
             let nav = nav_classes(&owner, &project, "databases", Some("connections"));
@@ -6907,7 +6920,10 @@ async fn render_settings_tab_page(
                 .list(&owner, &project, 10)
                 .unwrap_or_default();
 
-            let zebflow_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+            let zebflow_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+                Ok(config) => config,
+                Err(err) => return internal_error(err),
+            };
 
             let input = json!({
                 "seo": {
@@ -10043,12 +10059,15 @@ async fn api_install_platform_hub_app(
                 .projects
                 .get_project(&installed_owner, &installed_project)
             {
-                Ok(Some(project)) => Json(json!({
-                    "ok": true,
-                    "owner": installed_owner,
-                    "project": home_project_card_json(&state, &session, &project),
-                }))
-                .into_response(),
+                Ok(Some(project)) => match home_project_card_json(&state, &session, &project) {
+                    Ok(project) => Json(json!({
+                        "ok": true,
+                        "owner": installed_owner,
+                        "project": project,
+                    }))
+                    .into_response(),
+                    Err(err) => internal_error(err),
+                },
                 Ok(None) => Json(json!({
                     "ok": true,
                     "owner": installed_owner,
@@ -10107,11 +10126,14 @@ async fn api_install_platform_hub_project(
                 .projects
                 .get_project(&installed_owner, &installed_project)
             {
-                Ok(Some(project)) => Json(json!({
-                    "ok": true,
-                    "project": home_project_card_json(&state, &owner, &project)
-                }))
-                .into_response(),
+                Ok(Some(project)) => match home_project_card_json(&state, &owner, &project) {
+                    Ok(project) => Json(json!({
+                        "ok": true,
+                        "project": project
+                    }))
+                    .into_response(),
+                    Err(err) => internal_error(err),
+                },
                 Ok(None) => internal_error(PlatformError::new(
                     "HUB_INSTALL",
                     "installed project missing after install",
@@ -12399,10 +12421,14 @@ async fn api_git_commit(
     // optional push
     if req.push {
         // Resolve push target: prefer explicit request fields, fall back to zebflow.json remote
-        let zebflow_cfg = state
+        let zebflow_cfg = match state
             .platform
             .zebflow_cfg
-            .read_or_default(&owner_slug, &project_slug);
+            .read_or_default(&owner_slug, &project_slug)
+        {
+            Ok(config) => config,
+            Err(err) => return internal_error(err),
+        };
         let (cred_id, repo_url, branch) = {
             let remote_cfg = &zebflow_cfg.configs.git.remote;
             let cid = req
@@ -12583,7 +12609,10 @@ async fn api_git_get_remote(
             Err(err) => internal_error(err),
         };
     }
-    let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     Json(json!({
         "credential_id": cfg.configs.git.remote.credential_id,
         "repo_url": cfg.configs.git.remote.repo_url,
@@ -13013,7 +13042,10 @@ async fn execute_pipeline_local(
     req: &ExecutePipelineRequest,
 ) -> Response {
     let exec_start = std::time::Instant::now();
-    let project_cfg = state.platform.zebflow_cfg.read_or_default(owner, project);
+    let project_cfg = match state.platform.zebflow_cfg.read_or_default(owner, project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     let project_retention = resolve_invocation_retention(&project_cfg, None);
     let request_id = format!(
         "pipeline-exec-{}",
@@ -13160,7 +13192,9 @@ async fn execute_pipeline_local(
         )
             .into_response();
     }
-    apply_rwe_project_options(state, owner, project, &mut graph);
+    if let Err(err) = apply_rwe_project_options(state, owner, project, &mut graph) {
+        return internal_error(err);
+    }
 
     if let Err(message) = validate_execute_trigger(&graph, &req) {
         state.platform.pipeline_hits.record_failure(
@@ -13449,7 +13483,10 @@ async fn api_pipeline_invocations(
             .into_response();
     };
 
-    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let project_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     let retention =
         match state
             .platform
@@ -14299,7 +14336,10 @@ async fn api_files_upload(
         Ok(l) => l,
         Err(e) => return internal_error(e),
     };
-    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let project_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     let max_file_size_mb = project_cfg
         .configs
         .files
@@ -15608,7 +15648,10 @@ async fn api_get_settings_section(
             Err(err) => internal_error(err),
         };
     }
-    let cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     match section.as_str() {
         "rwe" => {
             Json(json!({"ok": true, "section": "rwe", "data": cfg.configs.rwe})).into_response()
@@ -15767,7 +15810,10 @@ async fn api_upsert_settings_section(
             .into_response();
     }
 
-    let mut cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let mut cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
 
     let section_data = match section.as_str() {
         "rwe" => {
@@ -16262,8 +16308,8 @@ fn apply_rwe_project_options(
     owner: &str,
     project: &str,
     graph: &mut PipelineGraph,
-) {
-    let cfg = state.platform.zebflow_cfg.read_or_default(owner, project);
+) -> Result<(), PlatformError> {
+    let cfg = state.platform.zebflow_cfg.read_or_default(owner, project)?;
     let rwe = &cfg.configs.rwe;
 
     // Resolve template root so @/ alias imports work in user project templates.
@@ -16309,6 +16355,7 @@ fn apply_rwe_project_options(
             map.insert("options".to_string(), options);
         }
     }
+    Ok(())
 }
 
 /// Load up to `max_pairs * 2` chat messages from the project's runtime data dir.
@@ -18728,10 +18775,14 @@ async fn api_set_hub_producer_mode(
             Err(err) => return internal_error(err),
         }
     }
-    let mut cfg = state
+    let mut cfg = match state
         .platform
         .zebflow_cfg
-        .get_hub_distribution(&owner_slug, &project_slug);
+        .get_hub_distribution(&owner_slug, &project_slug)
+    {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     cfg.producer_enabled = req.enabled;
     match state
         .platform
@@ -21051,7 +21102,11 @@ async fn dispatch_weberror(
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
             .unwrap_or_default();
-        let externalized = externalize_rwe_scripts(state, &html, &scripts, Some((owner, project)));
+        let externalized =
+            match externalize_rwe_scripts(state, &html, &scripts, Some((owner, project))) {
+                Ok(html) => html,
+                Err(err) => return Some(internal_error(err)),
+            };
         return Some((status, Html(externalized)).into_response());
     }
 
@@ -21074,7 +21129,10 @@ async fn public_webhook_ingress(
     let path = format!("/{}", tail.trim_start_matches('/'));
     let method_key = method.as_str().to_ascii_uppercase();
     let exec_start = std::time::Instant::now();
-    let project_cfg = state.platform.zebflow_cfg.read_or_default(&owner, &project);
+    let project_cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     let webhook_body_max_mb = project_cfg
         .configs
         .files
@@ -21283,7 +21341,9 @@ async fn public_webhook_ingress(
         )
             .into_response();
     }
-    apply_rwe_project_options(&state, &owner, &project, &mut graph);
+    if let Err(err) = apply_rwe_project_options(&state, &owner, &project, &mut graph) {
+        return internal_error(err);
+    }
 
     let mut input = match build_webhook_ingress_input(
         &state.platform,
@@ -21620,7 +21680,10 @@ async fn public_webhook_ingress(
                 .and_then(|v| serde_json::from_value::<Vec<CompiledScript>>(v).ok())
                 .unwrap_or_default();
             let externalized =
-                externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project)));
+                match externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project))) {
+                    Ok(html) => html,
+                    Err(err) => return internal_error(err),
+                };
             let mut resp = Html(externalized).into_response();
             *resp.status_mut() = status;
             apply_zf_extras(&mut resp, &zf_cookie, &zf_headers);
@@ -21711,7 +21774,10 @@ async fn public_webhook_ingress(
             .and_then(|value| serde_json::from_value::<Vec<CompiledScript>>(value).ok())
             .unwrap_or_default();
         let externalized =
-            externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project)));
+            match externalize_rwe_scripts(&state, &html, &scripts, Some((&owner, &project))) {
+                Ok(html) => html,
+                Err(err) => return internal_error(err),
+            };
         let mut resp = Html(externalized).into_response();
         if let Some(ref cookie) = set_cookie_header {
             if let Ok(v) = HeaderValue::from_str(cookie) {
@@ -25358,10 +25424,14 @@ async fn api_upload_asset(
         Err(err) => return internal_error(err),
     };
 
-    let cfg = state
+    let cfg = match state
         .platform
         .zebflow_cfg
-        .read_or_default(&owner_slug, &project_slug);
+        .read_or_default(&owner_slug, &project_slug)
+    {
+        Ok(config) => config,
+        Err(err) => return internal_error(err),
+    };
     let max_asset_size_mb = cfg.configs.files.uploads.effective_max_asset_size_mb();
     let max_bytes = (max_asset_size_mb as u64) * 1024 * 1024;
 
@@ -25774,7 +25844,10 @@ async fn preview_page(
     html = ensure_stylesheet_link(html, "/assets/platform/main.css");
 
     // Handle compiled JS scripts.
-    html = externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None);
+    html = match externalize_rwe_scripts(&state, &html, &out.compiled_scripts, None) {
+        Ok(html) => html,
+        Err(err) => return internal_error(err),
+    };
 
     // Inject WS live-reload client just before </body>
     let ws_url = format!(

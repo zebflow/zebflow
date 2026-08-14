@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use crate::pipeline::{NodeDefinition, PipelineGraph};
+use crate::infra::io::durable::atomic_write;
+use crate::pipeline::{NodeDefinition, PipelineGraph, parse_pipeline_graph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CredentialTypeDef, InstalledNodePackage, MultiNodePackageDefinition, NodePackageManifest,
@@ -543,7 +544,7 @@ impl NodeRegistryService {
                     ),
                 )
             })?;
-            let graph: PipelineGraph = serde_json::from_slice(bytes).map_err(|e| {
+            let graph: PipelineGraph = parse_pipeline_graph(bytes).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!(
@@ -555,7 +556,7 @@ impl NodeRegistryService {
             Ok(graph)
         } else if let Some(pipeline_json) = embedded.pipeline_json {
             // V1: single pre-resolved pipeline.
-            let graph: PipelineGraph = serde_json::from_slice(pipeline_json).map_err(|e| {
+            let graph: PipelineGraph = parse_pipeline_graph(pipeline_json).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!("embedded composite '{}': {}", kind, e),
@@ -571,7 +572,7 @@ impl NodeRegistryService {
                     format!("embedded composite '{}': missing '{}'", kind, asset_path),
                 )
             })?;
-            let graph: PipelineGraph = serde_json::from_slice(bytes).map_err(|e| {
+            let graph: PipelineGraph = parse_pipeline_graph(bytes).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!("embedded composite '{}': {}", kind, e),
@@ -632,7 +633,7 @@ impl NodeRegistryService {
                 format!("failed reading '{}': {}", pipeline_path.display(), e),
             )
         })?;
-        let graph: PipelineGraph = serde_json::from_str(&source).map_err(|e| {
+        let graph: PipelineGraph = parse_pipeline_graph(source.as_bytes()).map_err(|e| {
             PlatformError::new(
                 "NODE_COMPOSITE_PIPELINE_PARSE",
                 format!("failed parsing '{}': {}", pipeline_path.display(), e),
@@ -731,7 +732,7 @@ impl NodeRegistryService {
         // Write node.json.
         let manifest_json = serde_json::to_string_pretty(manifest)
             .map_err(|e| PlatformError::new("NODE_INSTALL_SERIALIZE", e.to_string()))?;
-        std::fs::write(pkg_dir.join("node.json"), &manifest_json).map_err(|e| {
+        atomic_write(&pkg_dir.join("node.json"), manifest_json.as_bytes()).map_err(|e| {
             PlatformError::new(
                 "NODE_INSTALL_WRITE",
                 format!("failed writing node.json: {}", e),
@@ -745,7 +746,7 @@ impl NodeRegistryService {
                 .as_ref()
                 .map(|r| r.pipeline.as_str())
                 .unwrap_or("pipeline.zf.json");
-            std::fs::write(pkg_dir.join(filename), source).map_err(|e| {
+            atomic_write(&pkg_dir.join(filename), source.as_bytes()).map_err(|e| {
                 PlatformError::new(
                     "NODE_INSTALL_WRITE",
                     format!("failed writing {}: {}", filename, e),
@@ -755,7 +756,7 @@ impl NodeRegistryService {
 
         // Write icon.svg.
         let has_icon = if let Some(svg) = icon_svg {
-            std::fs::write(pkg_dir.join("icon.svg"), svg).map_err(|e| {
+            atomic_write(&pkg_dir.join("icon.svg"), svg.as_bytes()).map_err(|e| {
                 PlatformError::new(
                     "NODE_INSTALL_WRITE",
                     format!("failed writing icon.svg: {}", e),

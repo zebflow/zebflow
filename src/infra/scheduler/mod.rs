@@ -153,7 +153,16 @@ impl PipelineScheduler {
                     return;
                 };
 
-                let project_cfg = zebflow_cfg.read_or_default(&owner, &project);
+                let project_cfg = match zebflow_cfg.read_or_default(&owner, &project) {
+                    Ok(config) => config,
+                    Err(err) => {
+                        eprintln!(
+                            "Scheduler: invalid project configuration for {}/{}: {}",
+                            owner, project, err
+                        );
+                        return;
+                    }
+                };
                 let pipeline_retention = compiled
                     .graph
                     .metadata

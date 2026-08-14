@@ -2352,13 +2352,22 @@ pub struct ZebflowJsonRweLibraryEntry {
 }
 
 /// Lock file model — stored at `repo/zeb.lock` (git-tracked).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZebLock {
     /// Schema version; current is 1.
     pub version: u32,
     /// Locked library entries keyed by library name.
     #[serde(default)]
     pub libraries: HashMap<String, ZebLockEntry>,
+}
+
+impl Default for ZebLock {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            libraries: HashMap::new(),
+        }
+    }
 }
 
 /// One locked library entry in `zeb.lock`.

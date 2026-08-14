@@ -9,11 +9,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::infra::io::durable::{JsonContract, JsonContractField, JsonContractValue};
+
 use super::error::ZebFsError;
 use super::local::normalize_object_path;
 
 pub const ACL_MANIFEST_PATH: &str = ".zebfs/acl.json";
 pub const ACL_RESERVED_PREFIX: &str = ".zebfs";
+pub const ACL_MANIFEST_VERSION: u32 = 1;
+pub const ACL_MANIFEST_CONTRACT: JsonContract = JsonContract {
+    name: "ZebFS ACL manifest",
+    fields: &[JsonContractField {
+        name: "version",
+        expected: JsonContractValue::U64(ACL_MANIFEST_VERSION as u64),
+    }],
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -165,7 +175,7 @@ fn normalize_acl_target(path: &str) -> Result<String, ZebFsError> {
 }
 
 fn acl_manifest_version() -> u32 {
-    1
+    ACL_MANIFEST_VERSION
 }
 
 fn now_secs() -> u64 {
