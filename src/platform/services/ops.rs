@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use crate::contracts::kinds::decode_pipeline_graph;
 use crate::platform::model::{
     DescribeProjectDbConnectionRequest, PipelineMeta, TemplateCreateKind, TemplateCreateRequest,
     TemplateSaveRequest, TemplateTreeItem,
@@ -2157,8 +2158,8 @@ fn pipeline_trigger_summary(ops: &PlatformOps, meta: &PipelineMeta) -> String {
         Ok(source) => source,
         Err(_) => return fallback,
     };
-    let graph = match serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
-        Ok(graph) => graph,
+    let graph = match decode_pipeline_graph(source.as_bytes()) {
+        Ok(document) => document.spec,
         Err(_) => return fallback,
     };
     let Some(node) = graph

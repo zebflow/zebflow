@@ -84,7 +84,8 @@ impl FileAdapter for FilesystemFileAdapter {
         let repo_pipelines_dir = repo_dir.join("pipelines");
         let repo_docs_dir = repo_dir.join("docs");
         let repo_nodes_dir = repo_dir.join("nodes");
-        let zebflow_json_file = repo_dir.join("zebflow.json");
+        let project_config_file =
+            repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
 
         // Base dirs
@@ -123,7 +124,7 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_git_dir,
             repo_pipelines_dir,
             repo_docs_dir,
-            zebflow_json_file,
+            project_config_file,
             agent_docs_dir,
             repo_nodes_dir,
         })

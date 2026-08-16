@@ -59,7 +59,7 @@
 //! - **Studio UI hint** — ASCII mockup of how the node dialog should look.
 //! - **Input/output payload examples** — what flows in, what flows out.
 //! - **DSL examples** — show the pipe chain with all flags.
-//! - **Project-level settings** if the node is affected by `zebflow.json` settings.
+//! - **Project-level settings** if the node is affected by `zebflow.yaml` settings.
 //!
 //! The module doc becomes the `description` field at `/docs/node` — **no separate
 //! markdown file needed**.  The source IS the docs.

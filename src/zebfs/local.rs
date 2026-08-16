@@ -1,12 +1,9 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use crate::infra::io::durable::{atomic_write, read_optional_versioned_json, write_atomic_json};
+use crate::infra::io::durable::atomic_write;
 
-use super::acl::{
-    ACL_MANIFEST_CONTRACT, ACL_MANIFEST_PATH, ZebFsAccess, ZebFsAclManifest, ZebFsAclScope,
-    is_reserved_acl_path,
-};
+use super::acl::is_reserved_acl_path;
 use super::error::ZebFsError;
 use super::model::{ZebFsEntry, ZebFsEntryKind, ZebFsObject, ZebFsStat};
 
@@ -187,48 +184,6 @@ impl LocalZebFs {
         self.head(&to_rel)
     }
 
-    /// Returns the access rule that applies to one object or prefix.
-    pub fn effective_access(&self, path: &str) -> Result<ZebFsAccess, ZebFsError> {
-        self.read_acl()?.effective_access(path)
-    }
-
-    /// Convenience check for anonymous GET permission.
-    pub fn is_public_read(&self, path: &str) -> Result<bool, ZebFsError> {
-        Ok(matches!(
-            self.effective_access(path)?,
-            ZebFsAccess::PublicRead
-        ))
-    }
-
-    /// Writes or replaces the ACL rule for one object or folder prefix.
-    pub fn set_access(
-        &self,
-        path: &str,
-        access: ZebFsAccess,
-        scope: ZebFsAclScope,
-    ) -> Result<String, ZebFsError> {
-        let mut manifest = self.read_acl()?;
-        let normalized = manifest.set_rule(path, access, scope)?;
-        self.write_acl(&manifest)?;
-        Ok(normalized)
-    }
-
-    fn read_acl(&self) -> Result<ZebFsAclManifest, ZebFsError> {
-        let path = self.root.join(ACL_MANIFEST_PATH);
-        read_optional_versioned_json(&path, ACL_MANIFEST_CONTRACT)
-            .map(|manifest| manifest.unwrap_or_default())
-            .map_err(|err| {
-                ZebFsError::new("ZEBFS_ACL_READ", format!("{} ({})", err, err.category()))
-            })
-    }
-
-    fn write_acl(&self, manifest: &ZebFsAclManifest) -> Result<(), ZebFsError> {
-        let path = self.root.join(ACL_MANIFEST_PATH);
-        write_atomic_json(&path, manifest, ACL_MANIFEST_CONTRACT).map_err(|err| {
-            ZebFsError::new("ZEBFS_ACL_WRITE", format!("{} ({})", err, err.category()))
-        })
-    }
-
     fn abs_path(&self, normalized_rel: &str) -> Result<PathBuf, ZebFsError> {
         let abs = self.root.join(normalized_rel);
         if !abs.starts_with(&self.root) {
@@ -297,27 +252,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acl_rejects_unsupported_manifest_version() {
-        let root = tempfile::tempdir().unwrap();
-        let fs = LocalZebFs::new(root.path().to_path_buf());
-        let acl_path = root.path().join(ACL_MANIFEST_PATH);
-        std::fs::create_dir_all(acl_path.parent().unwrap()).unwrap();
-        std::fs::write(&acl_path, br#"{"version":2,"rules":{}}"#).unwrap();
-
-        let err = fs.effective_access("public/file.txt").unwrap_err();
-        assert_eq!(err.code, "ZEBFS_ACL_READ");
-    }
-
-    #[test]
-    fn acl_and_objects_roundtrip_through_durable_writes() {
+    fn objects_roundtrip_through_durable_writes() {
         let root = tempfile::tempdir().unwrap();
         let fs = LocalZebFs::new(root.path().to_path_buf());
         fs.put("public/file.txt", b"first").unwrap();
         fs.put("public/file.txt", b"second").unwrap();
-        fs.set_access("public", ZebFsAccess::PublicRead, ZebFsAclScope::Prefix)
-            .unwrap();
 
         assert_eq!(fs.get("public/file.txt").unwrap().bytes, b"second");
-        assert!(fs.is_public_read("public/file.txt").unwrap());
     }
 }

@@ -6,22 +6,28 @@
 //! Also loads official composite nodes embedded in the binary via
 //! `PLATFORM_COMPOSITE_NODE_ASSETS`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-
-use crate::infra::io::durable::atomic_write;
-use crate::pipeline::{NodeDefinition, PipelineGraph, parse_pipeline_graph};
+use crate::contracts::kinds::{
+    DependencyLockNodeBundleSpec, DependencyLockSource, NodeBundleContract, NodeDefinitionContract,
+    decode_pipeline_graph, validate_node_definition_spec,
+};
+use crate::contracts::{ContractMetadata, decode_contract, encode_contract};
+use crate::infra::io::durable::{atomic_write, directory_tree_sha256};
+use crate::pipeline::{NodeDefinition, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CredentialTypeDef, InstalledNodePackage, MultiNodePackageDefinition, NodePackageManifest,
     NodePackageSource, slug_segment,
 };
 use crate::platform::services::ProjectService;
+use crate::platform::services::dependency_lock::DependencyLockService;
 use crate::platform::web::embedded::{
     PLATFORM_COMPOSITE_NODE_ASSETS, platform_composite_node_asset,
 };
+use arc_swap::ArcSwap;
 
 /// An official composite node embedded in the binary.
 struct EmbeddedCompositeNode {
@@ -36,6 +42,7 @@ struct EmbeddedCompositeNode {
 /// Runtime registry of installed node packages across all projects.
 pub struct NodeRegistryService {
     projects: Arc<ProjectService>,
+    dependency_lock: Arc<DependencyLockService>,
     /// Key = `"{owner}/{project}/{kind}"`.
     inner: ArcSwap<HashMap<String, InstalledNodePackage>>,
     /// Official composite nodes embedded in the binary, keyed by kind.
@@ -45,10 +52,7 @@ pub struct NodeRegistryService {
 /// Explodes a multi-node `definition.json` into individual `NodePackageManifest` entries.
 ///
 /// Each node entry gets its own manifest with the shared credentials and functions map.
-fn explode_multi_node_package(
-    pkg: &MultiNodePackageDefinition,
-    slug: &str,
-) -> Vec<NodePackageManifest> {
+fn explode_multi_node_package(pkg: &MultiNodePackageDefinition) -> Vec<NodePackageManifest> {
     let mut manifests = Vec::new();
     for node in &pkg.nodes {
         let is_wasm = node.kind.starts_with("n.wasm.");
@@ -93,7 +97,6 @@ fn explode_multi_node_package(
             } else {
                 node.lifecycle.clone()
             },
-            package_slug: slug.to_string(),
         });
     }
     manifests
@@ -115,10 +118,11 @@ fn slug_from_kind(kind: &str) -> String {
 }
 
 impl NodeRegistryService {
-    pub fn new(projects: Arc<ProjectService>) -> Self {
+    pub fn new(projects: Arc<ProjectService>, dependency_lock: Arc<DependencyLockService>) -> Self {
         let embedded_composites = Self::load_embedded_composites();
         Self {
             projects,
+            dependency_lock,
             inner: ArcSwap::new(Arc::new(HashMap::new())),
             embedded_composites,
         }
@@ -148,10 +152,11 @@ impl NodeRegistryService {
 
         let mut multi_slugs = HashSet::new();
         for (slug, def_bytes) in multi_defs {
-            match serde_json::from_slice::<MultiNodePackageDefinition>(def_bytes) {
-                Ok(pkg_def) => {
+            match decode_contract::<NodeBundleContract>(def_bytes) {
+                Ok(document) => {
+                    let pkg_def = document.spec;
                     multi_slugs.insert(slug.to_string());
-                    let manifests = explode_multi_node_package(&pkg_def, slug);
+                    let manifests = explode_multi_node_package(&pkg_def);
                     for manifest in manifests {
                         let kind = manifest.definition.kind.clone();
                         if let Err(e) = validate_manifest(&manifest, &builtin_kinds) {
@@ -211,8 +216,9 @@ impl NodeRegistryService {
             if multi_slugs.contains(slug) {
                 continue;
             }
-            match serde_json::from_slice::<NodePackageManifest>(manifest_bytes) {
-                Ok(manifest) => {
+            match decode_contract::<NodeDefinitionContract>(manifest_bytes) {
+                Ok(document) => {
+                    let manifest = document.spec;
                     let kind = manifest.definition.kind.clone();
                     if let Err(e) = validate_manifest(&manifest, &builtin_kinds) {
                         eprintln!(
@@ -293,6 +299,7 @@ impl NodeRegistryService {
             .collect();
 
         let mut new_entries: Vec<(String, InstalledNodePackage)> = Vec::new();
+        let mut discovered_bundles = BTreeMap::new();
 
         if nodes_dir.is_dir() {
             let entries = std::fs::read_dir(nodes_dir).map_err(|e| {
@@ -315,10 +322,24 @@ impl NodeRegistryService {
 
                 if definition_path.is_file() {
                     // Multi-node package.
-                    match parse_multi_node_definition(&definition_path, &slug, &builtin_kinds) {
+                    match parse_multi_node_definition(&definition_path, &builtin_kinds) {
                         Ok(manifests) => {
+                            let bundle = project_bundle_lock_from_multi_node(
+                                nodes_dir,
+                                &path,
+                                &definition_path,
+                            )?;
+                            if discovered_bundles
+                                .insert(bundle.0.clone(), bundle.1)
+                                .is_some()
+                            {
+                                return Err(PlatformError::new(
+                                    "NODE_BUNDLE_COLLISION",
+                                    format!("duplicate project node bundle '{}'", bundle.0),
+                                ));
+                            }
                             for manifest in manifests {
-                                let has_icon = !manifest.package_slug.is_empty();
+                                let has_icon = path.join("icon.svg").is_file();
                                 let kind = manifest.definition.kind.clone();
                                 let key = registry_key(&owner, &project, &kind);
                                 new_entries.push((
@@ -345,6 +366,22 @@ impl NodeRegistryService {
                     // V1 single-node package.
                     match parse_and_validate_manifest(&manifest_path, &builtin_kinds) {
                         Ok(manifest) => {
+                            let bundle = project_bundle_lock_from_single_node(
+                                nodes_dir,
+                                &path,
+                                &manifest_path,
+                                &manifest,
+                                &slug,
+                            )?;
+                            if discovered_bundles
+                                .insert(bundle.0.clone(), bundle.1)
+                                .is_some()
+                            {
+                                return Err(PlatformError::new(
+                                    "NODE_BUNDLE_COLLISION",
+                                    format!("duplicate project node bundle '{}'", bundle.0),
+                                ));
+                            }
                             let has_icon = path.join("icon.svg").is_file();
                             let kind = manifest.definition.kind.clone();
                             let key = registry_key(&owner, &project, &kind);
@@ -380,6 +417,12 @@ impl NodeRegistryService {
             map.insert(key, pkg);
         }
         self.inner.store(Arc::new(map));
+
+        self.dependency_lock.record_discovered_node_bundles(
+            &owner,
+            &project,
+            discovered_bundles.into_iter().collect(),
+        )?;
 
         Ok(())
     }
@@ -544,7 +587,7 @@ impl NodeRegistryService {
                     ),
                 )
             })?;
-            let graph: PipelineGraph = parse_pipeline_graph(bytes).map_err(|e| {
+            let graph = decode_pipeline_graph(bytes).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!(
@@ -553,16 +596,16 @@ impl NodeRegistryService {
                     ),
                 )
             })?;
-            Ok(graph)
+            Ok(graph.spec)
         } else if let Some(pipeline_json) = embedded.pipeline_json {
             // V1: single pre-resolved pipeline.
-            let graph: PipelineGraph = parse_pipeline_graph(pipeline_json).map_err(|e| {
+            let graph = decode_pipeline_graph(pipeline_json).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!("embedded composite '{}': {}", kind, e),
                 )
             })?;
-            Ok(graph)
+            Ok(graph.spec)
         } else if let Some(runtime) = &embedded.manifest.runtime {
             // V1 fallback via runtime.pipeline.
             let asset_path = format!("{}/{}", embedded.package_slug, runtime.pipeline);
@@ -572,13 +615,13 @@ impl NodeRegistryService {
                     format!("embedded composite '{}': missing '{}'", kind, asset_path),
                 )
             })?;
-            let graph: PipelineGraph = parse_pipeline_graph(bytes).map_err(|e| {
+            let graph = decode_pipeline_graph(bytes).map_err(|e| {
                 PlatformError::new(
                     "NODE_COMPOSITE_PIPELINE_PARSE",
                     format!("embedded composite '{}': {}", kind, e),
                 )
             })?;
-            Ok(graph)
+            Ok(graph.spec)
         } else {
             Err(PlatformError::new(
                 "NODE_COMPOSITE_NO_RUNTIME",
@@ -633,13 +676,13 @@ impl NodeRegistryService {
                 format!("failed reading '{}': {}", pipeline_path.display(), e),
             )
         })?;
-        let graph: PipelineGraph = parse_pipeline_graph(source.as_bytes()).map_err(|e| {
+        let graph = decode_pipeline_graph(source.as_bytes()).map_err(|e| {
             PlatformError::new(
                 "NODE_COMPOSITE_PIPELINE_PARSE",
                 format!("failed parsing '{}': {}", pipeline_path.display(), e),
             )
         })?;
-        Ok(graph)
+        Ok(graph.spec)
     }
 
     /// Returns the icon SVG bytes for an installed node, if present.
@@ -716,6 +759,29 @@ impl NodeRegistryService {
             .map(|d| d.kind.clone())
             .collect();
         validate_manifest(manifest, &builtin_kinds)?;
+        match manifest.source {
+            NodePackageSource::Composite => {
+                let source = pipeline_source.ok_or_else(|| {
+                    PlatformError::new(
+                        "NODE_INSTALL_PIPELINE_REQUIRED",
+                        "composite node installation requires pipeline_source",
+                    )
+                })?;
+                decode_pipeline_graph(source.as_bytes()).map_err(|error| {
+                    PlatformError::new(
+                        "NODE_INSTALL_PIPELINE_INVALID",
+                        format!("invalid composite pipeline: {error}"),
+                    )
+                })?;
+            }
+            NodePackageSource::Wasm if pipeline_source.is_some() => {
+                return Err(PlatformError::new(
+                    "NODE_INSTALL_PIPELINE_FORBIDDEN",
+                    "WASM node installation must not include pipeline_source",
+                ));
+            }
+            NodePackageSource::Wasm => {}
+        }
 
         let slug = slug_from_kind(&manifest.definition.kind);
         let layout = self.projects.project_layout(&owner, &project)?;
@@ -730,9 +796,16 @@ impl NodeRegistryService {
         })?;
 
         // Write node.json.
-        let manifest_json = serde_json::to_string_pretty(manifest)
-            .map_err(|e| PlatformError::new("NODE_INSTALL_SERIALIZE", e.to_string()))?;
-        atomic_write(&pkg_dir.join("node.json"), manifest_json.as_bytes()).map_err(|e| {
+        let mut metadata = ContractMetadata::named(&manifest.definition.kind);
+        metadata.version = Some(manifest.version.clone());
+        let manifest_json = encode_contract::<NodeDefinitionContract>(metadata, manifest.clone())
+            .map_err(|e| {
+            PlatformError::new(
+                "NODE_INSTALL_SERIALIZE",
+                format!("{} ({})", e, e.category()),
+            )
+        })?;
+        atomic_write(&pkg_dir.join("node.json"), &manifest_json).map_err(|e| {
             PlatformError::new(
                 "NODE_INSTALL_WRITE",
                 format!("failed writing node.json: {}", e),
@@ -808,14 +881,91 @@ impl NodeRegistryService {
         }
 
         self.refresh_project(&owner, &project)?;
+        self.dependency_lock
+            .remove_node_bundle_providing(&owner, &project, kind)?;
         Ok(())
     }
+}
+
+fn project_bundle_lock_from_multi_node(
+    nodes_dir: &Path,
+    package_dir: &Path,
+    definition_path: &Path,
+) -> Result<(String, DependencyLockNodeBundleSpec), PlatformError> {
+    let raw = std::fs::read(definition_path).map_err(|error| {
+        PlatformError::new(
+            "NODE_MANIFEST_READ",
+            format!("failed reading {}: {error}", definition_path.display()),
+        )
+    })?;
+    let document = decode_contract::<NodeBundleContract>(&raw).map_err(|error| {
+        PlatformError::new(
+            "NODE_MANIFEST_PARSE",
+            format!("{} ({})", error, error.category()),
+        )
+    })?;
+    let mut definitions = document
+        .spec
+        .nodes
+        .iter()
+        .map(|node| node.kind.clone())
+        .collect::<Vec<_>>();
+    definitions.sort();
+    definitions.dedup();
+    let package_name = document.spec.package.clone();
+    let key = format!("project/{package_name}");
+    Ok((
+        key,
+        DependencyLockNodeBundleSpec {
+            version: document.spec.version,
+            source: DependencyLockSource::Project,
+            source_id: format!("project/{package_name}"),
+            entry: node_manifest_entry(nodes_dir, definition_path)?,
+            integrity: directory_tree_sha256(package_dir)
+                .map_err(|error| PlatformError::new("NODE_BUNDLE_HASH", error.to_string()))?,
+            definitions,
+        },
+    ))
+}
+
+fn project_bundle_lock_from_single_node(
+    nodes_dir: &Path,
+    package_dir: &Path,
+    manifest_path: &Path,
+    manifest: &NodePackageManifest,
+    slug: &str,
+) -> Result<(String, DependencyLockNodeBundleSpec), PlatformError> {
+    let key = format!("project/{slug}");
+    Ok((
+        key.clone(),
+        DependencyLockNodeBundleSpec {
+            version: manifest.version.clone(),
+            source: DependencyLockSource::Project,
+            source_id: key,
+            entry: node_manifest_entry(nodes_dir, manifest_path)?,
+            integrity: directory_tree_sha256(package_dir)
+                .map_err(|error| PlatformError::new("NODE_BUNDLE_HASH", error.to_string()))?,
+            definitions: vec![manifest.definition.kind.clone()],
+        },
+    ))
+}
+
+fn node_manifest_entry(nodes_dir: &Path, manifest_path: &Path) -> Result<String, PlatformError> {
+    let relative = manifest_path.strip_prefix(nodes_dir).map_err(|_| {
+        PlatformError::new(
+            "NODE_BUNDLE_PATH",
+            "node bundle manifest escaped the project nodes directory",
+        )
+    })?;
+    Ok(format!(
+        "nodes/{}",
+        relative.to_string_lossy().replace('\\', "/")
+    ))
 }
 
 /// Parse a multi-node `definition.json` from disk and explode into manifests.
 fn parse_multi_node_definition(
     def_path: &std::path::Path,
-    slug: &str,
     builtin_kinds: &HashSet<String>,
 ) -> Result<Vec<NodePackageManifest>, PlatformError> {
     let raw = std::fs::read_to_string(def_path).map_err(|e| {
@@ -824,13 +974,18 @@ fn parse_multi_node_definition(
             format!("failed reading {}: {}", def_path.display(), e),
         )
     })?;
-    let pkg_def: MultiNodePackageDefinition = serde_json::from_str(&raw).map_err(|e| {
+    let pkg_def = decode_contract::<NodeBundleContract>(raw.as_bytes()).map_err(|e| {
         PlatformError::new(
             "NODE_MANIFEST_PARSE",
-            format!("invalid definition.json at {}: {}", def_path.display(), e),
+            format!(
+                "invalid definition.json at {}: {} ({})",
+                def_path.display(),
+                e,
+                e.category()
+            ),
         )
     })?;
-    let manifests = explode_multi_node_package(&pkg_def, slug);
+    let manifests = explode_multi_node_package(&pkg_def.spec);
     for manifest in &manifests {
         validate_manifest(manifest, builtin_kinds)?;
     }
@@ -848,12 +1003,19 @@ fn parse_and_validate_manifest(
             format!("failed reading {}: {}", manifest_path.display(), e),
         )
     })?;
-    let manifest: NodePackageManifest = serde_json::from_str(&raw).map_err(|e| {
-        PlatformError::new(
-            "NODE_MANIFEST_PARSE",
-            format!("invalid node.json at {}: {}", manifest_path.display(), e),
-        )
-    })?;
+    let manifest = decode_contract::<NodeDefinitionContract>(raw.as_bytes())
+        .map_err(|e| {
+            PlatformError::new(
+                "NODE_MANIFEST_PARSE",
+                format!(
+                    "invalid node.json at {}: {} ({})",
+                    manifest_path.display(),
+                    e,
+                    e.category()
+                ),
+            )
+        })?
+        .spec;
     validate_manifest(&manifest, builtin_kinds)?;
     Ok(manifest)
 }
@@ -864,64 +1026,11 @@ fn validate_manifest(
     builtin_kinds: &HashSet<String>,
 ) -> Result<(), PlatformError> {
     let kind = &manifest.definition.kind;
-
-    // Must have non-empty kind and title.
-    if kind.is_empty() {
-        return Err(PlatformError::new(
-            "NODE_MANIFEST_INVALID",
-            "node definition kind must not be empty",
-        ));
-    }
-    if manifest.definition.title.is_empty() {
-        return Err(PlatformError::new(
-            "NODE_MANIFEST_INVALID",
-            format!("node '{}' definition title must not be empty", kind),
-        ));
-    }
-    if let Err(errors) =
-        crate::pipeline::nodes::validate_node_definition_contract(&manifest.definition)
-    {
+    if let Err(error) = validate_node_definition_spec(manifest) {
         return Err(PlatformError::new(
             "NODE_DEFINITION_INCOMPLETE",
-            format!(
-                "node '{}' definition incomplete: {}",
-                kind,
-                errors.join("; ")
-            ),
+            format!("node '{}' definition invalid: {}", kind, error),
         ));
-    }
-
-    // Namespace rules.
-    match manifest.source {
-        NodePackageSource::Composite => {
-            if !kind.starts_with("n.c.") {
-                return Err(PlatformError::new(
-                    "NODE_NAMESPACE_VIOLATION",
-                    format!("composite node kind '{}' must start with 'n.c.'", kind),
-                ));
-            }
-            // Must have runtime.pipeline (v1) or main_function/trigger (multi-node).
-            if manifest.runtime.is_none()
-                && manifest.main_function.is_none()
-                && manifest.trigger.is_none()
-            {
-                return Err(PlatformError::new(
-                    "NODE_MANIFEST_INVALID",
-                    format!(
-                        "composite node '{}' must have runtime.pipeline, main function, or trigger",
-                        kind
-                    ),
-                ));
-            }
-        }
-        NodePackageSource::Wasm => {
-            if !kind.starts_with("n.wasm.") {
-                return Err(PlatformError::new(
-                    "NODE_NAMESPACE_VIOLATION",
-                    format!("WASM node kind '{}' must start with 'n.wasm.'", kind),
-                ));
-            }
-        }
     }
 
     // Collision check.
@@ -930,84 +1039,6 @@ fn validate_manifest(
             "NODE_KIND_COLLISION",
             format!("node kind '{}' collides with a built-in native node", kind),
         ));
-    }
-
-    let config_properties = manifest
-        .definition
-        .config_schema
-        .get("properties")
-        .and_then(|value| value.as_object());
-    for credential in &manifest.credentials {
-        if credential.kind.trim().is_empty() {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!("node '{}' credential kind must not be empty", kind),
-            ));
-        }
-        if credential.title.trim().is_empty() {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' title must not be empty",
-                    kind, credential.kind
-                ),
-            ));
-        }
-        if credential.description.trim().is_empty() {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' description must not be empty",
-                    kind, credential.kind
-                ),
-            ));
-        }
-        if credential.config_key.trim().is_empty() {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' config_key must not be empty",
-                    kind, credential.kind
-                ),
-            ));
-        }
-        if !config_properties.is_some_and(|props| props.contains_key(&credential.config_key)) {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' config_key '{}' must be declared in config_schema.properties",
-                    kind, credential.kind, credential.config_key
-                ),
-            ));
-        }
-        if !manifest
-            .definition
-            .fields
-            .iter()
-            .any(|field| field.name == credential.config_key)
-        {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' config_key '{}' must be documented in fields",
-                    kind, credential.kind, credential.config_key
-                ),
-            ));
-        }
-        if !manifest
-            .definition
-            .dsl_flags
-            .iter()
-            .any(|flag| flag.config_key == credential.config_key)
-        {
-            return Err(PlatformError::new(
-                "NODE_CREDENTIAL_INCOMPLETE",
-                format!(
-                    "node '{}' credential '{}' config_key '{}' must be documented in dsl_flags",
-                    kind, credential.kind, credential.config_key
-                ),
-            ));
-        }
     }
 
     Ok(())
@@ -1033,7 +1064,10 @@ mod tests {
     fn multi_node_definition_can_describe_wasm_nodes() {
         let raw = r#"
 {
-  "format": "zebflow-package-v2",
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": { "name": "wasm-test-add", "version": "0.1.0" },
+  "spec": {
   "package": "wasm-test-add",
   "version": "0.1.0",
   "title": "WASM Test Add",
@@ -1097,12 +1131,15 @@ mod tests {
         "layout": ["a", "b"]
       }
     }
-  ]
+  ]}
 }
 "#;
-        let pkg: crate::platform::model::MultiNodePackageDefinition =
-            serde_json::from_str(raw).expect("definition");
-        let manifests = super::explode_multi_node_package(&pkg, "wasm-test-add");
+        let pkg = crate::contracts::decode_contract::<crate::contracts::kinds::NodeBundleContract>(
+            raw.as_bytes(),
+        )
+        .expect("definition")
+        .spec;
+        let manifests = super::explode_multi_node_package(&pkg);
         assert_eq!(manifests.len(), 1);
         let manifest = &manifests[0];
         assert_eq!(

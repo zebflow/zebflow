@@ -36,6 +36,7 @@ use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
+use crate::contracts::kinds::decode_pipeline_graph;
 use crate::infra::execution::placement::{ProjectRuntimeMode, ProjectRuntimePlacementTarget};
 use crate::infra::mem::subscriber::KvSubscriber;
 use crate::infra::scheduler::PipelineScheduler;
@@ -765,6 +766,10 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
         .route(
             "/api/projects/{owner}/{project}/rwe/libraries/disable",
             delete(api_disable_rwe_library),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/dependencies",
+            get(api_project_dependency_status).post(api_repair_project_dependencies),
         )
         .route(
             "/api/projects/{owner}/{project}/rwe/cache/clear",
@@ -2437,7 +2442,7 @@ async fn project_fs_serve(
         Err(err) => return internal_error(err),
     };
     let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
-    let is_public = match zebfs.is_public_read(&path) {
+    let is_public = match crate::platform::services::zebfs_acl::is_public_read(&zebfs, &path) {
         Ok(value) => value,
         Err(err) if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" => {
             return (StatusCode::BAD_REQUEST, "invalid object path").into_response();
@@ -3410,7 +3415,7 @@ async fn home_clone_project_submit(
         return internal_error(e);
     }
 
-    // Save git remote config in zebflow.json.
+    // Save git remote config in zebflow.yaml.
     // Git author identity is resolved from the acting platform user profile.
     let cred_id = format!("{}-origin", req.provider);
     let resolved_git = state
@@ -3427,11 +3432,13 @@ async fn home_clone_project_submit(
     } else {
         req.git_email.trim().to_string()
     };
-    let _ = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+    if let Err(err) = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
         cfg.configs.git.remote.credential_id = cred_id.clone();
         cfg.configs.git.remote.repo_url = req.repo_url.clone();
         cfg.configs.git.remote.branch = effective_local.clone();
-    });
+    }) {
+        return internal_error(err);
+    }
 
     // Save credential record so git push can look it up later
     let cred_title = format!("{} origin", req.provider);
@@ -3833,6 +3840,7 @@ async fn materialize_project_to_remote_worker(
                 .data
                 .list_project_db_connections(owner, project)?,
         )?;
+    let request = runtime_materialization_contract_value(request)?;
     let url = format!(
         "{}/api/internal/runtime/materialize",
         worker.base_url.trim_end_matches('/')
@@ -3915,6 +3923,7 @@ async fn sync_project_to_remote_worker(
                 .data
                 .list_project_db_connections(owner, project)?,
         )?;
+    let request = runtime_materialization_contract_value(request)?;
     let url = format!(
         "{}/api/internal/runtime/materialize",
         worker.base_url.trim_end_matches('/')
@@ -6631,8 +6640,10 @@ async fn render_files_page(
                                 for entry in entries {
                                     let name = entry.name;
                                     let path = entry.path;
-                                    let access = zebfs
-                                        .effective_access(&path)
+                                    let access =
+                                        crate::platform::services::zebfs_acl::effective_access(
+                                            &zebfs, &path,
+                                        )
                                         .map(|value| value.as_str())
                                         .unwrap_or("private");
                                     if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
@@ -6881,6 +6892,14 @@ async fn render_settings_tab_page(
                 })
                 .collect::<Vec<_>>();
             let libraries_api = format!("/api/projects/{owner}/{project}/rwe/libraries");
+            let dependency_status = match state
+                .platform
+                .dependency_lock
+                .status(&owner, &project, &rwe_libs)
+            {
+                Ok(report) => report,
+                Err(err) => return internal_error(err),
+            };
 
             let assistant_config = match state
                 .platform
@@ -6924,6 +6943,10 @@ async fn render_settings_tab_page(
                 Ok(config) => config,
                 Err(err) => return internal_error(err),
             };
+            let project_configuration_exists = state
+                .platform
+                .zebflow_cfg
+                .canonical_exists(&owner, &project);
 
             let input = json!({
                 "seo": {
@@ -6942,6 +6965,7 @@ async fn render_settings_tab_page(
                     "policy": tab == "policy",
                     "automatons": tab == "automatons",
                     "libraries": tab == "libraries",
+                    "dependencies": tab == "dependencies",
                     "nodes": tab == "nodes",
                     "files": tab == "files",
                     "logs": tab == "logs"
@@ -6952,6 +6976,10 @@ async fn render_settings_tab_page(
                 "cards_policy": policy_cards,
                 "libraries_available": libraries_available,
                 "libraries_api": libraries_api,
+                "dependencies": {
+                    "api": format!("/api/projects/{owner}/{project}/dependencies"),
+                    "status": dependency_status
+                },
                 "node_count": node_count,
                 "node_groups": node_groups,
                 "assistant": {
@@ -6960,6 +6988,18 @@ async fn render_settings_tab_page(
                     },
                     "config": assistant_config,
                     "credentials": assistant_credentials
+                },
+                "project_configuration": {
+                    "api_version": crate::contracts::CONTRACT_API_VERSION,
+                    "kind": crate::contracts::ContractKind::ProjectConfiguration.as_str(),
+                    "path": crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+                    "metadata_name": project,
+                    "status": if project_configuration_exists { "valid" } else { "missing" },
+                    "valid": project_configuration_exists
+                },
+                "profile": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/profile"),
+                    "config": zebflow_cfg.metadata
                 },
                 "rwe": {
                     "api": format!("/api/projects/{owner}/{project}/settings/rwe"),
@@ -6975,6 +7015,10 @@ async fn render_settings_tab_page(
                     "config": zebflow_cfg.configs.git.remote,
                     "health_api": format!("/api/projects/{owner}/{project}/git/health"),
                     "repair_api": format!("/api/projects/{owner}/{project}/git/repair")
+                },
+                "distribution": {
+                    "api": format!("/api/projects/{owner}/{project}/settings/distribution"),
+                    "config": zebflow_cfg.distribution.hub
                 },
                 "assets": {
                     "api": format!("/api/projects/{owner}/{project}/assets"),
@@ -7023,6 +7067,7 @@ fn normalize_settings_tab(raw: &str) -> &'static str {
         "policy" => "policy",
         "automatons" => "automatons",
         "libraries" => "libraries",
+        "dependencies" => "dependencies",
         "nodes" => "nodes",
         "files" => "files",
         "logs" => "logs",
@@ -7035,6 +7080,7 @@ fn settings_tab_title(tab: &str) -> &'static str {
         "policy" => "Policy",
         "automatons" => "Automatons",
         "libraries" => "Libraries",
+        "dependencies" => "Dependencies",
         "nodes" => "Nodes",
         "files" => "Files",
         "logs" => "Logs",
@@ -7047,6 +7093,7 @@ fn settings_tab_subtitle(tab: &str) -> &'static str {
         "policy" => "Capability boundaries, runtime constraints, and session controls.",
         "automatons" => "Assistant and automation runtime configuration per project.",
         "libraries" => "Installed web libraries and runtime package contracts.",
+        "dependencies" => "Exact RWE library and node bundle resolutions stored in zeb.lock.",
         "nodes" => "Live node contracts and script/tool availability.",
         "files" => "External file storage backends — S3, R2, and compatible object stores.",
         "logs" => "Project-owned invocation history, storage size, retention, and cleanup.",
@@ -7061,6 +7108,7 @@ fn settings_tab_items(owner: &str, project: &str, active: &str) -> Vec<Value> {
         ("policy", "Policy"),
         ("automatons", "Automatons"),
         ("libraries", "Libraries"),
+        ("dependencies", "Dependencies"),
         ("nodes", "Nodes"),
         ("files", "Files"),
         ("logs", "Logs"),
@@ -7490,7 +7538,13 @@ fn hub_package_gallery_projection(
         .hub
         .get_asset_version_artifact(&package.package_id, &version.version)
     {
-        if let Some(value) = artifact
+        let spec = crate::contracts::decode_contract_value::<
+            crate::contracts::kinds::HubPackageContract,
+        >(artifact)
+        .ok()
+        .map(|document| document.spec)
+        .unwrap_or(Value::Null);
+        if let Some(value) = spec
             .get("summary")
             .and_then(Value::as_str)
             .map(str::trim)
@@ -7498,7 +7552,7 @@ fn hub_package_gallery_projection(
         {
             summary = value.to_string();
         }
-        gallery = artifact.get("gallery").cloned().unwrap_or(Value::Null);
+        gallery = spec.get("gallery").cloned().unwrap_or(Value::Null);
     }
     (summary, gallery)
 }
@@ -7537,7 +7591,7 @@ fn public_hub_version_json(
 }
 
 fn public_hub_artifact_json(mut artifact: Value) -> Value {
-    if let Some(object) = artifact.as_object_mut() {
+    if let Some(object) = artifact.get_mut("spec").and_then(Value::as_object_mut) {
         object.remove("source_owner");
         object.remove("source_project");
         object.remove("source_ref");
@@ -10506,19 +10560,94 @@ async fn api_internal_cluster_worker_heartbeat(
 async fn api_internal_runtime_materialize_project(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
-    Json(req): Json<ProjectRuntimeMaterializationRequest>,
+    Json(value): Json<Value>,
 ) -> Response {
     if let Err(response) = require_cluster_internal_token(&state, &headers) {
         return response;
     }
+    let req = match crate::contracts::decode_contract_value::<
+        crate::contracts::kinds::RuntimeBundleContract,
+    >(value)
+    {
+        Ok(document) => document.spec,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "RUNTIME_BUNDLE_CONTRACT",
+                        "message": format!("{} ({})", err, err.category())
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
     match state
         .platform
         .cluster_runtime_sync
         .apply_materialization_request(&req)
     {
-        Ok(_) => Json(json!({"ok": true, "project": req.bundle.identity})).into_response(),
+        Ok(_) => {
+            let owner = &req.bundle.identity.owner;
+            let project = &req.bundle.identity.project;
+            if let Err(err) = state.platform.node_registry.refresh_project(owner, project) {
+                return internal_error(err);
+            }
+            let requested = match state.platform.zebflow_cfg.get_rwe_libraries(owner, project) {
+                Ok(value) => value,
+                Err(err) => return internal_error(err),
+            };
+            let dependencies = match state
+                .platform
+                .dependency_lock
+                .status(owner, project, &requested)
+            {
+                Ok(report) => report,
+                Err(err) => return internal_error(err),
+            };
+            if !dependencies.ok {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "RUNTIME_DEPENDENCIES_UNRESOLVED",
+                            "message": "runtime materialization contains unresolved dependencies"
+                        },
+                        "dependencies": dependencies
+                    })),
+                )
+                    .into_response();
+            }
+            Json(json!({
+                "ok": true,
+                "project": req.bundle.identity,
+                "dependencies": dependencies
+            }))
+            .into_response()
+        }
         Err(err) => internal_error(err),
     }
+}
+
+fn runtime_materialization_contract_value(
+    request: ProjectRuntimeMaterializationRequest,
+) -> Result<Value, PlatformError> {
+    let name = request.bundle.identity.project.clone();
+    let bytes =
+        crate::contracts::encode_contract::<crate::contracts::kinds::RuntimeBundleContract>(
+            crate::contracts::ContractMetadata::named(name),
+            request,
+        )
+        .map_err(|err| {
+            PlatformError::new(
+                "RUNTIME_BUNDLE_CONTRACT",
+                format!("{} ({})", err, err.category()),
+            )
+        })?;
+    serde_json::from_slice(&bytes).map_err(PlatformError::from)
 }
 
 async fn api_internal_runtime_execute_pipeline(
@@ -10611,6 +10740,10 @@ fn refresh_local_project_workspace(
     owner: &str,
     project: &str,
 ) -> Result<(), PlatformError> {
+    state
+        .platform
+        .node_registry
+        .refresh_project(owner, project)?;
     state
         .platform
         .cluster_runtime_sync
@@ -11741,7 +11874,7 @@ async fn api_upsert_pipeline_definition(
 
     let self_file_rel_path = req.file_rel_path.clone();
     // Conflict check: reject if any active pipeline already owns the same webhook path.
-    if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&req.source) {
+    if let Ok(graph) = decode_pipeline_graph(req.source.as_bytes()).map(|value| value.spec) {
         if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
             &owner,
             &project,
@@ -11890,7 +12023,7 @@ async fn api_pipeline_lock_toggle(
         Err(err) => return internal_error(err),
     };
     let pipeline_path = layout.repo_dir.join(&req.file_rel_path);
-    let source = match std::fs::read_to_string(&pipeline_path) {
+    let source = match std::fs::read(&pipeline_path) {
         Ok(s) => s,
         Err(_) => {
             return (
@@ -11900,8 +12033,8 @@ async fn api_pipeline_lock_toggle(
                 .into_response();
         }
     };
-    let mut value: Value = match serde_json::from_str(&source) {
-        Ok(v) => v,
+    let mut graph = match crate::contracts::kinds::decode_pipeline_graph(&source) {
+        Ok(document) => document.spec,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -11910,8 +12043,8 @@ async fn api_pipeline_lock_toggle(
                 .into_response();
         }
     };
-    value["metadata"]["locked"] = Value::Bool(req.locked);
-    let serialized = match serde_json::to_string_pretty(&value) {
+    graph.metadata.get_or_insert_default().locked = req.locked;
+    let serialized = match crate::contracts::kinds::encode_pipeline_graph(graph) {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -11921,7 +12054,7 @@ async fn api_pipeline_lock_toggle(
                 .into_response();
         }
     };
-    if let Err(e) = std::fs::write(&pipeline_path, &serialized) {
+    if let Err(e) = crate::infra::io::durable::atomic_write(&pipeline_path, &serialized) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "error": e.to_string()})),
@@ -12026,7 +12159,7 @@ async fn api_template_lock_toggle(
             .arg(&layout.repo_dir)
             .arg("add")
             .arg("--")
-            .arg("zebflow.json");
+            .arg(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
         add_cmd.output()
     };
     let _ = {
@@ -12420,7 +12553,7 @@ async fn api_git_commit(
     }
     // optional push
     if req.push {
-        // Resolve push target: prefer explicit request fields, fall back to zebflow.json remote
+        // Resolve push target: prefer explicit request fields, fall back to zebflow.yaml remote
         let zebflow_cfg = match state
             .platform
             .zebflow_cfg
@@ -12569,6 +12702,7 @@ async fn api_git_commit(
 
 /// Request body for `PUT /api/projects/{owner}/{project}/git/remote`.
 #[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 struct GitRemoteRequest {
     #[serde(default)]
     credential_id: String,
@@ -12590,7 +12724,7 @@ async fn api_git_get_remote(
         &headers,
         &owner,
         &project,
-        ProjectCapability::TemplatesRead,
+        ProjectCapability::SettingsRead,
     ) {
         return r;
     }
@@ -12634,7 +12768,7 @@ async fn api_git_put_remote(
         &headers,
         &owner,
         &project,
-        ProjectCapability::PipelinesWrite,
+        ProjectCapability::SettingsWrite,
     ) {
         return r;
     }
@@ -12712,7 +12846,7 @@ async fn api_activate_pipeline_definition(
                 .projects
                 .read_pipeline_source(&owner, &project, &meta.file_rel_path)
         {
-            if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
+            if let Ok(graph) = decode_pipeline_graph(source.as_bytes()).map(|value| value.spec) {
                 if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
                     &owner,
                     &project,
@@ -12872,8 +13006,8 @@ async fn run_composite_lifecycle_hooks(
         Ok(s) => s,
         Err(_) => return,
     };
-    let graph: crate::pipeline::PipelineGraph = match serde_json::from_str(&source) {
-        Ok(g) => g,
+    let graph = match decode_pipeline_graph(source.as_bytes()) {
+        Ok(document) => document.spec,
         Err(_) => return,
     };
 
@@ -13118,8 +13252,8 @@ async fn execute_pipeline_local(
         Err(err) => return internal_error(err),
     };
 
-    let mut graph: PipelineGraph = match serde_json::from_str(&source) {
-        Ok(graph) => graph,
+    let mut graph = match decode_pipeline_graph(source.as_bytes()) {
+        Ok(document) => document.spec,
         Err(err) => {
             state.platform.pipeline_hits.record_failure(
                 owner,
@@ -13506,9 +13640,10 @@ async fn api_pipeline_invocations(
                         )
                     })
                     .ok();
-                let graph = source.as_deref().and_then(|raw| {
-                    serde_json::from_str::<crate::pipeline::PipelineGraph>(raw).ok()
-                });
+                let graph = source
+                    .as_deref()
+                    .and_then(|raw| decode_pipeline_graph(raw.as_bytes()).ok())
+                    .map(|document| document.spec);
                 resolve_invocation_retention(&project_cfg, graph.as_ref())
             }
             _ => resolve_invocation_retention(&project_cfg, None),
@@ -14142,8 +14277,7 @@ async fn api_files_list(
     for entry in entries {
         let name = entry.name;
         let path = entry.path;
-        let access = zebfs
-            .effective_access(&path)
+        let access = crate::platform::services::zebfs_acl::effective_access(&zebfs, &path)
             .map(|value| value.as_str())
             .unwrap_or("private");
         if matches!(entry.kind, crate::zebfs::ZebFsEntryKind::Prefix) {
@@ -14582,7 +14716,8 @@ fn set_project_file_access(
         .ensure_project_layout(owner, project)
         .map_err(internal_error)?;
     let zebfs = crate::zebfs::LocalZebFs::new(layout.files_dir);
-    let path = zebfs.set_access(&req.path, access, scope).map_err(|err| {
+    let path = crate::platform::services::zebfs_acl::set_access(&zebfs, &req.path, access, scope)
+        .map_err(|err| {
         if err.code == "ZEBFS_INVALID_PATH" || err.code == "ZEBFS_RESERVED_PATH" {
             (
                 StatusCode::BAD_REQUEST,
@@ -15615,9 +15750,9 @@ async fn api_upsert_project_assistant_config(
     }
 }
 
-/// `GET /api/projects/{owner}/{project}/settings/{section}` — read one zebflow.json section.
+/// `GET /api/projects/{owner}/{project}/settings/{section}` — read one zebflow.yaml section.
 ///
-/// Supported sections: `rwe`.
+/// Supported sections: `profile`, `rwe`, `logging`, `assets`, and `distribution`.
 async fn api_get_settings_section(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -15653,6 +15788,12 @@ async fn api_get_settings_section(
         Err(err) => return internal_error(err),
     };
     match section.as_str() {
+        "profile" => Json(json!({
+            "ok": true,
+            "section": "profile",
+            "data": cfg.metadata
+        }))
+        .into_response(),
         "rwe" => {
             Json(json!({"ok": true, "section": "rwe", "data": cfg.configs.rwe})).into_response()
         }
@@ -15669,6 +15810,12 @@ async fn api_get_settings_section(
                 "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
                 "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
             }
+        }))
+        .into_response(),
+        "distribution" => Json(json!({
+            "ok": true,
+            "section": "distribution",
+            "data": cfg.distribution.hub
         }))
         .into_response(),
         _ => (
@@ -15764,11 +15911,67 @@ async fn api_clear_project_invocation_logs(
     }
 }
 
-/// `PUT /api/projects/{owner}/{project}/settings/{section}` — write one zebflow.json section
+fn optional_bounded_settings_u64(
+    data: &serde_json::Value,
+    field: &str,
+    minimum: u64,
+    maximum: u64,
+) -> Result<Option<u64>, Response> {
+    let Some(value) = data.get(field) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": format!("{field} must be an integer between {minimum} and {maximum}")
+            })),
+        )
+            .into_response());
+    };
+    if !(minimum..=maximum).contains(&value) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "ok": false,
+                "error": format!("{field} must be between {minimum} and {maximum}")
+            })),
+        )
+            .into_response());
+    }
+    Ok(Some(value))
+}
+
+fn reject_unknown_settings_fields(
+    data: &serde_json::Value,
+    allowed: &[&str],
+) -> Result<(), Response> {
+    let Some(object) = data.as_object() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": "settings data must be an object"})),
+        )
+            .into_response());
+    };
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": format!("unknown settings field '{field}'")})),
+        )
+            .into_response());
+    }
+    Ok(())
+}
+
+/// `PUT /api/projects/{owner}/{project}/settings/{section}` — write one zebflow.yaml section
 /// and commit the change.
 ///
 /// Body: `{ "commit_message": "...", "data": { ...section fields } }`.
-/// After writing, stages `zebflow.json` and runs `git commit` in the project repo.
+/// After writing, stages `zebflow.yaml` and runs `git commit` in the project repo.
 /// Returns `{ ok, section, data, committed, git_error? }`.
 async fn api_upsert_settings_section(
     State(state): State<PlatformAppState>,
@@ -15810,14 +16013,37 @@ async fn api_upsert_settings_section(
             .into_response();
     }
 
-    let mut cfg = match state.platform.zebflow_cfg.read_or_default(&owner, &project) {
-        Ok(config) => config,
-        Err(err) => return internal_error(err),
-    };
-
     let section_data = match section.as_str() {
+        "profile" => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ProfilePayload {
+                #[serde(default)]
+                title: String,
+                #[serde(default)]
+                description: String,
+            }
+            let payload: ProfilePayload = match serde_json::from_value(req.data.clone()) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"ok": false, "error": err.to_string()})),
+                    )
+                        .into_response();
+                }
+            };
+            match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                cfg.metadata.title = payload.title.trim().to_string();
+                cfg.metadata.description = payload.description.trim().to_string();
+            }) {
+                Ok(cfg) => json!(cfg.metadata),
+                Err(err) => return internal_error(err),
+            }
+        }
         "rwe" => {
             #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
             struct RwePayload {
                 #[serde(default)]
                 allow_list: Vec<String>,
@@ -15838,64 +16064,136 @@ async fn api_upsert_settings_section(
                         .into_response();
                 }
             };
-            cfg.configs.rwe.allow_list = payload.allow_list;
-            cfg.configs.rwe.minify_html = payload.minify_html;
-            cfg.configs.rwe.strict_mode = payload.strict_mode;
-            cfg.configs.rwe.deployment_asset_base = payload.deployment_asset_base.and_then(|s| {
-                if s.trim().is_empty() {
-                    None
-                } else {
-                    Some(s.trim().to_string())
-                }
+            let updated = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                cfg.configs.rwe.allow_list = payload.allow_list;
+                cfg.configs.rwe.minify_html = payload.minify_html;
+                cfg.configs.rwe.strict_mode = payload.strict_mode;
+                cfg.configs.rwe.deployment_asset_base =
+                    payload.deployment_asset_base.and_then(|value| {
+                        let value = value.trim();
+                        (!value.is_empty()).then(|| value.to_string())
+                    });
             });
-            json!(cfg.configs.rwe)
+            match updated {
+                Ok(cfg) => json!(cfg.configs.rwe),
+                Err(err) => return internal_error(err),
+            }
         }
         "logging" => {
-            let max_inv: Option<u32> = req
-                .data
-                .get("max_invocations")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.min(1000) as u32);
-            cfg.configs.pipelines.logging.max_invocations = max_inv;
-            json!(cfg.configs.pipelines.logging)
+            if let Err(response) = reject_unknown_settings_fields(&req.data, &["max_invocations"]) {
+                return response;
+            }
+            let max_inv = match optional_bounded_settings_u64(&req.data, "max_invocations", 1, 1000)
+            {
+                Ok(value) => value.map(|value| value as u32),
+                Err(response) => return response,
+            };
+            match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                cfg.configs.pipelines.logging.max_invocations = max_inv;
+            }) {
+                Ok(cfg) => json!(cfg.configs.pipelines.logging),
+                Err(err) => return internal_error(err),
+            }
         }
         "assets" => {
-            let max_mb = req
-                .data
-                .get("max_asset_size_mb")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(5, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
-                .unwrap_or(crate::platform::model::ZebflowJsonUploads::default().max_asset_size_mb);
-            let max_file_size_mb = req
-                .data
-                .get("max_file_size_mb")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(5, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
-                .unwrap_or_else(|| cfg.configs.files.uploads.effective_max_file_size_mb());
-            let webhook_body_max_mb = req
-                .data
-                .get("webhook_body_max_mb")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(100, crate::platform::model::MAX_UPLOAD_SIZE_MB as u64) as u32)
-                .unwrap_or(
-                    crate::platform::model::ZebflowJsonUploads::default().webhook_body_max_mb,
-                );
-            let node_timeout_secs = req
-                .data
-                .get("pipeline_node_timeout_secs")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(5, 3600))
-                .unwrap_or_else(crate::platform::model::default_pipeline_node_timeout_secs);
-            cfg.configs.files.uploads.max_asset_size_mb = max_mb;
-            cfg.configs.files.uploads.max_file_size_mb = Some(max_file_size_mb);
-            cfg.configs.files.uploads.webhook_body_max_mb = webhook_body_max_mb;
-            cfg.configs.pipelines.node_timeout_secs = Some(node_timeout_secs);
-            json!({
-                "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
-                "max_file_size_mb": cfg.configs.files.uploads.effective_max_file_size_mb(),
-                "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
-                "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
-            })
+            if let Err(response) = reject_unknown_settings_fields(
+                &req.data,
+                &[
+                    "max_asset_size_mb",
+                    "max_file_size_mb",
+                    "webhook_body_max_mb",
+                    "pipeline_node_timeout_secs",
+                ],
+            ) {
+                return response;
+            }
+            let upload_maximum = crate::platform::model::MAX_UPLOAD_SIZE_MB as u64;
+            let max_mb = match optional_bounded_settings_u64(
+                &req.data,
+                "max_asset_size_mb",
+                5,
+                upload_maximum,
+            ) {
+                Ok(value) => value.map(|value| value as u32),
+                Err(response) => return response,
+            };
+            let max_file_size_mb = match optional_bounded_settings_u64(
+                &req.data,
+                "max_file_size_mb",
+                5,
+                upload_maximum,
+            ) {
+                Ok(value) => value.map(|value| value as u32),
+                Err(response) => return response,
+            };
+            let webhook_body_max_mb = match optional_bounded_settings_u64(
+                &req.data,
+                "webhook_body_max_mb",
+                100,
+                upload_maximum,
+            ) {
+                Ok(value) => value.map(|value| value as u32),
+                Err(response) => return response,
+            };
+            let node_timeout_secs = match optional_bounded_settings_u64(
+                &req.data,
+                "pipeline_node_timeout_secs",
+                5,
+                3600,
+            ) {
+                Ok(value) => value,
+                Err(response) => return response,
+            };
+            let updated = state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                if let Some(value) = max_mb {
+                    cfg.configs.files.uploads.max_asset_size_mb = value;
+                }
+                if let Some(value) = max_file_size_mb {
+                    cfg.configs.files.uploads.max_file_size_mb = Some(value);
+                }
+                if let Some(value) = webhook_body_max_mb {
+                    cfg.configs.files.uploads.webhook_body_max_mb = value;
+                }
+                if let Some(value) = node_timeout_secs {
+                    cfg.configs.pipelines.node_timeout_secs = Some(value);
+                }
+            });
+            match updated {
+                Ok(cfg) => json!({
+                    "max_asset_size_mb": cfg.configs.files.uploads.effective_max_asset_size_mb(),
+                    "max_file_size_mb": cfg.configs.files.uploads.effective_max_file_size_mb(),
+                    "webhook_body_max_mb": cfg.configs.files.uploads.effective_webhook_body_max_mb(),
+                    "pipeline_node_timeout_secs": cfg.configs.pipelines.effective_node_timeout_secs()
+                }),
+                Err(err) => return internal_error(err),
+            }
+        }
+        "distribution" => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct DistributionPayload {
+                #[serde(default)]
+                entry_url: String,
+                #[serde(default)]
+                as_app: bool,
+            }
+            let payload: DistributionPayload = match serde_json::from_value(req.data.clone()) {
+                Ok(payload) => payload,
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"ok": false, "error": err.to_string()})),
+                    )
+                        .into_response();
+                }
+            };
+            match state.platform.zebflow_cfg.update(&owner, &project, |cfg| {
+                cfg.distribution.hub.entry_url = payload.entry_url.trim().to_string();
+                cfg.distribution.hub.as_app = payload.as_app;
+            }) {
+                Ok(cfg) => json!(cfg.distribution.hub),
+                Err(err) => return internal_error(err),
+            }
         }
         _ => {
             return (
@@ -15908,11 +16206,7 @@ async fn api_upsert_settings_section(
         }
     };
 
-    if let Err(err) = state.platform.zebflow_cfg.write(&owner, &project, &cfg) {
-        return internal_error(err);
-    }
-
-    // Git: stage zebflow.json and commit with the user-provided message.
+    // Git: stage zebflow.yaml and commit with the user-provided message.
     // Uses the acting platform user's Git identity when committing settings changes.
     // Failure is non-fatal — settings are already saved; we report the git outcome.
     let (committed, git_error) = {
@@ -15931,7 +16225,7 @@ async fn api_upsert_settings_section(
                     .arg("-C")
                     .arg(&layout.repo_dir)
                     .arg("add")
-                    .arg("zebflow.json")
+                    .arg(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE)
                     .output()
                     .map(|o| o.status.success())
                     .unwrap_or(false);
@@ -15984,6 +16278,116 @@ async fn api_upsert_settings_section(
 }
 
 // ─── RWE Library API ─────────────────────────────────────────────────────────
+
+async fn api_project_dependency_status(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::LibrariesRead,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_api_to_worker(
+        &state,
+        &uri,
+        &Method::GET,
+        &headers,
+        Bytes::new(),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let requested = match state
+        .platform
+        .zebflow_cfg
+        .get_rwe_libraries(&owner, &project)
+    {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    match state
+        .platform
+        .dependency_lock
+        .status(&owner, &project, &requested)
+    {
+        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
+
+async fn api_repair_project_dependencies(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    uri: Uri,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::LibrariesInstall,
+    ) {
+        return response;
+    }
+    match maybe_forward_project_json_to_worker(
+        &state,
+        &uri,
+        &headers,
+        Method::POST,
+        &json!({}),
+        &owner,
+        &project,
+    )
+    .await
+    {
+        Ok(Some(response)) => return response,
+        Ok(None) => {}
+        Err(err) => return internal_error(err),
+    }
+    let requested = match state
+        .platform
+        .zebflow_cfg
+        .get_rwe_libraries(&owner, &project)
+    {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    if let Err(err) = state
+        .platform
+        .dependency_lock
+        .repair_rwe_libraries(&owner, &project, &requested)
+    {
+        return internal_error(err);
+    }
+    if let Err(err) = state
+        .platform
+        .node_registry
+        .refresh_project(&owner, &project)
+    {
+        return internal_error(err);
+    }
+    match state
+        .platform
+        .dependency_lock
+        .status(&owner, &project, &requested)
+    {
+        Ok(report) => Json(json!({"ok": true, "report": report})).into_response(),
+        Err(err) => internal_error(err),
+    }
+}
 
 /// `GET /api/projects/{owner}/{project}/rwe/libraries` — list all available
 /// libraries merged with per-project enabled state.
@@ -16099,35 +16503,20 @@ async fn api_enable_rwe_library(
         )
             .into_response();
     }
-    // Get the entry path for the requested version from the manifest.
-    let entry = state
-        .platform
-        .library
-        .get(req.name.trim())
-        .and_then(|m| m.version(req.version.trim()))
-        .map(|v| v.entry.clone())
-        .unwrap_or_default();
-    // Update zebflow.json.
-    if let Err(err) = state.platform.zebflow_cfg.enable_rwe_library(
-        &owner,
-        &project,
+    let lock_entry = match state.platform.library.resolve_lock_entry(
         req.name.trim(),
         req.version.trim(),
         req.source.trim(),
     ) {
-        return internal_error(err);
-    }
-    // Update zeb.lock.
-    if let Err(err) = state.platform.zeb_lock.add_entry(
+        Ok(entry) => entry,
+        Err(error) => return internal_error(error),
+    };
+    if let Err(err) = state.platform.dependency_lock.enable_rwe_library(
+        state.platform.zebflow_cfg.as_ref(),
         &owner,
         &project,
         req.name.trim(),
-        crate::platform::model::ZebLockEntry {
-            version: req.version.trim().to_string(),
-            source: req.source.trim().to_string(),
-            entry,
-            integrity: None,
-        },
+        lock_entry,
     ) {
         return internal_error(err);
     }
@@ -16188,19 +16577,12 @@ async fn api_disable_rwe_library(
         )
             .into_response();
     }
-    if let Err(err) =
-        state
-            .platform
-            .zebflow_cfg
-            .disable_rwe_library(&owner, &project, params.name.trim())
-    {
-        return internal_error(err);
-    }
-    if let Err(err) = state
-        .platform
-        .zeb_lock
-        .remove_entry(&owner, &project, params.name.trim())
-    {
+    if let Err(err) = state.platform.dependency_lock.disable_rwe_library(
+        state.platform.zebflow_cfg.as_ref(),
+        &owner,
+        &project,
+        params.name.trim(),
+    ) {
         return internal_error(err);
     }
     // Git commit (best-effort).
@@ -16256,7 +16638,7 @@ async fn api_rwe_cache_clear(
     Json(json!({"ok": true, "cleared": true})).into_response()
 }
 
-/// Stages `zebflow.json` and `zeb.lock`, then commits with the given message.
+/// Stages `zebflow.yaml` and `zeb.lock`, then commits with the given message.
 /// Best-effort: errors are logged but not propagated to the caller.
 fn rwe_library_git_commit(
     state: &PlatformAppState,
@@ -16276,7 +16658,7 @@ fn rwe_library_git_commit(
         .arg("-C")
         .arg(&layout.repo_dir)
         .arg("add")
-        .arg("zebflow.json")
+        .arg(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE)
         .arg("zeb.lock")
         .output()
         .map(|o| o.status.success())
@@ -16297,7 +16679,7 @@ fn rwe_library_git_commit(
     cmd.output().map(|_| ()).map_err(|_| ())
 }
 
-/// Merges project-level RWE settings (`zebflow.json → rwe`) into each `n.web.response`
+/// Merges project-level RWE settings (`zebflow.yaml -> rwe`) into each `n.web.response`
 /// node's `config.options` before pipeline execution.
 ///
 /// Also parses the node-level `--load-scripts` comma-separated string and injects it
@@ -18109,6 +18491,38 @@ async fn api_publish_hub_asset(
         Ok(token) => token,
         Err(response) => return response,
     };
+    if req.source_type == "project_files" {
+        let requested = match state
+            .platform
+            .zebflow_cfg
+            .get_rwe_libraries(&owner, &project)
+        {
+            Ok(value) => value,
+            Err(err) => return internal_error(err),
+        };
+        let dependencies = match state
+            .platform
+            .dependency_lock
+            .status(&owner, &project, &requested)
+        {
+            Ok(report) => report,
+            Err(err) => return internal_error(err),
+        };
+        if !dependencies.ok {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "HUB_PUBLISH_DEPENDENCIES",
+                        "message": "project bundle has unresolved dependencies"
+                    },
+                    "dependencies": dependencies
+                })),
+            )
+                .into_response();
+        }
+    }
     match state.platform.hub.publish_asset(
         &owner,
         &project,
@@ -18239,19 +18653,8 @@ async fn api_install_hub_asset(
         .hub
         .install_asset(&owner, &project, &package_id, &version, &target_folder)
     {
-        Ok(result) => {
-            if result.install_root == "nodes" || result.install_root.starts_with("nodes/") {
-                if let Err(err) = state
-                    .platform
-                    .node_registry
-                    .refresh_project(&owner, &project)
-                {
-                    return internal_error(err);
-                }
-            }
-            Json(json!({"ok": true, "target_folder": target_folder, "result": result}))
-                .into_response()
-        }
+        Ok(result) => Json(json!({"ok": true, "target_folder": target_folder, "result": result}))
+            .into_response(),
         Err(err) => internal_error(err),
     }
 }
@@ -19199,8 +19602,8 @@ async fn api_export_sekejap_schema(
             Ok(export) => export,
             Err(err) => return internal_error(err),
         };
-    let body = match serde_json::to_string_pretty(&export) {
-        Ok(value) => value + "\n",
+    let body = match sekejap::encode_schema_export(export) {
+        Ok(value) => value,
         Err(err) => {
             return internal_error(PlatformError::new("SEKEJAP_SCHEMA_EXPORT", err.to_string()));
         }
@@ -25054,11 +25457,10 @@ async fn api_reindex_project(
                         Ok(source) => {
                             let file_rel_path = format!("pipelines/{rel}");
                             // Preserve description stored inside the graph JSON
-                            let graph_description =
-                                serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
-                                    .ok()
-                                    .and_then(|g| g.description)
-                                    .unwrap_or_default();
+                            let graph_description = decode_pipeline_graph(source.as_bytes())
+                                .ok()
+                                .and_then(|document| document.spec.description)
+                                .unwrap_or_default();
                             let reindex_trigger_kind =
                                 crate::platform::services::project::derive_trigger_kind_from_source(&source)
                                     .unwrap_or_default();
@@ -26029,9 +26431,60 @@ fn get_mtime(path: &FsPath) -> Option<std::time::SystemTime> {
 
 #[cfg(test)]
 mod webhook_sse_tests {
-    use axum::http::{HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
-    use super::wants_event_stream;
+    use super::{
+        optional_bounded_settings_u64, reject_unknown_settings_fields, wants_event_stream,
+    };
+
+    #[test]
+    fn project_setting_numbers_are_rejected_instead_of_clamped() {
+        let below = optional_bounded_settings_u64(
+            &serde_json::json!({"node_timeout_secs": 1}),
+            "node_timeout_secs",
+            5,
+            3600,
+        )
+        .unwrap_err();
+        assert_eq!(below.status(), StatusCode::BAD_REQUEST);
+
+        let wrong_type = optional_bounded_settings_u64(
+            &serde_json::json!({"node_timeout_secs": "30"}),
+            "node_timeout_secs",
+            5,
+            3600,
+        )
+        .unwrap_err();
+        assert_eq!(wrong_type.status(), StatusCode::BAD_REQUEST);
+
+        assert_eq!(
+            optional_bounded_settings_u64(
+                &serde_json::json!({"node_timeout_secs": 30}),
+                "node_timeout_secs",
+                5,
+                3600,
+            )
+            .unwrap(),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn project_setting_payloads_reject_unknown_fields() {
+        assert!(
+            reject_unknown_settings_fields(
+                &serde_json::json!({"max_invocations": 20}),
+                &["max_invocations"],
+            )
+            .is_ok()
+        );
+        let response = reject_unknown_settings_fields(
+            &serde_json::json!({"max_invocation": 20}),
+            &["max_invocations"],
+        )
+        .unwrap_err();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 
     // ── wants_event_stream detection ──────────────────────────────────────────
 

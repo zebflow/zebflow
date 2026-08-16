@@ -978,8 +978,6 @@ fn build_graph_mode(
         .collect();
 
     let mut graph = PipelineGraph {
-        kind: "zebflow.pipeline".to_string(),
-        version: "0.1".to_string(),
         id: id.to_string(),
         description: None,
         metadata: None,
@@ -2091,8 +2089,6 @@ fn build_pipe_mode(
         .unwrap_or_default();
 
     let mut graph = PipelineGraph {
-        kind: "zebflow.pipeline".to_string(),
-        version: "0.1".to_string(),
         id: id.to_string(),
         description: None,
         metadata: None,

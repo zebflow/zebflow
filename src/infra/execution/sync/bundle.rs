@@ -8,13 +8,9 @@ use serde_json::{Map, Value};
 
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 
-/// Current serialized bundle schema version.
-pub const PROJECT_RUNTIME_BUNDLE_SCHEMA_VERSION: u32 = 1;
-/// Current serialized secret-binding schema version.
-pub const SECRET_BINDINGS_MANIFEST_SCHEMA_VERSION: u32 = 1;
-
 /// Stable project identity carried by a portable bundle.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBundleIdentity {
     /// Owner identifier.
     pub owner: String,
@@ -30,6 +26,7 @@ pub struct ProjectBundleIdentity {
 
 /// Repo-owned activation/bootstrap intent.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBootstrapPlan {
     /// Pipeline glob patterns that should auto-activate after clone/import.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -38,6 +35,7 @@ pub struct ProjectBootstrapPlan {
 
 /// Bundle content categories included in a transfer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBundleContents {
     /// Include the git-tracked repo working tree.
     #[serde(default = "default_true")]
@@ -70,6 +68,7 @@ const fn default_true() -> bool {
 
 /// One file carried inside a portable runtime bundle.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectBundleFile {
     /// Relative path inside the project repo or files area.
     pub path: String,
@@ -89,6 +88,7 @@ pub enum SecretBindingKind {
 
 /// One secret or environment binding required by a portable project bundle.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SecretBindingRequirement {
     /// Stable logical binding id inside the project bundle.
     pub binding_id: String,
@@ -113,23 +113,16 @@ impl Default for SecretBindingKind {
 
 /// Safe manifest of secret bindings required by a project bundle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SecretBindingsManifest {
-    /// Schema version for the manifest itself.
-    #[serde(default = "default_secret_bindings_manifest_schema_version")]
-    pub schema_version: u32,
     /// Required bindings, without secret values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<SecretBindingRequirement>,
 }
 
-const fn default_secret_bindings_manifest_schema_version() -> u32 {
-    SECRET_BINDINGS_MANIFEST_SCHEMA_VERSION
-}
-
 impl Default for SecretBindingsManifest {
     fn default() -> Self {
         Self {
-            schema_version: SECRET_BINDINGS_MANIFEST_SCHEMA_VERSION,
             bindings: Vec::new(),
         }
     }
@@ -137,10 +130,8 @@ impl Default for SecretBindingsManifest {
 
 /// Portable description of repo-owned project runtime state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectRuntimeBundle {
-    /// Bundle schema version.
-    #[serde(default = "default_project_runtime_bundle_schema_version")]
-    pub schema_version: u32,
     /// Opaque bundle identifier.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bundle_id: String,
@@ -170,14 +161,9 @@ pub struct ProjectRuntimeBundle {
     pub metadata: Value,
 }
 
-const fn default_project_runtime_bundle_schema_version() -> u32 {
-    PROJECT_RUNTIME_BUNDLE_SCHEMA_VERSION
-}
-
 impl Default for ProjectRuntimeBundle {
     fn default() -> Self {
         Self {
-            schema_version: PROJECT_RUNTIME_BUNDLE_SCHEMA_VERSION,
             bundle_id: String::new(),
             identity: ProjectBundleIdentity::default(),
             created_at: 0,
@@ -193,23 +179,16 @@ impl Default for ProjectRuntimeBundle {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PROJECT_RUNTIME_BUNDLE_SCHEMA_VERSION, ProjectBundleContents, ProjectRuntimeBundle,
-        SECRET_BINDINGS_MANIFEST_SCHEMA_VERSION, SecretBindingsManifest,
-    };
+    use super::{ProjectBundleContents, ProjectRuntimeBundle, SecretBindingsManifest};
 
     #[test]
-    fn defaults_are_versioned_and_portable() {
+    fn defaults_are_portable() {
         let bundle = ProjectRuntimeBundle::default();
-        assert_eq!(bundle.schema_version, PROJECT_RUNTIME_BUNDLE_SCHEMA_VERSION);
         assert!(bundle.contents.include_repo);
         assert!(!bundle.contents.include_runtime_snapshot);
 
         let manifest = SecretBindingsManifest::default();
-        assert_eq!(
-            manifest.schema_version,
-            SECRET_BINDINGS_MANIFEST_SCHEMA_VERSION
-        );
+        assert!(manifest.bindings.is_empty());
     }
 
     #[test]

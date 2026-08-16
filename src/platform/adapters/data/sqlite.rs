@@ -3015,7 +3015,7 @@ impl DataAdapter for SqliteDataAdapter {
                     project: row.get(1)?,
                     project_id: row.get(2)?,
                     owner_user_id: row.get(3)?,
-                    title: String::new(), // populated from zebflow.json by ProjectService
+                    title: String::new(), // populated from zebflow.yaml by ProjectService
                     created_at: row.get(4)?,
                     updated_at: row.get(5)?,
                 })

@@ -96,6 +96,14 @@ function formatBytes(bytes) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
+function dependencyStatusClass(status) {
+  if (status === "resolved") return "border-dark-accent2 text-dark-accent2";
+  if (status === "missing" || status === "integrity_mismatch") {
+    return "border-dark-accent4 text-dark-accent4";
+  }
+  return "border-dark-accent3 text-dark-accent3";
+}
+
 function settingsStatusToneClass(tone) {
   if (tone === "ok") {
     return "text-dark-accent2";
@@ -155,6 +163,225 @@ function SettingsSection({
       </header>
       <div className="px-4 py-4">{children}</div>
     </article>
+  );
+}
+
+function DependenciesPanel({ api, initialStatus }: any) {
+  const [report, setReport] = useState(initialStatus ?? { ok: true, resolved: 0, problems: 0, items: [] });
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const items = Array.isArray(report?.items) ? report.items : [];
+
+  async function run(action) {
+    setBusy(action);
+    setError("");
+    try {
+      const payload = await requestJson(api, action === "repair" ? { method: "POST", body: "{}" } : {});
+      if (payload?.report) setReport(payload.report);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <SettingsSection
+      title="Dependency Lock"
+      description="Exact RWE libraries and installed node bundles required to reproduce this project."
+      tag={report?.ok ? "Resolved" : `${report?.problems ?? 0} problem(s)`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-dark-border pb-3">
+        <div className="flex items-center gap-4 text-[0.74rem] text-body-soft">
+          <span><strong className="text-body">{report?.resolved ?? 0}</strong> resolved</span>
+          <span><strong className={report?.problems ? "text-dark-accent4" : "text-body"}>{report?.problems ?? 0}</strong> problems</span>
+          <code>{report?.lock_file ?? "zeb.lock"}</code>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" disabled={Boolean(busy)} onClick={() => run("refresh")}>
+            {busy === "refresh" ? "Refreshing..." : "Refresh"}
+          </Button>
+          <Button type="button" disabled={Boolean(busy)} onClick={() => run("repair")}>
+            {busy === "repair" ? "Repairing..." : "Repair"}
+          </Button>
+        </div>
+      </div>
+      {error ? <p className="border-b border-dark-border py-3 text-[0.74rem] text-dark-accent4">{error}</p> : null}
+      {items.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-left text-[0.74rem]">
+            <thead>
+              <tr className="border-b border-dark-border text-body-soft">
+                <th className="px-2 py-2 font-medium">Dependency</th>
+                <th className="px-2 py-2 font-medium">Family</th>
+                <th className="px-2 py-2 font-medium">Version</th>
+                <th className="px-2 py-2 font-medium">Source</th>
+                <th className="px-2 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, index) => (
+                <tr key={`${item?.family}-${item?.name}-${index}`} className="border-b border-dark-border last:border-b-0">
+                  <td className="min-w-[15rem] px-2 py-2.5 align-top">
+                    <code className="text-body">{item?.name}</code>
+                    <p className="mt-1 text-[0.69rem] leading-[1.4] text-body-soft">{item?.message}</p>
+                    {Array.isArray(item?.definitions) && item.definitions.length ? (
+                      <p className="mt-1 font-mono text-[0.66rem] text-body-soft">{item.definitions.join(", ")}</p>
+                    ) : null}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-2.5 align-top text-body-soft">{String(item?.family ?? "").replaceAll("_", " ")}</td>
+                  <td className="whitespace-nowrap px-2 py-2.5 align-top font-mono text-body">{item?.version}</td>
+                  <td className="whitespace-nowrap px-2 py-2.5 align-top text-body-soft">{item?.source}</td>
+                  <td className="whitespace-nowrap px-2 py-2.5 align-top">
+                    <span className={cx("inline-flex border px-2 py-1 font-mono text-[0.65rem]", dependencyStatusClass(item?.status))}>
+                      {String(item?.status ?? "unknown").replaceAll("_", " ")}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="py-5 text-[0.76rem] text-body-soft">This project has no external runtime dependencies.</p>
+      )}
+    </SettingsSection>
+  );
+}
+
+function ProjectConfigurationStatus({ config }) {
+  return (
+    <SettingsSection
+      title="Project Configuration"
+      description="Canonical, portable project settings stored with the project source."
+      tag={config?.status ?? (config?.valid ? "Valid" : "Missing")}
+    >
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <div className="border border-dark-border bg-dark-panel px-3 py-2.5">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">File</p>
+          <p className="mt-1 font-mono text-[0.76rem] text-body">{config?.path ?? "zebflow.yaml"}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel px-3 py-2.5">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">API Version</p>
+          <p className="mt-1 font-mono text-[0.76rem] text-body">{config?.api_version ?? "-"}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel px-3 py-2.5">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Kind</p>
+          <p className="mt-1 font-mono text-[0.76rem] text-body">{config?.kind ?? "-"}</p>
+        </div>
+        <div className="border border-dark-border bg-dark-panel px-3 py-2.5">
+          <p className="text-[0.66rem] uppercase tracking-[0.08em] text-body-soft">Project</p>
+          <p className="mt-1 font-mono text-[0.76rem] text-body">{config?.metadata_name ?? "-"}</p>
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
+function ProfilePanel({ api, initialConfig }) {
+  const [title, setTitle] = useState(String(initialConfig?.title ?? ""));
+  const [description, setDescription] = useState(String(initialConfig?.description ?? ""));
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [saving, setSaving] = useState(false);
+  const [commitOpen, setCommitOpen] = useState(false);
+
+  async function handleCommit(commitMessage) {
+    setCommitOpen(false);
+    setSaving(true);
+    setStatusMsg("Saving...");
+    setStatusTone("info");
+    try {
+      const response = await requestJson(api, {
+        method: "PUT",
+        body: JSON.stringify({ commit_message: commitMessage, data: { title, description } }),
+      });
+      setStatusMsg(response?.committed ? "Saved & committed." : response?.git_error ? `Saved (git: ${response.git_error})` : "Saved.");
+      setStatusTone(response?.git_error ? "info" : "ok");
+    } catch (err) {
+      setStatusMsg(`Failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsSection title="Project Profile" description="Portable display identity for this project." tag="Profile">
+      <CommitDialog
+        open={commitOpen}
+        section="profile"
+        defaultMessage="settings(profile): update project profile"
+        onConfirm={handleCommit}
+        onCancel={() => setCommitOpen(false)}
+      />
+      <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={(event) => { event.preventDefault(); setCommitOpen(true); }}>
+        <Field label="Title">
+          <Input value={title} maxLength={256} onInput={(event) => setTitle(event.currentTarget.value)} />
+        </Field>
+        <label className="pipeline-editor-field col-span-full">
+          <span>Description</span>
+          <Textarea rows={4} maxLength={16384} value={description} onInput={(event) => setDescription(event.currentTarget.value)} />
+        </label>
+        <div className="col-span-full flex items-center gap-[0.7rem]">
+          <Button type="submit" variant="primary" size="sm" disabled={saving} label={saving ? "Saving..." : "Save Profile"} />
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
+        </div>
+      </form>
+    </SettingsSection>
+  );
+}
+
+function DistributionPanel({ api, initialConfig }) {
+  const [entryUrl, setEntryUrl] = useState(String(initialConfig?.entry_url ?? ""));
+  const [asApp, setAsApp] = useState(Boolean(initialConfig?.as_app));
+  const [statusMsg, setStatusMsg] = useState("Ready.");
+  const [statusTone, setStatusTone] = useState("info");
+  const [saving, setSaving] = useState(false);
+  const [commitOpen, setCommitOpen] = useState(false);
+
+  async function handleCommit(commitMessage) {
+    setCommitOpen(false);
+    setSaving(true);
+    setStatusMsg("Saving...");
+    setStatusTone("info");
+    try {
+      const response = await requestJson(api, {
+        method: "PUT",
+        body: JSON.stringify({ commit_message: commitMessage, data: { entry_url: entryUrl, as_app: asApp } }),
+      });
+      setStatusMsg(response?.committed ? "Saved & committed." : response?.git_error ? `Saved (git: ${response.git_error})` : "Saved.");
+      setStatusTone(response?.git_error ? "info" : "ok");
+    } catch (err) {
+      setStatusMsg(`Failed: ${err?.message || String(err)}`);
+      setStatusTone("error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <SettingsSection title="Project Presentation" description="How this project appears as an application from the project dashboard." tag="Hub">
+      <CommitDialog
+        open={commitOpen}
+        section="distribution"
+        defaultMessage="settings(distribution): update project presentation"
+        onConfirm={handleCommit}
+        onCancel={() => setCommitOpen(false)}
+      />
+      <form className="grid grid-cols-2 gap-[0.65rem]" onSubmit={(event) => { event.preventDefault(); setCommitOpen(true); }}>
+        <Field label="Application Entry Path">
+          <Input placeholder="/app" value={entryUrl} onInput={(event) => setEntryUrl(event.currentTarget.value)} />
+        </Field>
+        <div className="flex items-center pt-5">
+          <Checkbox label="Open this project as an application" checked={asApp} onChange={(event) => setAsApp(event.target.checked)} />
+        </div>
+        <div className="col-span-full flex items-center gap-[0.7rem]">
+          <Button type="submit" variant="primary" size="sm" disabled={saving} label={saving ? "Saving..." : "Save Presentation"} />
+          <span className={cx("text-[0.72rem]", settingsStatusToneClass(statusTone))}>{statusMsg}</span>
+        </div>
+      </form>
+    </SettingsSection>
   );
 }
 
@@ -1843,6 +2070,9 @@ export default function Page(input) {
               {tabFlags?.general ? (
                 <section className="flex flex-col">
                   <div className="flex flex-col">
+                    <ProjectConfigurationStatus config={input?.project_configuration ?? {}} />
+                    <ProfilePanel api={input?.profile?.api ?? ""} initialConfig={input?.profile?.config ?? {}} />
+                    <DistributionPanel api={input?.distribution?.api ?? ""} initialConfig={input?.distribution?.config ?? {}} />
                     <ProjectTransferPanel
                       owner={input?.owner}
                       project={input?.project}
@@ -1928,6 +2158,17 @@ export default function Page(input) {
                     <LibrariesPanel
                       items={Array.isArray(input?.libraries_available) ? input.libraries_available : []}
                       api={input?.libraries_api ?? ""}
+                    />
+                  </div>
+                </section>
+              ) : null}
+
+              {tabFlags?.dependencies ? (
+                <section className="project-content-section">
+                  <div className="project-content-body">
+                    <DependenciesPanel
+                      api={input?.dependencies?.api ?? ""}
+                      initialStatus={input?.dependencies?.status ?? {}}
                     />
                   </div>
                 </section>

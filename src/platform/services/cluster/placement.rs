@@ -98,7 +98,7 @@ impl ClusterPlacementService {
                 .ok()
                 .and_then(|value| value.as_str().map(ToString::to_string))
                 .unwrap_or_else(|| "small".to_string()),
-            desired_replicas: 1,
+            desired_replicas: runtime_profile.min_replicas,
             effective_state: if target_worker.is_some() {
                 "assigned".to_string()
             } else {

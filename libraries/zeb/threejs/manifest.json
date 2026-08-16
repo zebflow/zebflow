@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/threejs" },
+  "spec": {
   "name": "zeb/threejs",
   "description": "Three.js for RWE templates — full 3D API + Canvas component, hooks (useThree, useFrame), and OrbitControls.",
   "exports": [
@@ -111,5 +115,6 @@
       "size_bytes": 755048,
       "integrity": "sha256:9c1e385bc9918e55ca7214dd995efbfc73bff14806ba13ee5c3f6ffcb4761eae"
     }
+  }
   }
 }

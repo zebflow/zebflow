@@ -1,6 +1,6 @@
 //! Environment-owned project runtime placement records.
 //!
-//! These records complement the portable `ProjectRuntimeProfile` stored in `zebflow.json`.
+//! These records complement the portable `ProjectRuntimeProfile` stored in `zebflow.yaml`.
 //! The portable profile answers:
 //!
 //! - how isolated the project wants to be

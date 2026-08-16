@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeDefinition",
+  "metadata": { "name": "n.c.tg.send.document", "version": "1.0.0" },
+  "spec": {
   "source": "composite",
   "version": "1.0.0",
   "definition": {
@@ -37,5 +41,5 @@
   ],
   "runtime": {
     "pipeline": "pipeline.zf.json"
-  }
+  }}
 }

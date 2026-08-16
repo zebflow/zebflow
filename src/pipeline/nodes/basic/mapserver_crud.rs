@@ -1191,7 +1191,10 @@ mod tests {
                 "__zf_type": "file_ref",
                 "backend": "zebfs",
                 "ref": "mapserver/sources/roads.geojson",
-                "sha256": "sha256:abc"
+                "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "mime": "application/geo+json",
+                "size": 1,
+                "lifecycle": "durable"
             }
         });
 

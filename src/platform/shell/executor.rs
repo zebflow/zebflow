@@ -9,6 +9,7 @@ use super::parser::{
     DslVerb, build_pipeline_graph_with_definitions, parse_one_command, split_commands,
 };
 use super::{DslLine, DslOutput};
+use crate::contracts::kinds::{decode_pipeline_graph, encode_pipeline_graph};
 use crate::platform::services::PlatformService;
 
 /// Executor for Pipeline DSL commands.
@@ -361,7 +362,7 @@ impl DslExecutor {
             &self.project,
             &meta.file_rel_path,
         ) {
-            if let Ok(graph) = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source) {
+            if let Ok(graph) = decode_pipeline_graph(source.as_bytes()).map(|value| value.spec) {
                 if compact {
                     // Compact: one line per node, no body content
                     for node in &graph.nodes {
@@ -475,8 +476,12 @@ impl DslExecutor {
                     if !description.trim().is_empty() {
                         graph.description = Some(description.trim().to_string());
                     }
-                    match serde_json::to_string_pretty(&graph) {
-                        Ok(s) => s,
+                    match encode_pipeline_graph(graph).and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|err| {
+                            crate::contracts::ContractError::invalid(err.to_string())
+                        })
+                    }) {
+                        Ok(source) => source,
                         Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
                     }
                 }
@@ -485,8 +490,8 @@ impl DslExecutor {
         };
 
         // Validate JSON
-        let graph: crate::pipeline::PipelineGraph = match serde_json::from_str(&graph_source) {
-            Ok(g) => g,
+        let graph = match decode_pipeline_graph(graph_source.as_bytes()) {
+            Ok(document) => document.spec,
             Err(e) => return DslOutput::err(format!("Invalid pipeline JSON: {e}")),
         };
 
@@ -600,8 +605,8 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Error reading pipeline: {}", e.message)),
         };
 
-        let mut graph: crate::pipeline::PipelineGraph = match serde_json::from_str(&source) {
-            Ok(g) => g,
+        let mut graph = match decode_pipeline_graph(source.as_bytes()) {
+            Ok(document) => document.spec,
             Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
 
@@ -756,8 +761,11 @@ impl DslExecutor {
             }
         }
 
-        let new_source = match serde_json::to_string_pretty(&graph) {
-            Ok(s) => s,
+        let new_source = match encode_pipeline_graph(graph.clone()).and_then(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|err| crate::contracts::ContractError::invalid(err.to_string()))
+        }) {
+            Ok(source) => source,
             Err(e) => return DslOutput::err(format!("Serialize error: {e}")),
         };
 
@@ -880,8 +888,8 @@ impl DslExecutor {
             Err(e) => return DslOutput::err(format!("Error: {}", e.message)),
         };
 
-        let graph: crate::pipeline::PipelineGraph = match serde_json::from_str(&source) {
-            Ok(g) => g,
+        let graph = match decode_pipeline_graph(source.as_bytes()) {
+            Ok(document) => document.spec,
             Err(e) => return DslOutput::err(format!("Parse error: {e}")),
         };
 

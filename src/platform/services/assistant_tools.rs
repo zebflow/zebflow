@@ -314,8 +314,8 @@ impl AssistantPlatformTools {
             ToolDef {
                 name: "template_write".to_string(),
                 description: "Write (create or overwrite) a template file. \
-                    Path is relative to templates/ (e.g. 'pages/blog-home.tsx'). \
-                    Use help_web_engine for TSX conventions before writing.".to_string(),
+                    Path is relative to templates/ (e.g. 'pages/blog-home.tsx' or 'scripts/format-address.ts'). \
+                    Read the web guide before writing; custom scripts must use local imports and camelCase exports.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "required": ["rel_path", "content"],

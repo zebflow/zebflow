@@ -1,0 +1,66 @@
+apiVersion: zebflow.com/v1
+kind: ProjectConfiguration
+metadata:
+  name: project-development
+spec:
+  profile:
+    title: Project Development
+    description: Portable project configuration fixture.
+  rwe:
+    allow_list:
+    - https://cdn.example.com/*
+    minify_html: true
+    strict_mode: false
+    libraries:
+      zeb/deckgl:
+        version: bridge-0.1
+        source: offline
+    deployment_asset_base: /project-assets
+  pipelines:
+    logging:
+      max_invocations: 25
+    node_timeout_secs: 120
+  runtime:
+    mode: dedicated
+    execution: k8s_job
+    resource_profile: custom
+    min_replicas: 2
+    max_replicas: 4
+    required_tags:
+    - geo
+    custom_resources:
+      cpu_request_millis: 500
+      memory_request_mb: 1024
+      cpu_limit_millis: 2000
+      memory_limit_mb: 4096
+      ephemeral_disk_mb: 8192
+      accelerator_count: 1
+  bootstrap:
+    activate:
+    - pipelines/main.zf.json
+  git:
+    remote:
+      credential_id: git-origin
+      repo_url: https://git.example.com/team/project.git
+      branch: main
+  assistant:
+    high_model_credential: ai-high
+    general_model_credential: ai-general
+    max_steps: 50
+    max_replans: 5
+    chat_history_pairs: 20
+    enabled: true
+  locks:
+    templates:
+    - pages/system
+  data: {}
+  files:
+    uploads:
+      max_asset_size_mb: 50
+      webhook_body_max_mb: 512
+      max_file_size_mb: 512
+  distribution:
+    hub:
+      entry_url: /app
+      as_app: true
+      producer_enabled: true

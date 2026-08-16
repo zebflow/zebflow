@@ -31,22 +31,22 @@ been verified.
 | ---: | :---: | --- | --- | --- | --- | :---: | --- |
 | 1 | P0 | Contract governance | Contract identity, compatibility, and release rules | Policy only | `docs/contracts/` | Review | Approve one lifecycle and freeze checklist for every contract |
 | 2 | P0 | Project directory | Project repository, data, files, runtime, and generated paths | None | `src/platform/adapters/file/mod.rs`, project services | Critical | Define the permanent project tree and classify durable, generated, and temporary paths |
-| 3 | P0 | Project configuration | `zebflow.json` | `1.0` | `src/platform/model.rs`, `src/platform/services/project_config.rs` | Partial | Strict version parsing and atomic replacement are implemented; define migration and prevent concurrent read-modify-write loss |
-| 4 | P0 | Pipeline source | Pipeline graph and `.zf.json` DSL source | `zebflow.pipeline` `0.1` | `src/pipeline/model.rs`, `src/pipeline/contract.rs`, pipeline services | Partial | The envelope is enforced and source/snapshot writes are atomic; make source, metadata, and activation one recoverable operation |
-| 5 | P0 | Dependency lock | `zeb.lock` | `1` | `src/platform/model.rs`, `src/platform/services/zeb_lock.rs` | Partial | Strict version parsing and atomic replacement are implemented; prevent concurrent read-modify-write loss |
-| 6 | P0 | Installed node definition | Native, composite, and WASM node definitions after installation | No single persisted format version | `src/pipeline/model.rs`, node registry | Critical | Define one installed definition contract shared by every node implementation |
-| 7 | P0 | Node bundle | Installable single-node and multi-node source | Intended `zebflow-package-v2` | `src/platform/model.rs`, `src/platform/services/node_registry.rs` | Critical | Keep one bundle format, enforce its identity, and remove alternate canonical paths before release |
-| 8 | P0 | File reference | FileRef passed between native, composite, and WASM nodes | No explicit version | `src/pipeline/nodes/basic/file_ref.rs` | Critical | Freeze a backend-independent FileRef and remove silent shape guessing |
-| 9 | P0 | Project file storage | ZebFS paths, object identity, lifecycle, and ACL manifest | ACL `1` | `src/zebfs/` | Partial | ACL validation and durable atomic local writes are implemented; verify FileRef integrity and define temporary-object cleanup |
-| 10 | P0 | Project data stores | Platform SQLite catalog and project Sekejap schema/store | SQLite migration `15`; Sekejap schema `v1` | `src/platform/adapters/data/sqlite.rs`, `src/platform/sekejap.rs` | Critical | Reject future schemas, add consistent backup/recovery, recover or reopen after lock poisoning, and make schema application atomic |
-| 11 | P0 | Project transfer | Project bundle and files-only export/import | Manifest `0.3.0` | `src/platform/services/project_transfer.rs` | Critical | Validate versions and digests before mutation; checkpoint live stores; harden archive extraction; stage and atomically replace with rollback |
-| 12 | P0 | Runtime synchronization | Materialization bundle, snapshot, secret requirements, and migration plan | Schema `1` | `src/infra/execution/sync/` | Critical | Reject unsupported bundles before mutation; validate hashes; stage materialization; add rollback and content-based incremental sync |
+| 3 | P0 | [Project configuration](./kinds/project-configuration/README.md) | `zebflow.yaml` | `zebflow.com/v1` `ProjectConfiguration` | `src/contracts/kinds/project_configuration.rs`, `src/platform/services/project_config.rs` | Frozen | Reference contract complete; preserve its schema and use its freeze evidence for every later kind |
+| 4 | P0 | [Pipeline source](./kinds/pipeline/README.md) | Pipeline graph and `.zf.json` source | `zebflow.com/v1` `Pipeline` | `src/contracts/kinds/pipeline.rs`, `src/pipeline/model.rs`, `src/platform/services/project.rs` | Frozen | Preserve v1 and use its contract/runtime separation and recoverable activation sequence for later executable kinds |
+| 5 | P0 | [Dependency lock](./kinds/dependency-lock/README.md) | `zeb.lock` | `zebflow.com/v1` `DependencyLock` | `src/contracts/kinds/dependency_lock.rs`, dependency service, RWE library service, node registry | Frozen | Strict namespaces, pipeline and composite discovery, status and repair UI, atomic Hub installation, explicit migration, and two-instance transfer are implemented and tested |
+| 6 | P0 | Installed node definition | Composite and WASM node definitions after installation | `zebflow.com/v1` `NodeDefinition` | `src/pipeline/model.rs`, node registry | Partial | One installed format is enforced; stage a whole installation and roll it back on failure |
+| 7 | P0 | Node bundle | Installable one-node and multi-node source | `zebflow.com/v1` `NodeBundle` | `src/platform/model.rs`, `src/platform/services/node_registry.rs` | Partial | One bundle format is enforced; add immutable digest verification and whole-install rollback |
+| 8 | P0 | File reference | FileRef passed between native, composite, and WASM nodes | `__zf_type=file_ref` | `src/pipeline/nodes/basic/file_ref.rs` | Partial | Required fields, size, and digest are enforced; define temporary-object cleanup and remote backend streaming behavior |
+| 9 | P0 | Project file storage | ZebFS paths, object identity, lifecycle, and ACL manifest | `zebflow.com/v1` `ZebFsAcl` | `src/zebfs/`, `src/platform/services/zebfs_acl.rs` | Partial | ACL and local objects use atomic writes; define multi-object transactions and cleanup ownership |
+| 10 | P0 | Project data stores | Platform SQLite catalog and project Sekejap schema/store | SQLite migration `15`; `zebflow.com/v1` `DatabaseSchema` | `src/platform/adapters/data/sqlite.rs`, `src/platform/sekejap.rs` | Critical | The portable schema is strict and atomic per file; add backup/recovery, poisoned-lock recovery, and atomic schema application |
+| 11 | P0 | Project transfer | Project bundle and files-only export/import | `zebflow.com/v1` `ProjectBundle` | `src/platform/services/project_transfer.rs` | Critical | The manifest is strict; checkpoint live stores, verify all content, stage extraction, and atomically replace with rollback |
+| 12 | P0 | Runtime synchronization | Materialization bundle, snapshot, secret requirements, and migration plan | `zebflow.com/v1` `RuntimeBundle`; internal snapshot schemas still separate | `src/infra/execution/sync/`, platform runtime sync | Critical | Materialization is strict; unify or explicitly freeze snapshot and migration records, then stage and roll back apply |
 | 13 | P1 | Reactive web protocol | RWE compile, render, event, and error messages | `rwe.v1` | `src/rwe/protocol.rs` | Partial | Separate source, compiled artifact, and wire protocol contracts and test version rejection |
-| 14 | P1 | Hub package | Published package metadata, media, manifest, and content | Package format `v2`; package release version is independent | `src/platform/services/hub.rs`, platform models | Critical | Artifact schema and local hashes are now enforced; make releases immutable and installation staged with rollback |
+| 14 | P1 | Hub package | Published package metadata, media, manifest, and content | `zebflow.com/v1` `HubPackage`; release version is independent | `src/platform/services/hub.rs`, platform models | Partial | Strict envelopes and stored hashes are enforced; make releases immutable and installation staged with rollback |
 | 15 | P1 | Public and cluster protocols | HTTP API, webhook, MCP, controller-worker, and service messages | Mostly route-based or unversioned | Platform routes, MCP, cluster services | Critical | Group protocol families, define compatibility windows, and version durable wire envelopes |
 | 16 | P2 | Invocation and temporary state | Invocation records, traces, node payloads, caches, and temporary files | No common version | Pipeline runtime and invocation services | Critical | Make it bounded and disposable; version only records that may survive a runtime upgrade |
-| 17 | P1 | Library definition | Installed library manifests, versions, URLs, integrity, and project enablement | No explicit format version | `src/platform/services/library.rs`, library catalog files | Critical | Define one versioned library manifest and verify source identity and integrity before enabling it |
-| 18 | P1 | Map publish manifest | Published layer identity, source, generated artifacts, styles, and caches | Several internal shapes | `src/mapserver/publish/`, mapserver nodes | Review | Separate durable publish intent from generated map artifacts and freeze the durable manifest |
+| 17 | P1 | Library definition | Installed library manifests, versions, URLs, integrity, and project enablement | `zebflow.com/v1` `LibraryManifest` | `src/platform/services/library.rs`, library catalog files | Partial | Strict manifests are enforced at startup; require complete integrity values before external libraries can be enabled |
+| 18 | P1 | Map publish manifest | Published layer identity, source, generated artifacts, styles, and caches | `zebflow.com/v1` `MapPublishManifest`; generated artifacts are private formats | project MapServer service, `src/mapserver/publish/` | Partial | Durable layer intent is strict and atomic; document and test rebuild of generated map artifacts |
 
 ## Verified Audit, 2026-08-14
 
@@ -58,46 +58,50 @@ assessment:
   trusted inputs, and conservative payload sizes.
 - Zebflow is not ready to declare a stable v1 storage and transfer contract.
 
-The full library suite passed: 400 default tests and three tests ignored by
+The full library suite passed: 420 default tests and three tests ignored by
 default, run separately. This proves the currently tested behavior. Focused
 failure tests now cover atomic-write interruption and forward-version rejection
 for the contracts listed in the implementation record below. It does not yet
 prove multi-file rollback, full package rollback, or every tamper boundary.
 
-The strongest verified mechanisms are transactional platform SQLite migrations,
-path-confined atomic ZebFS object writes, graph and node-definition validation,
+The strongest verified mechanisms are the central strict contract decoder,
+transactional platform SQLite migrations, path-confined atomic ZebFS object
+writes, FileRef size and digest checks, graph and node-definition validation,
 remote Hub artifact hash checks, and staged map artifact publishing.
 
 The highest remaining risks are multi-file operations without rollback,
 destructive project import and runtime materialization, non-atomic node and Hub
-installation, unverified FileRef reads, poisoned Sekejap locks, and repeated
-cloning of large JSON node payloads. Other authoritative JSON formats still
+installation, temporary FileRef cleanup, poisoned Sekejap locks, and repeated
+cloning of large JSON node payloads. Other authoritative document formats still
 need to adopt the shared strict reader and durable writer as their rows are
 reviewed.
 
 ## Implementation Record, 2026-08-14
 
-The first shared persistence foundation is implemented in
-`src/infra/io/durable.rs`:
+The contract kernel is implemented in `src/contracts/`. Generic atomic
+byte replacement remains in `src/infra/io/durable.rs`:
 
 - Same-directory temporary writes, file sync, atomic replacement, and parent
   directory sync on Unix.
-- Reusable root-field contract validation before deserialization or writing.
+- One closed kind registry and one `zebflow.com/v1` envelope.
+- Strict root validation before typed deserialization or writing.
 - Missing files are distinct from malformed, unreadable, and unsupported files.
 - Injected partial-write tests prove that a failed replacement preserves the
   previous valid file and removes the temporary file.
 
-The foundation now protects these paths:
+The foundation currently protects these paths:
 
-- `zebflow.json` project configuration.
-- `zeb.lock` dependency locks.
+- `zebflow.yaml` project configuration.
+- The existing RWE-only `zeb.lock`; its general RWE and node contract remains
+  under review and must not be called frozen yet.
 - ZebFS local objects and the ACL manifest.
 - Pipeline source and active runtime snapshots.
 - Installed node files and Hub artifact files at the individual-file boundary.
 
-Canonical strict readers now reject missing or unsupported versions for project
-configuration, dependency locks, ACL manifests, pipeline graphs, and Hub
-artifacts. Hub artifact reads also verify the stored SHA-256 digest before use.
+Canonical strict readers now cover project configuration, dependency locks,
+ACL manifests, pipeline graphs, node definitions and bundles, database schemas,
+project and runtime bundles, Hub packages, library manifests, and map publish
+manifests. Hub artifacts and FileRefs verify stored digests before use.
 
 This record does not claim whole-operation atomicity. Pipeline source plus
 metadata, node bundle installation, Hub installation, project transfer, and

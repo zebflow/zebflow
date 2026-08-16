@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/graphui" },
+  "spec": {
   "name": "zeb/graphui",
   "description": "Interactive graph canvas for pipeline and node visualisation in RWE templates.",
   "exports": [
@@ -23,5 +27,6 @@
       "size_bytes": 38435,
       "integrity": ""
     }
+  }
   }
 }

@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/use" },
+  "spec": {
   "name": "zeb/use",
   "description": "RWE hooks collection. useDebounce, useThrottle, useLocalStorage, useClipboard, useTemporaryState, useWindowEvent, useLazyModule, useSearchParams, useSplitPane, useClickAway, useInterval, useGeolocation, useTree.",
   "exports": [
@@ -24,5 +28,6 @@
       "size_bytes": 11754,
       "integrity": ""
     }
+  }
   }
 }

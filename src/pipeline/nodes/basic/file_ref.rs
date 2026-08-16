@@ -53,12 +53,6 @@ pub fn is_file_ref(value: &Value) -> bool {
         .get("__zf_type")
         .and_then(Value::as_str)
         .is_some_and(|kind| kind == FILE_REF_TYPE)
-        || value
-            .get("ref")
-            .and_then(Value::as_str)
-            .is_some_and(|path| !path.trim().is_empty())
-            && value.get("sha256").is_some()
-        || is_legacy_zebfs_file_ref(value)
 }
 
 pub fn file_ref_path(value: &Value) -> Option<&str> {
@@ -68,35 +62,8 @@ pub fn file_ref_path(value: &Value) -> Option<&str> {
     value
         .get("ref")
         .and_then(Value::as_str)
-        .or_else(|| value.get("path").and_then(Value::as_str))
         .map(str::trim)
         .filter(|path| !path.is_empty())
-}
-
-fn is_legacy_zebfs_file_ref(value: &Value) -> bool {
-    let Some(path) = value.get("path").and_then(Value::as_str).map(str::trim) else {
-        return false;
-    };
-    if path.is_empty() {
-        return false;
-    }
-    if value.get("size").and_then(Value::as_u64).is_none() {
-        return false;
-    }
-    let backend = value
-        .get("backend")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(BACKEND_ZEBFS);
-    if backend != BACKEND_ZEBFS {
-        return false;
-    }
-    value
-        .get("url")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .is_some_and(|url| url.starts_with("/fs/"))
 }
 
 pub fn file_ref_backend(value: &Value) -> &str {
@@ -105,7 +72,7 @@ pub fn file_ref_backend(value: &Value) -> &str {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(BACKEND_ZEBFS)
+        .unwrap_or("")
 }
 
 pub fn file_ref_lifecycle(value: &Value) -> Option<&str> {
@@ -169,8 +136,9 @@ pub fn read_file_ref_bytes(
     project: &str,
     value: &Value,
 ) -> Result<Vec<u8>, PipelineError> {
+    validate_file_ref(value)?;
     let path = file_ref_path(value).ok_or_else(|| {
-        PipelineError::new("FW_FILE_REF_READ", "value is not a FileRef with a ref/path")
+        PipelineError::new("FW_FILE_REF_READ", "value is not a FileRef with a ref")
     })?;
     let backend = file_ref_backend(value);
     if backend != BACKEND_ZEBFS {
@@ -187,7 +155,84 @@ pub fn read_file_ref_bytes(
     let object = zebfs
         .get(path)
         .map_err(|err| PipelineError::new("FW_FILE_REF_READ", err.to_string()))?;
+    let expected_size = value["size"].as_u64().unwrap_or_default();
+    if object.bytes.len() as u64 != expected_size {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INTEGRITY",
+            format!(
+                "FileRef size mismatch: expected {expected_size}, got {}",
+                object.bytes.len()
+            ),
+        ));
+    }
+    let expected_sha256 = value["sha256"].as_str().unwrap_or_default();
+    let actual_sha256 = format!("sha256:{:x}", Sha256::digest(&object.bytes));
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INTEGRITY",
+            format!("FileRef digest mismatch for '{path}'"),
+        ));
+    }
     Ok(object.bytes)
+}
+
+/// Performs the fixed, shallow validation required at a FileRef consumer.
+///
+/// This is intentionally not a full document-envelope decode. FileRef is a
+/// runtime payload value and this check stays constant-time with respect to the
+/// referenced file size.
+pub fn validate_file_ref(value: &Value) -> Result<(), PipelineError> {
+    if !is_file_ref(value) {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            "value is missing __zf_type=file_ref",
+        ));
+    }
+    required_non_empty_string(value, "backend")?;
+    required_non_empty_string(value, "ref")?;
+    required_non_empty_string(value, "sha256")?;
+    required_non_empty_string(value, "mime")?;
+    let lifecycle = required_non_empty_string(value, "lifecycle")?;
+    if !matches!(lifecycle, LIFECYCLE_TEMPORARY | LIFECYCLE_DURABLE) {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            "FileRef lifecycle must be temporary or durable",
+        ));
+    }
+    if value.get("size").and_then(Value::as_u64).is_none() {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            "FileRef size must be an unsigned integer",
+        ));
+    }
+    let digest = value["sha256"].as_str().unwrap_or_default();
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            "FileRef sha256 must use sha256:<hex>",
+        ));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(PipelineError::new(
+            "FW_FILE_REF_INVALID",
+            "FileRef sha256 must contain exactly 64 hexadecimal digits",
+        ));
+    }
+    Ok(())
+}
+
+fn required_non_empty_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, PipelineError> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            PipelineError::new(
+                "FW_FILE_REF_INVALID",
+                format!("FileRef {field} must be a non-empty string"),
+            )
+        })
 }
 
 pub fn file_ref_to_rel_path(value: &Value) -> Option<String> {
@@ -281,7 +326,7 @@ fn infer_kind(mime: &str, filename: &str) -> &'static str {
 mod tests {
     use serde_json::json;
 
-    use super::{file_ref_path, file_ref_to_rel_path_or_string, is_file_ref};
+    use super::{file_ref_path, file_ref_to_rel_path_or_string, is_file_ref, validate_file_ref};
 
     #[test]
     fn detects_file_ref_shape() {
@@ -290,15 +335,18 @@ mod tests {
             "backend": "zebfs",
             "ref": "tmp/runs/r/files/a.bin",
             "lifecycle": "temporary",
-            "sha256": "sha256:abc"
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mime": "application/octet-stream",
+            "size": 1
         });
 
         assert!(is_file_ref(&value));
+        validate_file_ref(&value).unwrap();
         assert_eq!(file_ref_path(&value), Some("tmp/runs/r/files/a.bin"));
     }
 
     #[test]
-    fn detects_legacy_zebfs_file_metadata_as_file_ref() {
+    fn rejects_legacy_zebfs_file_metadata() {
         let value = json!({
             "path": "tmp/e1-agent-upload-file-ref-smoke.csv",
             "url": "/fs/superadmin/default/tmp/e1-agent-upload-file-ref-smoke.csv",
@@ -307,11 +355,8 @@ mod tests {
             "content_type": "text/csv",
         });
 
-        assert!(is_file_ref(&value));
-        assert_eq!(
-            file_ref_path(&value),
-            Some("tmp/e1-agent-upload-file-ref-smoke.csv")
-        );
+        assert!(!is_file_ref(&value));
+        assert_eq!(file_ref_path(&value), None);
     }
 
     #[test]
@@ -331,7 +376,10 @@ mod tests {
             "__zf_type": "file_ref",
             "backend": "zebfs",
             "ref": "tmp/runs/r/files/a.csv",
-            "sha256": "sha256:abc"
+            "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mime": "text/csv",
+            "size": 1,
+            "lifecycle": "temporary"
         });
         assert_eq!(
             file_ref_to_rel_path_or_string(&file_ref),

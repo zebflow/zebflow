@@ -1,5 +1,8 @@
 {
-  "format": "zebflow-package-v2",
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": { "name": "openai-embedding", "version": "1.0.0" },
+  "spec": {
   "package": "openai-embedding",
   "version": "1.0.0",
   "title": "OpenAI Embedding",
@@ -72,5 +75,5 @@
         "layout": ["credential_id", "model", "input_expr"]
       }
     }
-  ]
+  ]}
 }

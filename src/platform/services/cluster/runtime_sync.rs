@@ -11,6 +11,7 @@ use std::sync::Arc;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use uuid::Uuid;
 
+use crate::contracts::kinds::decode_pipeline_graph;
 use crate::infra::execution::sync::{
     ProjectBootstrapPlan, ProjectBundleFile, ProjectBundleIdentity, ProjectRuntimeBundle,
 };
@@ -21,7 +22,9 @@ use crate::platform::model::{
     CreateProjectRequest, PlatformUser, PlatformUserLocalAuth,
     ProjectRuntimeMaterializationRequest, StoredUser, now_ts, slug_segment,
 };
-use crate::platform::services::{PipelineRuntimeService, ProjectService, ZebflowJsonService};
+use crate::platform::services::{
+    PipelineRuntimeService, ProjectConfigurationService, ProjectService,
+};
 
 /// Product-facing runtime-sync helper.
 #[derive(Clone)]
@@ -29,7 +32,7 @@ pub struct ClusterRuntimeSyncService {
     data: Arc<dyn DataAdapter>,
     file: Arc<dyn FileAdapter>,
     projects: Arc<ProjectService>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
     pipeline_runtime: Arc<PipelineRuntimeService>,
 }
 
@@ -39,7 +42,7 @@ impl ClusterRuntimeSyncService {
         data: Arc<dyn DataAdapter>,
         file: Arc<dyn FileAdapter>,
         projects: Arc<ProjectService>,
-        zebflow_cfg: Arc<ZebflowJsonService>,
+        zebflow_cfg: Arc<ProjectConfigurationService>,
         pipeline_runtime: Arc<PipelineRuntimeService>,
     ) -> Self {
         Self {
@@ -104,7 +107,7 @@ impl ClusterRuntimeSyncService {
     }
 
     /// Rebuild local runtime metadata from the current repo working tree and auto-activate
-    /// pipelines declared in `zebflow.json.bootstrap`.
+    /// pipelines declared in `zebflow.yaml` under `spec.bootstrap`.
     pub fn refresh_local_repo_state(
         &self,
         owner: &str,
@@ -345,9 +348,9 @@ fn reindex_project_sources(
             }
             let source = fs::read_to_string(&path)?;
             let file_rel_path = format!("pipelines/{rel}");
-            let graph_description = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
+            let graph_description = decode_pipeline_graph(source.as_bytes())
                 .ok()
-                .and_then(|graph| graph.description)
+                .and_then(|document| document.spec.description)
                 .unwrap_or_default();
             let trigger_kind = derive_trigger_kind_from_source(&source).unwrap_or_default();
             projects.upsert_pipeline_definition(
@@ -445,7 +448,7 @@ fn match_segment_chars(pattern: &[char], candidate: &[char]) -> bool {
 }
 
 fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
-    let graph = serde_json::from_str::<crate::pipeline::PipelineGraph>(source).ok()?;
+    let graph = decode_pipeline_graph(source.as_bytes()).ok()?.spec;
     graph
         .nodes
         .iter()

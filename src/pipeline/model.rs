@@ -230,6 +230,7 @@ pub enum DslFlagKind {
 ///
 /// Every flag used in DSL MUST be declared here. No fallback, no auto-rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct DslFlag {
     /// CLI flag name including `--` prefix (e.g. `"--template-path"`).
     ///
@@ -463,6 +464,7 @@ impl<'de> serde::Deserialize<'de> for NodeFieldDataSource {
 
 /// One option in a `select`, `datalist`, or `method_buttons` field.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SelectOptionDef {
     pub value: String,
     pub label: String,
@@ -470,6 +472,7 @@ pub struct SelectOptionDef {
 
 /// One item in a code-editor sidebar section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SidebarItem {
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -480,6 +483,7 @@ pub struct SidebarItem {
 
 /// A collapsible group of items shown in the code-editor sidebar.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SidebarSection {
     pub title: String,
     pub items: Vec<SidebarItem>,
@@ -491,6 +495,7 @@ pub struct SidebarSection {
 /// The pipeline editor reads this from `/docs/node` and renders the form
 /// generically — no frontend changes are needed when a new node is added.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct NodeFieldDef {
     /// Config key (also used as the HTML field name).
     pub name: String,
@@ -550,10 +555,12 @@ pub enum LayoutItem {
 
 // ── Pipeline graph ─────────────────────────────────────────────────────────────
 
-/// A complete pipeline graph ready for execution.
+/// A complete runtime pipeline graph ready for execution.
 ///
-/// Persisted as `repo/pipelines/<name>.zf.json`.  Loaded by
-/// [`crate::platform::services::PipelineRuntimeService`] at server startup and on demand.
+/// The permanent repository schema is owned by
+/// [`crate::contracts::kinds::PipelineSpec`]. Contract decoding converts that
+/// stable source model into this runtime model so engine refactoring cannot
+/// silently change `.zf.json`.
 ///
 /// # Execution entry point
 ///
@@ -565,21 +572,19 @@ pub enum LayoutItem {
 ///
 /// ```json
 /// {
-///   "kind": "zebflow.pipeline",
-///   "version": "0.1",
-///   "id": "blog-home",
-///   "nodes": [ ... ],
-///   "edges": [ ... ]
+///   "apiVersion": "zebflow.com/v1",
+///   "kind": "Pipeline",
+///   "metadata": { "name": "blog-home" },
+///   "spec": {
+///     "id": "blog-home",
+///     "nodes": [ ... ],
+///     "edges": [ ... ]
+///   }
 /// }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineGraph {
-    /// Marker for the graph format; always `"zebflow.pipeline"`.
-    #[serde(default = "default_pipeline_kind")]
-    pub kind: String,
-    /// Graph schema version; always `"0.1"` for now.
-    #[serde(default = "default_pipeline_version")]
-    pub version: String,
     /// Unique pipeline id — matches the filename stem of the `.zf.json` file.
     pub id: String,
     /// Optional human-readable description of what this pipeline does.
@@ -592,14 +597,15 @@ pub struct PipelineGraph {
     /// Explicit entry node ids.  If empty the engine uses nodes with no incoming edges.
     #[serde(default)]
     pub entry_nodes: Vec<String>,
-    /// All nodes in this graph.  Order does not matter — the engine performs topological
-    /// sort at execution time.
+    /// All nodes in this graph. Source order is stable but does not define
+    /// execution order. The engine follows directed edges and supports cycles.
     pub nodes: Vec<PipelineNode>,
     /// All directed edges connecting output pins to input pins.
     pub edges: Vec<PipelineEdge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineGraphMetadata {
     #[serde(default)]
     pub locked: bool,
@@ -608,12 +614,14 @@ pub struct PipelineGraphMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineGraphSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_retention: Option<PipelineInvocationRetention>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineInvocationRetention {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_invocations: Option<u32>,
@@ -638,16 +646,17 @@ pub struct PipelineInvocationRetention {
 /// format to be self-describing.  They must be consistent with what
 /// [`NodeDefinition::input_pins`] and [`NodeDefinition::output_pins`] declare for the kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineNode {
     /// Unique node id within this graph (e.g. `"n0"`, `"trigger"`, `"render_blog"`).
     pub id: String,
     /// Kind identifier — must match a registered node kind (e.g. `"n.web.response"`).
     pub kind: String,
-    /// Input pin names for this instance.  Alias: `"inputs"` in JSON.
-    #[serde(default, alias = "inputs")]
+    /// Input pin names for this instance.
+    #[serde(default)]
     pub input_pins: Vec<String>,
-    /// Output pin names for this instance.  Alias: `"outputs"` in JSON.
-    #[serde(default, alias = "outputs")]
+    /// Output pin names for this instance.
+    #[serde(default)]
     pub output_pins: Vec<String>,
     /// Node-specific configuration blob.  Shape is defined by the kind's
     /// [`NodeDefinition::config_schema`].  Validated at register time; deserialized into
@@ -658,8 +667,9 @@ pub struct PipelineNode {
 
 /// A directed connection from one node's output pin to another node's input pin.
 ///
-/// Together, all edges in a [`PipelineGraph`] form the DAG.  The engine follows edges
-/// to determine which node fires next and what payload it receives.
+/// Together, all edges in a [`PipelineGraph`] form a directed graph. The engine
+/// follows edges to determine which node fires next and what payload it receives.
+/// Cycles are permitted.
 ///
 /// # Example
 ///
@@ -667,16 +677,14 @@ pub struct PipelineNode {
 /// { "from_node": "trigger", "from_pin": "out", "to_node": "query", "to_pin": "in" }
 /// ```
 ///
-/// The `from`/`to` aliases allow a shorter JSON representation in `.zf.json` files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PipelineEdge {
-    /// Source node id.  Alias: `"from"` in JSON.
-    #[serde(alias = "from")]
+    /// Source node id.
     pub from_node: String,
     /// Output pin name on the source node (e.g. `"out"`, `"true"`, `"error"`).
     pub from_pin: String,
-    /// Target node id.  Alias: `"to"` in JSON.
-    #[serde(alias = "to")]
+    /// Target node id.
     pub to_node: String,
     /// Input pin name on the target node (almost always `"in"`).
     pub to_pin: String,
@@ -695,6 +703,7 @@ pub struct PipelineEdge {
 /// const rows = await n.pg.query({ credential_id: "main-db", query: "SELECT * FROM posts" });
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NodeScriptBridge {
     /// Function name exposed in the script sandbox (e.g. `"n.pg.query"`).
     pub name: String,
@@ -710,6 +719,7 @@ pub struct NodeScriptBridge {
 /// during an agentic pipeline run (e.g. Zebtune calling `n.pg.query` to answer a question).
 /// `tool_input_schema` is a JSON Schema object the LLM uses to form valid tool arguments.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NodeAiToolDefinition {
     /// Whether this node is exposed as an AI tool.
     #[serde(default)]
@@ -765,6 +775,7 @@ pub struct NodeAiToolDefinition {
 ///
 /// The [`NodeUsageMatrix`] in [`NodeContractItem`] captures all three dimensions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct NodeDefinition {
     /// Stable kind id — must be unique across all registered nodes.
     /// Convention: `n.<category>.<action>` (e.g. `n.pg.query`, `n.web.response`).
@@ -1328,11 +1339,3 @@ impl Display for PipelineError {
 }
 
 impl std::error::Error for PipelineError {}
-
-fn default_pipeline_kind() -> String {
-    "zebflow.pipeline".to_string()
-}
-
-fn default_pipeline_version() -> String {
-    "0.1".to_string()
-}

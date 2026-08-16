@@ -1,31 +1,31 @@
 # Zeb Libraries
 
-This folder contains platform-managed web libraries that are curated by Zebflow.
+This folder contains the browser libraries that Zebflow reviews, bundles, and
+ships with the platform.
 
-Current rule:
+## Current Model
 
-1. root-level discovery for maintainers and GitHub readers
-2. project installs pin concrete versions in project state
-3. these root packages are the source catalog, not the project's durable state
+Zebflow embeds these files in the executable and serves them from local asset
+routes. A project enables a library in Project Settings. Zebflow records the
+requested state in `repo/zebflow.yaml` and the exact resolved artifact in
+`repo/zeb.lock`.
 
-## Runtime Installation Model
+The project does not run `npm`, create `node_modules`, or download a package
+when a template is saved.
 
-Library installation is project-triggered and uses the office's shared library
-root. `{data_root}` is already the mounted persistence root; there is no nested
-`mounted/` directory in the storage contract.
+## Supported Dependency Paths
 
-1. Resolve dependency list + pinned versions from Zeb library spec.
-2. Download package archives into the shared library root:
-   - `{data_root}/libraries/downloads/external/js-registry/...`
-3. Extract package bodies into the shared library root:
-   - `{data_root}/libraries/installed/external/js-registry/{package}/{version}/package`
-4. Build declaration/export indexes for autocomplete:
-   - `{data_root}/libraries/indexes/external/js-registry/{package}/{version}/exports.json`
-5. Link dependencies into each project workspace:
-   - `{project}/repo/node_modules/...` (symlinked to shared library root)
-6. Persist project lock state:
-   - `{project}/repo/libraries.lock.json`
-7. Bundle/minify project assets into:
-   - `{project}/data/runtime/web-assets/rwe/chunks/...`
+1. Write a focused TypeScript module in the project under `repo/pipelines/`.
+2. Add a reviewed script or template package from Zebflow Hub.
+3. Enable a bundled `zeb/*` library and pin it through `zeb.lock`.
 
-Template save triggers project-level library detection + asset preparation for used libraries.
+Direct npm ingestion is not a supported project feature. It requires a complete
+supply chain policy for transitive dependencies, lifecycle scripts, archive
+limits, compilation, integrity, and capability review. That work remains a
+future direction.
+
+## Maintainer Rule
+
+Upstream npm tools may be used outside Zebflow to build an official bundled
+library. The reviewed output committed here is the runtime artifact. End-user
+projects never depend on that build toolchain.

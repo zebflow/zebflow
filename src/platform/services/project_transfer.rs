@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
+use crate::contracts::kinds::ProjectBundleContract;
+use crate::contracts::{ContractMetadata, read_optional_contract, write_contract};
 use crate::infra::execution::placement::ProjectRuntimePlacement;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::error::PlatformError;
@@ -22,7 +24,7 @@ use crate::platform::model::{
     ProjectTransferArtifactKind, ProjectTransferManifest, now_ts, slug_segment,
 };
 use crate::platform::sekejap;
-use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::services::project_config::ProjectConfigurationService;
 use crate::platform::sqlite_schema;
 
 #[derive(Default)]
@@ -34,7 +36,7 @@ struct DirectoryStats {
 /// Export/import service for project-scoped portability archives.
 pub struct ProjectTransferService {
     file: Arc<dyn FileAdapter>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
     data_root: PathBuf,
     artifacts_root: PathBuf,
 }
@@ -43,7 +45,7 @@ impl ProjectTransferService {
     /// Create a new transfer service. Artifacts are stored under the controller data root.
     pub fn new(
         file: Arc<dyn FileAdapter>,
-        zebflow_cfg: Arc<ZebflowJsonService>,
+        zebflow_cfg: Arc<ProjectConfigurationService>,
         data_root: PathBuf,
         artifacts_root: PathBuf,
     ) -> Self {
@@ -109,7 +111,6 @@ impl ProjectTransferService {
         fs::create_dir_all(&staging)?;
 
         let mut manifest = ProjectTransferManifest {
-            schema_version: "0.3.0".to_string(),
             owner: owner.clone(),
             project: project.clone(),
             artifact_kind: kind,
@@ -139,10 +140,17 @@ impl ProjectTransferService {
             }
         }
 
-        fs::write(
-            staging.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
+        write_contract::<ProjectBundleContract>(
+            &staging.join("manifest.json"),
+            ContractMetadata::named(&project),
+            manifest.clone(),
+        )
+        .map_err(|err| {
+            PlatformError::new(
+                "PROJECT_TRANSFER_MANIFEST_WRITE",
+                format!("{} ({})", err, err.category()),
+            )
+        })?;
         create_tar_archive(&staging, output_path)?;
         fs::remove_dir_all(&staging)?;
         Ok(manifest)
@@ -174,8 +182,21 @@ impl ProjectTransferService {
         fs::create_dir_all(&extract_dir)?;
         extract_tar_archive(archive_path, &extract_dir)?;
 
-        let manifest: ProjectTransferManifest =
-            serde_json::from_slice(&fs::read(extract_dir.join("manifest.json"))?)?;
+        let manifest_path = extract_dir.join("manifest.json");
+        let manifest = read_optional_contract::<ProjectBundleContract>(&manifest_path)
+            .map_err(|err| {
+                PlatformError::new(
+                    "PROJECT_TRANSFER_MANIFEST_READ",
+                    format!("{} ({})", err, err.category()),
+                )
+            })?
+            .ok_or_else(|| {
+                PlatformError::new(
+                    "PROJECT_TRANSFER_MANIFEST_READ",
+                    "archive is missing manifest.json",
+                )
+            })?
+            .spec;
         if manifest.owner != owner || manifest.project != project {
             fs::remove_dir_all(&extract_dir)?;
             return Err(PlatformError::new(
@@ -304,4 +325,137 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<DirectoryStats, Pl
         }
     }
     Ok(stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::decode_contract;
+    use crate::contracts::kinds::{
+        DependencyLockNodeBundleSpec, DependencyLockSource, DependencyLockSpec, NodeBundleContract,
+    };
+    use crate::infra::io::durable::directory_tree_sha256;
+    use crate::platform::adapters::file::{FileAdapter, FilesystemFileAdapter};
+    use crate::platform::services::{DependencyLockService, LibraryService};
+
+    #[test]
+    fn bundle_transfer_preserves_and_resolves_all_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let source_root = root.path().join("source");
+        let target_root = root.path().join("target");
+        let owner = "owner";
+        let project = "portable-project";
+
+        let source_file: Arc<dyn FileAdapter> =
+            Arc::new(FilesystemFileAdapter::new(source_root.join("users")));
+        source_file.initialize().unwrap();
+        let source_config = Arc::new(ProjectConfigurationService::new(source_root.join("users")));
+        source_config
+            .ensure_initialized(owner, project, "Portable Project")
+            .unwrap();
+        let library = Arc::new(LibraryService::from_embedded().unwrap());
+        let source_lock = DependencyLockService::with_library_service(
+            source_root.join("users"),
+            Arc::clone(&library),
+        );
+        source_config
+            .enable_rwe_library(owner, project, "zeb/deckgl", "full-9.x", "offline")
+            .unwrap();
+        let requested_libraries = source_config.get_rwe_libraries(owner, project).unwrap();
+        source_lock
+            .repair_rwe_libraries(owner, project, &requested_libraries)
+            .unwrap();
+
+        let source_layout = source_file.ensure_project_layout(owner, project).unwrap();
+        let package_dir = source_layout.repo_nodes_dir.join("openai-embedding");
+        copy_dir_recursive(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("composites")
+                .join("openai-embedding"),
+            &package_dir,
+        )
+        .unwrap();
+        let definition_path = package_dir.join("definition.json");
+        let document =
+            decode_contract::<NodeBundleContract>(&std::fs::read(&definition_path).unwrap())
+                .unwrap();
+        let mut definitions = document
+            .spec
+            .nodes
+            .iter()
+            .map(|node| node.kind.clone())
+            .collect::<Vec<_>>();
+        definitions.sort();
+        let mut lock = source_lock.read(owner, project).unwrap();
+        lock.nodes.bundles.insert(
+            "project/openai-embedding".to_string(),
+            DependencyLockNodeBundleSpec {
+                version: document.spec.version,
+                source: DependencyLockSource::Project,
+                source_id: "project/openai-embedding".to_string(),
+                entry: "nodes/openai-embedding/definition.json".to_string(),
+                integrity: directory_tree_sha256(&package_dir).unwrap(),
+                definitions,
+            },
+        );
+        source_lock.write(owner, project, &lock).unwrap();
+        let source_report = source_lock
+            .status(owner, project, &requested_libraries)
+            .unwrap();
+        assert!(source_report.ok, "{source_report:?}");
+
+        let source_transfer = ProjectTransferService::new(
+            Arc::clone(&source_file),
+            Arc::clone(&source_config),
+            source_root.clone(),
+            source_root.join("operations"),
+        );
+        let archive = root.path().join("portable-project.tar");
+        source_transfer
+            .export_project(
+                owner,
+                project,
+                ProjectTransferArtifactKind::Bundle,
+                Some("source-office"),
+                None,
+                None,
+                &archive,
+            )
+            .unwrap();
+
+        let target_file: Arc<dyn FileAdapter> =
+            Arc::new(FilesystemFileAdapter::new(target_root.join("users")));
+        target_file.initialize().unwrap();
+        let target_config = Arc::new(ProjectConfigurationService::new(target_root.join("users")));
+        target_config
+            .ensure_initialized(owner, project, "Target Placeholder")
+            .unwrap();
+        let target_transfer = ProjectTransferService::new(
+            Arc::clone(&target_file),
+            Arc::clone(&target_config),
+            target_root.clone(),
+            target_root.join("operations"),
+        );
+        target_transfer
+            .import_project(
+                owner,
+                project,
+                ProjectTransferArtifactKind::Bundle,
+                &archive,
+            )
+            .unwrap();
+
+        let target_lock =
+            DependencyLockService::with_library_service(target_root.join("users"), library);
+        let target_requested = target_config.get_rwe_libraries(owner, project).unwrap();
+        let report = target_lock
+            .status(owner, project, &target_requested)
+            .unwrap();
+        assert!(report.ok, "{report:?}");
+        assert_eq!(report.resolved, 2);
+        assert_eq!(target_lock.read(owner, project).unwrap(), lock);
+
+        let empty = DependencyLockSpec::default();
+        assert_ne!(target_lock.read(owner, project).unwrap(), empty);
+    }
 }

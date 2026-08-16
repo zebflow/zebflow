@@ -272,8 +272,6 @@ mod tests {
     #[test]
     fn auto_tidy_layers_pipeline_left_to_right() {
         let mut graph = PipelineGraph {
-            kind: "zebflow.pipeline".to_string(),
-            version: "0.1".to_string(),
             id: "test".to_string(),
             description: None,
             metadata: None,

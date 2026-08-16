@@ -32,6 +32,8 @@ async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml_ng = "0.10.0"
+saphyr-parser = "0.0.11"
 axum = { version = "0.8", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "time"] }
 pulldown-cmark = "0.12"

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::infra::cluster::config::ClusterSettings;
 use crate::infra::cluster::registry::WorkerHeartbeat;
@@ -45,11 +44,10 @@ pub struct PlatformConfig {
     pub file_adapter: FileAdapterKind,
     /// Default superadmin username created on first bootstrap.
     pub default_owner: String,
-    /// Initial superadmin password created on first bootstrap.
+    /// Optional initial superadmin password created on first bootstrap.
     ///
-    /// This should be supplied explicitly by the host (for example from
-    /// `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD`) rather than relying on a baked-in
-    /// repository default.
+    /// When empty, Zebflow generates a random password and stores it in a
+    /// private file under the platform data root.
     pub default_password: String,
     /// Default project slug created on first bootstrap.
     pub default_project: String,
@@ -148,6 +146,7 @@ pub struct PlatformProject {
 /// Defines a credential type (e.g. `postgres`, `telegram_bot`).
 /// Same format for official (built-in) and custom (from composite/WASM packages).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialTypeDef {
     /// Unique kind identifier, e.g. `"postgres"`, `"telegram_bot"`.
     pub kind: String,
@@ -172,6 +171,7 @@ pub struct CredentialTypeDef {
 
 /// One field in a credential type definition form.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialFieldDef {
     /// Secret JSON key this field writes to.
     pub key: String,
@@ -1331,7 +1331,7 @@ pub struct GitCommitRequest {
 /// Request body for `PUT /api/projects/{owner}/{project}/settings/{section}`.
 ///
 /// Wraps the section-specific data alongside a git commit message.
-/// The handler writes the section to `zebflow.json` then commits the file.
+/// The handler writes the section to `zebflow.yaml` then commits the file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateSettingsSectionRequest {
     /// Git commit message. Shown in the commit dialog before save.
@@ -1851,8 +1851,8 @@ pub struct ProjectFileLayout {
     pub repo_pipelines_dir: PathBuf,
     /// `.../repo/docs` (project docs: ERD, README.md, AGENTS.md, use cases, etc.; UI label may be "Schema")
     pub repo_docs_dir: PathBuf,
-    /// `.../repo/zebflow.json` (Layer 2 non-sensitive project config, git-synced).
-    pub zebflow_json_file: PathBuf,
+    /// `.../repo/zebflow.yaml` (non-sensitive project configuration, git-synced).
+    pub project_config_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
     /// `.../repo/nodes` — installed composite/WASM node packages.
@@ -1873,6 +1873,7 @@ pub enum NodePackageSource {
 
 /// Runtime configuration for a composite node package.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct CompositeNodeRuntime {
     /// Relative filename of the inner function pipeline (e.g. `"pipeline.zf.json"`).
     pub pipeline: String,
@@ -1880,6 +1881,7 @@ pub struct CompositeNodeRuntime {
 
 /// Runtime configuration for a WASM node package (future).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct WasmNodeRuntime {
     /// Relative filename of the WASM module (e.g. `"module.wasm"`).
     pub module: String,
@@ -1897,6 +1899,7 @@ pub struct WasmNodeRuntime {
 /// into one `NodePackageManifest` per node, each carrying the shared credentials
 /// and functions map.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct NodePackageManifest {
     /// Package source type.
     pub source: NodePackageSource,
@@ -1925,13 +1928,11 @@ pub struct NodePackageManifest {
     /// Lifecycle hooks (on_activate, on_deactivate).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<PackageLifecycleConfig>,
-    /// Package slug (directory name), set by the loader.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub package_slug: String,
 }
 
 /// Trigger configuration for a composite trigger node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PackageTriggerConfig {
     /// Trigger type: "webhook", "ws", "ws_client", "cron".
     #[serde(rename = "type")]
@@ -1947,6 +1948,7 @@ pub struct PackageTriggerConfig {
 
 /// Lifecycle hook configuration for a composite node.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PackageLifecycleConfig {
     /// Function to run when the pipeline is activated.
     #[serde(default)]
@@ -1961,6 +1963,7 @@ pub struct PackageLifecycleConfig {
 /// A single file declaring N nodes, shared credentials, and reusable function pipelines.
 /// The loader explodes this into N `NodePackageManifest` entries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultiNodePackageDefinition {
     /// Package identifier.
     pub package: String,
@@ -1989,6 +1992,7 @@ pub struct MultiNodePackageDefinition {
 
 /// A single node entry within a multi-node package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultiNodeEntry {
     /// Node kind (e.g. `"n.c.tg.send"`).
     pub kind: String,
@@ -2023,6 +2027,7 @@ pub struct MultiNodeEntry {
 /// The full `NodeDefinition` is constructed by the loader, filling in kind/title/description
 /// from the parent `MultiNodeEntry`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MultiNodeEntryDefinition {
     #[serde(default)]
     pub input_pins: Vec<String>,
@@ -2108,21 +2113,16 @@ pub struct ResolvedGitIdentity {
     pub source: GitIdentitySource,
 }
 
-/// Layer 2 project config stored in `repo/zebflow.json` (git-synced, non-sensitive).
+/// Runtime view of project configuration loaded from `repo/zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJson {
-    #[serde(default = "default_zebflow_json_version")]
-    pub version: String,
     #[serde(default)]
     pub metadata: ZebflowJsonMetadata,
     #[serde(default)]
     pub configs: ZebflowJsonConfigs,
     #[serde(default)]
     pub distribution: ZebflowJsonDistribution,
-}
-
-fn default_zebflow_json_version() -> String {
-    "1.0".to_string()
 }
 
 fn default_max_asset_size_mb() -> u32 {
@@ -2142,7 +2142,6 @@ pub fn default_pipeline_node_timeout_secs() -> u64 {
 impl Default for ZebflowJson {
     fn default() -> Self {
         Self {
-            version: default_zebflow_json_version(),
             metadata: ZebflowJsonMetadata::default(),
             configs: ZebflowJsonConfigs::default(),
             distribution: ZebflowJsonDistribution::default(),
@@ -2151,6 +2150,7 @@ impl Default for ZebflowJson {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonMetadata {
     #[serde(default)]
     pub title: String,
@@ -2159,6 +2159,7 @@ pub struct ZebflowJsonMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonConfigs {
     #[serde(default)]
     pub rwe: ZebflowJsonRwe,
@@ -2181,25 +2182,27 @@ pub struct ZebflowJsonConfigs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonPipelines {
     #[serde(default)]
     pub logging: ZebflowJsonLogging,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_timeout_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub nodes: HashMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonData {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonFiles {
     #[serde(default)]
     pub uploads: ZebflowJsonUploads,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonUploads {
     /// Max allowed size in MB for a single uploaded asset file (5–1024, default 10).
     #[serde(default = "default_max_asset_size_mb")]
@@ -2251,12 +2254,14 @@ impl ZebflowJsonPipelines {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonDistribution {
     #[serde(default)]
     pub hub: ZebflowJsonDistributionHub,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonDistributionHub {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub entry_url: String,
@@ -2266,24 +2271,27 @@ pub struct ZebflowJsonDistributionHub {
     pub producer_enabled: bool,
 }
 
-/// Lock settings stored in `zebflow.json` — controls which resources agents cannot access.
+/// Lock settings loaded from `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonLocks {
     /// Template rel_paths (files or folder prefixes) blocked from agent read/write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<String>,
 }
 
-/// Git settings section of `zebflow.json`.
+/// Git settings loaded from `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonGit {
     #[serde(default)]
     pub remote: ZebflowJsonGitRemote,
 }
 
-/// Git remote section of `zebflow.json`.
+/// Git remote settings loaded from `zebflow.yaml`.
 /// Stores remote repository configuration for push/sync operations.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonGitRemote {
     /// Credential ID for authenticated push (references `ProjectCredential.credential_id`).
     #[serde(default)]
@@ -2296,12 +2304,13 @@ pub struct ZebflowJsonGitRemote {
     pub branch: String,
 }
 
-/// RWE settings section of `zebflow.json`.
+/// RWE settings loaded from `zebflow.yaml`.
 ///
 /// Controls project-level compile/render behaviour for all `n.web.response` template nodes.
 /// Values are merged into [`crate::rwe::ReactiveWebOptions`] at execution time,
 /// before each pipeline run. Node-level `--load-scripts` is appended on top.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonRwe {
     /// URL patterns applied to the RWE resource allow-list (scripts and CSS).
     ///
@@ -2339,11 +2348,24 @@ pub struct ZebflowJsonRwe {
     pub deployment_asset_base: Option<String>,
 }
 
-/// Enabled library map stored under `rwe.libraries` in `zebflow.json`.
+impl Default for ZebflowJsonRwe {
+    fn default() -> Self {
+        Self {
+            allow_list: Vec::new(),
+            minify_html: false,
+            strict_mode: default_rwe_strict_mode(),
+            libraries: HashMap::new(),
+            deployment_asset_base: None,
+        }
+    }
+}
+
+/// Enabled library map loaded from `rwe.libraries` in `zebflow.yaml`.
 pub type ZebflowJsonRweLibraries = HashMap<String, ZebflowJsonRweLibraryEntry>;
 
-/// One enabled library entry stored in `zebflow.json`.
+/// One enabled library entry loaded from `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonRweLibraryEntry {
     /// Pinned packed version string (e.g. `"bridge-0.1"`).
     pub version: String,
@@ -2351,43 +2373,11 @@ pub struct ZebflowJsonRweLibraryEntry {
     pub source: String,
 }
 
-/// Lock file model — stored at `repo/zeb.lock` (git-tracked).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZebLock {
-    /// Schema version; current is 1.
-    pub version: u32,
-    /// Locked library entries keyed by library name.
-    #[serde(default)]
-    pub libraries: HashMap<String, ZebLockEntry>,
-}
-
-impl Default for ZebLock {
-    fn default() -> Self {
-        Self {
-            version: 1,
-            libraries: HashMap::new(),
-        }
-    }
-}
-
-/// One locked library entry in `zeb.lock`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZebLockEntry {
-    /// Pinned packed version string (e.g. `"bridge-0.1"`).
-    pub version: String,
-    /// Source kind: `"offline"` or `"online"`.
-    pub source: String,
-    /// Relative runtime entry path (e.g. `"runtime/threejs.bundle.mjs"`).
-    pub entry: String,
-    /// SHA-256 integrity hash of the bundle file; `None` for embedded bridge bundles.
-    pub integrity: Option<String>,
-}
-
 pub fn default_rwe_strict_mode() -> bool {
     true
 }
 
-/// API request to update the project-level RWE settings in `zebflow.json`.
+/// API request to update project-level RWE settings in `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpsertRweSettingsRequest {
     #[serde(default)]
@@ -2398,10 +2388,11 @@ pub struct UpsertRweSettingsRequest {
     pub strict_mode: bool,
 }
 
-/// Logging settings section of zebflow.json.
+/// Logging settings loaded from `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonLogging {
-    /// Max invocation entries to retain per pipeline. Defaults to 10.
+    /// Max invocation entries to retain per pipeline. Defaults to 20.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_invocations: Option<u32>,
 }
@@ -2455,8 +2446,9 @@ pub struct PipelineInvocationLogStats {
     pub pipelines: Vec<PipelineInvocationLogPipelineStats>,
 }
 
-/// Assistant settings section of zebflow.json.
+/// Assistant settings loaded from `zebflow.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ZebflowJsonAssistant {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub high_model_credential: Option<String>,
@@ -2595,9 +2587,8 @@ impl ProjectTransferArtifactKind {
 
 /// Versioned manifest embedded in exported project portability archives.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectTransferManifest {
-    /// Manifest schema version.
-    pub schema_version: String,
     /// Stable owner id.
     pub owner: String,
     /// Stable project slug.

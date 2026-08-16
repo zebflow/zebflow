@@ -1,10 +1,10 @@
 //! Asset hub service.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
 use image::{DynamicImage, GenericImageView, ImageFormat, imageops::FilterType};
@@ -13,24 +13,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::infra::io::durable::{
-    JsonContract, JsonContractField, JsonContractValue, atomic_write, parse_versioned_json,
+use crate::contracts::kinds::{
+    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageContract, ProjectConfigurationContract,
+    decode_pipeline_graph,
 };
+use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
+use crate::infra::io::durable::{atomic_write, durable_remove_file};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetPackage, HubAssetVersion,
     HubAuthority, HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance,
-    ProjectFileLayout, ProjectHubRepository, ProjectRuntimeSelectionRequest, ZebflowJson, now_ts,
-    slug_segment,
+    ProjectFileLayout, ProjectHubRepository, ProjectRuntimeSelectionRequest, now_ts, slug_segment,
 };
 use crate::platform::policy::package::{
     PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview, review_package_entries,
 };
 use crate::platform::sekejap;
-use crate::platform::services::ProjectService;
 use crate::platform::services::project::derive_trigger_kind_from_source;
 use crate::platform::services::tsx_outline::extract_import_sources;
+use crate::platform::services::{DependencyLockService, NodeRegistryService, ProjectService};
 use crate::platform::sqlite_schema;
 use crate::zebfs::{LocalZebFs, normalize_object_path};
 
@@ -38,21 +40,16 @@ pub struct HubService {
     control_data: Arc<dyn DataAdapter>,
     hub_data: Arc<dyn DataAdapter>,
     projects: Arc<ProjectService>,
+    node_registry: Arc<NodeRegistryService>,
+    dependency_lock: Arc<DependencyLockService>,
     data_root: PathBuf,
+    install_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
 pub const DEFAULT_HUB_SERVICE_INSTANCE_ID: &str = "hub-default";
 pub const HUB_SERVICE_KIND: &str = "hub";
 const HUB_SERVICE_SCOPE_OWNER: &str = "hub-service";
 const HUB_SERVICE_SCOPE_PROJECT: &str = "hub-default";
-const HUB_ARTIFACT_SCHEMA: &str = "zebflow.asset-pack.v1";
-const HUB_ARTIFACT_CONTRACT: JsonContract = JsonContract {
-    name: "Hub artifact",
-    fields: &[JsonContractField {
-        name: "schema",
-        expected: JsonContractValue::String(HUB_ARTIFACT_SCHEMA),
-    }],
-};
 const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = 25 * 1024 * 1024;
 const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
 const DEFAULT_PUBLISHER_MAX_PACKAGE_BYTES: i64 = 10 * 1024 * 1024;
@@ -114,6 +111,7 @@ pub struct HubPublishSourceItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HubExportEntry {
     pub rel_path: String,
     pub kind: String,
@@ -153,6 +151,7 @@ pub struct HubProjectBundlePublishOptions {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubProjectInitialization {
     #[serde(default)]
     include_sekejap_schema: bool,
@@ -165,6 +164,7 @@ struct HubProjectInitialization {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HubInitialDataStep {
     pub engine: String,
     pub path: String,
@@ -178,9 +178,17 @@ pub struct HubInitialDataStep {
 pub struct HubInstallResult {
     pub package_id: String,
     pub version: String,
+    pub asset_kind: String,
     pub install_root: String,
     pub files_written: usize,
     pub pipelines_registered: Vec<String>,
+}
+
+struct PreparedHubInstallEntry {
+    install_rel: String,
+    destination: PathBuf,
+    bytes: Vec<u8>,
+    previous: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -322,8 +330,8 @@ struct RemoteHubAssetVersion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubArtifact {
-    schema: String,
     asset_kind: String,
     #[serde(default)]
     source_type: String,
@@ -361,6 +369,7 @@ struct HubArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HubMediaFile {
     pub name: String,
     pub role: String,
@@ -372,6 +381,7 @@ pub struct HubMediaFile {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubGallery {
     #[serde(default)]
     cover: Option<HubGalleryImage>,
@@ -380,6 +390,7 @@ struct HubGallery {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubGalleryImage {
     kind: String,
     media_name: String,
@@ -388,6 +399,7 @@ struct HubGalleryImage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HubGalleryItem {
     kind: String,
     #[serde(default)]
@@ -424,13 +436,18 @@ impl HubService {
         control_data: Arc<dyn DataAdapter>,
         hub_data: Arc<dyn DataAdapter>,
         projects: Arc<ProjectService>,
+        node_registry: Arc<NodeRegistryService>,
+        dependency_lock: Arc<DependencyLockService>,
         data_root: PathBuf,
     ) -> Self {
         Self {
             control_data,
             hub_data,
             projects,
+            node_registry,
+            dependency_lock,
             data_root,
+            install_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -995,31 +1012,7 @@ impl HubService {
         if owner.is_empty() || project.is_empty() {
             return Ok(());
         }
-        self.ensure_default_platform_repository(&owner)?;
-        let has_default_grant = self
-            .control_data
-            .list_hub_access_grants(&owner)?
-            .into_iter()
-            .any(|grant| {
-                grant.repository_id == "zebflow-com"
-                    && grant.grant_scope == "all_projects"
-                    && grant.enabled
-                    && grant.can_read
-            });
-        if !has_default_grant {
-            self.upsert_access_grant(
-                &owner,
-                "zebflow-com",
-                "all_projects",
-                "",
-                "",
-                true,
-                false,
-                false,
-                true,
-            )?;
-        }
-        Ok(())
+        self.ensure_default_platform_repository(&owner)
     }
 
     pub fn list_platform_repositories(
@@ -1522,7 +1515,6 @@ impl HubService {
         }
         let now = now_ts();
         let manifest = HubArtifact {
-            schema: HUB_ARTIFACT_SCHEMA.to_string(),
             asset_kind: preview.asset_kind.clone(),
             source_type: source_type.clone(),
             source_owner: source_owner.clone(),
@@ -1563,8 +1555,7 @@ impl HubService {
             project_initialization,
             files: preview.entries.clone(),
         };
-        let artifact_bytes = serde_json::to_vec_pretty(&manifest)
-            .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
+        let artifact_bytes = encode_hub_artifact(&package_id, &version, &manifest, "HUB_PUBLISH")?;
         let artifact_sha256 = sha256_hex(&artifact_bytes);
         let existing_package = self.hub_data.get_hub_asset_package(&package_id)?;
         self.enforce_publisher_package_quota(
@@ -1731,9 +1722,8 @@ impl HubService {
         {
             let export = sekejap::export_schema(&self.data_root, source_owner, source_project)?;
             if !export.tables.is_empty() {
-                let content = serde_json::to_string_pretty(&export)
-                    .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?
-                    + "\n";
+                let content = String::from_utf8(sekejap::encode_schema_export(export)?)
+                    .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
                 preview.entries.push(text_export_entry(
                     "schemas/sekejap/schema.json",
                     "sekejap schema",
@@ -1843,6 +1833,7 @@ impl HubService {
             package_id,
             version,
             target_folder,
+            &format!("local/{package_id}"),
             payload,
         )
     }
@@ -1885,44 +1876,185 @@ impl HubService {
         package_id: &str,
         version: &str,
         target_folder: &str,
+        source_id: &str,
         payload: HubArtifact,
     ) -> Result<HubInstallResult, PlatformError> {
         let layout = self
             .projects
             .project_layout(&target_owner, &target_project)?;
+        let install_lock = self.install_lock(&layout.repo_dir);
+        let _install_guard = install_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let install_root =
             install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
+        let prepared = prepare_hub_install_entries(&layout, &install_root, &payload.files)?;
+        validate_prepared_pipeline_sources(&prepared)?;
+        let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+            Some(self.dependency_lock.read(&target_owner, &target_project)?)
+        } else {
+            None
+        };
 
         let mut pipelines_registered = Vec::new();
-        for entry in &payload.files {
-            let install_rel = install_rel_path_under_folder(&install_root, &entry.rel_path);
-            let dest_abs = layout.repo_dir.join(&install_rel);
-            if let Some(parent) = dest_abs.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            write_entry_content(&dest_abs, entry)?;
-            if install_rel.ends_with(".zf.json") && install_rel.starts_with("pipelines/") {
-                let source = fs::read_to_string(&dest_abs)?;
-                let (title, trigger_kind) = infer_pipeline_meta(&source, &install_rel);
-                let meta = self.projects.upsert_pipeline_definition(
+        for entry in &prepared {
+            if let Err(error) = atomic_write(&entry.destination, &entry.bytes) {
+                let operation_error = PlatformError::new("HUB_INSTALL", error.to_string());
+                return Err(self.recover_failed_install(
                     &target_owner,
                     &target_project,
-                    &install_rel,
+                    &prepared,
+                    previous_lock.as_ref(),
+                    operation_error,
+                ));
+            }
+        }
+        for entry in &prepared {
+            if entry.install_rel.ends_with(".zf.json")
+                && entry.install_rel.starts_with("pipelines/")
+            {
+                let source = String::from_utf8(entry.bytes.clone()).map_err(|error| {
+                    PlatformError::new(
+                        "HUB_INSTALL",
+                        format!("pipeline source is not UTF-8: {error}"),
+                    )
+                })?;
+                let (title, trigger_kind) = infer_pipeline_meta(&source, &entry.install_rel);
+                let meta = match self.projects.upsert_pipeline_definition(
+                    &target_owner,
+                    &target_project,
+                    &entry.install_rel,
                     &title,
                     "",
                     &trigger_kind,
                     &source,
-                )?;
+                ) {
+                    Ok(meta) => meta,
+                    Err(error) => {
+                        return Err(self.recover_failed_install(
+                            &target_owner,
+                            &target_project,
+                            &prepared,
+                            previous_lock.as_ref(),
+                            error,
+                        ));
+                    }
+                };
                 pipelines_registered.push(meta.file_rel_path);
+            }
+        }
+        if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+            let dependency_result = self
+                .node_registry
+                .refresh_project(&target_owner, &target_project)
+                .and_then(|_| {
+                    self.dependency_lock.record_hub_node_bundles(
+                        &target_owner,
+                        &target_project,
+                        &install_root,
+                        source_id,
+                        version,
+                    )
+                });
+            if let Err(error) = dependency_result {
+                return Err(self.recover_failed_install(
+                    &target_owner,
+                    &target_project,
+                    &prepared,
+                    previous_lock.as_ref(),
+                    error,
+                ));
             }
         }
         Ok(HubInstallResult {
             package_id: package_id.to_string(),
             version: version.to_string(),
+            asset_kind: payload.asset_kind,
             install_root,
             files_written: payload.files.len(),
             pipelines_registered,
         })
+    }
+
+    fn install_lock(&self, repo_dir: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .install_locks
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        locks
+            .entry(repo_dir.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    fn recover_failed_install(
+        &self,
+        owner: &str,
+        project: &str,
+        entries: &[PreparedHubInstallEntry],
+        previous_lock: Option<&crate::contracts::kinds::DependencyLockSpec>,
+        operation_error: PlatformError,
+    ) -> PlatformError {
+        let mut recovery_errors = Vec::new();
+        if let Err(error) = restore_hub_install_entries(entries) {
+            recovery_errors.push(error.to_string());
+        }
+        if let Some(previous) = previous_lock {
+            if let Err(error) = self.dependency_lock.write(owner, project, previous) {
+                recovery_errors.push(error.to_string());
+            }
+            if let Err(error) = self.node_registry.refresh_project(owner, project) {
+                recovery_errors.push(error.to_string());
+            }
+        }
+        if let Err(error) = self.restore_pipeline_metadata(owner, project, entries) {
+            recovery_errors.push(error.to_string());
+        }
+        if recovery_errors.is_empty() {
+            operation_error
+        } else {
+            PlatformError::new(
+                "HUB_INSTALL_RECOVERY",
+                format!(
+                    "installation failed ({operation_error}); recovery also failed: {}",
+                    recovery_errors.join("; ")
+                ),
+            )
+        }
+    }
+
+    fn restore_pipeline_metadata(
+        &self,
+        owner: &str,
+        project: &str,
+        entries: &[PreparedHubInstallEntry],
+    ) -> Result<(), PlatformError> {
+        for entry in entries.iter().filter(|entry| {
+            entry.install_rel.starts_with("pipelines/") && entry.install_rel.ends_with(".zf.json")
+        }) {
+            if let Some(previous) = &entry.previous {
+                let source = String::from_utf8(previous.clone()).map_err(|error| {
+                    PlatformError::new(
+                        "HUB_INSTALL_RECOVERY",
+                        format!("previous pipeline source is not UTF-8: {error}"),
+                    )
+                })?;
+                let (title, trigger_kind) = infer_pipeline_meta(&source, &entry.install_rel);
+                self.projects.upsert_pipeline_definition(
+                    owner,
+                    project,
+                    &entry.install_rel,
+                    &title,
+                    "",
+                    &trigger_kind,
+                    &source,
+                )?;
+            } else {
+                self.projects
+                    .delete_pipeline(owner, project, &entry.install_rel)?;
+            }
+        }
+        Ok(())
     }
 
     fn review_artifact_payload(
@@ -2157,8 +2289,6 @@ impl HubService {
             })
             .unwrap_or_default();
         sanitize_hub_export_entries(&mut artifact.files)?;
-        let artifact_value = serde_json::to_value(&artifact)
-            .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
             DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
@@ -2167,7 +2297,9 @@ impl HubService {
         if let Some(parent) = artifact_abs.parent() {
             fs::create_dir_all(parent)?;
         }
-        let artifact_bytes = serde_json::to_vec_pretty(&artifact)
+        let artifact_bytes =
+            encode_hub_artifact(&package_id, &version, &artifact, "HUB_REMOTE_INVALID")?;
+        let artifact_value = serde_json::from_slice(&artifact_bytes)
             .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
         let now = now_ts();
         let authority = self.ensure_service_authority()?;
@@ -2396,6 +2528,7 @@ impl HubService {
             package_id,
             version,
             target_folder,
+            &format!("{repository_id}/{package_id}"),
             artifact,
         )
     }
@@ -2509,7 +2642,8 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
+        let mut artifact =
+            parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
         if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
             return Err(PlatformError::new(
                 "HUB_REMOTE_INVALID",
@@ -2565,6 +2699,8 @@ impl HubService {
             }
         };
         let layout = self.projects.project_layout(&target_owner, &project)?;
+        retarget_project_configuration(&mut artifact.files, &project)?;
+        retarget_dependency_lock(&mut artifact.files, &project)?;
         clear_repo_worktree_preserving_git(&layout.repo_dir)?;
         for entry in &artifact.files {
             let dest_abs = sanitize_install_repo_path(&layout, &entry.rel_path)?;
@@ -3119,27 +3255,33 @@ fn rewrite_project_libraries(
     preview: &mut HubExportPreview,
     selected_libraries: &[String],
 ) -> Result<(), PlatformError> {
-    let Some(entry) = preview
-        .entries
-        .iter_mut()
-        .find(|entry| normalize_repo_rel(&entry.rel_path) == "zebflow.json")
-    else {
+    let Some(entry) = preview.entries.iter_mut().find(|entry| {
+        normalize_repo_rel(&entry.rel_path) == crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
+    }) else {
         return Ok(());
     };
     let Some(raw) = entry_text(entry) else {
-        return Ok(());
+        return Err(PlatformError::new(
+            "HUB_PUBLISH",
+            "zebflow.yaml must be a text entry",
+        ));
     };
-    let Ok(mut cfg) = serde_json::from_str::<ZebflowJson>(&raw) else {
-        return Ok(());
-    };
+    let mut document =
+        crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(raw.as_bytes())
+            .map_err(|err| {
+                PlatformError::new("HUB_PUBLISH", format!("invalid zebflow.yaml: {err}"))
+            })?;
+    let cfg = &mut document.spec;
     let selected = selected_libraries.iter().cloned().collect::<BTreeSet<_>>();
-    cfg.configs
-        .rwe
-        .libraries
-        .retain(|name, _| selected.contains(name));
-    let content = serde_json::to_string_pretty(&cfg)
-        .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?
-        + "\n";
+    cfg.rwe.libraries.retain(|name, _| selected.contains(name));
+    let content = String::from_utf8(
+        crate::contracts::encode_contract_yaml::<ProjectConfigurationContract>(
+            document.metadata,
+            document.spec,
+        )
+        .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?,
+    )
+    .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
     entry.size_bytes = content.len();
     entry.encoding = "text".to_string();
     entry.content = content;
@@ -3913,32 +4055,143 @@ fn default_install_target_folder(package_id: &str, asset_kind: &str) -> String {
 }
 
 fn write_entry_content(dest_abs: &Path, entry: &HubExportEntry) -> Result<(), PlatformError> {
-    let bytes = if entry.encoding == "base64" {
+    atomic_write(dest_abs, &hub_entry_bytes(entry)?)?;
+    Ok(())
+}
+
+fn hub_entry_bytes(entry: &HubExportEntry) -> Result<Vec<u8>, PlatformError> {
+    Ok(if entry.encoding == "base64" {
         base64::engine::general_purpose::STANDARD
             .decode(&entry.content)
             .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?
     } else {
         entry.content.as_bytes().to_vec()
-    };
-    atomic_write(dest_abs, &bytes)?;
+    })
+}
+
+fn prepare_hub_install_entries(
+    layout: &ProjectFileLayout,
+    install_root: &str,
+    files: &[HubExportEntry],
+) -> Result<Vec<PreparedHubInstallEntry>, PlatformError> {
+    let mut seen = HashSet::new();
+    let mut prepared = Vec::with_capacity(files.len());
+    for entry in files {
+        let install_rel = install_rel_path_under_folder(install_root, &entry.rel_path);
+        if !seen.insert(install_rel.clone()) {
+            return Err(PlatformError::new(
+                "HUB_INSTALL",
+                format!("package contains duplicate destination '{install_rel}'"),
+            ));
+        }
+        let destination = layout.repo_dir.join(&install_rel);
+        if !destination.starts_with(&layout.repo_dir) {
+            return Err(PlatformError::new(
+                "HUB_INSTALL",
+                format!("destination '{install_rel}' escapes the project repository"),
+            ));
+        }
+        let previous = match std::fs::symlink_metadata(&destination) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(PlatformError::new(
+                    "HUB_INSTALL",
+                    format!("destination '{install_rel}' is a symbolic link"),
+                ));
+            }
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(PlatformError::new(
+                    "HUB_INSTALL",
+                    format!("destination '{install_rel}' is not a regular file"),
+                ));
+            }
+            Ok(_) => Some(std::fs::read(&destination)?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        prepared.push(PreparedHubInstallEntry {
+            install_rel,
+            destination,
+            bytes: hub_entry_bytes(entry)?,
+            previous,
+        });
+    }
+    Ok(prepared)
+}
+
+fn validate_prepared_pipeline_sources(
+    entries: &[PreparedHubInstallEntry],
+) -> Result<(), PlatformError> {
+    for entry in entries.iter().filter(|entry| {
+        entry.install_rel.starts_with("pipelines/") && entry.install_rel.ends_with(".zf.json")
+    }) {
+        decode_pipeline_graph(&entry.bytes).map_err(|error| {
+            PlatformError::new(
+                "HUB_INSTALL",
+                format!(
+                    "invalid pipeline '{}': {} ({})",
+                    entry.install_rel,
+                    error,
+                    error.category()
+                ),
+            )
+        })?;
+    }
     Ok(())
+}
+
+fn restore_hub_install_entries(entries: &[PreparedHubInstallEntry]) -> Result<(), PlatformError> {
+    let mut errors = Vec::new();
+    for entry in entries.iter().rev() {
+        let result = match &entry.previous {
+            Some(previous) => atomic_write(&entry.destination, previous),
+            None => durable_remove_file(&entry.destination),
+        };
+        if let Err(error) = result {
+            errors.push(format!("{}: {error}", entry.install_rel));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(PlatformError::new(
+            "HUB_INSTALL_RECOVERY",
+            format!("failed restoring package files: {}", errors.join("; ")),
+        ))
+    }
 }
 
 fn parse_hub_artifact_bytes(
     bytes: &[u8],
     error_code: &'static str,
 ) -> Result<HubArtifact, PlatformError> {
-    parse_versioned_json(bytes, HUB_ARTIFACT_CONTRACT)
-        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
+    let document = decode_contract::<HubPackageContract>(bytes)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))?;
+    serde_json::from_value(document.spec)
+        .map_err(|err| PlatformError::new(error_code, err.to_string()))
 }
 
 fn parse_hub_artifact_value(
     value: Value,
     error_code: &'static str,
 ) -> Result<HubArtifact, PlatformError> {
-    let bytes = serde_json::to_vec(&value)
+    let document = decode_contract_value::<HubPackageContract>(value)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))?;
+    serde_json::from_value(document.spec)
+        .map_err(|err| PlatformError::new(error_code, err.to_string()))
+}
+
+fn encode_hub_artifact(
+    package_id: &str,
+    version: &str,
+    artifact: &HubArtifact,
+    error_code: &'static str,
+) -> Result<Vec<u8>, PlatformError> {
+    let mut metadata = ContractMetadata::named(package_id);
+    metadata.version = Some(version.to_string());
+    let spec = serde_json::to_value(artifact)
         .map_err(|err| PlatformError::new(error_code, err.to_string()))?;
-    parse_hub_artifact_bytes(&bytes, error_code)
+    encode_contract::<HubPackageContract>(metadata, spec)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
 }
 
 fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), PlatformError> {
@@ -3966,9 +4219,9 @@ fn reindex_project_bundle_pipelines(
         let Some(source) = entry_text(entry) else {
             continue;
         };
-        let description = serde_json::from_str::<crate::pipeline::PipelineGraph>(&source)
+        let description = decode_pipeline_graph(source.as_bytes())
             .ok()
-            .and_then(|graph| graph.description)
+            .and_then(|document| document.spec.description)
             .unwrap_or_default();
         let trigger_kind = derive_trigger_kind_from_source(&source).unwrap_or_default();
         hub.projects.upsert_pipeline_definition(
@@ -4187,8 +4440,14 @@ fn verify_remote_artifact_hash(payload: &RemoteHubArtifactResponse) -> Result<()
             "remote artifact response is missing artifact hash",
         ));
     }
-    let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
-    let bytes = serde_json::to_vec_pretty(&artifact)
+    let document =
+        decode_contract_value::<HubPackageContract>(payload.artifact.clone()).map_err(|err| {
+            PlatformError::new(
+                "HUB_REMOTE_INVALID",
+                format!("{} ({})", err, err.category()),
+            )
+        })?;
+    let bytes = encode_contract::<HubPackageContract>(document.metadata, document.spec.clone())
         .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
@@ -4217,18 +4476,111 @@ impl EmptyStringExt for String {
 
 fn sanitize_hub_export_entries(entries: &mut [HubExportEntry]) -> Result<(), PlatformError> {
     for entry in entries.iter_mut() {
-        if normalize_repo_rel(&entry.rel_path) != "zebflow.json" || entry.encoding == "base64" {
+        if normalize_repo_rel(&entry.rel_path)
+            != crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
+        {
             continue;
         }
-        let Ok(mut cfg) = serde_json::from_str::<ZebflowJson>(&entry.content) else {
-            continue;
-        };
+        if entry.encoding == "base64" {
+            return Err(PlatformError::new(
+                "HUB_PUBLISH",
+                "zebflow.yaml must be a text entry",
+            ));
+        }
+        let mut document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
+            entry.content.as_bytes(),
+        )
+        .map_err(|err| PlatformError::new("HUB_PUBLISH", format!("invalid zebflow.yaml: {err}")))?;
+        let cfg = &mut document.spec;
         cfg.distribution.hub.producer_enabled = false;
-        let content = serde_json::to_string_pretty(&cfg)
-            .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
+        let content = String::from_utf8(
+            crate::contracts::encode_contract_yaml::<ProjectConfigurationContract>(
+                document.metadata,
+                document.spec,
+            )
+            .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?,
+        )
+        .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
         entry.size_bytes = content.len();
         entry.content = content;
     }
+    Ok(())
+}
+
+fn retarget_project_configuration(
+    entries: &mut [HubExportEntry],
+    target_project: &str,
+) -> Result<(), PlatformError> {
+    let mut matches = entries.iter_mut().filter(|entry| {
+        normalize_repo_rel(&entry.rel_path) == crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
+    });
+    let entry = matches.next().ok_or_else(|| {
+        PlatformError::new("HUB_INSTALL", "project bundle is missing zebflow.yaml")
+    })?;
+    if matches.next().is_some() {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            "project bundle contains more than one zebflow.yaml",
+        ));
+    }
+    if entry.encoding == "base64" {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            "zebflow.yaml must be a text entry",
+        ));
+    }
+    let mut document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
+        entry.content.as_bytes(),
+    )
+    .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zebflow.yaml: {err}")))?;
+    document.metadata.name = target_project.to_string();
+    let content = String::from_utf8(
+        crate::contracts::encode_contract_yaml::<ProjectConfigurationContract>(
+            document.metadata,
+            document.spec,
+        )
+        .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?,
+    )
+    .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+    entry.size_bytes = content.len();
+    entry.encoding = "text".to_string();
+    entry.content = content;
+    Ok(())
+}
+
+fn retarget_dependency_lock(
+    entries: &mut [HubExportEntry],
+    target_project: &str,
+) -> Result<(), PlatformError> {
+    let mut matches = entries
+        .iter_mut()
+        .filter(|entry| normalize_repo_rel(&entry.rel_path) == DEPENDENCY_LOCK_FILE);
+    let Some(entry) = matches.next() else {
+        return Ok(());
+    };
+    if matches.next().is_some() {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            "project bundle contains more than one zeb.lock",
+        ));
+    }
+    if entry.encoding == "base64" {
+        return Err(PlatformError::new(
+            "HUB_INSTALL",
+            "zeb.lock must be a text entry",
+        ));
+    }
+    let mut document = decode_contract::<DependencyLockContract>(entry.content.as_bytes())
+        .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zeb.lock: {err}")))?;
+    document.metadata.name = target_project.to_string();
+    let content = String::from_utf8(
+        encode_contract::<DependencyLockContract>(document.metadata, document.spec)
+            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?,
+    )
+    .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+    entry.size_bytes = content.len();
+    entry.encoding = "text".to_string();
+    entry.content = content;
     Ok(())
 }
 
@@ -4239,19 +4591,17 @@ fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
         .unwrap_or("Imported Pipeline")
         .replace(".zf", "")
         .replace('-', " ");
-    let Ok(value) = serde_json::from_str::<Value>(source) else {
+    let Ok(document) = decode_pipeline_graph(source.as_bytes()) else {
         return (fallback_title, "webhook".to_string());
     };
-    let trigger_kind = value
-        .get("nodes")
-        .and_then(Value::as_array)
-        .and_then(|nodes| {
-            nodes.iter().find_map(|node| {
-                node.get("kind")
-                    .and_then(Value::as_str)
-                    .filter(|kind| kind.starts_with("n.trigger."))
-                    .map(|kind| kind.trim_start_matches("n.trigger.").to_string())
-            })
+    let trigger_kind = document
+        .spec
+        .nodes
+        .iter()
+        .find_map(|node| {
+            node.kind
+                .strip_prefix("n.trigger.")
+                .map(ToString::to_string)
         })
         .unwrap_or_else(|| "webhook".to_string());
     (fallback_title, trigger_kind)
@@ -4261,17 +4611,226 @@ fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
 mod tests {
     use super::*;
 
+    const PROJECT_CONFIGURATION_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/contracts/project-configuration/v1-complete.yaml");
+
+    #[test]
+    fn hub_export_rejects_malformed_project_configuration() {
+        let mut entries = vec![text_export_entry(
+            crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+            "project_configuration",
+            "test",
+            "not: [valid".to_string(),
+        )];
+        assert!(sanitize_hub_export_entries(&mut entries).is_err());
+        assert!(
+            rewrite_project_libraries(
+                &mut build_preview(
+                    "project_bundle".to_string(),
+                    "project".to_string(),
+                    "project".to_string(),
+                    "Project".to_string(),
+                    String::new(),
+                    entries,
+                    Vec::new(),
+                ),
+                &[]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hub_export_sanitizes_project_configuration_through_the_contract() {
+        let mut entries = vec![text_export_entry(
+            crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+            "project_configuration",
+            "test",
+            PROJECT_CONFIGURATION_FIXTURE.to_string(),
+        )];
+        sanitize_hub_export_entries(&mut entries).unwrap();
+        let document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
+            entries[0].content.as_bytes(),
+        )
+        .unwrap();
+        assert!(!document.spec.distribution.hub.producer_enabled);
+    }
+
+    #[test]
+    fn project_bundle_install_retargets_project_configuration_identity() {
+        let mut entries = vec![text_export_entry(
+            crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+            "project_configuration",
+            "test",
+            PROJECT_CONFIGURATION_FIXTURE.to_string(),
+        )];
+        retarget_project_configuration(&mut entries, "installed-project").unwrap();
+        let document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
+            entries[0].content.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(document.metadata.name, "installed-project");
+
+        assert!(retarget_project_configuration(&mut [], "installed-project").is_err());
+    }
+
     #[test]
     fn hub_artifact_rejects_missing_and_future_schema() {
-        let missing = serde_json::json!({"asset_kind": "pipeline_bundle"});
+        let missing = serde_json::json!({
+            "kind": "HubPackage",
+            "metadata": {"name": "example", "version": "1.0.0"},
+            "spec": {"asset_kind": "pipeline_bundle"}
+        });
         let err = parse_hub_artifact_value(missing, "TEST_HUB").unwrap_err();
         assert_eq!(err.code, "TEST_HUB");
-        assert!(err.message.contains("missing required root field 'schema'"));
+        assert!(
+            err.message
+                .contains("missing required root field 'apiVersion'")
+        );
 
-        let future = serde_json::json!({"schema": "zebflow.asset-pack.v2"});
+        let future = serde_json::json!({
+            "apiVersion": "zebflow.com/v2",
+            "kind": "HubPackage",
+            "metadata": {"name": "example", "version": "1.0.0"},
+            "spec": {}
+        });
         let err = parse_hub_artifact_value(future, "TEST_HUB").unwrap_err();
         assert_eq!(err.code, "TEST_HUB");
-        assert!(err.message.contains("unsupported 'schema'"));
+        assert!(err.message.contains("unsupported apiVersion"));
+    }
+
+    #[test]
+    fn failed_node_bundle_install_restores_files_and_dependency_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: root.path().to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let owner = "superadmin";
+        let project = "default";
+        let before = platform.dependency_lock.read(owner, project).unwrap();
+        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+            "asset_kind": "node_bundle",
+            "title": "Broken node bundle",
+            "description": "Exercises transactional recovery.",
+            "files": [
+                {
+                    "rel_path": "README.md",
+                    "kind": "documentation",
+                    "size_bytes": 7,
+                    "reason": "test",
+                    "content": "written"
+                },
+                {
+                    "rel_path": "definition.json",
+                    "kind": "node_definition",
+                    "size_bytes": 2,
+                    "reason": "test",
+                    "content": "{}"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let error = platform
+            .hub
+            .install_artifact_payload(
+                owner.to_string(),
+                project.to_string(),
+                "broken-bundle",
+                "1.0.0",
+                "",
+                "test/broken-bundle",
+                payload,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "ZEB_LOCK_NODE_BUNDLE");
+        let package_dir = root
+            .path()
+            .join("users/superadmin/default/repo/nodes/broken-bundle");
+        assert!(!package_dir.join("README.md").exists());
+        assert!(!package_dir.join("definition.json").exists());
+        assert_eq!(
+            platform.dependency_lock.read(owner, project).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn successful_node_bundle_install_registers_and_locks_the_exact_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: root.path().to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let owner = "superadmin";
+        let project = "default";
+        let definition = include_str!("../../../composites/openai-embedding/definition.json");
+        let function = include_str!("../../../composites/openai-embedding/functions/embed.zf.json");
+        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+            "asset_kind": "node_bundle",
+            "title": "OpenAI embedding",
+            "description": "Exercises successful dependency installation.",
+            "files": [
+                {
+                    "rel_path": "definition.json",
+                    "kind": "node_definition",
+                    "size_bytes": definition.len(),
+                    "reason": "test",
+                    "content": definition
+                },
+                {
+                    "rel_path": "functions/embed.zf.json",
+                    "kind": "pipeline",
+                    "size_bytes": function.len(),
+                    "reason": "test",
+                    "content": function
+                }
+            ]
+        }))
+        .unwrap();
+
+        let result = platform
+            .hub
+            .install_artifact_payload(
+                owner.to_string(),
+                project.to_string(),
+                "openai-embedding-test",
+                "1.0.0",
+                "",
+                "test/openai-embedding-test",
+                payload,
+            )
+            .unwrap();
+        assert_eq!(result.install_root, "nodes/openai-embedding-test");
+        assert!(
+            platform
+                .node_registry
+                .merged_definitions(owner, project)
+                .iter()
+                .any(|definition| definition.kind == "n.c.ai.embedding")
+        );
+        let lock = platform.dependency_lock.read(owner, project).unwrap();
+        let bundle = lock
+            .nodes
+            .bundles
+            .values()
+            .find(|bundle| bundle.definitions == ["n.c.ai.embedding"])
+            .unwrap();
+        assert_eq!(
+            bundle.source,
+            crate::contracts::kinds::DependencyLockSource::Hub
+        );
+        assert_eq!(bundle.source_id, "test/openai-embedding-test");
+        assert_eq!(bundle.entry, "nodes/openai-embedding-test/definition.json");
     }
 
     #[test]

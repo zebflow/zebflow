@@ -57,6 +57,7 @@ pub enum ResourceProfile {
 
 /// Explicit runtime resource overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeResourceSpec {
     /// Requested CPU in millicores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,6 +81,7 @@ pub struct RuntimeResourceSpec {
 
 /// Portable runtime profile stored in repo config and migration plans.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectRuntimeProfile {
     /// Runtime isolation mode.
     #[serde(default)]

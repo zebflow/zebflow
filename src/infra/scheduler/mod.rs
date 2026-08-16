@@ -14,7 +14,7 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::model::PipelineInvocationEntry;
 use crate::platform::services::pipeline_hits::PipelineHitsService;
 use crate::platform::services::pipeline_runtime::PipelineRuntimeService;
-use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::services::project_config::ProjectConfigurationService;
 
 /// Background cron scheduler for activated pipelines with `n.trigger.schedule` triggers.
 pub struct PipelineScheduler {
@@ -23,7 +23,7 @@ pub struct PipelineScheduler {
     engine: Arc<BasicPipelineEngine>,
     hits: Arc<PipelineHitsService>,
     data: Arc<dyn DataAdapter>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
     jobs: Arc<RwLock<HashMap<String, Uuid>>>,
 }
 
@@ -33,7 +33,7 @@ impl PipelineScheduler {
         engine: Arc<BasicPipelineEngine>,
         hits: Arc<PipelineHitsService>,
         data: Arc<dyn DataAdapter>,
-        zebflow_cfg: Arc<ZebflowJsonService>,
+        zebflow_cfg: Arc<ProjectConfigurationService>,
     ) -> Result<Arc<Self>, Box<dyn std::error::Error + Send + Sync>> {
         let sched = JobScheduler::new().await?;
         sched.start().await?;

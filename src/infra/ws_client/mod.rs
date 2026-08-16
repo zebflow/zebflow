@@ -20,7 +20,7 @@ use crate::platform::adapters::data::DataAdapter;
 use crate::platform::model::PipelineInvocationEntry;
 use crate::platform::services::pipeline_hits::PipelineHitsService;
 use crate::platform::services::pipeline_runtime::PipelineRuntimeService;
-use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::services::project_config::ProjectConfigurationService;
 
 /// Background task registry for WS client triggered pipelines.
 pub struct WsClientManager {
@@ -30,7 +30,7 @@ pub struct WsClientManager {
     engine: Arc<BasicPipelineEngine>,
     hits: Arc<PipelineHitsService>,
     data: Arc<dyn DataAdapter>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
 }
 
 impl WsClientManager {
@@ -39,7 +39,7 @@ impl WsClientManager {
         engine: Arc<BasicPipelineEngine>,
         hits: Arc<PipelineHitsService>,
         data: Arc<dyn DataAdapter>,
-        zebflow_cfg: Arc<ZebflowJsonService>,
+        zebflow_cfg: Arc<ProjectConfigurationService>,
     ) -> Self {
         Self {
             tasks: Arc::new(Mutex::new(HashMap::new())),

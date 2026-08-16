@@ -65,6 +65,52 @@ async fn login_cookie(app: axum::Router, identifier: &str, password: &str) -> St
         .to_string()
 }
 
+#[test]
+fn first_bootstrap_generates_password_and_restart_preserves_it() {
+    let data_root = temp_test_dir("generated-superadmin-password");
+    let mut config = PlatformConfig::default();
+    config.data_root = data_root.clone();
+
+    let platform = PlatformService::from_config(config).expect("first platform bootstrap");
+    let password_path = data_root.join(".bootstrap/superadmin-password");
+    let generated = fs::read_to_string(&password_path)
+        .expect("generated superadmin password")
+        .trim()
+        .to_string();
+    assert_eq!(generated.len(), 48);
+    assert!(
+        platform
+            .auth
+            .login("superadmin", &generated)
+            .expect("authenticate generated password")
+            .is_some()
+    );
+    drop(platform);
+
+    let mut restarted_config = PlatformConfig::default();
+    restarted_config.data_root = data_root.clone();
+    restarted_config.default_password = "must-not-replace-existing-password".to_string();
+    let restarted =
+        PlatformService::from_config(restarted_config).expect("restarted platform bootstrap");
+    assert!(
+        restarted
+            .auth
+            .login("superadmin", &generated)
+            .expect("authenticate preserved password")
+            .is_some()
+    );
+    assert!(
+        !restarted
+            .auth
+            .login("superadmin", "must-not-replace-existing-password")
+            .expect("reject replacement password")
+            .is_some()
+    );
+    drop(restarted);
+
+    let _ = fs::remove_dir_all(data_root);
+}
+
 fn multipart_body(field_name: &str, file_name: &str, bytes: &[u8]) -> (String, Vec<u8>) {
     multipart_body_with_type(field_name, file_name, "application/x-tar", bytes)
 }
@@ -94,17 +140,6 @@ fn multipart_body_with_type(
     body.extend_from_slice(bytes);
     body.extend_from_slice(format!("\r\n--{}--\r\n", boundary).as_bytes());
     (boundary, body)
-}
-
-#[tokio::test]
-async fn platform_bootstrap_requires_explicit_default_password() {
-    let mut config = PlatformConfig::default();
-    config.data_root = temp_test_dir("missing-bootstrap-password");
-
-    let err = build_router(config)
-        .await
-        .expect_err("bootstrap should fail without password");
-    assert_eq!(err.code, "PLATFORM_BOOTSTRAP_PASSWORD_MISSING");
 }
 
 #[tokio::test]
@@ -157,7 +192,8 @@ async fn platform_bootstrap_and_login_flow_works() {
         .await
         .expect("home body bytes");
     let html = String::from_utf8(body.to_vec()).expect("utf8");
-    assert!(html.contains("Projects for superadmin"));
+    assert!(html.contains("Projects for"));
+    assert!(html.contains("superadmin"));
     assert!(html.contains("default"));
 
     let project = app
@@ -285,12 +321,14 @@ async fn public_hub_requires_service_and_hides_project_internals() {
             "Internal project path should not leak",
             "manual",
             r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"internal-calc"},
+  "spec":{
   "id":"internal-calc",
   "entry_nodes":[],
   "nodes":[],
-  "edges":[]
+  "edges":[]}
 }"#,
         )
         .expect("pipeline");
@@ -486,7 +524,13 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                         "source_kind": "pipeline",
                         "source_ref": "pipelines/remote-calc.zf.json",
 	                        "artifact": {
-	                            "schema": "zebflow.hub.artifact.v1",
+                                "apiVersion": "zebflow.com/v1",
+                                "kind": "HubPackage",
+                                "metadata": {
+                                    "name": "calc-studio.calc-tools-remote",
+                                    "version": "1.0.0"
+                                },
+                                "spec": {
 	                            "asset_kind": "pipeline_bundle",
 	                            "source_type": "pipeline",
 	                            "source_owner": "external",
@@ -533,6 +577,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "encoding": "utf8",
                                 "content": "{}"
                             }]
+                            }
                         }
                     })
                     .to_string(),
@@ -574,7 +619,13 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                         "source_kind": "pipeline",
                         "source_ref": "pipelines/bad.zf.json",
                         "artifact": {
-                            "schema": "zebflow.hub.artifact.v1",
+                            "apiVersion": "zebflow.com/v1",
+                            "kind": "HubPackage",
+                            "metadata": {
+                                "name": "calc-studio.bad-kind-pack",
+                                "version": "1.0.0"
+                            },
+                            "spec": {
                             "asset_kind": "made_up_kind",
                             "source_type": "pipeline",
                             "source_owner": "external",
@@ -591,6 +642,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "encoding": "utf8",
                                 "content": "{}"
                             }]
+                            }
                         }
                     })
                     .to_string(),
@@ -624,7 +676,13 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                         "source_kind": "pipeline",
                         "source_ref": "pipelines/bad-gallery.zf.json",
                         "artifact": {
-                            "schema": "zebflow.hub.artifact.v1",
+                            "apiVersion": "zebflow.com/v1",
+                            "kind": "HubPackage",
+                            "metadata": {
+                                "name": "calc-studio.bad-gallery-pack",
+                                "version": "1.0.0"
+                            },
+                            "spec": {
                             "asset_kind": "pipeline_bundle",
                             "source_type": "pipeline",
                             "source_owner": "external",
@@ -648,6 +706,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "encoding": "utf8",
                                 "content": "{}"
                             }]
+                            }
                         }
                     })
                     .to_string(),
@@ -729,19 +788,24 @@ async fn public_hub_requires_service_and_hides_project_internals() {
     assert_eq!(remote_detail.status(), StatusCode::OK);
     let remote_detail = response_json(remote_detail).await;
     assert_eq!(
-        remote_detail["artifact"]["description_md"],
+        remote_detail["artifact"]["apiVersion"],
+        json!("zebflow.com/v1")
+    );
+    assert_eq!(remote_detail["artifact"]["kind"], json!("HubPackage"));
+    assert_eq!(
+        remote_detail["artifact"]["spec"]["description_md"],
         json!("## Remote Calculator Tools\nReusable calculator workflow.")
     );
     assert_eq!(
-        remote_detail["artifact"]["gallery"]["items"][1]["kind"],
+        remote_detail["artifact"]["spec"]["gallery"]["items"][1]["kind"],
         json!("youtube")
     );
     assert_eq!(
-        remote_detail["artifact"]["media"][0]["name"],
+        remote_detail["artifact"]["spec"]["media"][0]["name"],
         json!("cover.png")
     );
     assert!(
-        remote_detail["artifact"]["media"][0]
+        remote_detail["artifact"]["spec"]["media"][0]
             .get("content")
             .is_none()
     );
@@ -923,12 +987,14 @@ async fn hub_scoped_tokens_split_prosumer_and_consumer_projects() {
             "Published by a scoped publisher token",
             "manual",
             r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"prosumer-demo"},
+  "spec":{
   "id":"prosumer-demo",
   "entry_nodes":[],
   "nodes":[],
-  "edges":[]
+  "edges":[]}
 }"#,
         )
         .expect("prosumer pipeline");
@@ -1178,8 +1244,10 @@ export default function SpatialBlogPage({ input }) {
             "Render spatial blog posts from Sekejap.",
             "webhook",
             r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"spatial-blog"},
+  "spec":{
   "id":"spatial-blog",
   "entry_nodes":["trigger"],
   "nodes":[
@@ -1190,7 +1258,7 @@ export default function SpatialBlogPage({ input }) {
   "edges":[
     {"from_node":"trigger","from_pin":"out","to_node":"query","to_pin":"in"},
     {"from_node":"query","from_pin":"out","to_node":"response","to_pin":"in"}
-  ]
+  ]}
 }"#,
         )
         .expect("pipeline");
@@ -1431,8 +1499,10 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
             "Pipeline with reviewable effects",
             "webhook",
             r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"safety-demo"},
+  "spec":{
   "id":"safety-demo",
   "entry_nodes":["wh"],
   "nodes":[
@@ -1441,7 +1511,7 @@ async fn hub_add_reviews_risks_and_respects_target_folders() {
     {"id":"pg","kind":"n.pg.query","config":{"credential":"pg-main"}},
     {"id":"fs","kind":"n.fs.put","config":{"path":"exports/out.json"}}
   ],
-  "edges":[]
+  "edges":[]}
 }"#,
         )
         .expect("producer pipeline");
@@ -1623,8 +1693,8 @@ async fn project_hub_ui_is_project_surface_with_explicit_grant() {
     let page_status = page.status();
     let page_body = response_text(page).await;
     assert_eq!(page_status, StatusCode::OK, "hub page: {page_body}");
-    assert!(page_body.contains("Packs"));
-    assert!(page_body.contains("My Packs"));
+    assert!(page_body.contains("Browse"));
+    assert!(page_body.contains("Published"));
     assert!(page_body.contains("Publish"));
     assert!(!page_body.contains("Create Hub Token"));
     assert!(!page_body.contains("Publisher Registry"));
@@ -2454,11 +2524,11 @@ async fn project_transfer_export_import_roundtrip_restores_repo_and_files() {
     assert!(bundle_archive.exists());
     assert!(files_archive.exists());
 
-    let zebflow_json = project_root.join("repo").join("zebflow.json");
-    let mutated = fs::read_to_string(&zebflow_json)
-        .expect("zebflow.json")
-        .replace("\"Default\"", "\"Mutated Before Import\"");
-    fs::write(&zebflow_json, mutated).expect("mutate zebflow.json");
+    let zebflow_yaml = project_root.join("repo").join("zebflow.yaml");
+    let mutated = fs::read_to_string(&zebflow_yaml)
+        .expect("zebflow.yaml")
+        .replace("title: Default", "title: Mutated Before Import");
+    fs::write(&zebflow_yaml, mutated).expect("mutate zebflow.yaml");
     fs::write(
         project_root.join("files").join("public").join("hello.txt"),
         "mutated file before import\n",
@@ -2505,8 +2575,8 @@ async fn project_transfer_export_import_roundtrip_restores_repo_and_files() {
         .expect("files import response");
     assert_eq!(import_files.status(), StatusCode::OK);
 
-    let restored = fs::read_to_string(&zebflow_json).expect("restored zebflow.json");
-    assert!(restored.contains("\"title\": \"Default\""));
+    let restored = fs::read_to_string(&zebflow_yaml).expect("restored zebflow.yaml");
+    assert!(restored.contains("title: Default"));
     assert_eq!(
         fs::read_to_string(project_root.join("files").join("public").join("hello.txt"))
             .expect("restored hello.txt"),

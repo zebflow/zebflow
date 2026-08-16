@@ -1851,8 +1851,6 @@ mod tests {
         .expect("query");
 
         let graph = PipelineGraph {
-            kind: "zebflow.pipeline".to_string(),
-            version: "0.1".to_string(),
             id: "generate-docs".to_string(),
             description: None,
             metadata: None,

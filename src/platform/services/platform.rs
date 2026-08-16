@@ -14,13 +14,15 @@ use crate::platform::model::{
     CreateProjectRequest, CreateUserRequest, PipelineInvocationEntry, PlatformConfig,
     PlatformOffice, PlatformOfficeNode, now_ts,
 };
+use crate::platform::services::bootstrap::resolve_superadmin_password;
 use crate::platform::services::{
     AssistantConfigService, AuthService, AuthorizationService, ClusterBootstrapService,
     ClusterPlacementService, ClusterRegistryService, ClusterRuntimeSyncService, CredentialService,
-    DbConnectionService, DbRuntimeService, GitIdentityService, HubService, LibraryService,
-    McpSessionService, NodeRegistryService, PipelineHitsService, PipelineRuntimeService,
-    ProjectInviteService, ProjectMembershipService, ProjectOperationService, ProjectService,
-    ProjectTransferService, UserService, ZebLockService, ZebflowJsonService,
+    DbConnectionService, DbRuntimeService, DependencyLockService, GitIdentityService, HubService,
+    LibraryService, McpSessionService, NodeRegistryService, PipelineHitsService,
+    PipelineRuntimeService, ProjectConfigurationService, ProjectInviteService,
+    ProjectMembershipService, ProjectOperationService, ProjectService, ProjectTransferService,
+    UserService,
 };
 
 /// Main platform service graph, created once per process.
@@ -58,8 +60,8 @@ pub struct PlatformService {
     pub credentials: Arc<CredentialService>,
     /// Project assistant config service.
     pub assistant_configs: Arc<AssistantConfigService>,
-    /// Layer 2 project config (zebflow.json) service.
-    pub zebflow_cfg: Arc<ZebflowJsonService>,
+    /// Portable project configuration (`zebflow.yaml`) service.
+    pub zebflow_cfg: Arc<ProjectConfigurationService>,
     /// Project DB connection management service.
     pub db_connections: Arc<DbConnectionService>,
     /// Project DB runtime service (kind-dispatched describe/query).
@@ -89,7 +91,7 @@ pub struct PlatformService {
     /// Platform-level asset hub service.
     pub hub: Arc<HubService>,
     /// Read/write service for per-project `repo/zeb.lock`.
-    pub zeb_lock: Arc<ZebLockService>,
+    pub dependency_lock: Arc<DependencyLockService>,
 }
 
 impl PlatformService {
@@ -101,16 +103,21 @@ impl PlatformService {
         let project_data = build_project_data_factory(&config.data_root);
         file.initialize()?;
 
-        let zebflow_cfg = Arc::new(ZebflowJsonService::new(config.data_root.join("users")));
-        let zeb_lock = Arc::new(ZebLockService::new(config.data_root.join("users")));
-        let library = Arc::new(LibraryService::from_embedded());
+        let library = Arc::new(LibraryService::from_embedded()?);
+        let zebflow_cfg = Arc::new(ProjectConfigurationService::new(
+            config.data_root.join("users"),
+        ));
+        let dependency_lock = Arc::new(DependencyLockService::with_library_service(
+            config.data_root.join("users"),
+            library.clone(),
+        ));
         let users = Arc::new(UserService::new(data.clone()));
         let projects = Arc::new(ProjectService::new(
             data.clone(),
             file.clone(),
             project_data.clone(),
             zebflow_cfg.clone(),
-            zeb_lock.clone(),
+            dependency_lock.clone(),
         ));
         let auth = Arc::new(AuthService::new(users.clone()));
         let git_identity = Arc::new(GitIdentityService::new(users.clone()));
@@ -136,10 +143,16 @@ impl PlatformService {
                 .join(crate::platform::services::hub::DEFAULT_HUB_SERVICE_INSTANCE_ID)
                 .join("hub.db"),
         )?;
+        let node_registry = Arc::new(NodeRegistryService::new(
+            projects.clone(),
+            dependency_lock.clone(),
+        ));
         let hub = Arc::new(HubService::new(
             data.clone(),
             hub_data,
             projects.clone(),
+            node_registry.clone(),
+            dependency_lock.clone(),
             config.data_root.clone(),
         ));
         let project_operations = Arc::new(ProjectOperationService::new(data.clone()));
@@ -150,7 +163,6 @@ impl PlatformService {
             config.data_root.join("platform").join("project-operations"),
         ));
         let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
-        let node_registry = Arc::new(NodeRegistryService::new(projects.clone()));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(
             data.clone(),
@@ -205,7 +217,7 @@ impl PlatformService {
             state_bus,
             library,
             hub,
-            zeb_lock,
+            dependency_lock,
         };
         svc.bootstrap_local_office()?;
         if !svc.cluster_bootstrap.is_worker() {
@@ -452,20 +464,23 @@ impl PlatformService {
 
     /// Creates default superadmin + default project if missing.
     pub fn bootstrap_defaults(&self) -> Result<(), PlatformError> {
-        if self.config.default_password.trim().is_empty() {
-            return Err(PlatformError::new(
-                "PLATFORM_BOOTSTRAP_PASSWORD_MISSING",
-                "default superadmin password is missing; set ZEBFLOW_PLATFORM_DEFAULT_PASSWORD or provide PlatformConfig.default_password",
-            ));
+        if self.users.get_user(&self.config.default_owner)?.is_none() {
+            let password =
+                resolve_superadmin_password(&self.config.data_root, &self.config.default_password)?;
+            self.users.create_user(&CreateUserRequest {
+                owner: self.config.default_owner.clone(),
+                password: password.value,
+                role: "superadmin".to_string(),
+                git_name: String::new(),
+                git_email: String::new(),
+            })?;
+            if let Some(path) = password.generated_path {
+                eprintln!(
+                    "Generated initial superadmin password at {}. Read it now and store it securely.",
+                    path.display()
+                );
+            }
         }
-
-        self.users.create_or_update_user(&CreateUserRequest {
-            owner: self.config.default_owner.clone(),
-            password: self.config.default_password.clone(),
-            role: "superadmin".to_string(),
-            git_name: String::new(),
-            git_email: String::new(),
-        })?;
 
         self.projects.create_or_update_project(
             &self.config.default_owner,

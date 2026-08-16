@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/pdf" },
+  "spec": {
   "name": "zeb/pdf",
   "description": "Browser-native PDF generation. Zero dependencies. Build structured PDFs from an IR tree: text flow, tables, columns, floats, headers/footers, multi-page layout with auto page-break.",
   "exports": [
@@ -11,11 +15,12 @@
   "versions": {
     "full-0.1": {
       "entry": "0.1/runtime/pdf.bundle.mjs",
-      "source": "local",
+      "source": "offline",
       "package_version": "0.1",
       "size_bytes": 43690,
       "size_gzip_bytes": 13306,
       "integrity": ""
     }
+  }
   }
 }

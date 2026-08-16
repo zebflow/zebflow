@@ -1,20 +1,24 @@
 //! Project management service.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::infra::io::durable::atomic_write;
-use crate::pipeline::{PipelineGraph, parse_pipeline_graph};
+use crate::contracts::kinds::DependencyLockSpec;
+use crate::contracts::kinds::{
+    decode_pipeline_graph, encode_pipeline_graph, validate_pipeline_activation,
+};
+use crate::infra::io::durable::{atomic_write, durable_remove_file};
+use crate::pipeline::PipelineGraph;
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::adapters::file::FileAdapter;
 use crate::platform::adapters::project_data::ProjectDataFactory;
 use crate::platform::error::PlatformError;
-use crate::platform::model::ZebLock;
 use crate::platform::model::{
     AgentDocItem, CreateProjectRequest, HubAuthority, PipelineBreadcrumb, PipelineFolderItem,
     PipelineMeta, PipelineRegistryItem, PipelineRegistryListing, PlatformProject, ProjectDocItem,
@@ -23,8 +27,8 @@ use crate::platform::model::{
     TemplateSaveRequest, TemplateTreeItem, TemplateWorkspaceListing, normalize_virtual_path,
     now_ts, slug_segment,
 };
-use crate::platform::services::project_config::ZebflowJsonService;
-use crate::platform::services::zeb_lock::ZebLockService;
+use crate::platform::services::dependency_lock::DependencyLockService;
+use crate::platform::services::project_config::ProjectConfigurationService;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWebhookTrigger {
@@ -80,7 +84,7 @@ pub fn canonical_webhook_path(raw: Option<&str>) -> String {
 }
 
 pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
-    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
+    let graph = decode_pipeline_graph(source.as_bytes()).ok()?.spec;
     let entry_ids: std::collections::HashSet<&str> = if !graph.entry_nodes.is_empty() {
         graph.entry_nodes.iter().map(|s| s.as_str()).collect()
     } else {
@@ -106,15 +110,10 @@ pub fn derive_trigger_kind_from_source(source: &str) -> Option<String> {
 }
 
 fn pipeline_source_is_locked(source: &str) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(source) else {
-        return false;
-    };
-    value
-        .get("metadata")
-        .and_then(|metadata| metadata.get("locked"))
-        .and_then(serde_json::Value::as_bool)
-        .or_else(|| value.get("locked").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false)
+    decode_pipeline_graph(source.as_bytes())
+        .ok()
+        .and_then(|document| document.spec.metadata)
+        .is_some_and(|metadata| metadata.locked)
 }
 
 pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookTrigger> {
@@ -137,7 +136,7 @@ pub fn webhook_triggers_from_graph(graph: &PipelineGraph) -> Vec<ProjectWebhookT
 }
 
 pub fn webhook_triggers_from_source(source: &str) -> Option<Vec<ProjectWebhookTrigger>> {
-    let graph = serde_json::from_str::<PipelineGraph>(source).ok()?;
+    let graph = decode_pipeline_graph(source.as_bytes()).ok()?.spec;
     Some(webhook_triggers_from_graph(&graph))
 }
 
@@ -148,90 +147,29 @@ pub fn first_webhook_trigger_from_source(source: &str) -> Option<(String, String
         .map(|trigger| (trigger.path, trigger.method))
 }
 
-fn validate_pipeline_graph_structure(
-    graph: &PipelineGraph,
-    allow_empty: bool,
-) -> Result<(), PlatformError> {
-    if graph.nodes.is_empty() {
-        if allow_empty && graph.entry_nodes.is_empty() && graph.edges.is_empty() {
-            return Ok(());
-        }
-        return Err(PlatformError::new(
-            "FW_EMPTY_GRAPH",
-            format!("pipeline '{}' has no nodes", graph.id),
-        ));
-    }
-
-    let node_map: HashMap<&str, &crate::pipeline::PipelineNode> =
-        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-
-    for entry in &graph.entry_nodes {
-        if !node_map.contains_key(entry.as_str()) {
-            return Err(PlatformError::new(
-                "FW_ENTRY_NODE",
-                format!("unknown entry node '{}'", entry),
-            ));
-        }
-    }
-
-    for (idx, edge) in graph.edges.iter().enumerate() {
-        let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
-            PlatformError::new(
-                "FW_EDGE_FROM_NODE",
-                format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
-            )
-        })?;
-        let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
-            PlatformError::new(
-                "FW_EDGE_TO_NODE",
-                format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
-            )
-        })?;
-        if !from.output_pins.iter().any(|pin| pin == &edge.from_pin) && edge.from_pin != "error" {
-            return Err(PlatformError::new(
-                "FW_EDGE_FROM_PIN",
-                format!(
-                    "edge[{idx}] invalid from_pin '{}' for node '{}'",
-                    edge.from_pin, from.id
-                ),
-            ));
-        }
-        if !to.input_pins.iter().any(|pin| pin == &edge.to_pin) {
-            return Err(PlatformError::new(
-                "FW_EDGE_TO_PIN",
-                format!(
-                    "edge[{idx}] invalid to_pin '{}' for node '{}'",
-                    edge.to_pin, to.id
-                ),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
 fn parse_and_validate_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
-    parse_and_validate_pipeline_source_with_options(source, false)
+    let graph = parse_pipeline_source(source)?;
+    validate_pipeline_activation(&graph)
+        .map_err(|err| PlatformError::new("FW_EMPTY_GRAPH", err.to_string()))?;
+    Ok(graph)
 }
 
 fn parse_and_validate_pipeline_source_for_save(
     source: &str,
 ) -> Result<PipelineGraph, PlatformError> {
-    parse_and_validate_pipeline_source_with_options(source, true)
+    parse_pipeline_source(source)
 }
 
-fn parse_and_validate_pipeline_source_with_options(
-    source: &str,
-    allow_empty: bool,
-) -> Result<PipelineGraph, PlatformError> {
-    let graph: PipelineGraph = parse_pipeline_graph(source.as_bytes()).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_PIPELINE_PARSE",
-            format!("failed parsing pipeline source: {err} ({})", err.category()),
-        )
-    })?;
-    validate_pipeline_graph_structure(&graph, allow_empty)?;
-    Ok(graph)
+fn parse_pipeline_source(source: &str) -> Result<PipelineGraph, PlatformError> {
+    decode_pipeline_graph(source.as_bytes())
+        .map_err(|err| {
+            let code = err.violation_code().unwrap_or("PLATFORM_PIPELINE_PARSE");
+            PlatformError::new(
+                code,
+                format!("failed parsing pipeline source: {err} ({})", err.category()),
+            )
+        })
+        .map(|document| document.spec)
 }
 
 fn canonical_pipeline_node_kind(kind: &str) -> &str {
@@ -283,8 +221,10 @@ pub struct ProjectService {
     data: Arc<dyn DataAdapter>,
     file: Arc<dyn FileAdapter>,
     project_data: Arc<dyn ProjectDataFactory>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
-    zeb_lock: Arc<ZebLockService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
+    dependency_lock: Arc<DependencyLockService>,
+    #[cfg(test)]
+    fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool,
 }
 
 impl ProjectService {
@@ -297,16 +237,32 @@ impl ProjectService {
         data: Arc<dyn DataAdapter>,
         file: Arc<dyn FileAdapter>,
         project_data: Arc<dyn ProjectDataFactory>,
-        zebflow_cfg: Arc<ZebflowJsonService>,
-        zeb_lock: Arc<ZebLockService>,
+        zebflow_cfg: Arc<ProjectConfigurationService>,
+        dependency_lock: Arc<DependencyLockService>,
     ) -> Self {
         Self {
             data,
             file,
             project_data,
             zebflow_cfg,
-            zeb_lock,
+            dependency_lock,
+            #[cfg(test)]
+            fail_next_pipeline_meta_write: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    fn put_pipeline_meta(&self, meta: &PipelineMeta) -> Result<(), PlatformError> {
+        #[cfg(test)]
+        if self
+            .fail_next_pipeline_meta_write
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(PlatformError::new(
+                "PLATFORM_PIPELINE_META_INJECTED",
+                "injected pipeline metadata write failure",
+            ));
+        }
+        self.data.put_pipeline_meta(meta)
     }
 
     fn ensure_pipeline_editable(
@@ -352,7 +308,7 @@ impl ProjectService {
         Ok(())
     }
 
-    /// Lists projects by owner, populating title from zebflow.json.
+    /// Lists projects by owner, populating title from zebflow.yaml.
     pub fn list_projects(&self, owner: &str) -> Result<Vec<PlatformProject>, PlatformError> {
         let mut projects = self.data.list_projects(owner)?;
         for p in &mut projects {
@@ -361,7 +317,7 @@ impl ProjectService {
         Ok(projects)
     }
 
-    /// Gets one project by owner/slug, populating title from zebflow.json.
+    /// Gets one project by owner/slug, populating title from zebflow.yaml.
     pub fn get_project(
         &self,
         owner: &str,
@@ -465,18 +421,12 @@ impl ProjectService {
                     .output();
             }
         }
-        // Write title to zebflow.json (Layer 2)
+        // Write title to portable zebflow.yaml configuration.
         self.zebflow_cfg
             .ensure_initialized(&owner, &project, &title)?;
         // Write zeb.lock if it doesn't exist yet
-        self.zeb_lock.write_if_missing(
-            &owner,
-            &project,
-            &ZebLock {
-                version: 1,
-                ..Default::default()
-            },
-        )?;
+        self.dependency_lock
+            .write_if_missing(&owner, &project, &DependencyLockSpec::default())?;
         self.project_data.initialize_project(&layout)?;
         self.ensure_default_template_workspace(&layout)?;
 
@@ -606,21 +556,33 @@ impl ProjectService {
             ));
         }
         self.ensure_pipeline_editable(&owner, &project, &file_rel_path, "edited")?;
-        parse_and_validate_pipeline_source_for_save(source)?;
+        let graph = parse_and_validate_pipeline_source_for_save(source)?;
+        let canonical_source = encode_pipeline_graph(graph)
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|error| crate::contracts::ContractError::invalid(error.to_string()))
+            })
+            .map_err(|error| {
+                PlatformError::new(
+                    "PLATFORM_PIPELINE_SERIALIZE",
+                    format!("failed serializing canonical pipeline source: {error}"),
+                )
+            })?;
 
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         self.project_data.initialize_project(&layout)?;
-        self.ensure_webhook_paths_available(&owner, &project, source, &file_rel_path)?;
+        self.ensure_webhook_paths_available(&owner, &project, &canonical_source, &file_rel_path)?;
 
         let file_abs_path = self.pipeline_abs_path(&layout, &file_rel_path)?;
+        let previous_source = fs::read(&file_abs_path).ok();
+        let existing = self.get_pipeline_meta_by_file_id(&owner, &project, &file_rel_path)?;
         if let Some(parent) = file_abs_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        atomic_write(&file_abs_path, source.as_bytes())?;
+        atomic_write(&file_abs_path, canonical_source.as_bytes())?;
 
         let vpath = virtual_path_from_file_rel_path(&file_rel_path);
         let now = now_ts();
-        let existing = self.get_pipeline_meta_by_file_id(&owner, &project, &file_rel_path)?;
         let created_at = existing.as_ref().map(|m| m.created_at).unwrap_or(now);
         let meta = PipelineMeta {
             owner,
@@ -639,13 +601,28 @@ impl ProjectService {
             } else {
                 trigger_kind.trim().to_string()
             },
-            hash: stable_hash_hex(source),
+            hash: stable_hash_hex(&canonical_source),
             active_hash: existing.as_ref().and_then(|m| m.active_hash.clone()),
             activated_at: existing.as_ref().and_then(|m| m.activated_at),
             created_at,
             updated_at: now,
         };
-        self.data.put_pipeline_meta(&meta)?;
+        if let Err(error) = self.put_pipeline_meta(&meta) {
+            let rollback = match previous_source {
+                Some(previous) => atomic_write(&file_abs_path, &previous),
+                None => durable_remove_file(&file_abs_path),
+            };
+            if let Err(rollback_error) = rollback {
+                return Err(PlatformError::new(
+                    "PLATFORM_PIPELINE_RECOVERY",
+                    format!(
+                        "pipeline metadata update failed: {}; source rollback also failed: {}",
+                        error.message, rollback_error
+                    ),
+                ));
+            }
+            return Err(error);
+        }
         Ok(meta)
     }
 
@@ -806,19 +783,61 @@ impl ProjectService {
         };
         let layout = self.file.ensure_project_layout(&owner, &project)?;
         let source = self.read_pipeline_source(&owner, &project, &meta.file_rel_path)?;
-        parse_and_validate_pipeline_source(&source)?;
+        let graph = parse_and_validate_pipeline_source(&source)?;
+        self.dependency_lock
+            .validate_pipeline_dependencies(&owner, &project, &graph)?;
+        if graph
+            .nodes
+            .iter()
+            .any(|node| node.kind.starts_with("n.web."))
+        {
+            let requested = self.zebflow_cfg.get_rwe_libraries(&owner, &project)?;
+            self.dependency_lock
+                .validate_rwe_dependencies(&owner, &project, &requested)?;
+        }
         self.ensure_webhook_paths_available(&owner, &project, &source, &meta.file_rel_path)?;
         let current_hash = stable_hash_hex(&source);
-        let snapshot_path =
-            self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
-        atomic_write(&snapshot_path, source.as_bytes())?;
-
+        let previous_meta = meta.clone();
         meta.hash = current_hash.clone();
         meta.active_hash = Some(current_hash.clone());
         meta.activated_at = Some(now_ts());
         meta.updated_at = now_ts();
-        self.data.put_pipeline_meta(&meta)?;
-        self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, Some(&current_hash))?;
+
+        // Compile before changing durable active state. The runtime registry
+        // uses this same constructor after commit, so an invalid candidate can
+        // never replace the last executable snapshot.
+        crate::platform::services::pipeline_runtime::CompiledPipeline::from_active_meta(
+            &meta, &source,
+        )?;
+
+        let snapshot_path =
+            self.runtime_pipeline_snapshot_path(&layout, &meta.file_rel_path, &current_hash)?;
+        atomic_write(&snapshot_path, source.as_bytes())?;
+
+        if let Err(error) = self.put_pipeline_meta(&meta) {
+            durable_remove_file(&snapshot_path).map_err(|rollback_error| {
+                PlatformError::new(
+                    "PLATFORM_PIPELINE_RECOVERY",
+                    format!(
+                        "pipeline activation metadata update failed: {}; candidate snapshot cleanup also failed: {}",
+                        error.message, rollback_error
+                    ),
+                )
+            })?;
+            return Err(error);
+        }
+        if let Err(error) = self.remove_runtime_pipeline_snapshots(
+            &layout,
+            &meta.file_rel_path,
+            Some(&current_hash),
+        ) {
+            // The metadata pointer and its snapshot are already committed. Keep
+            // the new active state and leave stale snapshots for later cleanup.
+            eprintln!(
+                "pipeline activation cleanup warning for '{}': {} (previous active hash: {:?})",
+                meta.file_rel_path, error.message, previous_meta.active_hash
+            );
+        }
         Ok(meta)
     }
 
@@ -843,7 +862,7 @@ impl ProjectService {
         meta.active_hash = None;
         meta.activated_at = None;
         meta.updated_at = now_ts();
-        self.data.put_pipeline_meta(&meta)?;
+        self.put_pipeline_meta(&meta)?;
         self.remove_runtime_pipeline_snapshots(&layout, &meta.file_rel_path, None)?;
         Ok(meta)
     }
@@ -2078,7 +2097,7 @@ impl ProjectService {
             {
                 continue;
             }
-            fs::remove_file(path)?;
+            durable_remove_file(&path)?;
         }
         Ok(())
     }
@@ -2916,13 +2935,7 @@ fn path_remainder(current: &str, candidate: &str) -> Option<String> {
 }
 
 fn stable_hash_hex(input: &str) -> String {
-    // FNV-1a 64-bit: deterministic and lightweight for change tracking.
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in input.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x00000100000001B3);
-    }
-    format!("{h:016x}")
+    format!("{:x}", Sha256::digest(input.as_bytes()))
 }
 
 #[cfg(test)]
@@ -2935,8 +2948,8 @@ mod tests {
         CreateProjectRequest, DataAdapterKind, PlatformUser, PlatformUserLocalAuth,
         ProjectRuntimeSelectionRequest, StoredUser,
     };
-    use crate::platform::services::project_config::ZebflowJsonService;
-    use crate::platform::services::zeb_lock::ZebLockService;
+    use crate::platform::services::dependency_lock::DependencyLockService;
+    use crate::platform::services::project_config::ProjectConfigurationService;
     use std::sync::Arc;
 
     fn make_service(root: &Path) -> ProjectService {
@@ -2964,9 +2977,9 @@ mod tests {
         })
         .expect("seed test owner user");
         let project_data = build_project_data_factory(root);
-        let zebflow_cfg = Arc::new(ZebflowJsonService::new(root.join("users")));
-        let zeb_lock = Arc::new(ZebLockService::new(root.join("users")));
-        ProjectService::new(data, file, project_data, zebflow_cfg, zeb_lock)
+        let zebflow_cfg = Arc::new(ProjectConfigurationService::new(root.join("users")));
+        let dependency_lock = Arc::new(DependencyLockService::new(root.join("users")));
+        ProjectService::new(data, file, project_data, zebflow_cfg, dependency_lock)
     }
 
     fn create_default_project(svc: &ProjectService) {
@@ -2984,8 +2997,10 @@ mod tests {
 
     fn invalid_logic_match_router_source() -> &'static str {
         r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"invalid-router"},
+  "spec":{
   "id":"invalid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
@@ -2996,14 +3011,16 @@ mod tests {
   "edges":[
     {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
     {"from_node":"kind_route","from_pin":"out","to_node":"csv_branch","to_pin":"in"}
-  ]
+  ]}
 }"#
     }
 
     fn valid_logic_match_router_source() -> &'static str {
         r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"valid-router"},
+  "spec":{
   "id":"valid-router",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
@@ -3014,7 +3031,7 @@ mod tests {
   "edges":[
     {"from_node":"trigger_webhook","from_pin":"out","to_node":"kind_route","to_pin":"in"},
     {"from_node":"kind_route","from_pin":"csv","to_node":"csv_branch","to_pin":"in"}
-  ]
+  ]}
 }"#
     }
 
@@ -3092,15 +3109,17 @@ mod tests {
 
         let file_rel_path = "pipelines/pages/home.zf.json";
         let source_a = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
         let source_b = source_a.replace(r#""/a""#, r#""/b""#);
 
@@ -3165,6 +3184,161 @@ mod tests {
     }
 
     #[test]
+    fn failed_pipeline_metadata_write_restores_previous_source() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let file_rel_path = "pipelines/api/router.zf.json";
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Router",
+            "",
+            "webhook",
+            valid_logic_match_router_source(),
+        )
+        .expect("initial save");
+        let previous = svc
+            .read_pipeline_source("superadmin", "default", file_rel_path)
+            .expect("previous source");
+
+        svc.fail_next_pipeline_meta_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let changed = valid_logic_match_router_source().replace("/router", "/changed");
+        let error = svc
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                file_rel_path,
+                "Router",
+                "",
+                "webhook",
+                &changed,
+            )
+            .expect_err("metadata failure");
+        assert_eq!(error.code, "PLATFORM_PIPELINE_META_INJECTED");
+        assert_eq!(
+            svc.read_pipeline_source("superadmin", "default", file_rel_path)
+                .expect("restored source"),
+            previous
+        );
+    }
+
+    #[test]
+    fn failed_activation_commit_keeps_previous_active_snapshot() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let file_rel_path = "pipelines/api/router.zf.json";
+
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Router",
+            "",
+            "webhook",
+            valid_logic_match_router_source(),
+        )
+        .expect("initial save");
+        let active = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect("initial activation");
+        let old_hash = active.active_hash.clone().expect("old active hash");
+
+        let changed = valid_logic_match_router_source().replace("/router", "/changed");
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Router",
+            "",
+            "webhook",
+            &changed,
+        )
+        .expect("changed draft");
+        let changed_source = svc
+            .read_pipeline_source("superadmin", "default", file_rel_path)
+            .expect("changed canonical source");
+        let candidate_hash = stable_hash_hex(&changed_source);
+
+        svc.fail_next_pipeline_meta_write
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let error = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("activation metadata failure");
+        assert_eq!(error.code, "PLATFORM_PIPELINE_META_INJECTED");
+
+        let current = svc
+            .get_pipeline_meta_by_file_id("superadmin", "default", file_rel_path)
+            .expect("metadata read")
+            .expect("metadata");
+        assert_eq!(current.active_hash.as_deref(), Some(old_hash.as_str()));
+
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        let old_snapshot = svc
+            .runtime_pipeline_snapshot_path(&layout, file_rel_path, &old_hash)
+            .expect("old snapshot");
+        let candidate_snapshot = svc
+            .runtime_pipeline_snapshot_path(&layout, file_rel_path, &candidate_hash)
+            .expect("candidate snapshot");
+        assert!(old_snapshot.is_file());
+        assert!(!candidate_snapshot.exists());
+    }
+
+    #[test]
+    fn activation_preflight_rejects_missing_required_node_config_before_snapshot_write() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let svc = make_service(tmp.path());
+        create_default_project(&svc);
+        let file_rel_path = "pipelines/functions/invalid-query.zf.json";
+        let source = r#"{
+          "apiVersion":"zebflow.com/v1",
+          "kind":"Pipeline",
+          "metadata":{"name":"invalid-query"},
+          "spec":{
+            "id":"invalid-query",
+            "entry_nodes":["function"],
+            "nodes":[
+              {"id":"function","kind":"n.trigger.function","input_pins":[],"output_pins":["out"],"config":{}}
+            ],
+            "edges":[]
+          }
+        }"#;
+        svc.upsert_pipeline_definition(
+            "superadmin",
+            "default",
+            file_rel_path,
+            "Invalid query",
+            "",
+            "manual",
+            source,
+        )
+        .expect("structurally valid draft");
+
+        let error = svc
+            .activate_pipeline_definition("superadmin", "default", file_rel_path)
+            .expect_err("invalid node config must fail preflight");
+        assert_eq!(error.code, "PIPELINE_NODE_CONFIG_VIOLATION");
+
+        let meta = svc
+            .get_pipeline_meta_by_file_id("superadmin", "default", file_rel_path)
+            .expect("metadata read")
+            .expect("metadata");
+        assert!(meta.active_hash.is_none());
+        let layout = svc
+            .file
+            .ensure_project_layout("superadmin", "default")
+            .expect("layout");
+        assert!(!layout.data_runtime_pipelines_dir.join("functions").exists());
+    }
+
+    #[test]
     fn deactivate_removes_runtime_snapshot_for_pipeline_file() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let svc = make_service(tmp.path());
@@ -3181,15 +3355,17 @@ mod tests {
 
         let file_rel_path = "pipelines/pages/home.zf.json";
         let source = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/a"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
 
         svc.upsert_pipeline_definition(
@@ -3241,15 +3417,17 @@ mod tests {
         .expect("create project");
 
         let source = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"GET"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
 
         svc.upsert_pipeline_definition(
@@ -3263,8 +3441,9 @@ mod tests {
         )
         .expect("save first");
 
-        let graph: crate::pipeline::PipelineGraph =
-            serde_json::from_str(source).expect("parse graph");
+        let graph = decode_pipeline_graph(source.as_bytes())
+            .expect("parse graph")
+            .spec;
         let conflicts = svc
             .check_webhook_path_conflict(
                 "superadmin",
@@ -3295,15 +3474,17 @@ mod tests {
         .expect("create project");
 
         let source = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
 
         svc.upsert_pipeline_definition(
@@ -3347,15 +3528,17 @@ mod tests {
         .expect("create project");
 
         let source = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
   "nodes":[
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/same","method":"POST"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
 
         let meta_a = svc
@@ -3426,8 +3609,10 @@ mod tests {
 
         let file_rel_path = "pipelines/pages/home.zf.json";
         let locked_source = r#"{
-  "kind":"zebflow.pipeline",
-  "version":"0.1",
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"pipeline-canvas"},
+  "spec":{
   "metadata":{"locked":true},
   "id":"pipeline-canvas",
   "entry_nodes":["trigger_webhook"],
@@ -3435,7 +3620,7 @@ mod tests {
     {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/locked"}},
     {"id":"web-response","kind":"n.web.response","input_pins":["in"],"output_pins":["out"],"config":{"template":"pages/home/home.tsx"}}
   ],
-  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]
+  "edges":[{"from_node":"trigger_webhook","from_pin":"out","to_node":"web-response","to_pin":"in"}]}
 }"#;
 
         svc.upsert_pipeline_definition(
@@ -3561,29 +3746,25 @@ mod tests {
     #[test]
     fn pipeline_source_rejects_missing_and_future_contract_versions() {
         let missing = r#"{
-            "kind":"zebflow.pipeline",
-            "id":"missing-version",
-            "entry_nodes":[],
-            "nodes":[],
-            "edges":[]
+            "kind":"Pipeline",
+            "metadata":{"name":"missing-version"},
+            "spec":{"id":"missing-version","entry_nodes":[],"nodes":[],"edges":[]}
         }"#;
         let err = parse_and_validate_pipeline_source_for_save(missing).unwrap_err();
         assert_eq!(err.code, "PLATFORM_PIPELINE_PARSE");
         assert!(
             err.message
-                .contains("missing required root field 'version'")
+                .contains("missing required root field 'apiVersion'")
         );
 
         let future = r#"{
-            "kind":"zebflow.pipeline",
-            "version":"1.0",
-            "id":"future-version",
-            "entry_nodes":[],
-            "nodes":[],
-            "edges":[]
+            "apiVersion":"zebflow.com/v2",
+            "kind":"Pipeline",
+            "metadata":{"name":"future-version"},
+            "spec":{"id":"future-version","entry_nodes":[],"nodes":[],"edges":[]}
         }"#;
         let err = parse_and_validate_pipeline_source_for_save(future).unwrap_err();
         assert_eq!(err.code, "PLATFORM_PIPELINE_PARSE");
-        assert!(err.message.contains("unsupported 'version'"));
+        assert!(err.message.contains("unsupported apiVersion"));
     }
 }

@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashMap;
 
 use crate::pipeline::interface::PipelineEngine;
 use crate::pipeline::model::{PipelineContext, PipelineError, PipelineGraph, PipelineOutput};
@@ -21,47 +20,12 @@ impl PipelineEngine for NoopPipelineEngine {
     }
 
     fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), PipelineError> {
-        if graph.nodes.is_empty() {
-            return Err(PipelineError::new(
-                "FW_EMPTY_GRAPH",
-                format!("pipeline '{}' has no nodes", graph.id),
-            ));
-        }
-        let node_map: HashMap<&str, _> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-        for (idx, edge) in graph.edges.iter().enumerate() {
-            let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_EDGE_FROM_NODE",
-                    format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
-                )
-            })?;
-            let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_EDGE_TO_NODE",
-                    format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
-                )
-            })?;
-
-            if !from.output_pins.iter().any(|p| p == &edge.from_pin) {
-                return Err(PipelineError::new(
-                    "FW_EDGE_FROM_PIN",
-                    format!(
-                        "edge[{idx}] invalid from_pin '{}' for node '{}' (allowed: {:?})",
-                        edge.from_pin, from.id, from.output_pins
-                    ),
-                ));
-            }
-            if !to.input_pins.iter().any(|p| p == &edge.to_pin) {
-                return Err(PipelineError::new(
-                    "FW_EDGE_TO_PIN",
-                    format!(
-                        "edge[{idx}] invalid to_pin '{}' for node '{}' (allowed: {:?})",
-                        edge.to_pin, to.id, to.input_pins
-                    ),
-                ));
-            }
-        }
-        Ok(())
+        crate::contracts::kinds::validate_pipeline_activation(graph).map_err(|error| {
+            PipelineError::new(
+                error.violation_code().unwrap_or("FW_PIPELINE_CONTRACT"),
+                error.to_string(),
+            )
+        })
     }
 
     async fn execute_with_options_async(

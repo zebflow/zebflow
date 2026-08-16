@@ -28,6 +28,9 @@ use zebflow::platform::services::PlatformService;
 use zebflow::platform::services::project::{
     derive_trigger_kind_from_source, webhook_triggers_from_source,
 };
+use zebflow::platform::services::{
+    DependencyLockService, LibraryService, ProjectConfigurationService,
+};
 use zebflow::platform::web;
 use zebflow::platform::{DataAdapterKind, FileAdapterKind, PlatformConfig, build_router};
 use zebflow::provision::k8s as k8s_provision;
@@ -135,6 +138,8 @@ fn top_level_help() -> String {
 Usage:
   zebflow [standalone]
   zebflow run <project-or-hub-asset-url> [--owner <owner>] [--project <project>]
+  zebflow project config migrate <owner> <project>
+  zebflow project lock migrate <owner> <project>
   zebflow controller
   zebflow office
   zebflow k8s cluster <command> ...
@@ -147,6 +152,12 @@ Runtime Modes:
   run          Materialize one app project if needed, then serve its public route
   controller   Start the control-plane oriented server
   office       Start the execution-plane oriented server
+
+Project Maintenance:
+  zebflow project config migrate <owner> <project>
+               Explicitly migrate repo/zebflow.json to repo/zebflow.yaml
+  zebflow project lock migrate <owner> <project>
+               Explicitly migrate the pre-v1 repo/zeb.lock format
 
 Kubernetes:
   zebflow k8s cluster init <path>
@@ -166,7 +177,7 @@ Kubernetes:
   zebflow k8s cluster validate <path>
 
 Environment:
-  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Required for standalone/controller bootstrap
+  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD  Optional initial superadmin password
   ZEBFLOW_PLATFORM_HOST              Listen host (default: 127.0.0.1)
   ZEBFLOW_PLATFORM_PORT              Listen port (default: 10610)
   ZEBFLOW_HEALTH_PORT                Optional dedicated liveness port, e.g. 10611
@@ -186,6 +197,45 @@ fn print_top_level_help() {
 
 fn print_version() {
     println!("{APP_VERSION}");
+}
+
+fn project_maintenance(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 4 || args[1] != "migrate" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zebflow project <config|lock> migrate <owner> <project>",
+        )
+        .into());
+    }
+    let mut data_root = PlatformConfig::default().data_root;
+    if let Ok(path) = std::env::var("ZEBFLOW_PLATFORM_DATA_DIR") {
+        data_root = path.into();
+    }
+    match args[0].as_str() {
+        "config" => {
+            let service = ProjectConfigurationService::new(data_root.join("users"));
+            let result = service.migrate_legacy_json(&args[2], &args[3])?;
+            println!("Project configuration migrated ({})", result.source_format);
+            println!("Canonical: {}", result.canonical_path.display());
+            println!("Recovery: {}", result.recovery_path.display());
+            Ok(())
+        }
+        "lock" => {
+            let library = Arc::new(LibraryService::from_embedded()?);
+            let service =
+                DependencyLockService::with_library_service(data_root.join("users"), library);
+            let result = service.migrate_legacy(&args[2], &args[3])?;
+            println!("Dependency lock migrated ({})", result.source_format);
+            println!("Canonical: {}", result.canonical_path.display());
+            println!("Recovery: {}", result.recovery_path.display());
+            Ok(())
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: zebflow project <config|lock> migrate <owner> <project>",
+        )
+        .into()),
+    }
 }
 
 /// Load the platform configuration for the requested runtime role from environment variables.
@@ -231,11 +281,6 @@ fn load_platform_config_with_default_password(
     config.data_adapter = DataAdapterKind::Sqlite;
     config.file_adapter = FileAdapterKind::Filesystem;
 
-    if role != ClusterRole::Worker && config.default_password.trim().is_empty() {
-        return Err(io::Error::other(
-            "missing ZEBFLOW_PLATFORM_DEFAULT_PASSWORD for initial superadmin bootstrap",
-        ));
-    }
     let allow_insecure_default = std::env::var("ZEBFLOW_PLATFORM_ALLOW_INSECURE_DEFAULT_PASSWORD")
         .ok()
         .map(|value| {
@@ -681,6 +726,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match mode.as_deref() {
         None | Some("standalone") => run_server(ClusterRole::Standalone).await,
         Some("run") => run_project(parse_run_request(&args.collect::<Vec<_>>())?).await,
+        Some("project") => project_maintenance(&args.collect::<Vec<_>>()),
         Some("help") | Some("--help") | Some("-h") => {
             print_top_level_help();
             Ok(())

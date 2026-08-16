@@ -1,4 +1,4 @@
-//! Project assistant configuration service — reads/writes `repo/zebflow.json`.
+//! Project assistant configuration service backed by `repo/zebflow.yaml`.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use crate::platform::model::{
     ProjectAssistantConfig, UpsertProjectAssistantConfigRequest, ZebflowJsonAssistant, now_ts,
     slug_segment,
 };
-use crate::platform::services::project_config::ZebflowJsonService;
+use crate::platform::services::project_config::ProjectConfigurationService;
 
 const DEFAULT_MAX_STEPS: u32 = 50;
 const DEFAULT_MAX_REPLANS: u32 = 2;
@@ -20,15 +20,15 @@ const MAX_MAX_REPLANS: u32 = 64;
 const MIN_CHAT_HISTORY_PAIRS: u32 = 0;
 const MAX_CHAT_HISTORY_PAIRS: u32 = 50;
 
-/// Project-scoped assistant settings stored in `repo/zebflow.json`.
+/// Project-scoped assistant settings stored in `repo/zebflow.yaml`.
 pub struct AssistantConfigService {
     data: Arc<dyn DataAdapter>,
-    zebflow_cfg: Arc<ZebflowJsonService>,
+    zebflow_cfg: Arc<ProjectConfigurationService>,
 }
 
 impl AssistantConfigService {
     /// Creates assistant config service.
-    pub fn new(data: Arc<dyn DataAdapter>, zebflow_cfg: Arc<ZebflowJsonService>) -> Self {
+    pub fn new(data: Arc<dyn DataAdapter>, zebflow_cfg: Arc<ProjectConfigurationService>) -> Self {
         Self { data, zebflow_cfg }
     }
 
@@ -56,19 +56,38 @@ impl AssistantConfigService {
         let project = slug_segment(project);
         self.ensure_project_exists(&owner, &project)?;
 
-        let llm_high_credential_id = normalize_optional_id(req.llm_high_credential_id.as_deref());
+        let llm_high_credential_id = normalize_optional_id(req.llm_high_credential_id.as_deref())?;
         let llm_general_credential_id =
-            normalize_optional_id(req.llm_general_credential_id.as_deref());
+            normalize_optional_id(req.llm_general_credential_id.as_deref())?;
         self.ensure_credential_exists(&owner, &project, llm_high_credential_id.as_deref())?;
         self.ensure_credential_exists(&owner, &project, llm_general_credential_id.as_deref())?;
+
+        let max_steps = bounded_value(
+            "max_steps",
+            req.max_steps.unwrap_or(DEFAULT_MAX_STEPS),
+            MIN_MAX_STEPS,
+            MAX_MAX_STEPS,
+        )?;
+        let max_replans = bounded_value(
+            "max_replans",
+            req.max_replans.unwrap_or(DEFAULT_MAX_REPLANS),
+            0,
+            MAX_MAX_REPLANS,
+        )?;
+        let chat_history_pairs = bounded_value(
+            "chat_history_pairs",
+            req.chat_history_pairs.unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS),
+            MIN_CHAT_HISTORY_PAIRS,
+            MAX_CHAT_HISTORY_PAIRS,
+        )?;
 
         let assistant = ZebflowJsonAssistant {
             high_model_credential: llm_high_credential_id.clone(),
             general_model_credential: llm_general_credential_id.clone(),
-            max_steps: Some(sanitize_max_steps(req.max_steps)),
-            max_replans: Some(sanitize_max_replans(req.max_replans)),
+            max_steps: Some(max_steps),
+            max_replans: Some(max_replans),
             enabled: Some(req.enabled.unwrap_or(DEFAULT_ENABLED)),
-            chat_history_pairs: Some(sanitize_chat_history_pairs(req.chat_history_pairs)),
+            chat_history_pairs: Some(chat_history_pairs),
         };
         self.zebflow_cfg
             .set_assistant(&owner, &project, assistant.clone())?;
@@ -98,15 +117,20 @@ impl AssistantConfigService {
         self.ensure_project_exists(&owner, &project)?;
 
         let llm_high_credential_id =
-            normalize_optional_id(config.llm_high_credential_id.as_deref());
+            normalize_optional_id(config.llm_high_credential_id.as_deref())?;
         let llm_general_credential_id =
-            normalize_optional_id(config.llm_general_credential_id.as_deref());
+            normalize_optional_id(config.llm_general_credential_id.as_deref())?;
         self.ensure_credential_exists(&owner, &project, llm_high_credential_id.as_deref())?;
         self.ensure_credential_exists(&owner, &project, llm_general_credential_id.as_deref())?;
 
-        let max_steps = sanitize_max_steps(Some(config.max_steps));
-        let max_replans = sanitize_max_replans(Some(config.max_replans));
-        let chat_history_pairs = sanitize_chat_history_pairs(Some(config.chat_history_pairs));
+        let max_steps = bounded_value("max_steps", config.max_steps, MIN_MAX_STEPS, MAX_MAX_STEPS)?;
+        let max_replans = bounded_value("max_replans", config.max_replans, 0, MAX_MAX_REPLANS)?;
+        let chat_history_pairs = bounded_value(
+            "chat_history_pairs",
+            config.chat_history_pairs,
+            MIN_CHAT_HISTORY_PAIRS,
+            MAX_CHAT_HISTORY_PAIRS,
+        )?;
 
         let assistant = ZebflowJsonAssistant {
             high_model_credential: llm_high_credential_id.clone(),
@@ -162,10 +186,10 @@ impl AssistantConfigService {
             project: project.to_string(),
             llm_high_credential_id: a.high_model_credential.clone(),
             llm_general_credential_id: a.general_model_credential.clone(),
-            max_steps: sanitize_max_steps(a.max_steps),
-            max_replans: sanitize_max_replans(a.max_replans),
+            max_steps: a.max_steps.unwrap_or(DEFAULT_MAX_STEPS),
+            max_replans: a.max_replans.unwrap_or(DEFAULT_MAX_REPLANS),
             enabled: a.enabled.unwrap_or(DEFAULT_ENABLED),
-            chat_history_pairs: sanitize_chat_history_pairs(a.chat_history_pairs),
+            chat_history_pairs: a.chat_history_pairs.unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS),
             updated_at: now_ts(),
         }
     }
@@ -203,22 +227,56 @@ impl AssistantConfigService {
     }
 }
 
-fn normalize_optional_id(value: Option<&str>) -> Option<String> {
-    value.map(slug_segment).filter(|v| !v.is_empty())
+fn normalize_optional_id(value: Option<&str>) -> Result<Option<String>, PlatformError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(PlatformError::new(
+            "PLATFORM_ASSISTANT_CONFIG_INVALID",
+            "credential ids may contain only letters, numbers, dot, underscore, and hyphen",
+        ));
+    }
+    Ok(Some(value.to_string()))
 }
 
-fn sanitize_max_steps(value: Option<u32>) -> u32 {
-    value
-        .unwrap_or(DEFAULT_MAX_STEPS)
-        .clamp(MIN_MAX_STEPS, MAX_MAX_STEPS)
+fn bounded_value(
+    field: &str,
+    value: u32,
+    minimum: u32,
+    maximum: u32,
+) -> Result<u32, PlatformError> {
+    if !(minimum..=maximum).contains(&value) {
+        return Err(PlatformError::new(
+            "PLATFORM_ASSISTANT_CONFIG_INVALID",
+            format!("{field} must be between {minimum} and {maximum}"),
+        ));
+    }
+    Ok(value)
 }
 
-fn sanitize_max_replans(value: Option<u32>) -> u32 {
-    value.unwrap_or(DEFAULT_MAX_REPLANS).min(MAX_MAX_REPLANS)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn sanitize_chat_history_pairs(value: Option<u32>) -> u32 {
-    value
-        .unwrap_or(DEFAULT_CHAT_HISTORY_PAIRS)
-        .clamp(MIN_CHAT_HISTORY_PAIRS, MAX_CHAT_HISTORY_PAIRS)
+    #[test]
+    fn assistant_values_are_validated_without_clamping() {
+        assert_eq!(bounded_value("max_replans", 0, 0, 64).unwrap(), 0);
+        assert_eq!(bounded_value("max_replans", 64, 0, 64).unwrap(), 64);
+        assert!(bounded_value("max_replans", 65, 0, 64).is_err());
+        assert!(bounded_value("max_steps", 0, 1, 1000).is_err());
+    }
+
+    #[test]
+    fn credential_references_are_trimmed_but_not_rewritten() {
+        assert_eq!(
+            normalize_optional_id(Some(" ai_model.v1 ")).unwrap(),
+            Some("ai_model.v1".to_string())
+        );
+        assert!(normalize_optional_id(Some("ai/model")).is_err());
+    }
 }

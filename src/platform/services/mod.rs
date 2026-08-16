@@ -17,10 +17,12 @@ pub mod assistant_config;
 pub mod assistant_tools;
 pub mod auth;
 pub mod authorization;
+pub mod bootstrap;
 pub mod cluster;
 pub mod credential;
 pub mod db_connection;
 pub mod db_runtime;
+pub mod dependency_lock;
 pub mod hub;
 pub mod library;
 pub mod mcp_session;
@@ -35,7 +37,7 @@ pub mod project_operation;
 pub mod project_transfer;
 pub mod tsx_outline;
 pub mod user;
-pub mod zeb_lock;
+pub mod zebfs_acl;
 
 pub use access::{GitIdentityService, ProjectInviteService, ProjectMembershipService};
 pub use assistant_config::AssistantConfigService;
@@ -49,6 +51,10 @@ pub use cluster::{
 pub use credential::CredentialService;
 pub use db_connection::DbConnectionService;
 pub use db_runtime::DbRuntimeService;
+pub use dependency_lock::{
+    DependencyLockMigration, DependencyLockService, DependencyResolutionStatus,
+    DependencyStatusItem, DependencyStatusReport,
+};
 pub use hub::HubService;
 pub use library::LibraryService;
 pub use mcp_session::McpSessionService;
@@ -58,8 +64,7 @@ pub use pipeline_hits::PipelineHitsService;
 pub use pipeline_runtime::{PipelineRuntimeService, WsTriggerSpec};
 pub use platform::PlatformService;
 pub use project::ProjectService;
-pub use project_config::ZebflowJsonService;
+pub use project_config::ProjectConfigurationService;
 pub use project_operation::ProjectOperationService;
 pub use project_transfer::ProjectTransferService;
 pub use user::UserService;
-pub use zeb_lock::ZebLockService;

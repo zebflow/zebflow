@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/markdown" },
+  "spec": {
   "name": "zeb/markdown",
   "description": "Markdown rendering for RWE templates using marked + DOMPurify. Includes Markdown component.",
   "exports": [
@@ -13,5 +17,6 @@
       "size_bytes": 62808,
       "integrity": ""
     }
+  }
   }
 }

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "libraries": {
+    "zeb/deckgl": {
+      "version": "full-9.x",
+      "source": "offline",
+      "entry": "0.1/runtime/deckgl.bundle.mjs",
+      "integrity": null
+    }
+  }
+}

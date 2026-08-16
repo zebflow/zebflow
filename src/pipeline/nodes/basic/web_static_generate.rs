@@ -688,8 +688,6 @@ export default function LyricPage(input) {
         .expect("template write");
 
         let graph = PipelineGraph {
-            kind: "zebflow.pipeline".to_string(),
-            version: "0.1".to_string(),
             id: "generate-lyric".to_string(),
             description: None,
             metadata: None,
@@ -874,8 +872,6 @@ export default function LyricPage(input) {
         .expect("template write");
 
         let graph = PipelineGraph {
-            kind: "zebflow.pipeline".to_string(),
-            version: "0.1".to_string(),
             id: "generate-one-lyric".to_string(),
             description: None,
             metadata: None,

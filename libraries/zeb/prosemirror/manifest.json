@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/prosemirror" },
+  "spec": {
   "name": "zeb/prosemirror",
   "description": "ProseMirror 1.41 rich text editor for RWE templates. Two-way stateKey reactive bridge, SPA/API-first MutationObserver auto-mount, extensible toolbar system, built-in doodle/photo/link plugins, instance registry via window.__zebProse.",
   "exports": [
@@ -15,5 +19,6 @@
       "integrity": "",
       "note": "All PM packages bundled inline via esbuild. No CDN fetches at runtime. Build: cd /tmp/zeb-pm-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=prosemirror.bundle.mjs"
     }
+  }
   }
 }

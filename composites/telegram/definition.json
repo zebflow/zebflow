@@ -1,5 +1,8 @@
 {
-  "format": "zebflow-package-v2",
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": { "name": "telegram", "version": "1.0.0" },
+  "spec": {
   "package": "telegram",
   "version": "1.0.0",
   "title": "Telegram",
@@ -189,5 +192,5 @@
         "layout": ["bot_credential_id"]
       }
     }
-  ]
+  ]}
 }

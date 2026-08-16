@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/d3" },
+  "spec": {
   "name": "zeb/d3",
   "description": "D3.js v7 runtime for RWE templates. Full d3 namespace bundled offline. Bar, line, pie chart helpers with reactive stateKey bridge.",
   "exports": [
@@ -18,5 +22,6 @@
       "integrity": "",
       "note": "Full d3 v7 bundle via esbuild. Build: cd /tmp/zeb-d3-build && npm install && node_modules/.bin/esbuild entry.mjs --bundle --format=esm --minify --outfile=d3.bundle.mjs"
     }
+  }
   }
 }

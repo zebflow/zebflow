@@ -1,26 +1,24 @@
-//! Service for reading and writing `repo/zebflow.json` (Layer 2 project config).
+//! Service for reading and writing canonical `repo/zebflow.yaml` project configuration.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use crate::contracts::kinds::{
+    LEGACY_PROJECT_CONFIGURATION_FILE, PROJECT_CONFIGURATION_BACKUP_FILE,
+    PROJECT_CONFIGURATION_FILE, ProjectConfigurationContract, ProjectConfigurationSpec,
+    decode_legacy_project_configuration,
+};
+use crate::contracts::{
+    ContractMetadata, decode_contract, read_optional_contract_yaml, write_contract_yaml,
+};
 use crate::infra::execution::placement::ProjectRuntimeProfile;
 use crate::infra::execution::sync::ProjectBootstrapPlan;
-use crate::infra::io::durable::{
-    JsonContract, JsonContractField, JsonContractValue, read_optional_versioned_json,
-    write_atomic_json,
-};
+use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub, ZebflowJsonMetadata,
-    ZebflowJsonRweLibraries, ZebflowJsonRweLibraryEntry, slug_segment,
-};
-
-const ZEBFLOW_JSON_FIELDS: &[JsonContractField] = &[JsonContractField {
-    name: "version",
-    expected: JsonContractValue::String("1.0"),
-}];
-const ZEBFLOW_JSON_CONTRACT: JsonContract = JsonContract {
-    name: "zebflow.json",
-    fields: ZEBFLOW_JSON_FIELDS,
+    ZebflowJson, ZebflowJsonAssistant, ZebflowJsonDistributionHub, ZebflowJsonRweLibraries,
+    ZebflowJsonRweLibraryEntry, slug_segment,
 };
 
 /// Returns true if `rel_path` matches a locked path or is inside a locked folder prefix.
@@ -30,26 +28,55 @@ pub fn is_template_path_locked(locked: &[String], rel_path: &str) -> bool {
     })
 }
 
-/// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.json`.
-pub struct ZebflowJsonService {
+/// Reads and writes `{data_root}/users/{owner}/{project}/repo/zebflow.yaml`.
+pub struct ProjectConfigurationService {
     users_root: PathBuf,
+    update_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
 }
 
-impl ZebflowJsonService {
+impl ProjectConfigurationService {
     /// Creates service rooted at `{data_root}/users`.
     pub fn new(users_root: PathBuf) -> Self {
-        Self { users_root }
+        Self {
+            users_root,
+            update_locks: Mutex::new(HashMap::new()),
+        }
     }
 
-    fn json_path(&self, owner: &str, project: &str) -> PathBuf {
+    fn repo_path(&self, owner: &str, project: &str) -> PathBuf {
         self.users_root
             .join(slug_segment(owner))
             .join(slug_segment(project))
             .join("repo")
-            .join("zebflow.json")
     }
 
-    /// Reads `zebflow.json`, returning defaults only when the file is missing.
+    fn config_path(&self, owner: &str, project: &str) -> PathBuf {
+        self.repo_path(owner, project)
+            .join(PROJECT_CONFIGURATION_FILE)
+    }
+
+    fn legacy_path(&self, owner: &str, project: &str) -> PathBuf {
+        self.repo_path(owner, project)
+            .join(LEGACY_PROJECT_CONFIGURATION_FILE)
+    }
+
+    /// Returns whether the canonical project configuration file exists.
+    pub fn canonical_exists(&self, owner: &str, project: &str) -> bool {
+        self.config_path(owner, project).is_file()
+    }
+
+    fn update_lock(&self, path: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .update_locks
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        locks
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Reads `zebflow.yaml`, returning defaults only when the file is missing.
     ///
     /// Malformed and unsupported files are rejected so runtime behavior never
     /// silently changes because an authoritative project file is damaged.
@@ -58,42 +85,217 @@ impl ZebflowJsonService {
         owner: &str,
         project: &str,
     ) -> Result<ZebflowJson, PlatformError> {
-        let path = self.json_path(owner, project);
-        read_optional_versioned_json(&path, ZEBFLOW_JSON_CONTRACT)
-            .map(|config| config.unwrap_or_default())
+        let path = self.config_path(owner, project);
+        self.read_path_or_default(&path, &self.legacy_path(owner, project), project)
+    }
+
+    fn read_path_or_default(
+        &self,
+        path: &Path,
+        legacy_path: &Path,
+        project: &str,
+    ) -> Result<ZebflowJson, PlatformError> {
+        read_optional_contract_yaml::<ProjectConfigurationContract>(path)
+            .and_then(|document| {
+                let Some(document) = document else {
+                    if legacy_path.exists() {
+                        return Err(crate::contracts::ContractError::Invalid(format!(
+                            "legacy '{}' exists; run the explicit project configuration migration",
+                            legacy_path.display()
+                        )));
+                    }
+                    return Ok(ZebflowJson::default());
+                };
+                if document.metadata.name != project {
+                    return Err(crate::contracts::ContractError::Invalid(format!(
+                        "metadata.name '{}' must match owning project '{}'",
+                        document.metadata.name, project
+                    )));
+                }
+                Ok(document.spec.into())
+            })
             .map_err(|err| {
-                PlatformError::new("ZEBFLOW_JSON_READ", format!("{} ({})", err, err.category()))
+                PlatformError::new(
+                    "PROJECT_CONFIG_READ",
+                    format!("{} ({})", err, err.category()),
+                )
             })
     }
 
-    /// Writes zebflow.json atomically (best-effort).
+    /// Writes `zebflow.yaml` with durable atomic replacement.
     pub fn write(
         &self,
         owner: &str,
         project: &str,
         config: &ZebflowJson,
     ) -> Result<(), PlatformError> {
-        let path = self.json_path(owner, project);
-        write_atomic_json(&path, config, ZEBFLOW_JSON_CONTRACT).map_err(|err| {
+        let path = self.config_path(owner, project);
+        let lock = self.update_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+        self.write_unlocked(&path, project, config)
+    }
+
+    fn write_unlocked(
+        &self,
+        path: &Path,
+        project: &str,
+        config: &ZebflowJson,
+    ) -> Result<(), PlatformError> {
+        write_contract_yaml::<ProjectConfigurationContract>(
+            path,
+            ContractMetadata::named(project),
+            ProjectConfigurationSpec::from(config.clone()),
+        )
+        .map_err(|err| {
             PlatformError::new(
-                "ZEBFLOW_JSON_WRITE",
+                "PROJECT_CONFIG_WRITE",
                 format!("{} ({})", err, err.category()),
             )
         })
     }
 
-    /// Reads zebflow.json, applies a mutation, and writes it back.
+    /// Reads `zebflow.yaml`, applies a mutation, and writes it back atomically.
     pub fn update<F>(&self, owner: &str, project: &str, f: F) -> Result<ZebflowJson, PlatformError>
     where
         F: FnOnce(&mut ZebflowJson),
     {
-        let mut cfg = self.read_or_default(owner, project)?;
-        f(&mut cfg);
-        self.write(owner, project, &cfg)?;
+        self.update_fallible(owner, project, |config| {
+            f(config);
+            Ok(())
+        })
+    }
+
+    /// Runs a fallible mutation while holding the per-project configuration lock.
+    ///
+    /// This is restricted to platform services that coordinate `zebflow.yaml`
+    /// with another durable project contract. Returning an error leaves the
+    /// configuration file unchanged.
+    pub(crate) fn update_fallible<F>(
+        &self,
+        owner: &str,
+        project: &str,
+        f: F,
+    ) -> Result<ZebflowJson, PlatformError>
+    where
+        F: FnOnce(&mut ZebflowJson) -> Result<(), PlatformError>,
+    {
+        let path = self.config_path(owner, project);
+        let legacy_path = self.legacy_path(owner, project);
+        let lock = self.update_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+        let mut cfg = self.read_path_or_default(&path, &legacy_path, project)?;
+        f(&mut cfg)?;
+        self.write_unlocked(&path, project, &cfg)?;
         Ok(cfg)
     }
 
-    /// Writes the project title to zebflow.json, preserving other fields.
+    /// Explicitly migrates `repo/zebflow.json` into canonical `repo/zebflow.yaml`.
+    ///
+    /// Normal reads never invoke this path. The original JSON bytes remain in
+    /// `zebflow.pre-yaml.json` so an operator can inspect or restore them.
+    pub fn migrate_legacy_json(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<ProjectConfigurationMigration, PlatformError> {
+        let path = self.config_path(owner, project);
+        let legacy_path = self.legacy_path(owner, project);
+        let backup_path = self
+            .repo_path(owner, project)
+            .join(PROJECT_CONFIGURATION_BACKUP_FILE);
+        let lock = self.update_lock(&path);
+        let _guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+
+        if path.exists() {
+            return Err(PlatformError::new(
+                "PROJECT_CONFIG_MIGRATE",
+                format!("'{}' already exists", path.display()),
+            ));
+        }
+        let bytes = std::fs::read(&legacy_path).map_err(|err| {
+            PlatformError::new(
+                "PROJECT_CONFIG_MIGRATE",
+                format!("failed reading '{}': {err}", legacy_path.display()),
+            )
+        })?;
+        let (metadata, spec, source_format) =
+            match decode_contract::<ProjectConfigurationContract>(&bytes) {
+                Ok(document) => (document.metadata, document.spec, "contract_json"),
+                Err(_) => (
+                    ContractMetadata::named(project),
+                    decode_legacy_project_configuration(&bytes).map_err(|err| {
+                        PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string())
+                    })?,
+                    "legacy_1.0",
+                ),
+            };
+        if metadata.name != project {
+            return Err(PlatformError::new(
+                "PROJECT_CONFIG_MIGRATE",
+                format!(
+                    "metadata.name '{}' must match owning project '{}'",
+                    metadata.name, project
+                ),
+            ));
+        }
+
+        match std::fs::read(&backup_path) {
+            Ok(existing) if existing != bytes => {
+                return Err(PlatformError::new(
+                    "PROJECT_CONFIG_MIGRATE",
+                    format!(
+                        "recovery copy '{}' already exists with different content",
+                        backup_path.display()
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                atomic_write(&backup_path, &bytes).map_err(|err| {
+                    PlatformError::new(
+                        "PROJECT_CONFIG_MIGRATE",
+                        format!("failed writing recovery copy: {err}"),
+                    )
+                })?;
+            }
+            Err(err) => {
+                return Err(PlatformError::new(
+                    "PROJECT_CONFIG_MIGRATE",
+                    format!("failed reading recovery copy: {err}"),
+                ));
+            }
+        }
+        write_contract_yaml::<ProjectConfigurationContract>(&path, metadata, spec.clone())
+            .map_err(|err| PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string()))?;
+        let reopened = read_optional_contract_yaml::<ProjectConfigurationContract>(&path)
+            .map_err(|err| PlatformError::new("PROJECT_CONFIG_MIGRATE", err.to_string()))?
+            .ok_or_else(|| {
+                PlatformError::new(
+                    "PROJECT_CONFIG_MIGRATE",
+                    "canonical configuration disappeared after migration",
+                )
+            })?;
+        if reopened.spec != spec {
+            return Err(PlatformError::new(
+                "PROJECT_CONFIG_MIGRATE",
+                "canonical configuration did not roundtrip after migration",
+            ));
+        }
+        std::fs::remove_file(&legacy_path).map_err(|err| {
+            PlatformError::new(
+                "PROJECT_CONFIG_MIGRATE",
+                format!("migration succeeded but failed removing legacy source: {err}"),
+            )
+        })?;
+
+        Ok(ProjectConfigurationMigration {
+            source_format: source_format.to_string(),
+            canonical_path: path,
+            recovery_path: backup_path,
+        })
+    }
+
+    /// Writes the project title to `zebflow.yaml`, preserving other fields.
     pub fn set_project_title(
         &self,
         owner: &str,
@@ -106,7 +308,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Gets the project title from zebflow.json, falling back to the project slug.
+    /// Gets the project title from `zebflow.yaml`, falling back to the project slug.
     pub fn get_project_title(&self, owner: &str, project: &str) -> Result<String, PlatformError> {
         let cfg = self.read_or_default(owner, project)?;
         if cfg.metadata.title.trim().is_empty() {
@@ -137,7 +339,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Returns the assistant section of zebflow.json.
+    /// Returns the assistant section of `zebflow.yaml`.
     pub fn get_assistant(
         &self,
         owner: &str,
@@ -146,7 +348,7 @@ impl ZebflowJsonService {
         Ok(self.read_or_default(owner, project)?.configs.assistant)
     }
 
-    /// Returns the portable runtime profile section of `zebflow.json`.
+    /// Returns the portable runtime profile section of `zebflow.yaml`.
     pub fn get_runtime_profile(
         &self,
         owner: &str,
@@ -155,7 +357,7 @@ impl ZebflowJsonService {
         Ok(self.read_or_default(owner, project)?.configs.runtime)
     }
 
-    /// Sets the portable runtime profile section of `zebflow.json`, preserving other fields.
+    /// Sets the portable runtime profile section of `zebflow.yaml`, preserving other fields.
     pub fn set_runtime_profile(
         &self,
         owner: &str,
@@ -168,7 +370,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Returns the bootstrap/activation plan section of `zebflow.json`.
+    /// Returns the bootstrap/activation plan section of `zebflow.yaml`.
     pub fn get_bootstrap(
         &self,
         owner: &str,
@@ -177,7 +379,7 @@ impl ZebflowJsonService {
         Ok(self.read_or_default(owner, project)?.configs.bootstrap)
     }
 
-    /// Sets the bootstrap/activation plan section of `zebflow.json`, preserving other fields.
+    /// Sets the bootstrap/activation plan section of `zebflow.yaml`, preserving other fields.
     pub fn set_bootstrap(
         &self,
         owner: &str,
@@ -190,7 +392,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Sets the assistant section of zebflow.json, preserving other fields.
+    /// Sets the assistant section of `zebflow.yaml`, preserving other fields.
     pub fn set_assistant(
         &self,
         owner: &str,
@@ -203,7 +405,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Returns the `rwe.libraries` map from zebflow.json.
+    /// Returns the `rwe.libraries` map from `zebflow.yaml`.
     pub fn get_rwe_libraries(
         &self,
         owner: &str,
@@ -281,7 +483,7 @@ impl ZebflowJsonService {
         Ok(())
     }
 
-    /// Returns all locked template paths from zebflow.json.
+    /// Returns all locked template paths from `zebflow.yaml`.
     pub fn get_locked_templates(
         &self,
         owner: &str,
@@ -294,72 +496,70 @@ impl ZebflowJsonService {
             .templates)
     }
 
-    /// Initializes zebflow.json with defaults if it doesn't already exist.
+    /// Initializes zebflow.yaml with defaults if it doesn't already exist.
     pub fn ensure_initialized(
         &self,
         owner: &str,
         project: &str,
         title: &str,
     ) -> Result<(), PlatformError> {
-        let path = self.json_path(owner, project);
-        if path.exists() {
-            // Only update title if currently blank
-            let mut cfg = self.read_or_default(owner, project)?;
+        self.update(owner, project, |cfg| {
             if cfg.metadata.title.trim().is_empty() && !title.trim().is_empty() {
                 cfg.metadata.title = title.to_string();
-                self.write(owner, project, &cfg)?;
             }
-            return Ok(());
-        }
-        let cfg = ZebflowJson {
-            metadata: ZebflowJsonMetadata {
-                title: title.to_string(),
-                description: String::new(),
-            },
-            ..Default::default()
-        };
-        self.write(owner, project, &cfg)
+        })?;
+        Ok(())
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProjectConfigurationMigration {
+    pub source_format: String,
+    pub canonical_path: PathBuf,
+    pub recovery_path: PathBuf,
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use super::*;
 
     #[test]
     fn missing_config_defaults_but_malformed_and_future_configs_fail() {
         let root = tempfile::tempdir().unwrap();
-        let service = ZebflowJsonService::new(root.path().join("users"));
-        assert_eq!(
-            service.read_or_default("owner", "project").unwrap().version,
-            "1.0"
-        );
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        assert!(service.read_or_default("owner", "project").is_ok());
 
-        let path = service.json_path("owner", "project");
+        let path = service.config_path("owner", "project");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"not-json").unwrap();
+        std::fs::write(&path, b"spec: [").unwrap();
         assert_eq!(
             service
                 .read_or_default("owner", "project")
                 .unwrap_err()
                 .code,
-            "ZEBFLOW_JSON_READ"
+            "PROJECT_CONFIG_READ"
         );
 
-        std::fs::write(&path, br#"{"version":"2.0"}"#).unwrap();
+        std::fs::write(
+            &path,
+            b"apiVersion: zebflow.com/v2\nkind: ProjectConfiguration\nmetadata:\n  name: project\nspec: {}\n",
+        )
+        .unwrap();
         assert_eq!(
             service
                 .read_or_default("owner", "project")
                 .unwrap_err()
                 .code,
-            "ZEBFLOW_JSON_READ"
+            "PROJECT_CONFIG_READ"
         );
     }
 
     #[test]
     fn config_write_is_strict_and_roundtrips() {
         let root = tempfile::tempdir().unwrap();
-        let service = ZebflowJsonService::new(root.path().join("users"));
+        let service = ProjectConfigurationService::new(root.path().join("users"));
         let mut config = ZebflowJson::default();
         config.metadata.title = "Stable".to_string();
         service.write("owner", "project", &config).unwrap();
@@ -372,8 +572,23 @@ mod tests {
             "Stable"
         );
 
-        config.version = "2.0".to_string();
-        assert!(service.write("owner", "project", &config).is_err());
+        let path = service.config_path("owner", "project");
+        let written = std::fs::read_to_string(&path).unwrap();
+        let written: serde_yaml_ng::Value = serde_yaml_ng::from_str(&written).unwrap();
+        assert_eq!(written["spec"]["profile"]["title"], "Stable");
+        assert_eq!(
+            written["spec"]["data"],
+            serde_yaml_ng::Value::Mapping(Default::default())
+        );
+        assert!(written["spec"].get("configs").is_none());
+
+        std::fs::write(
+            &path,
+            b"apiVersion: zebflow.com/v1\nkind: DependencyLock\nmetadata:\n  name: project\nspec: {}\n",
+        )
+        .unwrap();
+        assert!(service.read_or_default("owner", "project").is_err());
+        service.write("owner", "project", &config).unwrap();
         assert_eq!(
             service
                 .read_or_default("owner", "project")
@@ -382,5 +597,121 @@ mod tests {
                 .title,
             "Stable"
         );
+    }
+
+    #[test]
+    fn legacy_json_requires_explicit_migration_and_keeps_recovery_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let legacy = service.legacy_path("owner", "project");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(
+            &legacy,
+            br#"{
+                "version":"1.0",
+                "metadata":{"title":"Migrated","description":""},
+                "configs":{"data":{},"pipelines":{"nodes":{}}},
+                "distribution":{}
+            }"#,
+        )
+        .unwrap();
+
+        let err = service.read_or_default("owner", "project").unwrap_err();
+        assert_eq!(err.code, "PROJECT_CONFIG_READ");
+        assert!(
+            err.message
+                .contains("explicit project configuration migration")
+        );
+
+        let result = service.migrate_legacy_json("owner", "project").unwrap();
+        assert_eq!(result.source_format, "legacy_1.0");
+        assert!(!legacy.exists());
+        assert!(result.canonical_path.exists());
+        assert!(result.recovery_path.exists());
+        assert_eq!(
+            service
+                .read_or_default("owner", "project")
+                .unwrap()
+                .metadata
+                .title,
+            "Migrated"
+        );
+    }
+
+    #[test]
+    fn failed_legacy_migration_preserves_the_source() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let legacy = service.legacy_path("owner", "project");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        let invalid = br#"{"version":"2.0"}"#;
+        std::fs::write(&legacy, invalid).unwrap();
+
+        assert!(service.migrate_legacy_json("owner", "project").is_err());
+        assert_eq!(std::fs::read(&legacy).unwrap(), invalid);
+        assert!(!service.config_path("owner", "project").exists());
+        assert!(
+            !service
+                .repo_path("owner", "project")
+                .join(PROJECT_CONFIGURATION_BACKUP_FILE)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn migration_never_overwrites_a_different_recovery_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let service = ProjectConfigurationService::new(root.path().join("users"));
+        let legacy = service.legacy_path("owner", "project");
+        let recovery = service
+            .repo_path("owner", "project")
+            .join(PROJECT_CONFIGURATION_BACKUP_FILE);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(
+            &legacy,
+            br#"{"version":"1.0","metadata":{},"configs":{},"distribution":{}}"#,
+        )
+        .unwrap();
+        std::fs::write(&recovery, b"previous recovery").unwrap();
+
+        let error = service.migrate_legacy_json("owner", "project").unwrap_err();
+        assert_eq!(error.code, "PROJECT_CONFIG_MIGRATE");
+        assert_eq!(std::fs::read(&recovery).unwrap(), b"previous recovery");
+        assert!(legacy.exists());
+        assert!(!service.config_path("owner", "project").exists());
+    }
+
+    #[test]
+    fn concurrent_updates_preserve_independent_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let service = Arc::new(ProjectConfigurationService::new(root.path().join("users")));
+        service
+            .ensure_initialized("owner", "project", "Initial")
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let title_service = Arc::clone(&service);
+        let title_barrier = Arc::clone(&barrier);
+        let title = std::thread::spawn(move || {
+            title_barrier.wait();
+            title_service
+                .set_project_title("owner", "project", "Concurrent")
+                .unwrap();
+        });
+        let lock_service = Arc::clone(&service);
+        let lock_barrier = Arc::clone(&barrier);
+        let template_lock = std::thread::spawn(move || {
+            lock_barrier.wait();
+            lock_service
+                .set_template_locked("owner", "project", "pages/system", true)
+                .unwrap();
+        });
+        barrier.wait();
+        title.join().unwrap();
+        template_lock.join().unwrap();
+
+        let config = service.read_or_default("owner", "project").unwrap();
+        assert_eq!(config.metadata.title, "Concurrent");
+        assert_eq!(config.configs.locks.templates, ["pages/system"]);
     }
 }

@@ -6,7 +6,12 @@ rely on them.
 - [Platform contract](./platform.md)
 - [Project contract](./project.md)
 - [Format contract](./formats.md)
+- [Registered contract kinds](./kinds/README.md)
+- [Contract stability matrix](./stability-matrix.md)
 - [Versioning contract](./versioning.md)
+
+Shared rules live directly in this folder. The exact schema, ownership, and
+lifecycle of each registered kind live under `kinds/<kind>/`.
 
 ## Words Used Here
 

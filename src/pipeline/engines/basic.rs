@@ -1723,53 +1723,12 @@ impl PipelineEngine for BasicPipelineEngine {
     }
 
     fn validate_graph(&self, graph: &PipelineGraph) -> Result<(), PipelineError> {
-        if graph.nodes.is_empty() {
-            return Err(PipelineError::new(
-                "FW_EMPTY_GRAPH",
-                format!("pipeline '{}' has no nodes", graph.id),
-            ));
-        }
-        let node_map: HashMap<&str, _> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-        for entry in &graph.entry_nodes {
-            if !node_map.contains_key(entry.as_str()) {
-                return Err(PipelineError::new(
-                    "FW_ENTRY_NODE",
-                    format!("unknown entry node '{}'", entry),
-                ));
-            }
-        }
-        for (idx, edge) in graph.edges.iter().enumerate() {
-            let from = node_map.get(edge.from_node.as_str()).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_EDGE_FROM_NODE",
-                    format!("edge[{idx}] unknown from_node '{}'", edge.from_node),
-                )
-            })?;
-            let to = node_map.get(edge.to_node.as_str()).ok_or_else(|| {
-                PipelineError::new(
-                    "FW_EDGE_TO_NODE",
-                    format!("edge[{idx}] unknown to_node '{}'", edge.to_node),
-                )
-            })?;
-            if !from.output_pins.iter().any(|p| p == &edge.from_pin) && edge.from_pin != "error" {
-                return Err(PipelineError::new(
-                    "FW_EDGE_FROM_PIN",
-                    format!(
-                        "edge[{idx}] invalid from_pin '{}' for node '{}'",
-                        edge.from_pin, from.id
-                    ),
-                ));
-            }
-            if !to.input_pins.iter().any(|p| p == &edge.to_pin) {
-                return Err(PipelineError::new(
-                    "FW_EDGE_TO_PIN",
-                    format!(
-                        "edge[{idx}] invalid to_pin '{}' for node '{}'",
-                        edge.to_pin, to.id
-                    ),
-                ));
-            }
-        }
+        crate::contracts::kinds::validate_pipeline_activation(graph).map_err(|error| {
+            PipelineError::new(
+                error.violation_code().unwrap_or("FW_PIPELINE_CONTRACT"),
+                error.to_string(),
+            )
+        })?;
         for node in &graph.nodes {
             // Skip upfront validation for nodes whose config contains {{ expr }} placeholders —
             // those are resolved per-input at runtime, so type validation must happen there.
@@ -1811,6 +1770,25 @@ impl PipelineEngine for BasicPipelineEngine {
         };
 
         let bus = options.bus.clone();
+        // Project configuration is immutable for this invocation. Snapshot the
+        // timeout once instead of reparsing zebflow.yaml for every node.
+        let project_timeout_secs = self
+            .platform
+            .as_ref()
+            .map(|platform| {
+                platform
+                    .zebflow_cfg
+                    .read_or_default(&ctx.owner, &ctx.project)
+                    .map(|config| config.configs.pipelines.effective_node_timeout_secs())
+            })
+            .transpose()
+            .map_err(|err| PipelineError::new(err.code, err.message))?
+            .or_else(|| {
+                std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
         // nodes_output: accumulates only completed node outputs required by the
         // graph's `$nodes`/`ctx.nodes` retention plan.
         // Declared here (before the initial queue push) so entry-node metadata can include it.
@@ -1875,23 +1853,6 @@ impl PipelineEngine for BasicPipelineEngine {
 
             // Per-node timeout: prevents slow HTTP/DB nodes from hanging pipelines.
             // Priority: node config `timeout_secs` → project config → env var → default(30s).
-            let project_timeout_secs = self
-                .platform
-                .as_ref()
-                .map(|platform| {
-                    platform
-                        .zebflow_cfg
-                        .read_or_default(&ctx.owner, &ctx.project)
-                        .map(|config| config.configs.pipelines.effective_node_timeout_secs())
-                })
-                .transpose()
-                .map_err(|err| PipelineError::new(err.code, err.message))?
-                .or_else(|| {
-                    std::env::var("PIPELINE_NODE_TIMEOUT_SECS")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                })
-                .unwrap_or(crate::platform::model::default_pipeline_node_timeout_secs());
             let node_timeout_secs: u64 = effective_config
                 .get("timeout_secs")
                 .and_then(|v| {
@@ -3611,8 +3572,6 @@ mod tests {
             .expect("posts csv");
 
         let graph = PipelineGraph {
-            kind: "zebflow.pipeline".to_string(),
-            version: "0.1".to_string(),
             id: "table-query-ui-rows".to_string(),
             description: None,
             metadata: None,

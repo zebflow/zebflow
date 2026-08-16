@@ -2,17 +2,19 @@
 //!
 //! This crate is intentionally split into independent subsystems:
 //!
-//! 1. [`pipeline`] for pipeline orchestration (graph traversal, node dispatch)
-//! 2. [`language`] for sandboxed script execution (Deno)
-//! 3. [`rwe`] for reactive web template compile/render (TSX → SSR → hydrate)
-//! 4. [`automaton`] for autonomous objective planning/execution + LLM clients (Zebtune)
-//! 5. [`platform`] for service composition and web shell (Axum, MCP, DSL)
-//! 6. [`infra`] for shared runtime infrastructure (WebSocket, storage, scheduler)
+//! 1. [`contracts`] for stable persisted and transferred format boundaries
+//! 2. [`pipeline`] for pipeline orchestration (graph traversal, node dispatch)
+//! 3. [`language`] for sandboxed script execution (Deno)
+//! 4. [`rwe`] for reactive web template compile/render (TSX → SSR → hydrate)
+//! 5. [`automaton`] for autonomous objective planning/execution + LLM clients (Zebtune)
+//! 6. [`platform`] for service composition and web shell (Axum, MCP, DSL)
+//! 7. [`infra`] for shared runtime infrastructure (WebSocket, storage, scheduler)
 //!
 //! The [`ZebflowEngineKit`] type wires default implementations so an app entrypoint
 //! can keep `main.rs` thin and delegate all behavior to library modules.
 
 pub mod automaton;
+pub mod contracts;
 pub mod infra;
 pub mod language;
 pub mod mapserver;

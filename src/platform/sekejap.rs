@@ -6,6 +6,9 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::contracts::kinds::DatabaseSchemaContract;
+use crate::contracts::{ContractMetadata, decode_contract, encode_contract};
+use crate::infra::io::durable::atomic_write;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CollectionAttribute, CreateSimpleTableRequest, DbObjectNode, DbQueryColumn,
@@ -212,9 +215,8 @@ fn sekejap_sidecar_bytes(dir: &Path) -> u64 {
 pub const BUILTIN_CONNECTION_SLUG: &str = "default-multimodel";
 pub const BUILTIN_CONNECTION_LABEL: &str = "Default Multimodel Store";
 pub const DB_KIND: &str = "sekejap";
-pub const REPO_SCHEMA_VERSION: &str = "zebflow.sekejap.schema.v1";
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SekejapTableSchemaExport {
     pub table: String,
     pub title: String,
@@ -234,8 +236,8 @@ pub struct SekejapTableSchemaExport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SekejapSchemaExport {
-    pub schema_version: String,
     pub database: String,
     pub connection_slug: String,
     pub tables: Vec<SekejapTableSchemaExport>,
@@ -252,7 +254,6 @@ pub struct SekejapSchemaSyncReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SekejapSchemaApplyReport {
-    pub schema_version: String,
     pub tables_created: Vec<String>,
     pub tables_skipped: Vec<String>,
     pub table_count: usize,
@@ -717,11 +718,23 @@ pub fn export_schema(
 ) -> Result<SekejapSchemaExport, PlatformError> {
     let tables = export_tables_from_defs(list_tables(data_root, owner, project)?);
     Ok(SekejapSchemaExport {
-        schema_version: REPO_SCHEMA_VERSION.to_string(),
         database: DB_KIND.to_string(),
         connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
         tables,
     })
+}
+
+/// Encodes a portable Sekejap schema using the canonical platform envelope.
+pub fn encode_schema_export(export: SekejapSchemaExport) -> Result<Vec<u8>, PlatformError> {
+    let name = export.connection_slug.clone();
+    encode_contract::<DatabaseSchemaContract>(ContractMetadata::named(name), export).map_err(
+        |err| {
+            PlatformError::new(
+                "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
+                format!("failed to serialise schema contract: {err}"),
+            )
+        },
+    )
 }
 
 fn export_tables_from_defs(defs: Vec<SimpleTableDefinition>) -> Vec<SekejapTableSchemaExport> {
@@ -772,16 +785,7 @@ pub fn apply_schema_export(
     project: &str,
     export: &SekejapSchemaExport,
 ) -> Result<SekejapSchemaApplyReport, PlatformError> {
-    if export.schema_version != REPO_SCHEMA_VERSION {
-        return Err(PlatformError::new(
-            "PLATFORM_SEKEJAP_SCHEMA_VERSION",
-            format!(
-                "unsupported sekejap schema version '{}'",
-                export.schema_version
-            ),
-        ));
-    }
-
+    encode_schema_export(export.clone())?;
     let mut existing = load_catalog(data_root, owner, project)?;
     let mut existing_tables = existing
         .iter()
@@ -848,7 +852,6 @@ pub fn apply_schema_export(
     sync_schema_to_repo(data_root, owner, project)?;
 
     Ok(SekejapSchemaApplyReport {
-        schema_version: export.schema_version.clone(),
         table_count: export.tables.len(),
         tables_created,
         tables_skipped,
@@ -864,14 +867,14 @@ pub fn apply_schema_from_repo(
     if !schema_path.is_file() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&schema_path)?;
-    let export = serde_json::from_str::<SekejapSchemaExport>(&raw).map_err(|err| {
+    let raw = std::fs::read(&schema_path)?;
+    let document = decode_contract::<DatabaseSchemaContract>(&raw).map_err(|err| {
         PlatformError::new(
             "PLATFORM_SEKEJAP_SCHEMA_READ",
-            format!("failed to parse sekejap schema export: {err}"),
+            format!("failed to parse sekejap schema contract: {err}"),
         )
     })?;
-    apply_schema_export(data_root, owner, project, &export).map(Some)
+    apply_schema_export(data_root, owner, project, &document.spec).map(Some)
 }
 
 fn sync_catalog_with_live(
@@ -904,7 +907,15 @@ fn write_json_if_changed(path: &Path, value: &Value) -> Result<bool, PlatformErr
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, encoded)?;
+    atomic_write(path, encoded.as_bytes())?;
+    Ok(true)
+}
+
+fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool, PlatformError> {
+    if path.exists() && std::fs::read(path)? == bytes {
+        return Ok(false);
+    }
+    atomic_write(path, bytes)?;
     Ok(true)
 }
 
@@ -915,7 +926,6 @@ pub fn sync_schema_to_repo(
 ) -> Result<SekejapSchemaSyncReport, PlatformError> {
     let defs = sync_catalog_with_live(data_root, owner, project)?;
     let export = SekejapSchemaExport {
-        schema_version: REPO_SCHEMA_VERSION.to_string(),
         database: DB_KIND.to_string(),
         connection_slug: BUILTIN_CONNECTION_SLUG.to_string(),
         tables: export_tables_from_defs(defs),
@@ -929,13 +939,8 @@ pub fn sync_schema_to_repo(
     let mut files_removed = Vec::new();
 
     let schema_path = schema_root.join("schema.json");
-    let schema_value = serde_json::to_value(&export).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_SEKEJAP_SCHEMA_EXPORT",
-            format!("failed to serialise schema export: {err}"),
-        )
-    })?;
-    if write_json_if_changed(&schema_path, &schema_value)? {
+    let schema_bytes = encode_schema_export(export.clone())?;
+    if write_bytes_if_changed(&schema_path, &schema_bytes)? {
         changed = true;
     }
     files_written.push("schemas/sekejap/schema.json".to_string());
@@ -1902,10 +1907,12 @@ mod tests {
         let schema: Value =
             serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
                 .expect("schema json");
-        assert_eq!(schema["schema_version"], REPO_SCHEMA_VERSION);
-        assert_eq!(schema["tables"][0]["table"], "posts");
-        assert!(schema["tables"][0].get("row_count").is_none());
-        assert!(schema["tables"][0].get("updated_at").is_none());
+        assert_eq!(schema["apiVersion"], "zebflow.com/v1");
+        assert_eq!(schema["kind"], "DatabaseSchema");
+        assert_eq!(schema["metadata"]["name"], BUILTIN_CONNECTION_SLUG);
+        assert_eq!(schema["spec"]["tables"][0]["table"], "posts");
+        assert!(schema["spec"]["tables"][0].get("row_count").is_none());
+        assert!(schema["spec"]["tables"][0].get("updated_at").is_none());
     }
 
     #[test]
@@ -1967,6 +1974,26 @@ mod tests {
         assert!(places.fulltext_fields.contains(&"name".to_string()));
         assert!(places.spatial_fields.contains(&"geometry".to_string()));
         assert!(places.vector_fields.contains(&"embedding".to_string()));
+    }
+
+    #[test]
+    fn apply_schema_from_repo_rejects_legacy_unversioned_shape() {
+        let tmp = tmp_root();
+        let schema_path = tmp
+            .path()
+            .join("users/alice/demo/repo/schemas/sekejap/schema.json");
+        std::fs::create_dir_all(schema_path.parent().expect("schema parent"))
+            .expect("create schema dir");
+        std::fs::write(
+            &schema_path,
+            r#"{"schema_version":"zebflow.sekejap.schema.v1","database":"sekejap","connection_slug":"default-multimodel","tables":[]}"#,
+        )
+        .expect("legacy schema");
+
+        let err = apply_schema_from_repo(tmp.path(), "alice", "demo").unwrap_err();
+        assert_eq!(err.code, "PLATFORM_SEKEJAP_SCHEMA_READ");
+        assert!(err.message.contains("invalid contract"));
+        assert!(err.message.contains("schema_version"));
     }
 
     #[test]
@@ -2072,7 +2099,7 @@ mod tests {
         let schema: Value =
             serde_json::from_str(&std::fs::read_to_string(schema_path).expect("schema file"))
                 .expect("schema json");
-        assert_eq!(schema["tables"][0]["table"], "posts");
+        assert_eq!(schema["spec"]["tables"][0]["table"], "posts");
     }
 
     #[test]

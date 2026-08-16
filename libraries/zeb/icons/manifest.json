@@ -1,4 +1,8 @@
 {
+  "apiVersion": "zebflow.com/v1",
+  "kind": "LibraryManifest",
+  "metadata": { "name": "zeb/icons" },
+  "spec": {
   "name": "zeb/icons",
   "description": "Lucide-style SVG icon components for RWE templates. 78 icons covering navigation, actions, status, data, files, and auth. Includes devicons CSS helpers (ensureDevicons, dbKindIconClass, dbObjectIconClass).",
   "exports": [
@@ -98,5 +102,6 @@
       "size_bytes": 18568,
       "integrity": ""
     }
+  }
   }
 }

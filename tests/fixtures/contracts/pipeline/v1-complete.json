@@ -1,0 +1,58 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "Pipeline",
+  "metadata": {
+    "name": "catalog-search"
+  },
+  "spec": {
+    "id": "catalog-search",
+    "description": "Search the project catalog and return a JSON response.",
+    "metadata": {
+      "locked": false,
+      "settings": {
+        "invocation_retention": {
+          "max_invocations": 50,
+          "max_age_secs": 604800
+        }
+      }
+    },
+    "entry_nodes": [
+      "trigger"
+    ],
+    "nodes": [
+      {
+        "id": "trigger",
+        "kind": "n.trigger.webhook",
+        "input_pins": [],
+        "output_pins": [
+          "out"
+        ],
+        "config": {
+          "path": "/catalog/search",
+          "method": "POST"
+        }
+      },
+      {
+        "id": "respond",
+        "kind": "n.web.response",
+        "input_pins": [
+          "in"
+        ],
+        "output_pins": [
+          "out"
+        ],
+        "config": {
+          "status": 200
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from_node": "trigger",
+        "from_pin": "out",
+        "to_node": "respond",
+        "to_pin": "in"
+      }
+    ]
+  }
+}
