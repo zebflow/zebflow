@@ -1871,33 +1871,24 @@ pub enum NodePackageSource {
     Wasm,
 }
 
-/// Runtime configuration for a composite node package.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CompositeNodeRuntime {
-    /// Relative filename of the inner function pipeline (e.g. `"pipeline.zf.json"`).
-    pub pipeline: String,
-}
-
 /// Runtime configuration for a WASM node package (future).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct WasmNodeRuntime {
     /// Relative filename of the WASM module (e.g. `"module.wasm"`).
     pub module: String,
-    /// ABI identifier (e.g. `"extism-json-v1"`).
+    /// ABI identifier (currently `"zebflow-wasm-json-v1"`).
     pub abi: String,
     /// Export function map.
     #[serde(default)]
     pub exports: HashMap<String, String>,
 }
 
-/// Parsed `node.json` / `definition.json` manifest for an installed node package.
+/// Runtime-normalized manifest for one node from an installed `definition.json` bundle.
 ///
-/// For single-node packages (v1 `node.json`), `definition` is set directly.
-/// For multi-node packages (`definition.json`), the loader explodes the package
-/// into one `NodePackageManifest` per node, each carrying the shared credentials
-/// and functions map.
+/// This is not an authoring or disk format. The registry derives it from the
+/// canonical [`MultiNodePackageDefinition`] and uses it uniformly for composite
+/// and WASM execution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodePackageManifest {
@@ -1910,9 +1901,6 @@ pub struct NodePackageManifest {
     /// Custom credential type definitions provided by this package.
     #[serde(default)]
     pub credentials: Vec<CredentialTypeDef>,
-    /// Composite runtime config (present when `source == Composite`, v1 single-pipeline).
-    #[serde(default)]
-    pub runtime: Option<CompositeNodeRuntime>,
     /// WASM runtime config (present when `source == Wasm`).
     #[serde(default)]
     pub wasm_runtime: Option<WasmNodeRuntime>,
@@ -2036,6 +2024,14 @@ pub struct MultiNodeEntryDefinition {
     #[serde(default)]
     pub config_schema: serde_json::Value,
     #[serde(default)]
+    pub input_schema: serde_json::Value,
+    #[serde(default)]
+    pub output_schema: serde_json::Value,
+    #[serde(default)]
+    pub examples: Vec<crate::pipeline::NodeExample>,
+    #[serde(default)]
+    pub failure_semantics: Vec<crate::pipeline::NodeFailureSemantic>,
+    #[serde(default)]
     pub fields: Vec<crate::pipeline::NodeFieldDef>,
     #[serde(default)]
     pub layout: Vec<crate::pipeline::model::LayoutItem>,
@@ -2056,8 +2052,8 @@ pub struct InstalledNodePackage {
     pub manifest: NodePackageManifest,
     /// Absolute path to the package directory on disk.
     pub package_dir: String,
-    /// Whether an `icon.svg` exists in the package.
-    pub has_icon: bool,
+    /// Validated package-relative icon path for this node.
+    pub icon_rel_path: Option<String>,
 }
 
 /// Request payload for user creation.

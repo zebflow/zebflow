@@ -39,7 +39,7 @@ The review and freeze status for each kind is maintained in the
 | `ProjectManifest` | Reserved | Name held for a future project manifest; no reader accepts it yet |
 | `Pipeline` | Envelope | Saved and active pipeline graphs |
 | `DependencyLock` | Envelope | Exact RWE library and installed node-bundle pins in project `zeb.lock` |
-| `NodeDefinition` | Envelope | One installed composite or WASM node definition |
+| `NodeDefinition` | Envelope | One normalized node interface shared by native, composite, and WASM nodes |
 | `NodeBundle` | Envelope | One installable bundle containing one or more nodes |
 | `FileRef` | Inline payload | Small reference passed inside node JSON |
 | `ZebFsAcl` | Envelope | Project file access rules |

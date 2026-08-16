@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use wasmtime::{Engine, Instance, Module, Store, Val, ValType};
+use wasmtime::{Engine, Instance, Module, Store};
 
+use crate::contracts::kinds::WASM_JSON_ABI_V1;
 use crate::pipeline::model::PipelineError;
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput};
 use crate::platform::model::{NodePackageSource, WasmNodeRuntime};
@@ -134,29 +135,24 @@ fn execute_wasm_node_blocking(
         .get("main")
         .map(String::as_str)
         .unwrap_or(DEFAULT_MAIN_EXPORT);
-    let payload = if runtime.abi == "zebflow-wasm-json-v1"
-        && has_json_abi(&mut store, &instance, main_export)
-    {
-        execute_json_abi(
-            &kind,
-            runtime,
-            &mut store,
-            &instance,
-            main_export,
-            &config,
-            &input,
-        )?
-    } else {
-        execute_scalar_abi(
-            &kind,
-            &mut store,
-            &instance,
-            main_export,
-            &installed.manifest.definition.fields,
-            &config,
-            &input.payload,
-        )?
-    };
+    if runtime.abi != WASM_JSON_ABI_V1 {
+        return Err(PipelineError::new(
+            "FW_NODE_WASM_ABI",
+            format!(
+                "WASM node '{kind}' declares unsupported ABI '{}'; expected '{WASM_JSON_ABI_V1}'",
+                runtime.abi
+            ),
+        ));
+    }
+    let payload = execute_json_abi(
+        &kind,
+        runtime,
+        &mut store,
+        &instance,
+        main_export,
+        &config,
+        &input,
+    )?;
 
     Ok(vec![NodeExecutionOutput {
         output_pins: vec!["out".to_string()],
@@ -182,16 +178,6 @@ fn resolve_package_file(package_dir: &str, rel_path: &str) -> Result<PathBuf, Pi
         ));
     }
     Ok(Path::new(package_dir).join(rel))
-}
-
-fn has_json_abi(store: &mut Store<()>, instance: &Instance, main_export: &str) -> bool {
-    instance.get_memory(&mut *store, "memory").is_some()
-        && instance
-            .get_typed_func::<i32, i32>(&mut *store, DEFAULT_ALLOC_EXPORT)
-            .is_ok()
-        && instance
-            .get_typed_func::<(i32, i32), i64>(&mut *store, main_export)
-            .is_ok()
 }
 
 fn execute_json_abi(
@@ -289,66 +275,6 @@ fn execute_json_abi(
     })
 }
 
-fn execute_scalar_abi(
-    kind: &str,
-    store: &mut Store<()>,
-    instance: &Instance,
-    main_export: &str,
-    fields: &[crate::pipeline::NodeFieldDef],
-    config: &Value,
-    input: &Value,
-) -> Result<Value, PipelineError> {
-    let func = instance.get_func(&mut *store, main_export).ok_or_else(|| {
-        PipelineError::new(
-            "FW_NODE_WASM_EXPORT",
-            format!("WASM node '{kind}' missing main export '{main_export}'"),
-        )
-    })?;
-    let ty = func.ty(&mut *store);
-    let params: Vec<ValType> = ty.params().collect();
-    let results: Vec<ValType> = ty.results().collect();
-    let mut args = Vec::new();
-    for (idx, param) in params.iter().enumerate() {
-        let name = fields
-            .get(idx)
-            .map(|field| field.name.as_str())
-            .unwrap_or_default();
-        let value = config
-            .get(name)
-            .or_else(|| input.get(name))
-            .ok_or_else(|| {
-                PipelineError::new(
-                    "FW_NODE_WASM_ARG",
-                    format!("WASM node '{kind}' scalar argument {idx} ('{name}') is missing"),
-                )
-            })?;
-        args.push(json_value_to_wasm_val(kind, idx, name, param, value)?);
-    }
-    let mut out = results
-        .iter()
-        .map(default_wasm_val)
-        .collect::<Result<Vec<_>, _>>()?;
-    func.call(&mut *store, &args, &mut out).map_err(|err| {
-        PipelineError::new(
-            "FW_NODE_WASM_CALL",
-            format!("WASM node '{kind}' scalar export '{main_export}' failed: {err}"),
-        )
-    })?;
-    let result_values = out.iter().map(wasm_val_to_json).collect::<Vec<_>>();
-    let result = if result_values.len() == 1 {
-        result_values[0].clone()
-    } else {
-        Value::Array(result_values)
-    };
-    Ok(json!({
-        "ok": true,
-        "wasm": {
-            "export": main_export,
-            "result": result
-        }
-    }))
-}
-
 fn write_memory(
     kind: &str,
     store: &mut Store<()>,
@@ -394,66 +320,4 @@ fn read_memory(
         ));
     }
     Ok(data[ptr..end].to_vec())
-}
-
-fn json_value_to_wasm_val(
-    kind: &str,
-    idx: usize,
-    name: &str,
-    ty: &ValType,
-    value: &Value,
-) -> Result<Val, PipelineError> {
-    match ty {
-        ValType::I32 => value
-            .as_i64()
-            .and_then(|n| i32::try_from(n).ok())
-            .map(Val::I32)
-            .ok_or_else(|| scalar_type_error(kind, idx, name, "i32")),
-        ValType::I64 => value
-            .as_i64()
-            .map(Val::I64)
-            .ok_or_else(|| scalar_type_error(kind, idx, name, "i64")),
-        ValType::F32 => value
-            .as_f64()
-            .map(|n| Val::F32((n as f32).to_bits()))
-            .ok_or_else(|| scalar_type_error(kind, idx, name, "f32")),
-        ValType::F64 => value
-            .as_f64()
-            .map(|n| Val::F64(n.to_bits()))
-            .ok_or_else(|| scalar_type_error(kind, idx, name, "f64")),
-        other => Err(PipelineError::new(
-            "FW_NODE_WASM_TYPE",
-            format!("WASM node '{kind}' argument {idx} ('{name}') uses unsupported type {other:?}"),
-        )),
-    }
-}
-
-fn default_wasm_val(ty: &ValType) -> Result<Val, PipelineError> {
-    match ty {
-        ValType::I32 => Ok(Val::I32(0)),
-        ValType::I64 => Ok(Val::I64(0)),
-        ValType::F32 => Ok(Val::F32(0)),
-        ValType::F64 => Ok(Val::F64(0)),
-        other => Err(PipelineError::new(
-            "FW_NODE_WASM_TYPE",
-            format!("unsupported WASM result type {other:?}"),
-        )),
-    }
-}
-
-fn wasm_val_to_json(value: &Val) -> Value {
-    match value {
-        Val::I32(n) => json!(*n),
-        Val::I64(n) => json!(*n),
-        Val::F32(bits) => json!(f32::from_bits(*bits)),
-        Val::F64(bits) => json!(f64::from_bits(*bits)),
-        other => json!(format!("{other:?}")),
-    }
-}
-
-fn scalar_type_error(kind: &str, idx: usize, name: &str, expected: &str) -> PipelineError {
-    PipelineError::new(
-        "FW_NODE_WASM_ARG_TYPE",
-        format!("WASM node '{kind}' argument {idx} ('{name}') must be {expected}"),
-    )
 }

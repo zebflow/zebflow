@@ -290,9 +290,9 @@ pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
 
 /// Embedded official composite node packages.
 ///
-/// Each entry uses path format: `{slug}/node.json`, `{slug}/pipeline.zf.json`, `{slug}/icon.svg`.
-/// To add an official composite node, create the package under `composites/{slug}/` and add
-/// `include_bytes!()` entries here.
+/// Each package uses `{slug}/definition.json` plus its declared functions and icons.
+/// To add an official composite node bundle, create it under `composites/{slug}/`
+/// and add every required artifact here.
 pub const PLATFORM_COMPOSITE_NODE_ASSETS: &[EmbeddedAsset] = &[
     // ── Telegram (multi-node package) ───────────────────────────────────
     EmbeddedAsset {

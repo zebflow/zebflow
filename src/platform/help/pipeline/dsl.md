@@ -414,7 +414,7 @@ n.logic.match --help            # same
 | `pg.query` | `n.pg.query` | `--credential <credential-slug>` (**credential slug** from `get credentials`, kind=postgres) `[--params-path <dot.path>] [--params-expr <js-expr>] [--credential-expr <js-expr>] [--query-expr <js-expr>]` + `-- <sql>` |
 | `auth.token.create` | `n.auth.token.create` | `--credential <jwt_key_id> [--expires-in <secs>] [--claim key=$.field ...] [--issuer <iss>] [--audience <aud>]` — append `:public` to a claim value to expose it in the browser via `ctx.auth` (e.g. `--claim name=$.fullname:public`). Use `--claim roles=$.roles:public` where `roles` is an array — role-based access control always uses the `roles` array claim. Claims without `:public` are signed but never reach the browser DOM. Secure by default — `ctx.auth` is `null` unless at least one claim is marked public. |
 | `table.convert` | `n.table.convert` | `(--from <path> \| --from-expr <expr>) [--from-format csv\|json\|ndjson\|parquet] [--to <path>] [--to-format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — converts CSV/JSON/NDJSON/Parquet between ZebFS and downstream row JSON. |
-| `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --sql "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
+| `table.query` | `n.table.query` | `--from "<path-or-expr> as <alias>" ... --query "<select>" [--engine geodatafusion] [--params-path <dot.path>] [--params-expr <js-expr>] [--to <path>] [--format csv\|json\|ndjson\|parquet] [--to-json] [--preview <n>] [--limit <n>]` — runs GeoDataFusion SQL over CSV/JSON/NDJSON/Parquet ZebFS objects or upstream row expressions. |
 | `fs.list` | `n.fs.list` | `[--path <prefix> \| --prefix <prefix>]` — list immediate children under a ZebFS prefix; output `{ fs: { operation, path, count, entries } }`. |
 | `fs.head` | `n.fs.head` | `--path <object-or-prefix>` — read object/prefix metadata without reading content. |
 | `fs.get` | `n.fs.get` | `--path <object> [--encoding text\|base64]` — read one object; default text requires UTF-8, base64 is for binary objects. |
@@ -502,21 +502,21 @@ or a row-producing expression such as `$input.rows`.
     --from "datasets/posts.parquet as posts" \
     --from "datasets/authors.csv as authors" \
     --to-json \
-    --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id"
+    --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id"
 
 # Bind parameters with GeoDataFusion placeholders
 | table.query \
     --from "datasets/posts.csv as posts" \
     --params-expr "[$trigger.params.id]" \
     --to-json \
-    --sql "select * from posts where id = $1"
+    --query "select * from posts where id = $1"
 
 # Query upstream rows and write Parquet
 | sekejap.query -- "SELECT id, title, author_id FROM posts"
 | table.query \
     --from "$input.rows as posts" \
     --to exports/filtered-posts.parquet \
-    --sql "select * from posts where author_id is not null"
+    --query "select * from posts where author_id is not null"
 ```
 
 ### FileRef convention

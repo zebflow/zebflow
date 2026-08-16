@@ -24,7 +24,11 @@ pub use dependency_lock::{
 pub use hub_package::HubPackageContract;
 pub use library_manifest::LibraryManifestContract;
 pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord};
-pub use node::{NodeBundleContract, NodeDefinitionContract, validate_node_definition_spec};
+pub use node::{
+    MAX_NODE_DEFINITION_BYTES, NodeBundleContract, NodeDefinitionContract, WASM_JSON_ABI_V1,
+    decode_node_definition, encode_node_definition, normalize_node_bundle,
+    validate_node_definition_spec, validate_normalized_node_definition,
+};
 pub use pipeline::{
     MAX_PIPELINE_EDGES, MAX_PIPELINE_NODES, MAX_PIPELINE_SOURCE_BYTES, PipelineContract,
     PipelineEdgeSpec, PipelineInvocationRetentionSpec, PipelineMetadataSpec, PipelineNodeSpec,

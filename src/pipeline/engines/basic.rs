@@ -3439,7 +3439,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params-expr "[$input.post_id]" --to-json --preview 1 --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
+[b] table.query --from "datasets/posts.csv as posts" --from "datasets/authors.csv as authors" --params-expr "[$input.post_id]" --to-json --preview 1 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where p.id = $1"
 
 [a] -> [b]
 "#;
@@ -3515,7 +3515,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview 2 --sql "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
+[b] table.query --from "datasets/posts.parquet as posts" --from "datasets/authors.parquet as authors" --to-json --preview 2 --query "select p.id, p.title, a.name from posts p join authors a on p.author_id = a.id where a.active = true order by p.id"
 
 [a] -> [b]
 "#;
@@ -3648,7 +3648,7 @@ mod tests {
 
         let dsl = r#"
 [a] trigger.manual
-[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview 1 --sql "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
+[b] table.query --engine geodatafusion --from "$input.rows as points" --to-json --preview 1 --query "select id, ST_AsText(ST_Point(x, y)) as geom from points where id = 1"
 
 [a] -> [b]
 "#;

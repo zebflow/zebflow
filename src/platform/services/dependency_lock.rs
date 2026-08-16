@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_BACKUP_FILE, DEPENDENCY_LOCK_FILE, DependencyLockArtifactSpec,
     DependencyLockNodeBundleSpec, DependencyLockSource, DependencyLockSpec, NodeBundleContract,
-    NodeDefinitionContract, decode_dependency_lock, decode_pipeline_graph, encode_dependency_lock,
+    decode_dependency_lock, decode_pipeline_graph, encode_dependency_lock,
 };
 use crate::contracts::{ContractMetadata, decode_contract};
 use crate::infra::io::durable::atomic_write;
@@ -992,37 +992,26 @@ fn inspect_node_bundle(
         )
     })?;
     let mut pipeline_paths = BTreeSet::new();
-    let (version, mut definitions) =
-        if manifest_path.file_name().and_then(|name| name.to_str()) == Some("definition.json") {
-            let document = decode_contract::<NodeBundleContract>(&bytes).map_err(|error| {
-                PlatformError::new(
-                    "PLATFORM_DEPENDENCY_MANIFEST",
-                    format!("{} ({})", error, error.category()),
-                )
-            })?;
-            pipeline_paths.extend(document.spec.functions.values().cloned());
-            (
-                document.spec.version,
-                document
-                    .spec
-                    .nodes
-                    .into_iter()
-                    .map(|node| node.kind)
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            let document = decode_contract::<NodeDefinitionContract>(&bytes).map_err(|error| {
-                PlatformError::new(
-                    "PLATFORM_DEPENDENCY_MANIFEST",
-                    format!("{} ({})", error, error.category()),
-                )
-            })?;
-            pipeline_paths.extend(document.spec.functions.values().cloned());
-            if let Some(runtime) = &document.spec.runtime {
-                pipeline_paths.insert(runtime.pipeline.clone());
-            }
-            (document.spec.version, vec![document.spec.definition.kind])
-        };
+    if manifest_path.file_name().and_then(|name| name.to_str()) != Some("definition.json") {
+        return Err(PlatformError::new(
+            "PLATFORM_DEPENDENCY_MANIFEST",
+            "node bundle entry must end with definition.json",
+        ));
+    }
+    let document = decode_contract::<NodeBundleContract>(&bytes).map_err(|error| {
+        PlatformError::new(
+            "PLATFORM_DEPENDENCY_MANIFEST",
+            format!("{} ({})", error, error.category()),
+        )
+    })?;
+    pipeline_paths.extend(document.spec.functions.values().cloned());
+    let version = document.spec.version;
+    let mut definitions = document
+        .spec
+        .nodes
+        .into_iter()
+        .map(|node| node.kind)
+        .collect::<Vec<_>>();
     definitions.sort();
     definitions.dedup();
 
@@ -1586,16 +1575,19 @@ mod tests {
               "apiVersion":"zebflow.com/v1",
               "kind":"NodeBundle",
               "metadata":{"name":"example","version":"1.0.0"},
-              "spec":{
-                "package":"example",
-                "version":"1.0.0",
-                "title":"Example",
-                "nodes":[{
-                  "kind":"n.c.example",
-                  "title":"Example",
-                  "definition":{"output_pins":["out"]}
-                }]
-              }
+	              "spec":{
+	                "package":"example",
+	                "version":"1.0.0",
+	                "title":"Example",
+	                "description":"Example composite node bundle.",
+	                "nodes":[{
+	                  "kind":"n.c.example",
+	                  "title":"Example",
+	                  "description":"Execute the example function.",
+	                  "trigger":{"type":"webhook"},
+	                  "definition":{"output_pins":["out"]}
+	                }]
+	              }
             }"#,
         )
         .unwrap();

@@ -88,13 +88,6 @@ pub fn definition() -> NodeDefinition {
                 required: false,
             },
             DslFlag {
-                flag: "--sql".to_string(),
-                config_key: "query".to_string(),
-                description: "Alias for --query.".to_string(),
-                kind: DslFlagKind::Scalar,
-                required: false,
-            },
-            DslFlag {
                 flag: "--query-expr".to_string(),
                 config_key: "query_expr".to_string(),
                 description: "JS expression returning the SQL query string. Overrides --query at runtime.".to_string(),

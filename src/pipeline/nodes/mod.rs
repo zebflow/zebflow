@@ -625,8 +625,8 @@ mod tests {
     fn native_node_definitions_have_complete_contracts() {
         let mut failures = Vec::new();
         for def in super::builtin_node_definitions() {
-            if let Err(errors) = super::validate_node_definition_contract(&def) {
-                failures.push(format!("{}: {}", def.kind, errors.join("; ")));
+            if let Err(error) = crate::contracts::kinds::validate_normalized_node_definition(&def) {
+                failures.push(format!("{}: {}", def.kind, error));
             }
         }
         assert!(
@@ -640,8 +640,8 @@ mod tests {
     fn embedded_official_node_definitions_have_complete_contracts() {
         let mut failures = Vec::new();
         for def in crate::platform::services::node_registry::NodeRegistryService::embedded_official_definitions() {
-            if let Err(errors) = super::validate_node_definition_contract(&def) {
-                failures.push(format!("{}: {}", def.kind, errors.join("; ")));
+            if let Err(error) = crate::contracts::kinds::validate_normalized_node_definition(&def) {
+                failures.push(format!("{}: {}", def.kind, error));
             }
         }
         assert!(

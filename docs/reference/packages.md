@@ -41,7 +41,8 @@ definitions.
 `definition.json` is a `NodeBundle` document using `zebflow.com/v1`. Its
 `metadata.name` and `metadata.version` match `spec.package` and `spec.version`.
 A node entry uses the normal node definition fields. The package loader turns
-every entry into an installed `NodeDefinition` document.
+every entry into the normalized `NodeDefinition` interface used by the catalog
+and runtime. It does not write a second node manifest.
 
 ## Safety Review
 

@@ -814,6 +814,17 @@ pub struct NodeDefinition {
     /// can rely on after this node runs.
     #[serde(default)]
     pub output_schema: Value,
+    /// Concrete examples used by generated documentation and tool callers.
+    ///
+    /// Examples are documentation, not fixtures executed during every pipeline run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<NodeExample>,
+    /// Stable failure codes and their meaning.
+    ///
+    /// Runtime errors may include more context, but documented codes must keep the
+    /// meaning declared here for the lifetime of this contract version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_semantics: Vec<NodeFailureSemantic>,
     /// Input pin names declared by this kind.  Empty for trigger nodes (no upstream).
     /// Almost always `["in"]` for processing nodes.
     #[serde(default)]
@@ -866,6 +877,43 @@ pub struct NodeDefinition {
     /// If empty, the frontend title-cases the subcategory slug.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ui_category_label: String,
+}
+
+/// One concrete node usage example.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NodeExample {
+    /// Short label shown in generated documentation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Optional explanation of what the example demonstrates.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Static node configuration for the example.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub config: Value,
+    /// Example upstream payload.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub input: Value,
+    /// Expected output payload.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub output: Value,
+}
+
+/// One documented runtime failure exposed by a node kind.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NodeFailureSemantic {
+    /// Stable machine-readable error code.
+    pub code: String,
+    /// Human-readable explanation of the failure.
+    pub description: String,
+    /// Whether retrying unchanged input can reasonably succeed.
+    #[serde(default)]
+    pub retryable: bool,
+    /// Optional actionable guidance for a retry or correction.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub retry_hint: String,
 }
 
 /// Script bridge capability as exposed in a [`NodeUsageMatrix`].
@@ -936,6 +984,12 @@ pub struct NodeContractItem {
     /// JSON Schema for the produced payload.
     #[serde(default)]
     pub output_schema: Value,
+    /// Concrete usage examples from the node definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<NodeExample>,
+    /// Stable documented failure codes from the node definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_semantics: Vec<NodeFailureSemantic>,
     /// Declared input pin names.
     #[serde(default)]
     pub input_pins: Vec<String>,
@@ -1070,6 +1124,8 @@ impl From<NodeDefinition> for NodeContractItem {
             config_schema: value.config_schema,
             input_schema: value.input_schema,
             output_schema: value.output_schema,
+            examples: value.examples,
+            failure_semantics: value.failure_semantics,
             input_pins: value.input_pins,
             output_pins: value.output_pins,
             dsl_flags: value.dsl_flags,

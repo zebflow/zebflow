@@ -1903,6 +1903,7 @@ impl HubService {
                 return Err(self.recover_failed_install(
                     &target_owner,
                     &target_project,
+                    &layout.repo_dir,
                     &prepared,
                     previous_lock.as_ref(),
                     operation_error,
@@ -1934,6 +1935,7 @@ impl HubService {
                         return Err(self.recover_failed_install(
                             &target_owner,
                             &target_project,
+                            &layout.repo_dir,
                             &prepared,
                             previous_lock.as_ref(),
                             error,
@@ -1960,6 +1962,7 @@ impl HubService {
                 return Err(self.recover_failed_install(
                     &target_owner,
                     &target_project,
+                    &layout.repo_dir,
                     &prepared,
                     previous_lock.as_ref(),
                     error,
@@ -1991,12 +1994,13 @@ impl HubService {
         &self,
         owner: &str,
         project: &str,
+        repo_dir: &Path,
         entries: &[PreparedHubInstallEntry],
         previous_lock: Option<&crate::contracts::kinds::DependencyLockSpec>,
         operation_error: PlatformError,
     ) -> PlatformError {
         let mut recovery_errors = Vec::new();
-        if let Err(error) = restore_hub_install_entries(entries) {
+        if let Err(error) = restore_hub_install_entries(repo_dir, entries) {
             recovery_errors.push(error.to_string());
         }
         if let Some(previous) = previous_lock {
@@ -4139,7 +4143,10 @@ fn validate_prepared_pipeline_sources(
     Ok(())
 }
 
-fn restore_hub_install_entries(entries: &[PreparedHubInstallEntry]) -> Result<(), PlatformError> {
+fn restore_hub_install_entries(
+    repo_dir: &Path,
+    entries: &[PreparedHubInstallEntry],
+) -> Result<(), PlatformError> {
     let mut errors = Vec::new();
     for entry in entries.iter().rev() {
         let result = match &entry.previous {
@@ -4148,6 +4155,29 @@ fn restore_hub_install_entries(entries: &[PreparedHubInstallEntry]) -> Result<()
         };
         if let Err(error) = result {
             errors.push(format!("{}: {error}", entry.install_rel));
+        }
+    }
+    for entry in entries.iter().filter(|entry| entry.previous.is_none()) {
+        let mut parent = entry.destination.parent();
+        while let Some(path) = parent {
+            if path == repo_dir || !path.starts_with(repo_dir) {
+                break;
+            }
+            match std::fs::remove_dir(path) {
+                Ok(()) => parent = path.parent(),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => {
+                    errors.push(format!("{}: {error}", path.display()));
+                    break;
+                }
+            }
         }
     }
     if errors.is_empty() {
@@ -4748,7 +4778,7 @@ mod tests {
                 payload,
             )
             .unwrap_err();
-        assert_eq!(error.code, "ZEB_LOCK_NODE_BUNDLE");
+        assert_eq!(error.code, "NODE_MANIFEST_PARSE");
         let package_dir = root
             .path()
             .join("users/superadmin/default/repo/nodes/broken-bundle");
@@ -4773,7 +4803,8 @@ mod tests {
         .unwrap();
         let owner = "superadmin";
         let project = "default";
-        let definition = include_str!("../../../composites/openai-embedding/definition.json");
+        let definition = include_str!("../../../composites/openai-embedding/definition.json")
+            .replace("n.c.ai.embedding", "n.c.test.embedding");
         let function = include_str!("../../../composites/openai-embedding/functions/embed.zf.json");
         let payload: HubArtifact = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
@@ -4816,14 +4847,14 @@ mod tests {
                 .node_registry
                 .merged_definitions(owner, project)
                 .iter()
-                .any(|definition| definition.kind == "n.c.ai.embedding")
+                .any(|definition| definition.kind == "n.c.test.embedding")
         );
         let lock = platform.dependency_lock.read(owner, project).unwrap();
         let bundle = lock
             .nodes
             .bundles
             .values()
-            .find(|bundle| bundle.definitions == ["n.c.ai.embedding"])
+            .find(|bundle| bundle.definitions == ["n.c.test.embedding"])
             .unwrap();
         assert_eq!(
             bundle.source,

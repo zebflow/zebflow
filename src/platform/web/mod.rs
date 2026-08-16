@@ -476,10 +476,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_get_node_definition),
         )
         .route(
-            "/api/projects/{owner}/{project}/nodes/install",
-            post(api_install_node_package),
-        )
-        .route(
             "/api/projects/{owner}/{project}/nodes/uninstall/{kind}",
             delete(api_uninstall_node_package),
         )
@@ -8094,7 +8090,7 @@ async fn docs_node_contract() -> Response {
     items.sort_by(|a, b| a.kind.cmp(&b.kind));
     Json(crate::pipeline::NodeContractDocument {
         ok: true,
-        schema_version: "0.1",
+        schema_version: crate::contracts::CONTRACT_API_VERSION,
         source: "pipeline::nodes + embedded_official_composites",
         items,
     })
@@ -8255,58 +8251,6 @@ async fn api_get_node_definition(
 
 // ── Node package install/uninstall/icon ─────────────────────────────────────
 
-async fn api_install_node_package(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(body): Json<NodePackageInstallRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::SettingsWrite,
-    ) {
-        return response;
-    }
-    match maybe_forward_project_json_to_worker(
-        &state,
-        &uri,
-        &headers,
-        Method::POST,
-        &body,
-        &owner,
-        &project,
-    )
-    .await
-    {
-        Ok(Some(response)) => return response,
-        Ok(None) => {}
-        Err(err) => return internal_error(err),
-    }
-    match state.platform.node_registry.install_package(
-        &owner,
-        &project,
-        &body.manifest,
-        body.pipeline_source.as_deref(),
-        body.icon_svg.as_deref(),
-    ) {
-        Ok(pkg) => Json(json!({
-            "ok": true,
-            "kind": pkg.manifest.definition.kind,
-            "slug": pkg.slug,
-        }))
-        .into_response(),
-        Err(e) => Json(json!({
-            "ok": false,
-            "error": format!("{}: {}", e.code, e.message)
-        }))
-        .into_response(),
-    }
-}
-
 async fn api_uninstall_node_package(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -8419,15 +8363,6 @@ async fn api_node_icon(
     }
 
     StatusCode::NOT_FOUND.into_response()
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct NodePackageInstallRequest {
-    manifest: crate::platform::model::NodePackageManifest,
-    #[serde(default)]
-    pipeline_source: Option<String>,
-    #[serde(default)]
-    icon_svg: Option<String>,
 }
 
 // ── Admin DB endpoints ──────────────────────────────────────────────────────

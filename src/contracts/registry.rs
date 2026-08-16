@@ -87,7 +87,7 @@ const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     reserved(ContractKind::ProjectManifest, "platform", "persisted"),
     envelope(ContractKind::Pipeline, "pipeline", "persisted"),
     envelope(ContractKind::DependencyLock, "platform", "persisted"),
-    envelope(ContractKind::NodeDefinition, "pipeline", "persisted"),
+    envelope(ContractKind::NodeDefinition, "pipeline", "normalized"),
     envelope(ContractKind::NodeBundle, "platform", "transferred"),
     inline(ContractKind::FileRef, "pipeline", "payload"),
     envelope(ContractKind::ZebFsAcl, "zebfs", "persisted"),

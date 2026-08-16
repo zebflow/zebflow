@@ -326,12 +326,6 @@ pub fn definition() -> NodeDefinition {
             LayoutItem::Field("delete_source".to_string()),
             LayoutItem::Field("filename".to_string()),
         ],
-        ai_tool: crate::pipeline::model::NodeAiToolDefinition {
-            registered: false,
-            tool_name: String::new(),
-            tool_description: String::new(),
-            tool_input_schema: json!({}),
-        },
         ..Default::default()
     }
 }

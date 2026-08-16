@@ -15,7 +15,7 @@ explicitly.
 | 1 | [`ProjectConfiguration`](./project-configuration/README.md) | Envelope, persisted file | Frozen |
 | 2 | [`Pipeline`](./pipeline/README.md) | Envelope, persisted file | Frozen |
 | 3 | [`DependencyLock`](./dependency-lock/README.md) | Envelope, persisted file | Frozen |
-| 4 | [`NodeDefinition`](./node-definition/README.md) | Envelope, persisted file | Pending |
+| 4 | [`NodeDefinition`](./node-definition/README.md) | Envelope, normalized node interface | Frozen |
 | 5 | [`NodeBundle`](./node-bundle/README.md) | Envelope, package source and transfer | Pending |
 | 6 | [`FileRef`](./file-ref/README.md) | Inline payload | Pending |
 | 7 | [`ZebFsAcl`](./zebfs-acl/README.md) | Envelope, persisted file | Pending |

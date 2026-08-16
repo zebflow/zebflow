@@ -162,8 +162,9 @@ node bundle is a runtime capability and must not be written to the project
 lock.
 
 Composite and WASM nodes copied into project source are discovered through
-their strict `NodeDefinition` and `NodeBundle` manifests. Their external or
-binary artifacts are locked when reproducible resolution requires them.
+their strict `NodeBundle` manifest. Each entry is normalized into a validated
+`NodeDefinition`. External or binary artifacts are locked when reproducible
+resolution requires them.
 
 A Hub script or template added as editable project source is not kept as an
 installed dependency. It becomes normal project source.

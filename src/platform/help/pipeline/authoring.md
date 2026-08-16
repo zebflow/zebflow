@@ -225,7 +225,7 @@ Key config fields and their DSL flag equivalents:
 | `n.table.convert` | `to_format` | `--to-format` | Target format: `csv`, `json`, `ndjson`, or `parquet`; inferred from path when possible |
 | `n.table.convert` | `to_json` | `--to-json` | Emit rows under `table.data` for downstream nodes |
 | `n.table.query` | `sources` | `--from` | Repeated list of source bindings, each `<path-or-expr> as <alias>` |
-| `n.table.query` | `sql` | `--sql` or `-- <sql>` | Read-only GeoDataFusion SQL query |
+| `n.table.query` | `query` | `--query` or `-- <sql>` | Read-only GeoDataFusion SQL query |
 | `n.table.query` | `engine` | `--engine` | Query engine. Only supported value: `geodatafusion` |
 | `n.table.query` | `params_path` | `--params-path` | Dot-notation path into upstream payload for `$1`/`$2` binds |
 | `n.table.query` | `params_expr` | `--params-expr` | JS expression returning array of bind params |
