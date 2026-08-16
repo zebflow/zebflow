@@ -40,6 +40,7 @@ import NodeDialog from "@/pages/project-studio/pipelines/registry/components/pip
 import WebRenderDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/web-render-dialog";
 import GitCommitDialog from "@/pages/project-studio/pipelines/registry/components/pipeline-editor/dialogs/git-commit-dialog";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
+import { pePipelineDocument, pePipelineGraph } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
 
 // ── graphui bundle loader (sets globalThis.PipelineGraph) ────────────────────
 let _graphuiPromise: Promise<void> | null = null;
@@ -269,6 +270,7 @@ export default function PipelineEditor({
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pipelineMetadata, setPipelineMetadata] = useState<any>({});
+  const [pipelineContractMetadata, setPipelineContractMetadata] = useState<any>({});
 
   // ── Dialog state ────────────────────────────────────────────────────────────
   const [dialogNode, setDialogNode] = useState<PipelineNodeData | null>(null);
@@ -412,12 +414,11 @@ export default function PipelineEditor({
     try {
       const payload = await requestJson(`${api.byId}?id=${encodeURIComponent(id)}&include_source=true`);
       const source = payload?.source || "{}";
-      let graph: any;
-      try { graph = JSON.parse(source); } catch {
-        graph = { kind: "zebflow.pipeline", version: "0.1", id, entry_nodes: [], nodes: [], edges: [] };
-      }
+      const document = JSON.parse(source);
+      let graph: any = pePipelineGraph(document);
       graph = normalizeGraphForEditor(graph);
       setCurrentGraph(graph);
+      setPipelineContractMetadata(document.metadata || {});
       setPipelineMetadata(graph?.metadata || {});
       setCurrentMeta(payload.meta || null);
       setCurrentLocked(!!payload.locked);
@@ -535,7 +536,7 @@ export default function PipelineEditor({
         currentLocked,
       ),
     };
-    const source = JSON.stringify(graph, null, 2);
+    const source = JSON.stringify(pePipelineDocument(graph, pipelineContractMetadata), null, 2);
     const payload = {
       file_rel_path: currentMeta.file_rel_path,
       title: currentMeta.title,

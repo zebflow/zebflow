@@ -198,6 +198,21 @@
   box-sizing: border-box;
 }
 
+.db-suite-grid-editor-wrap {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.db-suite-grid-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 0 0.875rem 0.75rem;
+  box-sizing: border-box;
+}
+
 .db-suite-data-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 23rem;

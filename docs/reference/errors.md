@@ -7,7 +7,7 @@ Zebflow errors use a stable code and a human readable message.
   "ok": false,
   "error": {
     "code": "FW_FILE_REF_READ",
-    "message": "value is not a FileRef with a ref or path"
+    "message": "value is not a FileRef with a ref"
   }
 }
 ```

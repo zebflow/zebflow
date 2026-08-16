@@ -845,8 +845,8 @@ impl ZebflowMcpHandler {
 
     #[tool(description = "Write (create or overwrite) a template file. \
                        Use template_create first to scaffold with boilerplate, then template_write to fill in content. \
-                       Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx'). \
-                       Use help(\"web\") for TSX conventions before writing.")]
+                       Path is relative to templates/ (e.g. 'pages/blog-home.tsx', 'components/ui/card.tsx', 'scripts/format-address.ts'). \
+                       Use help(\"web\") for TSX conventions or help(\"web/custom-scripts\") for TypeScript module rules before writing.")]
     async fn template_write(
         &self,
         Extension(parts): Extension<http::request::Parts>,

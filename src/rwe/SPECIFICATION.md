@@ -151,7 +151,7 @@ Source .tsx file (entry page)
 ┌──────────────────┐
 │ collect_imports  │  Gather all import sources from OXC AST
 │ validate_        │  Check against allowlist:
-│   allowlist()    │    "rwe", "npm:*", "node:*", "jsr:*", "@/*", "/*"
+│   allowlist()    │    RWE internals, project aliases, and reviewed sources
 └────────┬─────────┘
          │
          ▼
@@ -419,8 +419,8 @@ This pattern works in **every file** — pages, components, layouts. No exceptio
 | `import X from "@/components/ui/button"` | `@/` resolves to template root, works in all files | ✅ |
 | `import X from "@/pages/home/components/chrome-header"` | Nested imports cascade correctly | ✅ |
 | No relative `../` imports | `../../foo` is forbidden — use `@/` always | ✅ enforced |
-| `import X from "npm:somelib"` | Allowed npm packages per allowlist | ✅ |
-| `import X from "jsr:somelib"` | JSR packages allowed | ✅ |
+| `import X from "npm:somelib"` | Direct package ingestion is not a project dependency contract | 🔮 future |
+| `import X from "jsr:somelib"` | Direct registry ingestion is not a project dependency contract | 🔮 future |
 | Component dependency graph / cache | Hash-based cache per source file | 🔮 M1 |
 | Cycle detection in imports | Detect and error on circular deps | 🔮 M1 |
 
@@ -433,9 +433,9 @@ Developers can only import from these sources. Everything else is blocked at com
 | Source | Example | Status |
 |--------|---------|--------|
 | `"rwe"` | `import { useState } from "rwe"` | ✅ |
-| `"npm:*"` | `import { z } from "npm:zod"` | ✅ |
+| `"npm:*"` | Reserved for RWE internals; project package ingestion is unsupported | 🔮 future |
 | `"node:*"` | `import { Buffer } from "node:buffer"` | ✅ |
-| `"jsr:*"` | `import x from "jsr:@std/fmt"` | ✅ |
+| `"jsr:*"` | Reserved for future reviewed registry ingestion | 🔮 future |
 | `"@/*"` | `import X from "@/components/ui/x"` | ✅ |
 | Custom allowlist prefixes | Configured per project security policy | ✅ |
 | Arbitrary HTTPS URLs | `import x from "https://evil.com/x"` ❌ blocked | ✅ blocked |

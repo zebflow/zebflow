@@ -39,6 +39,21 @@ assets/
 This is one source tree. Pages may import nearby components and supported Zeb
 libraries.
 
+## Adding Browser Behavior
+
+Use one of these paths:
+
+1. Create a focused TypeScript file under `scripts/` or another project folder.
+2. Add a reviewed script or template package from Hub.
+3. Enable a bundled `zeb/*` library in Project Settings.
+
+Project Studio provides `New > Script prompt` when you want an external coding
+assistant to generate a small module. The generated prompt includes Zebflow's
+module rules and your input and output examples.
+
+Zebflow does not install npm packages into a project. This keeps project saves
+offline, predictable, and free from package lifecycle scripts.
+
 ## Data Flow
 
 A page usually receives the last pipeline payload as `input`. Web trigger data

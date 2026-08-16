@@ -9,7 +9,7 @@
 
 pub(crate) mod embedded;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs;
 use std::path::{Path as FsPath, PathBuf};
@@ -31,9 +31,6 @@ use axum::{Json, Router};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use swc_common::{FileName, SourceMap, sync::Lrc};
-use swc_ecma_ast::{Callee, Expr, ModuleDecl, ModuleItem};
-use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 
 use crate::automaton::infra::assistant_config::load_project_assistant_llm;
 use crate::contracts::kinds::decode_pipeline_graph;
@@ -1011,10 +1008,6 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_reset_mcp_session_token),
         )
         .route(
-            "/api/projects/{owner}/{project}/assets/prepare",
-            post(api_prepare_project_assets),
-        )
-        .route(
             "/api/projects/{owner}/{project}/assets",
             get(api_list_assets)
                 .post(api_upload_asset)
@@ -1834,24 +1827,6 @@ struct DbTablePreviewQuery {
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default)]
-struct PrepareProjectAssetsRequest {
-    library: String,
-    version: String,
-    entries: Vec<String>,
-}
-
-impl Default for PrepareProjectAssetsRequest {
-    fn default() -> Self {
-        Self {
-            library: "zeb/threejs".to_string(),
-            version: "0.1".to_string(),
-            entries: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
-#[serde(default)]
 struct AssistantChatRequest {
     message: String,
     history: Vec<AssistantChatMessage>,
@@ -1876,41 +1851,6 @@ impl Default for AssistantChatRequest {
 struct AssistantChatMessage {
     role: String,
     content: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ProjectAssetChunkItem {
-    chunk_id: String,
-    module_count: usize,
-    modules: Vec<String>,
-    path: String,
-    url: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ProjectAssetEntryItem {
-    entry: String,
-    path: String,
-    url: String,
-    chunks: Vec<ProjectAssetChunkItem>,
-    imports: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ProjectAssetLibraryItem {
-    library: String,
-    version: String,
-    entries: Vec<ProjectAssetEntryItem>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ProjectAssetManifest {
-    schema_version: String,
-    owner: String,
-    project: String,
-    generated_at: i64,
-    strategy: String,
-    libraries: Vec<ProjectAssetLibraryItem>,
 }
 
 async fn branding_asset(Path(asset): Path<String>) -> Response {
@@ -7736,992 +7676,6 @@ fn db_connection_icon_class(database_kind: &str) -> &'static str {
     }
 }
 
-fn project_web_assets_root(layout: &crate::platform::model::ProjectFileLayout) -> PathBuf {
-    layout.data_runtime_dir.join("web-assets")
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ProjectAssetLibrarySpec {
-    library: &'static str,
-    version: &'static str,
-    default_entry: &'static str,
-    vendor_rel_paths: &'static [&'static str],
-    npm_deps: &'static [(&'static str, &'static str)],
-    detect_markers: &'static [&'static str],
-}
-
-impl ProjectAssetLibrarySpec {
-    fn library_root(self, layout: &crate::platform::model::ProjectFileLayout) -> PathBuf {
-        let mut root = layout.repo_dir.join("libraries");
-        for segment in self.library.split('/') {
-            root = root.join(segment);
-        }
-        root.join(self.version)
-    }
-}
-
-const PROJECT_ASSET_LIBRARY_SPECS: &[ProjectAssetLibrarySpec] = &[
-    ProjectAssetLibrarySpec {
-        library: "zeb/threejs",
-        version: "0.1",
-        default_entry: "runtime/threejs.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/threejs.bundle.mjs",
-            "runtime/threejs.global.js",
-            "wrappers/ThreeScene.tsx",
-        ],
-        npm_deps: &[("three", "0.183.2")],
-        detect_markers: &[
-            "/assets/libraries/zeb/threejs/",
-            "zeb/threejs",
-            "'three'",
-            "\"three\"",
-        ],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/deckgl",
-        version: "0.1",
-        default_entry: "runtime/deckgl.patched.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/deckgl.bundle.mjs",
-            "runtime/deckgl.patched.mjs",
-            "wrappers/DeckMap.tsx",
-        ],
-        npm_deps: &[
-            ("deck.gl", "9.2.10"),
-            ("@deck.gl/core", "9.2.10"),
-            ("@deck.gl/layers", "9.2.10"),
-        ],
-        detect_markers: &[
-            "/assets/libraries/zeb/deckgl/",
-            "zeb/deckgl",
-            "'deck.gl'",
-            "\"deck.gl\"",
-            "@deck.gl/",
-        ],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/d3",
-        version: "0.1",
-        default_entry: "runtime/d3.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/d3.bundle.mjs",
-            "wrappers/D3Bars.tsx",
-        ],
-        npm_deps: &[("d3", "7.9.0")],
-        detect_markers: &["/assets/libraries/zeb/d3/", "zeb/d3", "'d3'", "\"d3\""],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/livegeo",
-        version: "0.1",
-        default_entry: "runtime/livegeo.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/livegeo.bundle.mjs",
-        ],
-        npm_deps: &[],
-        detect_markers: &[
-            "/assets/libraries/zeb/livegeo/",
-            "zeb/livegeo",
-            "usePlayback",
-            "useTrackPlayback",
-        ],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/icons",
-        version: "0.1",
-        default_entry: "runtime/icons.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/icons.bundle.mjs",
-            "runtime/devicons.css",
-        ],
-        npm_deps: &[],
-        detect_markers: &[
-            "/assets/libraries/zeb/icons/",
-            "zeb/icons",
-            "devicon-",
-            "zf-devicon",
-        ],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/prosemirror",
-        version: "0.1",
-        default_entry: "runtime/prosemirror.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/prosemirror.bundle.mjs",
-            "wrappers/ProseEditor.tsx",
-        ],
-        npm_deps: &[],
-        detect_markers: &[
-            "/assets/libraries/zeb/prosemirror/",
-            "zeb/prosemirror",
-            "mountProseEditor",
-            "ProseEditor",
-        ],
-    },
-    ProjectAssetLibrarySpec {
-        library: "zeb/threejs-vrm",
-        version: "0.1",
-        default_entry: "runtime/threejs-vrm.bundle.mjs",
-        vendor_rel_paths: &[
-            "library.json",
-            "exports.json",
-            "keywords.json",
-            "runtime/threejs-vrm.bundle.mjs",
-            "wrappers/VrmViewer.tsx",
-        ],
-        npm_deps: &[("three", "0.183.2"), ("@pixiv/three-vrm", "3.5.0")],
-        detect_markers: &[
-            "/assets/libraries/zeb/threejs-vrm/",
-            "zeb/threejs-vrm",
-            "@pixiv/three-vrm",
-            "GLTFLoader",
-        ],
-    },
-];
-
-fn resolve_project_asset_library_spec(
-    library: &str,
-    version: &str,
-) -> Option<ProjectAssetLibrarySpec> {
-    PROJECT_ASSET_LIBRARY_SPECS
-        .iter()
-        .copied()
-        .find(|spec| spec.library == library && spec.version == version)
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct InstalledNpmDependency {
-    package: String,
-    version: String,
-    store_path: String,
-    index_path: String,
-    linked_path: String,
-}
-
-fn library_store_root(data_root: &FsPath) -> PathBuf {
-    data_root.join("libraries")
-}
-
-fn encode_package_for_path(package: &str) -> String {
-    package
-        .replace('@', "_at_")
-        .replace('/', "__")
-        .replace('\\', "__")
-}
-
-fn run_process_capture_stdout(cmd: &mut std::process::Command) -> Result<String, PlatformError> {
-    let output = cmd.output().map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_LIBRARY_PROCESS",
-            format!("failed spawning process: {err}"),
-        )
-    })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(PlatformError::new(
-            "PLATFORM_LIBRARY_PROCESS",
-            format!(
-                "process exited with status {} stdout='{}' stderr='{}'",
-                output.status, stdout, stderr
-            ),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn ensure_npm_packaged_dependency(
-    libraries_root: &FsPath,
-    package: &str,
-    version: &str,
-) -> Result<(PathBuf, PathBuf), PlatformError> {
-    let encoded = encode_package_for_path(package);
-    let package_dir = libraries_root
-        .join("installed")
-        .join("external")
-        .join("js-registry")
-        .join(&encoded)
-        .join(version)
-        .join("package");
-    let index_path = libraries_root
-        .join("indexes")
-        .join("external")
-        .join("js-registry")
-        .join(&encoded)
-        .join(version)
-        .join("exports.json");
-    if package_dir.is_dir() && index_path.is_file() {
-        return Ok((package_dir, index_path));
-    }
-
-    let download_dir = libraries_root
-        .join("downloads")
-        .join("external")
-        .join("js-registry");
-    let tmp_root = libraries_root
-        .join("cache")
-        .join("external")
-        .join("js-registry")
-        .join("tmp");
-
-    std::fs::create_dir_all(package_dir.parent().ok_or_else(|| {
-        PlatformError::new(
-            "PLATFORM_LIBRARY_PATH",
-            "failed resolving library package parent directory",
-        )
-    })?)?;
-    std::fs::create_dir_all(&download_dir)?;
-    std::fs::create_dir_all(index_path.parent().ok_or_else(|| {
-        PlatformError::new(
-            "PLATFORM_LIBRARY_PATH",
-            "failed resolving library index parent directory",
-        )
-    })?)?;
-    std::fs::create_dir_all(&tmp_root)?;
-
-    let spec = format!("{package}@{version}");
-    let npm_path = std::process::Command::new("npm")
-        .arg("--version")
-        .output()
-        .map_err(|err| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_NPM_MISSING",
-                format!("npm is required but unavailable: {err}"),
-            )
-        })?;
-    if !npm_path.status.success() {
-        return Err(PlatformError::new(
-            "PLATFORM_LIBRARY_NPM_MISSING",
-            "npm command is unavailable",
-        ));
-    }
-
-    let pack_stdout = run_process_capture_stdout(
-        std::process::Command::new("npm")
-            .arg("pack")
-            .arg(&spec)
-            .arg("--pack-destination")
-            .arg(&download_dir),
-    )?;
-    let tarball_name = pack_stdout
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty())
-        .next_back()
-        .ok_or_else(|| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_NPM_PACK",
-                format!("npm pack produced empty output for '{spec}'"),
-            )
-        })?;
-    let tarball = download_dir.join(tarball_name);
-    if !tarball.is_file() {
-        return Err(PlatformError::new(
-            "PLATFORM_LIBRARY_NPM_PACK",
-            format!(
-                "npm pack output tarball missing for '{}' (expected '{}')",
-                spec,
-                tarball.display()
-            ),
-        ));
-    }
-
-    let tmp_extract_dir = tmp_root.join(format!(
-        "{}-{}-{}",
-        encoded,
-        version,
-        crate::platform::model::now_ts()
-    ));
-    if tmp_extract_dir.exists() {
-        std::fs::remove_dir_all(&tmp_extract_dir)?;
-    }
-    std::fs::create_dir_all(&tmp_extract_dir)?;
-    let _ = run_process_capture_stdout(
-        std::process::Command::new("tar")
-            .arg("-xzf")
-            .arg(&tarball)
-            .arg("-C")
-            .arg(&tmp_extract_dir),
-    )?;
-    let extracted_package = tmp_extract_dir.join("package");
-    if !extracted_package.is_dir() {
-        return Err(PlatformError::new(
-            "PLATFORM_LIBRARY_NPM_PACK",
-            format!(
-                "tar extraction for '{}' missing 'package/' folder at '{}'",
-                spec,
-                extracted_package.display()
-            ),
-        ));
-    }
-
-    if package_dir.exists() {
-        std::fs::remove_dir_all(&package_dir)?;
-    }
-    if let Some(parent) = package_dir.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::rename(&extracted_package, &package_dir)?;
-    let _ = std::fs::remove_dir_all(&tmp_extract_dir);
-
-    build_package_declaration_index(&package_dir, &index_path, package, version)?;
-    Ok((package_dir, index_path))
-}
-
-fn collect_files_recursively_with_exts(
-    root: &FsPath,
-    exts: &[&str],
-    out: &mut Vec<PathBuf>,
-) -> Result<(), PlatformError> {
-    if !root.exists() {
-        return Ok(());
-    }
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let ft = entry.file_type()?;
-            if ft.is_symlink() {
-                continue;
-            }
-            if ft.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if ft.is_file() {
-                let ext = path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("");
-                let filename = path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("");
-                if exts.iter().any(|item| {
-                    item.eq_ignore_ascii_case(ext)
-                        || filename
-                            .to_ascii_lowercase()
-                            .ends_with(&item.to_ascii_lowercase())
-                }) {
-                    out.push(path);
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn extract_export_symbols_from_ts_declaration(source: &str) -> BTreeSet<String> {
-    let mut symbols = BTreeSet::new();
-    let keywords = [
-        "const",
-        "function",
-        "class",
-        "interface",
-        "type",
-        "enum",
-        "namespace",
-        "let",
-        "var",
-    ];
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("export ") {
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("export {") {
-            let block = rest.split('}').next().unwrap_or_default();
-            for item in block.split(',') {
-                let name = item.trim();
-                if name.is_empty() {
-                    continue;
-                }
-                let alias = name.split_whitespace().next().unwrap_or_default();
-                if !alias.is_empty() {
-                    symbols.insert(alias.to_string());
-                }
-            }
-            continue;
-        }
-        for keyword in keywords {
-            let needle = format!("export {keyword} ");
-            if let Some(rest) = trimmed.strip_prefix(&needle) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '$')
-                    .collect();
-                if !ident.is_empty() {
-                    symbols.insert(ident);
-                }
-            }
-            let declare_needle = format!("export declare {keyword} ");
-            if let Some(rest) = trimmed.strip_prefix(&declare_needle) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_' || *ch == '$')
-                    .collect();
-                if !ident.is_empty() {
-                    symbols.insert(ident);
-                }
-            }
-        }
-    }
-    symbols
-}
-
-fn build_package_declaration_index(
-    package_dir: &FsPath,
-    index_path: &FsPath,
-    package: &str,
-    version: &str,
-) -> Result<(), PlatformError> {
-    let mut declaration_files = Vec::new();
-    collect_files_recursively_with_exts(
-        package_dir,
-        &["d.ts", "d.mts", "d.cts"],
-        &mut declaration_files,
-    )?;
-    declaration_files.sort();
-    let mut all_symbols = BTreeSet::new();
-    let mut files_meta = Vec::new();
-    for file in declaration_files.iter().take(600) {
-        let rel = file
-            .strip_prefix(package_dir)
-            .unwrap_or(file)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let source = std::fs::read_to_string(file).unwrap_or_default();
-        let symbols = extract_export_symbols_from_ts_declaration(&source);
-        for symbol in &symbols {
-            all_symbols.insert(symbol.clone());
-        }
-        files_meta.push(json!({
-            "path": rel,
-            "export_count": symbols.len()
-        }));
-    }
-    if let Some(parent) = index_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(
-        index_path,
-        serde_json::to_vec_pretty(&json!({
-            "schema_version": "0.1",
-            "package": package,
-            "version": version,
-            "generated_at": crate::platform::model::now_ts(),
-            "total_declaration_files": declaration_files.len(),
-            "total_exports": all_symbols.len(),
-            "exports": all_symbols.into_iter().collect::<Vec<_>>(),
-            "files": files_meta,
-        }))?,
-    )?;
-    Ok(())
-}
-
-fn link_dependency_into_project_node_modules(
-    layout: &crate::platform::model::ProjectFileLayout,
-    package: &str,
-    package_dir: &FsPath,
-) -> Result<PathBuf, PlatformError> {
-    let node_modules = layout.repo_dir.join("node_modules");
-    std::fs::create_dir_all(&node_modules)?;
-    let mut dest = node_modules.clone();
-    for segment in package.split('/') {
-        dest = dest.join(segment);
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    if dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
-        if dest.is_dir() && !std::fs::symlink_metadata(&dest)?.file_type().is_symlink() {
-            std::fs::remove_dir_all(&dest)?;
-        } else {
-            std::fs::remove_file(&dest)?;
-        }
-    }
-    let target = std::fs::canonicalize(package_dir).unwrap_or_else(|_| package_dir.to_path_buf());
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&target, &dest).map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_LIBRARY_LINK",
-            format!(
-                "failed linking '{}' -> '{}': {err}",
-                dest.display(),
-                target.display()
-            ),
-        )
-    })?;
-    #[cfg(not(unix))]
-    {
-        return Err(PlatformError::new(
-            "PLATFORM_LIBRARY_LINK",
-            "symlink-based node_modules linking is only implemented for unix targets",
-        ));
-    }
-    Ok(dest)
-}
-
-fn update_project_libraries_lock(
-    layout: &crate::platform::model::ProjectFileLayout,
-    spec: ProjectAssetLibrarySpec,
-    installed_deps: &[InstalledNpmDependency],
-) -> Result<(), PlatformError> {
-    let lock_path = layout.repo_dir.join("libraries.lock.json");
-    let mut root = if lock_path.is_file() {
-        let raw = std::fs::read_to_string(&lock_path).unwrap_or_default();
-        serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| json!({}))
-    } else {
-        json!({})
-    };
-
-    let libraries_obj = root
-        .as_object_mut()
-        .map(|obj| obj.entry("libraries").or_insert_with(|| json!({})))
-        .and_then(|value| value.as_object_mut())
-        .ok_or_else(|| {
-            PlatformError::new(
-                "PLATFORM_LIBRARY_LOCK",
-                "libraries.lock.json has invalid shape",
-            )
-        })?;
-
-    let key = format!("{}@{}", spec.library, spec.version);
-    libraries_obj.insert(
-        key,
-        json!({
-            "library": spec.library,
-            "version": spec.version,
-            "updated_at": crate::platform::model::now_ts(),
-            "npm_deps": installed_deps,
-        }),
-    );
-
-    root["schema_version"] = json!("0.1");
-    root["updated_at"] = json!(crate::platform::model::now_ts());
-
-    std::fs::write(lock_path, serde_json::to_vec_pretty(&root)?)?;
-    Ok(())
-}
-
-fn ensure_library_npm_dependencies(
-    data_root: &FsPath,
-    layout: &crate::platform::model::ProjectFileLayout,
-    spec: ProjectAssetLibrarySpec,
-) -> Result<Vec<InstalledNpmDependency>, PlatformError> {
-    let store_root = library_store_root(data_root);
-    std::fs::create_dir_all(&store_root)?;
-    let mut installed = Vec::new();
-    for (package, version) in spec.npm_deps {
-        let (package_dir, index_path) =
-            ensure_npm_packaged_dependency(&store_root, package, version)?;
-        let linked_path = link_dependency_into_project_node_modules(layout, package, &package_dir)?;
-        installed.push(InstalledNpmDependency {
-            package: (*package).to_string(),
-            version: (*version).to_string(),
-            store_path: package_dir.display().to_string(),
-            index_path: index_path.display().to_string(),
-            linked_path: linked_path.display().to_string(),
-        });
-    }
-    update_project_libraries_lock(layout, spec, &installed)?;
-    Ok(installed)
-}
-
-fn detect_required_project_library_specs(
-    templates_root: &FsPath,
-) -> Result<Vec<ProjectAssetLibrarySpec>, PlatformError> {
-    let mut files = Vec::new();
-    collect_files_recursively_with_exts(
-        templates_root,
-        &["tsx", "ts", "jsx", "js", "mjs"],
-        &mut files,
-    )?;
-    let mut detected = BTreeSet::new();
-    for path in files {
-        let source = match std::fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(_) => continue,
-        };
-        for spec in PROJECT_ASSET_LIBRARY_SPECS {
-            if spec
-                .detect_markers
-                .iter()
-                .any(|marker| source.contains(marker))
-            {
-                detected.insert((spec.library, spec.version));
-            }
-        }
-        if let Ok(imports) = parse_module_imports_with_swc(&path, &source) {
-            for import in imports {
-                if import == "three" {
-                    detected.insert(("zeb/threejs", "0.1"));
-                }
-                if import == "d3" || import.starts_with("d3-") {
-                    detected.insert(("zeb/d3", "0.1"));
-                }
-                if import == "@pixiv/three-vrm" {
-                    detected.insert(("zeb/threejs-vrm", "0.1"));
-                }
-                if import == "deck.gl" || import.starts_with("@deck.gl/") {
-                    detected.insert(("zeb/deckgl", "0.1"));
-                }
-            }
-        }
-    }
-    Ok(detected
-        .into_iter()
-        .filter_map(|(library, version)| resolve_project_asset_library_spec(library, version))
-        .collect())
-}
-
-fn trigger_project_asset_prepare_on_template_save(
-    state: &PlatformAppState,
-    owner: &str,
-    project: &str,
-    layout: &crate::platform::model::ProjectFileLayout,
-) -> Result<(), PlatformError> {
-    let detected_specs = detect_required_project_library_specs(&layout.repo_pipelines_dir)?;
-    for spec in detected_specs {
-        let _ = prepare_project_assets_manifest(
-            owner,
-            project,
-            &state.platform.config.data_root,
-            layout,
-            PrepareProjectAssetsRequest {
-                library: spec.library.to_string(),
-                version: spec.version.to_string(),
-                entries: Vec::new(),
-            },
-        )?;
-    }
-    Ok(())
-}
-
-fn prepare_project_assets_manifest(
-    owner: &str,
-    project: &str,
-    data_root: &FsPath,
-    layout: &crate::platform::model::ProjectFileLayout,
-    req: PrepareProjectAssetsRequest,
-) -> Result<ProjectAssetManifest, PlatformError> {
-    let library = req.library.trim().to_string();
-    let version = req.version.trim().to_string();
-    let Some(spec) = resolve_project_asset_library_spec(&library, &version) else {
-        let supported = PROJECT_ASSET_LIBRARY_SPECS
-            .iter()
-            .map(|item| format!("{}@{}", item.library, item.version))
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(PlatformError::new(
-            "PLATFORM_ASSET_PREPARE_UNSUPPORTED",
-            format!(
-                "library '{}' version '{}' is unsupported. supported: {supported}",
-                library, version
-            ),
-        ));
-    };
-    let entries = if req.entries.is_empty() {
-        vec![spec.default_entry.to_string()]
-    } else {
-        req.entries
-    };
-
-    // Install flow: resolve deps/versions, download+extract into mounted npm store,
-    // build declaration/export index, and link into project app/node_modules.
-    let _installed_deps = ensure_library_npm_dependencies(data_root, layout, spec)?;
-
-    // Scaffold step: vendor curated library bridge assets into project workspace.
-    let library_root = spec.library_root(layout);
-    materialize_vendor_library(spec, &library_root)?;
-
-    // Scaffold step: build simple chunk graph from vendored entry modules via SWC import parsing.
-    let assets_root = project_web_assets_root(layout);
-    let rwe_assets_root = assets_root.join("rwe");
-    std::fs::create_dir_all(rwe_assets_root.join("chunks"))?;
-
-    let mut entry_items = Vec::new();
-    for entry in entries {
-        let rel = entry.trim().replace('\\', "/");
-        if rel.is_empty() || rel.contains("..") {
-            return Err(PlatformError::new(
-                "PLATFORM_ASSET_ENTRY_INVALID",
-                "entry path is invalid",
-            ));
-        }
-        let entry_abs = library_root.join(&rel);
-        if !entry_abs.is_file() {
-            return Err(PlatformError::new(
-                "PLATFORM_ASSET_ENTRY_MISSING",
-                format!("entry '{}' not found in vendored library", rel),
-            ));
-        }
-
-        let graph = build_module_graph_with_swc(&entry_abs, &library_root)?;
-        let mut chunk_source = String::new();
-        for module_rel in &graph.modules {
-            let module_abs = library_root.join(module_rel);
-            let source = std::fs::read_to_string(&module_abs)?;
-            chunk_source.push_str(&format!("// module: {module_rel}\n{source}\n"));
-        }
-        let chunk_source = compact_chunk_javascript(&chunk_source);
-        let chunk_id = stable_fnv64_hex(&chunk_source);
-        let chunk_rel = format!("rwe/chunks/{chunk_id}.mjs");
-        let chunk_abs = assets_root.join(&chunk_rel);
-        if let Some(parent) = chunk_abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&chunk_abs, chunk_source)?;
-
-        let chunk_url = format!("/assets/{owner}/{project}/{chunk_rel}");
-        let entry_item = ProjectAssetEntryItem {
-            entry: rel.clone(),
-            path: format!("app/libraries/{}/{}/{rel}", spec.library, spec.version),
-            url: chunk_url.clone(),
-            chunks: vec![ProjectAssetChunkItem {
-                chunk_id,
-                module_count: graph.modules.len(),
-                modules: graph.modules.clone(),
-                path: format!("data/runtime/web-assets/{chunk_rel}"),
-                url: chunk_url,
-            }],
-            imports: graph.imports,
-        };
-        entry_items.push(entry_item);
-    }
-
-    let manifest_abs = assets_root.join("rwe").join("manifest.json");
-    let mut manifest = match std::fs::read(&manifest_abs) {
-        Ok(bytes) => {
-            serde_json::from_slice::<ProjectAssetManifest>(&bytes).unwrap_or(ProjectAssetManifest {
-                schema_version: "0.1".to_string(),
-                owner: owner.to_string(),
-                project: project.to_string(),
-                generated_at: crate::platform::model::now_ts(),
-                strategy: "swc-import-graph-scaffold".to_string(),
-                libraries: Vec::new(),
-            })
-        }
-        Err(_) => ProjectAssetManifest {
-            schema_version: "0.1".to_string(),
-            owner: owner.to_string(),
-            project: project.to_string(),
-            generated_at: crate::platform::model::now_ts(),
-            strategy: "swc-import-graph-scaffold".to_string(),
-            libraries: Vec::new(),
-        },
-    };
-    manifest.schema_version = "0.1".to_string();
-    manifest.owner = owner.to_string();
-    manifest.project = project.to_string();
-    manifest.generated_at = crate::platform::model::now_ts();
-    manifest.strategy = "swc-import-graph-scaffold".to_string();
-    if let Some(item) = manifest
-        .libraries
-        .iter_mut()
-        .find(|item| item.library == library && item.version == version)
-    {
-        item.entries = entry_items;
-    } else {
-        manifest.libraries.push(ProjectAssetLibraryItem {
-            library,
-            version,
-            entries: entry_items,
-        });
-    }
-    manifest
-        .libraries
-        .sort_by(|a, b| (&a.library, &a.version).cmp(&(&b.library, &b.version)));
-    if let Some(parent) = manifest_abs.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&manifest_abs, serde_json::to_vec_pretty(&manifest)?)?;
-    Ok(manifest)
-}
-
-fn materialize_vendor_library(
-    spec: ProjectAssetLibrarySpec,
-    library_root: &FsPath,
-) -> Result<(), PlatformError> {
-    for rel in spec.vendor_rel_paths {
-        let catalog = format!("{}/{}/{}", spec.library, spec.version, rel);
-        let Some(bytes) = platform_library_asset(&catalog) else {
-            return Err(PlatformError::new(
-                "PLATFORM_ASSET_VENDOR_SOURCE_MISSING",
-                format!("embedded library asset '{catalog}' not found"),
-            ));
-        };
-        let abs = library_root.join(rel);
-        if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(abs, bytes)?;
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, Default)]
-struct ModuleGraphSummary {
-    modules: Vec<String>,
-    imports: Vec<String>,
-}
-
-fn build_module_graph_with_swc(
-    entry_abs: &FsPath,
-    root: &FsPath,
-) -> Result<ModuleGraphSummary, PlatformError> {
-    let mut queue = VecDeque::new();
-    let mut seen = BTreeSet::new();
-    let mut ordered_modules = Vec::new();
-    let mut imports = BTreeSet::new();
-
-    queue.push_back(entry_abs.to_path_buf());
-    while let Some(module_abs) = queue.pop_front() {
-        let Ok(rel) = module_abs.strip_prefix(root) else {
-            continue;
-        };
-        let rel_norm = rel.to_string_lossy().replace('\\', "/");
-        if !seen.insert(rel_norm.clone()) {
-            continue;
-        }
-        ordered_modules.push(rel_norm.clone());
-        let source = std::fs::read_to_string(&module_abs)?;
-        let specs = parse_module_imports_with_swc(&module_abs, &source)?;
-        for spec in specs {
-            if spec.starts_with("./") || spec.starts_with("../") {
-                if let Some(next) = resolve_relative_module(&module_abs, &spec) {
-                    queue.push_back(next);
-                }
-            } else {
-                imports.insert(spec);
-            }
-        }
-    }
-
-    Ok(ModuleGraphSummary {
-        modules: ordered_modules,
-        imports: imports.into_iter().collect(),
-    })
-}
-
-fn parse_module_imports_with_swc(
-    path: &FsPath,
-    source: &str,
-) -> Result<Vec<String>, PlatformError> {
-    let cm: Lrc<SourceMap> = Default::default();
-    let fm = cm.new_source_file(
-        FileName::Real(path.to_path_buf()).into(),
-        source.to_string(),
-    );
-    let lexer = Lexer::new(
-        Syntax::Typescript(TsSyntax {
-            tsx: true,
-            decorators: true,
-            ..Default::default()
-        }),
-        Default::default(),
-        StringInput::from(&*fm),
-        None,
-    );
-    let mut parser = Parser::new_from(lexer);
-    let module = parser.parse_module().map_err(|err| {
-        PlatformError::new(
-            "PLATFORM_ASSET_SWC_PARSE",
-            format!("failed parsing '{}': {err:?}", path.display()),
-        )
-    })?;
-
-    let mut imports = Vec::new();
-    for item in module.body {
-        match item {
-            ModuleItem::ModuleDecl(decl) => match decl {
-                ModuleDecl::Import(import) => {
-                    imports.push(import.src.value.to_string_lossy().to_string())
-                }
-                ModuleDecl::ExportAll(export) => {
-                    imports.push(export.src.value.to_string_lossy().to_string())
-                }
-                ModuleDecl::ExportNamed(export) => {
-                    if let Some(src) = export.src {
-                        imports.push(src.value.to_string_lossy().to_string());
-                    }
-                }
-                _ => {}
-            },
-            ModuleItem::Stmt(stmt) => {
-                // Include simple dynamic `import("...")` calls in import graph.
-                if let swc_ecma_ast::Stmt::Expr(expr_stmt) = stmt
-                    && let Expr::Call(call) = *expr_stmt.expr
-                    && matches!(call.callee, Callee::Import(_))
-                    && let Some(first) = call.args.first()
-                    && let Expr::Lit(swc_ecma_ast::Lit::Str(s)) = &*first.expr
-                {
-                    imports.push(s.value.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    Ok(imports)
-}
-
-fn resolve_relative_module(base_abs: &FsPath, spec: &str) -> Option<PathBuf> {
-    let parent = base_abs.parent()?;
-    let stem = parent.join(spec);
-    let candidates = [
-        stem.clone(),
-        stem.with_extension("mjs"),
-        stem.with_extension("js"),
-        stem.with_extension("ts"),
-        stem.with_extension("tsx"),
-        stem.join("index.mjs"),
-        stem.join("index.js"),
-        stem.join("index.ts"),
-        stem.join("index.tsx"),
-    ];
-    candidates.into_iter().find(|candidate| candidate.is_file())
-}
-
-fn stable_fnv64_hex(input: &str) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in input.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x00000100000001B3);
-    }
-    format!("{h:016x}")
-}
-
-fn compact_chunk_javascript(source: &str) -> String {
-    let mut out = String::new();
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("// module:") {
-            continue;
-        }
-        out.push_str(trimmed);
-        out.push('\n');
-    }
-    out
-}
-
 fn template_kind_from_rel(rel: &str) -> &'static str {
     if rel.ends_with(".css") {
         "style"
@@ -11471,74 +10425,6 @@ async fn api_delete_project(
     Json(json!({"ok": true})).into_response()
 }
 
-async fn api_prepare_project_assets(
-    State(state): State<PlatformAppState>,
-    headers: HeaderMap,
-    Path((owner, project)): Path<(String, String)>,
-    uri: Uri,
-    Json(req): Json<PrepareProjectAssetsRequest>,
-) -> Response {
-    if let Err(response) = require_project_api_capability(
-        &state,
-        &headers,
-        &owner,
-        &project,
-        ProjectCapability::LibrariesInstall,
-    ) {
-        return response;
-    }
-    match maybe_forward_project_json_to_worker(
-        &state,
-        &uri,
-        &headers,
-        Method::POST,
-        &req,
-        &owner,
-        &project,
-    )
-    .await
-    {
-        Ok(Some(response)) => return response,
-        Ok(None) => {}
-        Err(err) => return internal_error(err),
-    }
-
-    let owner_slug = crate::platform::model::slug_segment(&owner);
-    let project_slug = crate::platform::model::slug_segment(&project);
-    if owner_slug.is_empty() || project_slug.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"ok": false, "error": {"code":"PLATFORM_ASSET_SCOPE_INVALID","message":"owner/project must not be empty"}})),
-        )
-            .into_response();
-    }
-
-    let layout = match state
-        .platform
-        .file
-        .ensure_project_layout(&owner_slug, &project_slug)
-    {
-        Ok(layout) => layout,
-        Err(err) => return internal_error(err),
-    };
-
-    match prepare_project_assets_manifest(
-        &owner_slug,
-        &project_slug,
-        &state.platform.config.data_root,
-        &layout,
-        req,
-    ) {
-        Ok(manifest) => Json(json!({
-            "ok": true,
-            "manifest": manifest,
-            "manifest_url": format!("/assets/{owner_slug}/{project_slug}/rwe/manifest.json")
-        }))
-        .into_response(),
-        Err(err) => internal_error(err),
-    }
-}
-
 async fn api_pipeline_registry(
     State(state): State<PlatformAppState>,
     headers: HeaderMap,
@@ -11872,34 +10758,48 @@ async fn api_upsert_pipeline_definition(
         };
     }
 
+    let graph = match decode_pipeline_graph(req.source.as_bytes()) {
+        Ok(document) => document.spec,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "error": {
+                        "code": err.violation_code().unwrap_or("PLATFORM_PIPELINE_PARSE"),
+                        "message": format!("failed parsing pipeline source: {err} ({})", err.category())
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
     let self_file_rel_path = req.file_rel_path.clone();
     // Conflict check: reject if any active pipeline already owns the same webhook path.
-    if let Ok(graph) = decode_pipeline_graph(req.source.as_bytes()).map(|value| value.spec) {
-        if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
-            &owner,
-            &project,
-            &graph,
-            &self_file_rel_path,
-        ) {
-            if !conflicts.is_empty() {
-                let msg = format!(
-                    "{} {} is already registered by pipeline '{}'",
-                    conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
-                );
-                return (
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "ok": false,
-                        "error": {
-                            "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
-                            "message": msg,
-                            "conflicts": conflicts
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
+    if let Ok(conflicts) = state.platform.projects.check_webhook_path_conflict(
+        &owner,
+        &project,
+        &graph,
+        &self_file_rel_path,
+    ) && !conflicts.is_empty()
+    {
+        let msg = format!(
+            "{} {} is already registered by pipeline '{}'",
+            conflicts[0].method, conflicts[0].path, conflicts[0].pipeline_name
+        );
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "PLATFORM_PIPELINE_WEBHOOK_CONFLICT",
+                    "message": msg,
+                    "conflicts": conflicts
+                }
+            })),
+        )
+            .into_response();
     }
 
     // Derive trigger_kind from the actual graph entry nodes so that it stays correct
@@ -13965,36 +12865,17 @@ async fn api_template_save(
         Ok(file) => {
             let owner_slug = crate::platform::model::slug_segment(&owner);
             let project_slug = crate::platform::model::slug_segment(&project);
-            if let Ok(layout) = state
-                .platform
-                .file
-                .ensure_project_layout(&owner_slug, &project_slug)
-            {
-                // Evict cache entries that depend on this file.
-                // Entry-page saves cause a hash miss automatically; component saves
-                // need explicit eviction so importing pages recompile with the new content.
-                if let Ok(abs) = state.platform.projects.resolve_template_abs_path(
-                    &owner_slug,
-                    &project_slug,
-                    &req.rel_path,
-                ) {
-                    crate::pipeline::engines::basic::evict_template_cache_by_path(
-                        &state.template_cache,
-                        &abs.to_string_lossy(),
-                    );
-                }
-
-                if let Err(err) = trigger_project_asset_prepare_on_template_save(
-                    &state,
-                    &owner_slug,
-                    &project_slug,
-                    &layout,
-                ) {
-                    eprintln!(
-                        "warning: template save asset prepare failed for {}/{}: {} ({})",
-                        owner_slug, project_slug, err.code, err.message
-                    );
-                }
+            // Entry-page saves cause a hash miss automatically; component saves need
+            // explicit eviction so importing pages recompile with the new content.
+            if let Ok(abs) = state.platform.projects.resolve_template_abs_path(
+                &owner_slug,
+                &project_slug,
+                &req.rel_path,
+            ) {
+                crate::pipeline::engines::basic::evict_template_cache_by_path(
+                    &state.template_cache,
+                    &abs.to_string_lossy(),
+                );
             }
             Json(file).into_response()
         }
@@ -23232,36 +22113,7 @@ async fn public_mapserver_ingress_root(
     public_mapserver_ingress(State(state), Path((owner, project, String::new())), uri).await
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct MapserverLayerRecord {
-    layer_id: String,
-    path: String,
-    source_path: String,
-    #[serde(default)]
-    source_kind: String,
-    #[serde(default)]
-    artifact_manifest_path: Option<String>,
-    mode: String,
-    #[serde(default)]
-    min_zoom: Option<u8>,
-    #[serde(default)]
-    max_zoom: Option<u8>,
-    bbox_required: bool,
-    max_features: usize,
-    allowed_properties: Vec<String>,
-    #[serde(default)]
-    feature_count: Option<usize>,
-    #[serde(default)]
-    chunk_count: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    style: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    filter: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    function_slug: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cache_ttl_secs: Option<u64>,
-}
+use crate::contracts::kinds::MapserverLayerRecord;
 
 fn mapserver_layers_manifest_path(
     state: &PlatformAppState,
@@ -23297,13 +22149,11 @@ fn read_mapserver_layers(
     instance: &str,
 ) -> Result<Vec<MapserverLayerRecord>, PlatformError> {
     let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|err| PlatformError::new("MAPSERVER_READ", err.to_string()))?;
-    serde_json::from_str::<Vec<MapserverLayerRecord>>(&raw)
-        .map_err(|err| PlatformError::new("MAPSERVER_PARSE", err.to_string()))
+    crate::contracts::read_optional_contract::<crate::contracts::kinds::MapPublishManifestContract>(
+        &path,
+    )
+    .map(|document| document.map(|value| value.spec).unwrap_or_default())
+    .map_err(|err| PlatformError::new("MAPSERVER_PARSE", format!("{} ({})", err, err.category())))
 }
 
 fn write_mapserver_layers(
@@ -23314,13 +22164,12 @@ fn write_mapserver_layers(
     items: &[MapserverLayerRecord],
 ) -> Result<(), PlatformError> {
     let path = mapserver_layers_manifest_path(state, owner, project, instance)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))?;
-    }
-    let raw = serde_json::to_string_pretty(items)
-        .map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))?;
-    std::fs::write(path, raw).map_err(|err| PlatformError::new("MAPSERVER_WRITE", err.to_string()))
+    crate::contracts::write_contract::<crate::contracts::kinds::MapPublishManifestContract>(
+        &path,
+        crate::contracts::ContractMetadata::named(instance),
+        items.to_vec(),
+    )
+    .map_err(|err| PlatformError::new("MAPSERVER_WRITE", format!("{} ({})", err, err.category())))
 }
 
 fn list_mapserver_source_files(

@@ -1,3 +1,5 @@
+import { pePipelineDocument } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
+
 export function initPipelineRegistryBehavior() {
   if (typeof document === "undefined") return;
   requestAnimationFrame(() => {
@@ -309,10 +311,10 @@ export function initPipelineRegistryBehavior() {
       // Derive file_rel_path from virtualPath + name
       const vSeg = virtualPath === "/" ? "" : virtualPath.replace(/^\//, "") + "/";
       const fileRelPath = `pipelines/${vSeg}${name}.zf.json`;
-      const defaultSource = JSON.stringify({
-        kind: "zebflow.pipeline", version: "0.1", id: name,
+      const defaultSource = JSON.stringify(pePipelineDocument({
+        id: name,
         entry_nodes: [], nodes: [], edges: [],
-      }, null, 2);
+      }), null, 2);
       const resp = await fetch(`/api/projects/${owner}/${project}/pipelines/definition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

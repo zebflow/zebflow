@@ -38,9 +38,10 @@ Only files needed by the package are required. Composite bundles use function
 pipelines. WASM bundles use one or more modules. Both may share credential type
 definitions.
 
-The current node package format name is `zebflow-package-v2`. A node entry uses
-the normal node definition fields. The package loader turns every entry into an
-installed `NodePackageManifest`.
+`definition.json` is a `NodeBundle` document using `zebflow.com/v1`. Its
+`metadata.name` and `metadata.version` match `spec.package` and `spec.version`.
+A node entry uses the normal node definition fields. The package loader turns
+every entry into an installed `NodeDefinition` document.
 
 ## Safety Review
 

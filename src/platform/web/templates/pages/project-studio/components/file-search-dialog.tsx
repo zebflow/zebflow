@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "zeb";
+import { Dialog } from "@/components/ui/dialog";
+import DialogContent from "@/components/ui/dialog-content";
 
 export interface FileItem {
   rel_path: string;
@@ -130,16 +132,8 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[200] overflow-y-auto overscroll-contain px-4 py-6 sm:py-8"
-      onClick={onClose}
-    >
-      <div className="fixed inset-0 bg-black/60" />
-      <div className="relative z-10 flex min-h-full items-center justify-center">
-        <div
-          className="relative w-full max-w-xl rounded-lg border border-dark-border bg-dark-background shadow-2xl overflow-hidden max-h-[calc(100dvh-3rem)] sm:max-h-[calc(100dvh-4rem)] flex flex-col"
-          onClick={(e) => e.stopPropagation()}
-        >
+    <Dialog open={open} onOpenChange={(value) => { if (!value) onClose(); }}>
+      <DialogContent className="max-w-xl border-dark-border bg-dark-background text-dark-text1">
           {/* Input */}
           <div className="flex items-center gap-2 px-3 py-2.5 border-b border-dark-border">
             <DlgSearchIcon />
@@ -220,9 +214,8 @@ export default function FileSearchDialog({ open, onClose, onSelect, owner, proje
             <span>↵ select</span>
             <span>Esc close</span>
           </div>
-        </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

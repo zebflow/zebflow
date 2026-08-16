@@ -16,7 +16,7 @@ Zebflow is a pipeline-based reactive web automation platform. Projects contain:
 ```
 {project-root}/
 ├── repo/
-│   ├── zebflow.json          ← project config
+│   ├── zebflow.yaml          ← project config
 │   ├── pipelines/            ← .zf.json pipeline definitions
 │   ├── templates/
 │   │   ├── pages/            ← full-page TSX templates

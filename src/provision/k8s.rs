@@ -774,7 +774,7 @@ fn load_cluster_config(root: &Path) -> Result<ClusterConfig, Box<dyn std::error:
 fn render_management_yaml(cfg: &ClusterConfig) -> String {
     let secret_yaml = if cfg.manage_secret {
         format!(
-            "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: {secret}\n  namespace: {namespace}\ntype: Opaque\nstringData:\n  ZEBFLOW_PLATFORM_DEFAULT_PASSWORD: \"CHANGE_ME_TO_A_REAL_PASSWORD\"\n  ZEBFLOW_CLUSTER_JOIN_TOKEN: \"CHANGE_ME_TO_A_REAL_JOIN_TOKEN\"\n",
+            "---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: {secret}\n  namespace: {namespace}\ntype: Opaque\nstringData:\n  # Optional: set ZEBFLOW_PLATFORM_DEFAULT_PASSWORD before applying this file.\n  ZEBFLOW_CLUSTER_JOIN_TOKEN: \"CHANGE_ME_TO_A_REAL_JOIN_TOKEN\"\n",
             secret = cfg.management_secret_name,
             namespace = cfg.namespace,
         )
@@ -942,6 +942,7 @@ fn render_office_container_block(cfg: &ClusterConfig, office_id: &str) -> String
         "                secretKeyRef:".to_string(),
         format!("                  name: {}", cfg.management_secret_name),
         "                  key: ZEBFLOW_PLATFORM_DEFAULT_PASSWORD".to_string(),
+        "                  optional: true".to_string(),
         "            - name: ZEBFLOW_CLUSTER_NODE_ID".to_string(),
         format!("              value: \"{}\"", office_id),
         "            - name: ZEBFLOW_CLUSTER_NODE_LABEL".to_string(),
@@ -1458,6 +1459,22 @@ mod tests {
         assert!(main.contains("name: ZEBFLOW_CLUSTER_MASTER_URL"));
         assert!(office_a.contains("args:\n            - controller"));
         assert!(!office_a.contains("name: ZEBFLOW_CLUSTER_MASTER_URL"));
+    }
+
+    #[test]
+    fn generated_manifests_leave_superadmin_password_optional() {
+        let root = temp_cluster_dir();
+        init_cluster(&root).expect("init");
+
+        let management = fs::read_to_string(root.join(MANAGEMENT_FILE)).expect("management");
+        assert!(!management.contains("CHANGE_ME_TO_A_REAL_PASSWORD"));
+
+        let office = fs::read_to_string(root.join("office-main.yaml")).expect("office");
+        assert!(
+            office.contains(
+                "key: ZEBFLOW_PLATFORM_DEFAULT_PASSWORD\n                  optional: true"
+            )
+        );
     }
 
     #[test]

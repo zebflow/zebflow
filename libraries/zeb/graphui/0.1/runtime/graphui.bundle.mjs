@@ -2811,8 +2811,6 @@ export const PipelineGraph = (() => {
       .filter((n) => String(n.kind).startsWith("n.trigger."))
       .map((n) => n.id);
     return {
-      kind: "zebflow.pipeline",
-      version: "0.1",
       id: app._pgId || "pipeline",
       entry_nodes:
         entry.length ? entry : nodes[0] ? [nodes[0].id] : [],
@@ -2892,7 +2890,7 @@ export const PipelineGraph = (() => {
         onSelectionModeChange: props.onSelectionModeChange || null,
         onSelectAll: props.onSelectAll || null,
       });
-      app._pgId = props.id || "pipeline";
+      app._pgId = props.pipeline?.id || "pipeline";
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
       appRef.current = app;
@@ -2919,6 +2917,7 @@ export const PipelineGraph = (() => {
     _useEffect(function () {
       const app = appRef.current;
       if (!app) return;
+      app._pgId = props.pipeline?.id || app._pgId || "pipeline";
       app._pgOnNodeEdit = props.onNodeEdit || null;
       app._pgOnOutputAdd = props.onOutputAdd || null;
       app.ui.options.onSelectionModeChange = props.onSelectionModeChange || null;

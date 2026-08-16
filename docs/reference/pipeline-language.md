@@ -7,26 +7,29 @@ describe the same pipeline graph.
 
 ```json
 {
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "hello",
-  "entry_nodes": ["start"],
-  "nodes": [
-    {
-      "id": "start",
-      "kind": "n.trigger.manual",
-      "input_pins": [],
-      "output_pins": ["out"],
-      "config": {}
-    }
-  ],
-  "edges": []
+  "apiVersion": "zebflow.com/v1",
+  "kind": "Pipeline",
+  "metadata": { "name": "hello" },
+  "spec": {
+    "id": "hello",
+    "entry_nodes": ["start"],
+    "nodes": [
+      {
+        "id": "start",
+        "kind": "n.trigger.manual",
+        "input_pins": [],
+        "output_pins": ["out"],
+        "config": {}
+      }
+    ],
+    "edges": []
+  }
 }
 ```
 
-`kind` marks the file as a pipeline. `version` is the graph format version. Node
-IDs are unique inside the graph. Every edge names a source node, source output
-pin, target node, and target input pin.
+`apiVersion` selects the platform contract version. `kind` identifies a pipeline.
+`metadata.name` must equal `spec.id`. Node IDs are unique inside the graph. Every
+edge names a source node, source output pin, target node, and target input pin.
 
 ## Pipe DSL
 
@@ -52,5 +55,6 @@ Related source:
 
 - `src/pipeline/model.rs`
 - `src/platform/shell/parser.rs`
+- `src/contracts/kinds/pipeline.rs`
 - `src/platform/services/project.rs`
 - `src/pipeline/nodes/basic/mod.rs`

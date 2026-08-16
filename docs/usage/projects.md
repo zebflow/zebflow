@@ -16,7 +16,7 @@ The source area contains:
 
 ```text
 repo/
-├── zebflow.json
+├── zebflow.yaml
 ├── zeb.lock
 ├── pipelines/
 └── docs/
@@ -24,8 +24,15 @@ repo/
 
 `repo/pipelines/` is the live source tree. It can contain pipeline files, TSX
 pages, components, scripts, styles, and assets. `repo/docs/` contains notes that
-belong to the project. `zebflow.json` stores project settings that are safe to
-track. `zeb.lock` records selected libraries and package state.
+belong to the project. `zebflow.yaml` stores project settings that are safe to
+track. `zeb.lock` records exact resolved library versions and verified content
+digests. Zebflow writes it; users should not edit it manually. A project with
+the old `version: 1` lock can be migrated with
+`zebflow project lock migrate <owner> <project>`.
+
+Projects that still contain the pre-release `zebflow.json` format require the
+explicit migration command documented in the
+[`ProjectConfiguration` contract](../contracts/kinds/project-configuration/migration.md).
 
 ## Normal Work Loop
 

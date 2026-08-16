@@ -56,45 +56,48 @@ Naming convention: `pipelines/<virtual-path>/<name>.zf.json`
 
 ## JSON Model
 
-Every pipeline compiles to a `PipelineGraph` object:
+Every saved pipeline is a canonical `Pipeline` document. Its executable `PipelineGraph` is stored in `spec`:
 
 ```json
 {
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "auth-login",
-  "entry_nodes": ["a"],
-  "nodes": [
-    {
-      "id": "a",
-      "kind": "n.trigger.webhook",
-      "input_pins": [],
-      "output_pins": ["out"],
-      "config": { "path": "/api/auth/login", "method": "POST" }
-    },
-    {
-      "id": "b",
-      "kind": "n.pg.query",
-      "input_pins": ["in"],
-      "output_pins": ["out"],
-      "config": {
-        "credential_id": "main-db",
-        "query": "SELECT * FROM users WHERE identifier = $1",
-        "params_path": "identifier"
+  "apiVersion": "zebflow.com/v1",
+  "kind": "Pipeline",
+  "metadata": { "name": "auth-login" },
+  "spec": {
+    "id": "auth-login",
+    "entry_nodes": ["a"],
+    "nodes": [
+      {
+        "id": "a",
+        "kind": "n.trigger.webhook",
+        "input_pins": [],
+        "output_pins": ["out"],
+        "config": { "path": "/api/auth/login", "method": "POST" }
+      },
+      {
+        "id": "b",
+        "kind": "n.pg.query",
+        "input_pins": ["in"],
+        "output_pins": ["out"],
+        "config": {
+          "credential_id": "main-db",
+          "query": "SELECT * FROM users WHERE identifier = $1",
+          "params_path": "identifier"
+        }
+      },
+      {
+        "id": "c",
+        "kind": "n.web.response",
+        "input_pins": ["in"],
+        "output_pins": ["out", "error"],
+        "config": { "template": "pages/auth/login.tsx" }
       }
-    },
-    {
-      "id": "c",
-      "kind": "n.web.response",
-      "input_pins": ["in"],
-      "output_pins": ["out", "error"],
-      "config": { "template": "pages/auth/login.tsx" }
-    }
-  ],
-  "edges": [
-    { "from_node": "a", "from_pin": "out", "to_node": "b", "to_pin": "in" },
-    { "from_node": "b", "from_pin": "out", "to_node": "c", "to_pin": "in" }
-  ]
+    ],
+    "edges": [
+      { "from_node": "a", "from_pin": "out", "to_node": "b", "to_pin": "in" },
+      { "from_node": "b", "from_pin": "out", "to_node": "c", "to_pin": "in" }
+    ]
+  }
 }
 ```
 
@@ -102,12 +105,13 @@ Every pipeline compiles to a `PipelineGraph` object:
 
 | Field | Type | Description |
 |---|---|---|
-| `kind` | string | Always `"zebflow.pipeline"` |
-| `version` | string | Always `"0.1"` |
-| `id` | string | Pipeline slug (matches filename without `.zf.json`) |
-| `entry_nodes` | string[] | IDs of nodes with no incoming edges (auto-computed by DSL) |
-| `nodes` | Node[] | All nodes in the graph |
-| `edges` | Edge[] | All pin-to-pin connections |
+| `apiVersion` | string | Always `"zebflow.com/v1"` |
+| `kind` | string | Always `"Pipeline"` |
+| `metadata.name` | string | Stable pipeline name |
+| `spec.id` | string | Pipeline slug, matching `metadata.name` |
+| `spec.entry_nodes` | string[] | IDs of entry nodes, computed by the DSL when omitted there |
+| `spec.nodes` | Node[] | All nodes in the graph |
+| `spec.edges` | Edge[] | All pin-to-pin connections |
 
 ### Node fields
 

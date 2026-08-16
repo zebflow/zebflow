@@ -18,7 +18,7 @@ node payload.
   "path": "uploads/roads.geojson",
   "url": "/fs/owner/project/uploads/roads.geojson",
   "size": 24810,
-  "sha256": "sha256:...",
+  "sha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "filename": "roads.geojson",
   "mime": "application/geo+json",
   "kind": "geojson",

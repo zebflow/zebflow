@@ -1112,23 +1112,26 @@ git commit -- "add get-posts pipeline"
 
 ## JSON Equivalent
 
-Both pipeline modes compile to the same `PipelineGraph` JSON. Edges are pin-to-pin — no conditions on edges:
+Both pipeline modes compile to the same canonical `Pipeline` document. The graph is stored in `spec`. Edges connect pins directly and do not carry conditions:
 
 ```json
 {
-  "kind": "zebflow.pipeline",
-  "version": "0.1",
-  "id": "event-router",
-  "entry_nodes": ["a"],
-  "nodes": [
-    { "id": "a", "kind": "n.trigger.webhook",  "input_pins": [],     "output_pins": ["out"],                        "config": { "path": "/events", "method": "POST" } },
-    { "id": "b", "kind": "n.logic.match",      "input_pins": ["in"], "output_pins": ["create","update","unknown"],  "config": { "expression": "input.type", "cases": ["create","update"], "default": "unknown" } },
-    { "id": "c", "kind": "n.script",           "input_pins": ["in"], "output_pins": ["out"],                        "config": { "language": "js", "source": "return handleCreate(input);" } }
-  ],
-  "edges": [
-    { "from_node": "a", "from_pin": "out",    "to_node": "b", "to_pin": "in" },
-    { "from_node": "b", "from_pin": "create", "to_node": "c", "to_pin": "in" }
-  ]
+  "apiVersion": "zebflow.com/v1",
+  "kind": "Pipeline",
+  "metadata": { "name": "event-router" },
+  "spec": {
+    "id": "event-router",
+    "entry_nodes": ["a"],
+    "nodes": [
+      { "id": "a", "kind": "n.trigger.webhook", "input_pins": [], "output_pins": ["out"], "config": { "path": "/events", "method": "POST" } },
+      { "id": "b", "kind": "n.logic.match", "input_pins": ["in"], "output_pins": ["create", "update", "unknown"], "config": { "expression": "input.type", "cases": ["create", "update"], "default": "unknown" } },
+      { "id": "c", "kind": "n.script", "input_pins": ["in"], "output_pins": ["out"], "config": { "language": "js", "source": "return handleCreate(input);" } }
+    ],
+    "edges": [
+      { "from_node": "a", "from_pin": "out", "to_node": "b", "to_pin": "in" },
+      { "from_node": "b", "from_pin": "create", "to_node": "c", "to_pin": "in" }
+    ]
+  }
 }
 ```
 

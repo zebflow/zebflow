@@ -108,6 +108,11 @@ Then open:
 http://localhost:10610/login
 ```
 
+Setting `ZEBFLOW_PLATFORM_DEFAULT_PASSWORD` is optional. When it is omitted on
+the first run, Zebflow generates a strong password and prints the path to its
+private file under the platform data directory. Existing superadmin passwords
+are never replaced during startup.
+
 ### Docker
 
 Docker is useful for servers and repeatable deployments:

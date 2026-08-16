@@ -215,6 +215,19 @@ template_write    rel_path=pages/my-page.tsx   content="..."
 pipeline_register + pipeline_activate
 ```
 
+For a reusable TypeScript module:
+
+```text
+help              topic=web/custom-scripts
+template_create   kind=script   name=format-address
+template_get      rel_path=scripts/format-address.ts
+template_write    rel_path=scripts/format-address.ts   content="..."
+```
+
+Do not add npm, JSR, CDN, React, Preact, or Node package imports to project
+scripts. Use local TypeScript, reviewed Hub packages, or enabled `zeb/*`
+libraries.
+
 ---
 
 ## Further Reading
@@ -222,4 +235,5 @@ pipeline_register + pipeline_activate
 - `help("web/hooks")` — useState, useEffect, usePageState, cx, useNavigate, Link, tv
 - `help("web/tailwind")` — semantic tokens, tw-variants, cx(), tv()
 - `help("web/libraries")` — zeb/* bundled add-ons: icons, markdown, codemirror, d3
+- `help("web/custom-scripts")` — create focused TypeScript modules through MCP
 - `help("web/design-system")` — component library rules

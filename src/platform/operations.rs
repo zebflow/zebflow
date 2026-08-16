@@ -184,15 +184,6 @@ pub const OPERATIONS: &[OperationSpec] = &[
         path: "/api/projects/{owner}/{project}/assistant/chat",
         params_schema: r#"{"message":"string","history":"[{role,content}]?","use_high_model":"bool?"}"#,
     },
-    OperationSpec {
-        id: "prepare_project_assets",
-        category: "libraries",
-        description: "Vendor selected web library assets into project workspace and build project-scoped chunk manifest for runtime serving",
-        capability: ProjectCapability::LibrariesInstall,
-        method: "POST",
-        path: "/api/projects/{owner}/{project}/assets/prepare",
-        params_schema: r#"{"library":"string?","version":"string?","entries":"string[]?"}"#,
-    },
     // DB connections
     OperationSpec {
         id: "list_db_connections",

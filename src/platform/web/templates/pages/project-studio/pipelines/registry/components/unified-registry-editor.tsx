@@ -17,13 +17,14 @@ import {
 import { useFileSearchOptional } from "@/pages/project-studio/components/file-search-context";
 import { LockIcon, LockOpenIcon } from "@/pages/project-studio/components/icons";
 import {
-  pipelineNavLastSegment, expandFolderPaths, getDirectChildFolders, peSanitizeSegment, peNormalizeVirtualPath, peEmptyPipelineGraph,
+  pipelineNavLastSegment, expandFolderPaths, getDirectChildFolders, peSanitizeSegment, peNormalizeVirtualPath, peEmptyPipelineDocument,
 } from "@/pages/project-studio/pipelines/registry/components/registry-helpers";
 import { RegistryInstallCatalog } from "@/pages/project-studio/pipelines/registry/components/registry-install-catalog";
 import { notifyStudioRepoChanged } from "@/pages/project-studio/components/studio-chrome-bridge";
 import { subscribeEditorPreferences } from "@/pages/project-studio/components/editor-preferences";
 import { loadEditorCompletionCatalog, refreshEditorCompletionCatalog } from "@/pages/project-studio/components/editor-catalog";
 import ConfirmDialog from "@/components/ui/confirm-dialog";
+import ScriptPromptDialog from "@/pages/project-studio/pipelines/registry/components/script-prompt-dialog";
 
 // ── Asset Manager ─────────────────────────────────────────────────────────────
 
@@ -449,6 +450,7 @@ export default function UnifiedRegistryEditor(input) {
   const newFileDialogRef = useRef(null);
   const newFolderDialogRef = useRef(null);
   const newDocDialogRef = useRef(null);
+  const [scriptPromptOpen, setScriptPromptOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(null as string | null);
 
@@ -863,7 +865,7 @@ export default function UnifiedRegistryEditor(input) {
     const name = peSanitizeSegment(fd.get("name"));
     const virtualPath = peNormalizeVirtualPath(currentPath);
     const title = String(fd.get("title") || "");
-    const source = JSON.stringify(peEmptyPipelineGraph(name, triggerKind), null, 2);
+    const source = JSON.stringify(peEmptyPipelineDocument(name, triggerKind), null, 2);
     const cleanVp = (virtualPath || "/").replace(/^\//, "");
     const fileRelPath = cleanVp ? `pipelines/${cleanVp}/${name}.zf.json` : `pipelines/${name}.zf.json`;
     setCreating(true);
@@ -1173,6 +1175,10 @@ export default function UnifiedRegistryEditor(input) {
                       setCreateError(null);
                       if (newDocDialogRef.current) newDocDialogRef.current.showModal();
                     }}
+                  />
+                  <DropdownMenuItem
+                    label="Script prompt"
+                    onClick={() => setScriptPromptOpen(true)}
                   />
                 </DropdownMenu>
                   <Button size="sm" variant="ghost"
@@ -1837,6 +1843,8 @@ export default function UnifiedRegistryEditor(input) {
               </div>
             </form>
           </dialog>
+
+          <ScriptPromptDialog open={scriptPromptOpen} onClose={() => setScriptPromptOpen(false)} />
 
           {installOpen && (
             <RegistryInstallCatalog

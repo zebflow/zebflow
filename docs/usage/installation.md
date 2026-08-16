@@ -1,13 +1,13 @@
 # Installation
 
-Zebflow is one executable. Choose one installation method, set the first admin
-password, start the server, then open the browser.
+Zebflow is one executable. Choose one installation method, start the server,
+then open the browser. You can set the first admin password yourself or let
+Zebflow generate one.
 
 ## npm
 
 ```bash
 npm install -g zebflow
-export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="choose-a-strong-password"
 zebflow
 ```
 
@@ -15,7 +15,6 @@ zebflow
 
 ```bash
 pip install zebflow
-export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="choose-a-strong-password"
 zebflow
 ```
 
@@ -23,7 +22,6 @@ zebflow
 
 ```bash
 docker run -p 10610:10610 \
-  -e ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="choose-a-strong-password" \
   -v zebflow-data:/var/lib/zebflow/data \
   zebflow/zebflow:latest
 ```
@@ -33,7 +31,6 @@ The volume keeps projects and platform data after the container stops.
 ## Source
 
 ```bash
-export ZEBFLOW_PLATFORM_DEFAULT_PASSWORD="choose-a-strong-password"
 cargo build
 ./target/debug/zebflow
 ```
@@ -46,8 +43,18 @@ The default address is:
 http://127.0.0.1:10610/login
 ```
 
-The default owner is `superadmin`. The password is the value of
-`ZEBFLOW_PLATFORM_DEFAULT_PASSWORD`.
+The default owner is `superadmin`. To choose its initial password, set
+`ZEBFLOW_PLATFORM_DEFAULT_PASSWORD` before the first run. When the variable is
+missing, Zebflow generates a password and prints the path to:
+
+```text
+<platform-data-directory>/.bootstrap/superadmin-password
+```
+
+On Unix systems, the directory uses mode `0700` and the password file uses mode
+`0600`. Read the password, store it securely, and remove the file when it is no
+longer needed. Restarting Zebflow never replaces an existing superadmin
+password.
 
 ## Change the Address
 

@@ -44,6 +44,8 @@ src/
 │   │   └── basic/
 │   └── planning/
 │       └── basic/
+├── contracts/
+│   └── kinds/
 ├── infra/
 │   ├── cluster/
 │   │   ├── config/
@@ -187,6 +189,9 @@ src/
 - `src/version.rs` stores the runtime version value.
 - `src/bin/` contains executable entry points and CLI behavior.
 - `src/automaton/` contains agent planning, tools, memory, and model clients.
+- `src/contracts/` contains the shared contract envelope, strict readers and
+  writers, the closed kind registry, and adapters for durable or transferred
+  formats owned by every Zebflow domain.
 - `src/infra/` contains shared execution, storage, state, cluster, health, and
   transport parts.
 - `src/language/` contains sandboxed user script engines and script contracts.

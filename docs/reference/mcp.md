@@ -55,6 +55,31 @@ project route set the scope.
 Every tool call checks its project capability. Tool descriptions and argument
 schemas belong in the MCP tool definition, not only in a guide.
 
+## Create a Custom TypeScript Module
+
+Read the web rules before writing source:
+
+```text
+help topic=web/custom-scripts
+```
+
+Then scaffold, inspect, and replace the script:
+
+```text
+template_create kind=script name=format-address
+template_get rel_path=scripts/format-address.ts
+template_write rel_path=scripts/format-address.ts content="<complete TypeScript source>"
+```
+
+Use `template_create` first so the destination follows the project layout. Keep
+exports camelCase, use `@/` for local imports, and do not add npm, JSR, CDN,
+React, Preact, or Node package imports. For complex existing behavior, search
+Hub packages or use a project-enabled `zeb/*` library.
+
+After writing, use `template_get` to verify the saved source and compile or run
+the page that imports it. Never place credentials or private tokens in a web
+script.
+
 Related source:
 
 - `src/platform/mcp/handler.rs`

@@ -50,20 +50,42 @@ export function peNormalizeVirtualPath(raw) {
   return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
 }
 
-export function peEmptyPipelineGraph(name, triggerKind) {
+export function pePipelineDocument(graph, metadata = {}) {
+  return {
+    apiVersion: "zebflow.com/v1",
+    kind: "Pipeline",
+    metadata: { ...metadata, name: graph.id },
+    spec: graph,
+  };
+}
+
+export function pePipelineGraph(document) {
+  if (
+    document?.apiVersion !== "zebflow.com/v1" ||
+    document?.kind !== "Pipeline" ||
+    !document?.spec ||
+    typeof document.spec !== "object"
+  ) {
+    throw new Error("Pipeline source must use the zebflow.com/v1 Pipeline contract");
+  }
+  return document.spec;
+}
+
+export function peEmptyPipelineDocument(name, triggerKind) {
   const id = peSanitizeSegment(name);
+  let graph;
   if (triggerKind === "schedule") {
-    return { kind: "zebflow.pipeline", version: "0.1", id, entry_nodes: ["trigger_schedule"],
+    graph = { id, entry_nodes: ["trigger_schedule"],
       nodes: [{ id: "trigger_schedule", kind: "n.trigger.schedule", input_pins: [], output_pins: ["out"], config: { cron: "*/5 * * * *", timezone: "UTC" } }], edges: [] };
-  }
-  if (triggerKind === "function") {
-    return { kind: "zebflow.pipeline", version: "0.1", id, entry_nodes: ["script_entry"],
+  } else if (triggerKind === "function") {
+    graph = { id, entry_nodes: ["script_entry"],
       nodes: [{ id: "script_entry", kind: "n.script", input_pins: ["in"], output_pins: ["out"], config: { source: "return input;" } }], edges: [] };
-  }
-  if (triggerKind === "manual") {
-    return { kind: "zebflow.pipeline", version: "0.1", id, entry_nodes: ["trigger_manual"],
+  } else if (triggerKind === "manual") {
+    graph = { id, entry_nodes: ["trigger_manual"],
       nodes: [{ id: "trigger_manual", kind: "n.trigger.manual", input_pins: [], output_pins: ["out"], config: {} }], edges: [] };
+  } else {
+    graph = { id, entry_nodes: ["trigger_webhook"],
+      nodes: [{ id: "trigger_webhook", kind: "n.trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: `/${id}`, method: "GET" } }], edges: [] };
   }
-  return { kind: "zebflow.pipeline", version: "0.1", id, entry_nodes: ["trigger_webhook"],
-    nodes: [{ id: "trigger_webhook", kind: "n.trigger.webhook", input_pins: [], output_pins: ["out"], config: { path: `/${id}`, method: "GET" } }], edges: [] };
+  return pePipelineDocument(graph);
 }

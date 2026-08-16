@@ -1788,7 +1788,7 @@ function RuntimeDefaultsPanel({ api, initialConfig }) {
             type="range"
             name="pipeline_node_timeout_secs"
             min={5}
-            max={600}
+            max={3600}
             step={5}
             value={nodeTimeoutSecs}
             onInput={(e) => setNodeTimeoutSecs(Number((e.target as HTMLInputElement).value))}

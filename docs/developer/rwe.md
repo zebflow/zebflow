@@ -32,3 +32,19 @@ behavior. Zeb Tailwind scans supported classes and creates CSS.
 - `src/rwe/protocol.rs`
 - `src/rwe/script_cache.rs`
 - `libraries/`
+
+## Dependency Boundary
+
+The stable paths are local project TypeScript, reviewed Hub scripts, and
+embedded Zeb Libraries. RWE resolves these inputs but does not act as an npm
+client or package manager.
+
+The removed npm preparation scaffold depended on external `npm` and `tar`
+executables, created project `node_modules` links, wrote a second lock file, and
+ran automatically after template saves. Those behaviors conflict with the
+single-binary and frozen `DependencyLock` contracts.
+
+Direct npm ingestion remains future work. It must not return until Zebflow can
+resolve the full transitive graph, reject lifecycle scripts, limit archive
+extraction, compile an approved browser artifact, record immutable digests, and
+show a policy review before writing project files.

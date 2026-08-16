@@ -9,7 +9,7 @@ Everything an agent needs to understand how a Zebflow project is structured and 
 ```
 {project-root}/
 ├── repo/
-│   ├── zebflow.json              ← project config (title, assistant LLM settings)
+│   ├── zebflow.yaml              ← project config (title, assistant LLM settings)
 │   ├── pipelines/                ← pipeline definitions (.zf.json)
 │   ├── templates/
 │   │   ├── pages/                ← full-page TSX templates
@@ -200,14 +200,14 @@ Stored as `"metadata": { "locked": true }` inside the `.zf.json` file itself. To
 
 ### Template lock
 
-Stored in `repo/zebflow.json` under `locks.templates` as a list of `rel_path` strings. A folder prefix locks all files under it.
+Stored in `repo/zebflow.yaml` under `spec.locks.templates` as a list of `rel_path` strings. A folder prefix locks all files under it.
 
-```json
-{
-  "locks": {
-    "templates": ["components/auth", "pages/admin.tsx"]
-  }
-}
+```yaml
+spec:
+  locks:
+    templates:
+    - components/auth
+    - pages/admin.tsx
 ```
 
 ### Lock scope

@@ -96,22 +96,15 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
   const active = findHelpSectionById(sections, activeSection) || sections[0] || null;
 
   return (
-    <div className="fixed inset-0 z-[120] overflow-y-auto overscroll-contain px-4 py-6 sm:py-8">
-      <button
-        type="button"
-        className="fixed inset-0 bg-black/55 backdrop-blur-[1px]"
-        onClick={onClose}
-        aria-label="Close help"
-      />
-      <div className="relative z-10 flex min-h-full items-center justify-center">
-        <div
-          role="dialog"
-          aria-modal="true"
-          className={cx(
-            "relative flex h-[min(calc(100dvh-3rem),54rem)] w-[min(92vw,72rem)] overflow-hidden rounded-lg border shadow-2xl sm:h-[min(calc(100dvh-4rem),54rem)]",
-            isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
-          )}
-        >
+    <Dialog open={open} onOpenChange={(value) => { if (!value) onClose(); }}>
+      <DialogContent
+        size="full"
+        className={cx(
+          "border shadow-2xl",
+          isLight ? "border-gray-200 bg-white" : "border-dark-border bg-dark-background",
+        )}
+      >
+        <div className="flex min-h-0 w-full">
           <aside
             className={cx(
               "flex w-60 shrink-0 flex-col border-r",
@@ -169,8 +162,8 @@ function HelpDialog({ owner, project, isLight, open, onClose }) {
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
