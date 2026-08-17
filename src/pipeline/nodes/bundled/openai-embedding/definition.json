@@ -39,6 +39,10 @@
         "config_key": "credential_id"
       }
     ],
+    "hosts": [
+      "api.openai.com",
+      "openrouter.ai"
+    ],
     "functions": {
       "embed": "functions/embed.zf.json"
     },

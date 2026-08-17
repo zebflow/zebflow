@@ -41,6 +41,9 @@
         "config_key": "bot_credential_id"
       }
     ],
+    "hosts": [
+      "api.telegram.org"
+    ],
     "functions": {
       "send-message": "functions/send-message.zf.json",
       "send-photo": "functions/send-photo.zf.json",

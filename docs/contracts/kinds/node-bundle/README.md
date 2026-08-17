@@ -458,6 +458,52 @@ database effects, file effects, public endpoints, schedules, initial data, large
 files, and WASM modules before install. The UI may not hide them.
 `src/platform/policy/package.rs` owns that inspection.
 
+**One review, every source.** A Hub package and a local archive go through the
+identical scan. A Hub package is not safer, only published.
+
+### Three gates
+
+| Gate | Question | Behavior |
+| --- | --- | --- |
+| Contract validator | Is this a well-formed bundle? | Refuses path traversal, symlinks, unsupported ABI, kind collisions, missing artifacts, invalid function pipelines |
+| Policy violations | Is this bundle safe to run? | **Refuses. Never overridable, whoever approves.** |
+| Policy warnings | Does the user accept these effects? | Reported; the user decides |
+
+A warning asks whether an effect is acceptable. A violation says the package
+will not be installed at all. The precedent already exists: a bundle with a
+symlink cannot be installed no matter who approves it. Violations extend that
+from malformed to unsafe.
+
+`PackageSafetyReview::violations` and `is_installable()` exist now and install
+checks them before considering any approval the caller supplies. No detector
+populates them yet, because a non-overridable refusal has to be precise enough
+not to produce false positives.
+
+### Declared hosts
+
+`spec.hosts` lists the external hosts a package may contact. An empty list
+states that the package makes no external calls.
+
+```json
+"hosts": ["api.telegram.org", "*.example.com"]
+```
+
+Entries are lowercase host names with an optional leading `*.` wildcard label.
+Schemes, ports, paths, credentials, and single-label names are rejected, because
+a declaration that can be read two ways cannot be enforced.
+
+Declaring is what turns "here are the URLs this package contacts" from a
+judgement the reader has to make into a consistency check against what the
+author stated. Static scanning alone is weak — a URL built at run time from
+configuration is invisible, and a compiled WASM module is opaque — so the
+declaration's real purpose is to be the allowlist a runtime egress boundary
+enforces later.
+
+The first violations to be implemented, in order of significance:
+
+1. contacting a host the package did not declare
+2. a credential value reaching a host other than the one that credential belongs to
+
 A bundle contains public metadata and artifacts only. Credential values stay in
 the credential service. Manifest fields never imply extra host capability for a
 WASM module.

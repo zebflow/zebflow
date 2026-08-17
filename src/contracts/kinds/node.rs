@@ -28,6 +28,9 @@ pub const MAX_NODE_BUNDLE_MODULES: usize = 64;
 /// Maximum credential definitions declared by one bundle.
 pub const MAX_NODE_BUNDLE_CREDENTIALS: usize = 32;
 
+/// Maximum external hosts one bundle may declare.
+pub const MAX_NODE_BUNDLE_HOSTS: usize = 64;
+
 /// Maximum regular files inside one installed package directory.
 pub const MAX_NODE_BUNDLE_FILES: usize = 4096;
 
@@ -211,6 +214,17 @@ impl PlatformContract for NodeBundleContract {
             }
         }
 
+        validate_limit("spec.hosts", spec.hosts.len(), MAX_NODE_BUNDLE_HOSTS)?;
+        let mut hosts = HashSet::new();
+        for host in &spec.hosts {
+            validate_declared_host(host)?;
+            if !hosts.insert(host.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.hosts declares '{host}' more than once"
+                )));
+            }
+        }
+
         let mut credential_kinds = HashSet::new();
         for credential in &spec.credentials {
             if credential.kind.trim().is_empty()
@@ -284,6 +298,31 @@ fn validate_limit(path: &str, actual: usize, limit: usize) -> Result<(), Contrac
     if actual > limit {
         return Err(ContractError::invalid(format!(
             "{path} exceeds the limit of {limit}"
+        )));
+    }
+    Ok(())
+}
+
+/// Validates one declared host.
+///
+/// A host is a bare name, optionally with a leading `*.` wildcard label. Schemes,
+/// ports, paths, and credentials are rejected so the declaration cannot be read
+/// two ways when it is later enforced at the egress boundary.
+fn validate_declared_host(value: &str) -> Result<(), ContractError> {
+    let bare = value.strip_prefix("*.").unwrap_or(value);
+    let looks_like_host = !bare.is_empty()
+        && bare.len() <= 253
+        && !bare.starts_with('.')
+        && !bare.ends_with('.')
+        && !bare.contains("..")
+        && bare.split('.').count() >= 2
+        && bare.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'.')
+        });
+    if !looks_like_host {
+        return Err(ContractError::invalid(format!(
+            "spec.hosts entry '{value}' must be a lowercase host name such as \
+             'api.example.com' or '*.example.com', with no scheme, port, or path"
         )));
     }
     Ok(())
@@ -1216,6 +1255,47 @@ mod tests {
             }))
             .is_err(),
             "a used credential must map to a declared config key"
+        );
+    }
+
+    /// Declaring hosts is what turns "here are the URLs it contacts" into a
+    /// consistency check against what the author said, and is what a runtime
+    /// egress allowlist will later enforce.
+    #[test]
+    fn accepts_declared_hosts_and_rejects_ambiguous_ones() {
+        let bytes = mutate(V1_COMPOSITE, |value| {
+            value["spec"]["hosts"] = serde_json::json!(["api.example.com", "*.example.org"]);
+        });
+        let document = decode_node_bundle(&bytes).expect("plain host names are accepted");
+        assert_eq!(document.spec.hosts.len(), 2);
+
+        // A host that could be read two ways cannot be enforced at an egress
+        // boundary, so it is rejected at the contract instead.
+        for host in [
+            "https://api.example.com",
+            "api.example.com:443",
+            "api.example.com/path",
+            "API.example.com",
+            "localhost",
+            "user@api.example.com",
+            ".example.com",
+            "api..example.com",
+        ] {
+            assert!(
+                decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                    value["spec"]["hosts"] = serde_json::json!([host]);
+                }))
+                .is_err(),
+                "host '{host}' must be rejected"
+            );
+        }
+
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["hosts"] = serde_json::json!(["api.example.com", "api.example.com"]);
+            }))
+            .is_err(),
+            "a duplicate declaration must be rejected"
         );
     }
 

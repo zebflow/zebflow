@@ -12,6 +12,7 @@
     "description": "Two WASM nodes sharing one module through distinct exports.",
     "icon": "icon.svg",
     "credentials": [],
+    "hosts": [],
     "functions": {},
     "modules": {
       "core": {

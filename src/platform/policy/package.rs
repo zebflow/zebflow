@@ -44,7 +44,21 @@ pub struct PackageSafetyReview {
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
     pub seed_data: Vec<String>,
+    /// Effects the installer reports and the user may accept.
     pub warnings: Vec<String>,
+    /// Findings that make a package uninstallable.
+    ///
+    /// These are never overridable. A warning asks whether the user accepts an
+    /// effect; a violation says the package will not be installed at all,
+    /// whoever approves it. The contract validator already refuses malformed
+    /// bundles; this refuses well-formed ones whose behaviour is unsafe.
+    ///
+    /// Declared now, enforced later: the fields the detectors need exist, but
+    /// the detectors themselves are added once each is precise enough to be
+    /// non-overridable without producing false positives.
+    #[serde(default)]
+    pub violations: Vec<String>,
+    /// `low`, `medium`, `high`, or `blocked` when violations are present.
     pub risk_level: String,
 }
 
@@ -156,7 +170,21 @@ pub fn review_package_entries(
         large_files,
         seed_data,
         warnings,
+        // No detectors yet. The tier exists so install can refuse on it and the
+        // review dialog can distinguish "cannot be installed" from "are you
+        // sure", before any detector is precise enough to be non-overridable.
+        violations: Vec::new(),
         risk_level: PolicyRiskLevel::from_score(risk_score).as_str().to_string(),
+    }
+}
+
+impl PackageSafetyReview {
+    /// Whether this package may be installed at all.
+    ///
+    /// Violations are never overridable, so this is checked before any approval
+    /// the caller supplies is considered.
+    pub fn is_installable(&self) -> bool {
+        self.violations.is_empty()
     }
 }
 

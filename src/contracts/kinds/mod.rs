@@ -27,11 +27,11 @@ pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord}
 pub use node::{
     BUNDLE_TRIGGER_TYPES, BundleScope, INSTALLED_NODE_KIND_PREFIX, MAX_NODE_BUNDLE_BYTES,
     MAX_NODE_BUNDLE_CREDENTIALS, MAX_NODE_BUNDLE_FILES, MAX_NODE_BUNDLE_FUNCTIONS,
-    MAX_NODE_BUNDLE_MODULES, MAX_NODE_BUNDLE_NODES, MAX_NODE_DEFINITION_BYTES, NodeBundleContract,
-    NodeDefinitionContract, WASM_JSON_ABI_V1, decode_node_bundle, decode_node_definition,
-    encode_node_bundle, encode_node_definition, normalize_node_bundle, package_kind_namespace,
-    package_kind_token, validate_bundle_namespace, validate_node_definition_spec,
-    validate_normalized_node_definition,
+    MAX_NODE_BUNDLE_HOSTS, MAX_NODE_BUNDLE_MODULES, MAX_NODE_BUNDLE_NODES,
+    MAX_NODE_DEFINITION_BYTES, NodeBundleContract, NodeDefinitionContract, WASM_JSON_ABI_V1,
+    decode_node_bundle, decode_node_definition, encode_node_bundle, encode_node_definition,
+    normalize_node_bundle, package_kind_namespace, package_kind_token, validate_bundle_namespace,
+    validate_node_definition_spec, validate_normalized_node_definition,
 };
 pub use pipeline::{
     MAX_PIPELINE_EDGES, MAX_PIPELINE_NODES, MAX_PIPELINE_SOURCE_BYTES, PipelineContract,

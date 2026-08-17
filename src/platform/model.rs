@@ -2040,6 +2040,14 @@ pub struct MultiNodePackageDefinition {
     /// Credential kinds this package can use. Nodes opt in per entry.
     #[serde(default)]
     pub credentials: Vec<CredentialTypeDef>,
+    /// External hosts this package is allowed to contact.
+    ///
+    /// Declared now, enforced later. An empty list states that the package makes
+    /// no external calls. Declaring turns "here are the URLs it contacts" from a
+    /// judgement the reader has to make into a consistency check against what
+    /// the author said, and is what a runtime egress allowlist will enforce.
+    #[serde(default)]
+    pub hosts: Vec<String>,
     /// Function name → package-relative pipeline path.
     #[serde(default)]
     pub functions: BTreeMap<String, String>,
