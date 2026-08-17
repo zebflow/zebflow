@@ -1888,7 +1888,14 @@ impl HubService {
             .unwrap_or_else(|error| error.into_inner());
         let install_root =
             install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
-        let prepared = prepare_hub_install_entries(&layout, &install_root, &payload.files)?;
+        // A node bundle is a materialized artifact, so it installs under data/.
+        // Everything else is project source and installs under repo/.
+        let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+            layout.data_dir.clone()
+        } else {
+            layout.repo_dir.clone()
+        };
+        let prepared = prepare_hub_install_entries(&install_base, &install_root, &payload.files)?;
         validate_prepared_pipeline_sources(&prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
@@ -1903,7 +1910,7 @@ impl HubService {
                 return Err(self.recover_failed_install(
                     &target_owner,
                     &target_project,
-                    &layout.repo_dir,
+                    &install_base,
                     &prepared,
                     previous_lock.as_ref(),
                     operation_error,
@@ -1935,7 +1942,7 @@ impl HubService {
                         return Err(self.recover_failed_install(
                             &target_owner,
                             &target_project,
-                            &layout.repo_dir,
+                            &install_base,
                             &prepared,
                             previous_lock.as_ref(),
                             error,
@@ -1962,7 +1969,7 @@ impl HubService {
                 return Err(self.recover_failed_install(
                     &target_owner,
                     &target_project,
-                    &layout.repo_dir,
+                    &install_base,
                     &prepared,
                     previous_lock.as_ref(),
                     error,
@@ -1994,13 +2001,13 @@ impl HubService {
         &self,
         owner: &str,
         project: &str,
-        repo_dir: &Path,
+        install_base: &Path,
         entries: &[PreparedHubInstallEntry],
         previous_lock: Option<&crate::contracts::kinds::DependencyLockSpec>,
         operation_error: PlatformError,
     ) -> PlatformError {
         let mut recovery_errors = Vec::new();
-        if let Err(error) = restore_hub_install_entries(repo_dir, entries) {
+        if let Err(error) = restore_hub_install_entries(install_base, entries) {
             recovery_errors.push(error.to_string());
         }
         if let Some(previous) = previous_lock {
@@ -4074,7 +4081,7 @@ fn hub_entry_bytes(entry: &HubExportEntry) -> Result<Vec<u8>, PlatformError> {
 }
 
 fn prepare_hub_install_entries(
-    layout: &ProjectFileLayout,
+    install_base: &Path,
     install_root: &str,
     files: &[HubExportEntry],
 ) -> Result<Vec<PreparedHubInstallEntry>, PlatformError> {
@@ -4088,11 +4095,11 @@ fn prepare_hub_install_entries(
                 format!("package contains duplicate destination '{install_rel}'"),
             ));
         }
-        let destination = layout.repo_dir.join(&install_rel);
-        if !destination.starts_with(&layout.repo_dir) {
+        let destination = install_base.join(&install_rel);
+        if !destination.starts_with(install_base) {
             return Err(PlatformError::new(
                 "HUB_INSTALL",
-                format!("destination '{install_rel}' escapes the project repository"),
+                format!("destination '{install_rel}' escapes the install root"),
             ));
         }
         let previous = match std::fs::symlink_metadata(&destination) {
@@ -4144,7 +4151,7 @@ fn validate_prepared_pipeline_sources(
 }
 
 fn restore_hub_install_entries(
-    repo_dir: &Path,
+    install_base: &Path,
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
     let mut errors = Vec::new();
@@ -4160,7 +4167,7 @@ fn restore_hub_install_entries(
     for entry in entries.iter().filter(|entry| entry.previous.is_none()) {
         let mut parent = entry.destination.parent();
         while let Some(path) = parent {
-            if path == repo_dir || !path.starts_with(repo_dir) {
+            if path == install_base || !path.starts_with(install_base) {
                 break;
             }
             match std::fs::remove_dir(path) {
@@ -4947,7 +4954,7 @@ mod tests {
         assert_eq!(error.code, "NODE_MANIFEST_PARSE");
         let package_dir = root
             .path()
-            .join("users/superadmin/default/repo/nodes/broken-bundle");
+            .join("users/superadmin/default/data/nodes/broken-bundle");
         assert!(!package_dir.join("README.md").exists());
         assert!(!package_dir.join("definition.json").exists());
         assert_eq!(

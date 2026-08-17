@@ -367,7 +367,7 @@ mod tests {
             .unwrap();
 
         let source_layout = source_file.ensure_project_layout(owner, project).unwrap();
-        let package_dir = source_layout.repo_nodes_dir.join("openai-embedding");
+        let package_dir = source_layout.data_nodes_dir.join("openai-embedding");
         copy_dir_recursive(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("src/pipeline/nodes/bundled")

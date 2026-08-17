@@ -102,6 +102,18 @@ impl DependencyLockService {
             .join("repo")
     }
 
+    /// Root that a node bundle's `entry` path resolves against.
+    ///
+    /// Bundles are materialized artifacts, so they live under `data/` while the
+    /// lock that declares them stays in `repo/`. The recorded `entry` string is
+    /// unchanged by that split; only its base directory differs.
+    fn node_root(&self, owner: &str, project: &str) -> PathBuf {
+        self.users_root
+            .join(slug_segment(owner))
+            .join(slug_segment(project))
+            .join("data")
+    }
+
     fn lock_path(&self, owner: &str, project: &str) -> PathBuf {
         self.repo_path(owner, project).join(DEPENDENCY_LOCK_FILE)
     }
@@ -264,15 +276,12 @@ impl DependencyLockService {
 
     /// Reconciles discovered package sources against the lock.
     ///
-    /// The digest means different things depending on where a bundle came from,
-    /// so enforcement differs:
+    /// Installed bundles live under `data/`, so nothing there is authored by
+    /// hand. A digest that no longer matches the lock therefore means tampering
+    /// or an interrupted write, whatever the bundle's source, and fails closed.
     ///
-    /// - A `hub` bundle's digest is a security claim about the bytes a publisher
-    ///   shipped. A mismatch is tampering or corruption and fails closed.
-    /// - A `project` bundle is the project's own source, which a developer is
-    ///   expected to edit, so its digest is re-recorded from what is on disk.
-    ///
-    /// A newly discovered package that nothing already provides is pinned.
+    /// A newly discovered package that nothing already provides is still pinned,
+    /// which is how a restored project adopts bundles that arrived with it.
     pub fn record_discovered_node_bundles(
         &self,
         owner: &str,
@@ -310,31 +319,17 @@ impl DependencyLockService {
             if locked.integrity == entry.integrity {
                 continue;
             }
-            match locked.source {
-                DependencyLockSource::Hub | DependencyLockSource::Embedded => {
-                    return Err(PlatformError::new(
-                        "PLATFORM_DEPENDENCY_INTEGRITY",
-                        format!(
-                            "node bundle '{}' no longer matches the digest recorded in zeb.lock",
-                            locked.source_id
-                        ),
-                    ));
-                }
-                DependencyLockSource::Project => {
-                    value.nodes.bundles.insert(
-                        key,
-                        DependencyLockNodeBundleSpec {
-                            version: entry.version,
-                            source: locked.source,
-                            source_id: locked.source_id,
-                            entry: entry.entry,
-                            integrity: entry.integrity,
-                            definitions: entry.definitions,
-                        },
-                    );
-                    changed = true;
-                }
-            }
+            // Bundles are materialized under `data/`, which is machine-owned and
+            // never hand-edited, so drift means tampering or a partial write
+            // regardless of where the bundle came from. Re-materializing from
+            // the lock is the repair, not silently trusting what is on disk.
+            return Err(PlatformError::new(
+                "PLATFORM_DEPENDENCY_INTEGRITY",
+                format!(
+                    "node bundle '{}' no longer matches the digest recorded in zeb.lock",
+                    locked.source_id
+                ),
+            ));
         }
         if changed {
             self.write_unlocked(&path, project, &value)?;
@@ -490,6 +485,7 @@ impl DependencyLockService {
         }
 
         let repo = self.repo_path(owner, project);
+        let node_root = self.node_root(owner, project);
         let mut available = crate::pipeline::nodes::builtin_node_definitions()
             .into_iter()
             .map(|definition| definition.kind)
@@ -507,7 +503,7 @@ impl DependencyLockService {
             &mut items,
         )?;
         for (name, bundle) in &lock.nodes.bundles {
-            let manifest = repo.join(&bundle.entry);
+            let manifest = node_root.join(&bundle.entry);
             let (status, message, inspected) = if !manifest.is_file() {
                 (
                     DependencyResolutionStatus::Missing,
@@ -689,6 +685,7 @@ impl DependencyLockService {
         );
 
         let repo = self.repo_path(owner, project);
+        let node_root = self.node_root(owner, project);
         let mut required = graph
             .nodes
             .iter()
@@ -706,7 +703,7 @@ impl DependencyLockService {
                 break;
             };
             checked.insert(bundle_name.clone());
-            let manifest = repo.join(&bundle.entry);
+            let manifest = node_root.join(&bundle.entry);
             if !manifest.is_file() {
                 return Err(PlatformError::new(
                     "PLATFORM_DEPENDENCY_MISSING",
@@ -1611,7 +1608,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let users = root.path().join("users");
         let service = DependencyLockService::new(users.clone());
-        let package_dir = users.join("owner/project/repo/nodes/example");
+        let package_dir = users.join("owner/project/data/nodes/example");
         std::fs::create_dir_all(&package_dir).unwrap();
         std::fs::write(
             package_dir.join("definition.json"),
@@ -1776,10 +1773,11 @@ mod tests {
         );
     }
 
-    /// A project bundle is the project's own source. A developer is expected to
-    /// edit it, so the observed digest is re-recorded instead of failing.
+    /// Nothing under `data/` is hand-edited, so a project-sourced bundle gets
+    /// the same treatment as a Hub one: drift fails closed rather than being
+    /// adopted.
     #[test]
-    fn project_bundle_digest_drift_is_relocked() {
+    fn project_bundle_digest_drift_also_fails_closed() {
         let root = tempfile::tempdir().unwrap();
         let service = DependencyLockService::new(root.path().join("users"));
         let mut lock = DependencyLockSpec::default();
@@ -1789,7 +1787,7 @@ mod tests {
         );
         service.write("owner", "project", &lock).unwrap();
 
-        service
+        let error = service
             .record_discovered_node_bundles(
                 "owner",
                 "project",
@@ -1798,13 +1796,15 @@ mod tests {
                     locked_bundle(DependencyLockSource::Project, 'b'),
                 )],
             )
-            .expect("project drift is re-locked");
+            .expect_err("project drift must fail closed");
+        assert_eq!(error.code, "PLATFORM_DEPENDENCY_INTEGRITY");
 
         let after = service.read("owner", "project").unwrap();
         assert_eq!(after.nodes.bundles.len(), 1);
         assert_eq!(
             after.nodes.bundles["project/example"].integrity,
-            format!("sha256:{}", "b".repeat(64))
+            format!("sha256:{}", "a".repeat(64)),
+            "the previous lock survives"
         );
     }
 }

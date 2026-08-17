@@ -83,7 +83,7 @@ impl FileAdapter for FilesystemFileAdapter {
         let repo_git_dir = repo_dir.join(".git");
         let repo_pipelines_dir = repo_dir.join("pipelines");
         let repo_docs_dir = repo_dir.join("docs");
-        let repo_nodes_dir = repo_dir.join("nodes");
+        let data_nodes_dir = data_dir.join("nodes");
         let project_config_file =
             repo_dir.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE);
         let agent_docs_dir = data_runtime_dir.join("agent_docs");
@@ -126,7 +126,7 @@ impl FileAdapter for FilesystemFileAdapter {
             repo_docs_dir,
             project_config_file,
             agent_docs_dir,
-            repo_nodes_dir,
+            data_nodes_dir,
         })
     }
 }

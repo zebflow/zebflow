@@ -1,6 +1,6 @@
 //! Runtime registry for installed composite and WASM node packages.
 //!
-//! Scans `repo/nodes/` for installed packages, validates manifests, and provides
+//! Scans `data/nodes/` for installed packages, validates manifests, and provides
 //! merged node catalogs. Uses the same ArcSwap pattern as `PipelineRuntimeService`.
 //!
 //! Also loads official composite nodes embedded in the binary via
@@ -152,13 +152,13 @@ impl NodeRegistryService {
         manifests
     }
 
-    /// Scans `repo/nodes/` for a project and rebuilds its registry entries.
+    /// Scans `data/nodes/` for a project and rebuilds its registry entries.
     pub fn refresh_project(&self, owner: &str, project: &str) -> Result<(), PlatformError> {
         let owner = slug_segment(owner);
         let project = slug_segment(project);
 
         let layout = self.projects.project_layout(&owner, &project)?;
-        let nodes_dir = &layout.repo_nodes_dir;
+        let nodes_dir = &layout.data_nodes_dir;
 
         // Installed bundles may not replace any official node kind.
         let mut official_kinds: HashSet<String> =
@@ -920,7 +920,7 @@ mod tests {
 
     fn write_composite_bundle(root: &Path, directory: &str, package: &str, kind: &str, icon: &str) {
         let package_dir = root
-            .join("users/superadmin/default/repo/nodes")
+            .join("users/superadmin/default/data/nodes")
             .join(directory);
         std::fs::create_dir_all(package_dir.join("functions")).expect("package dirs");
         let spec: crate::platform::model::MultiNodePackageDefinition =
@@ -1136,7 +1136,7 @@ mod tests {
 
         let invalid = temp
             .path()
-            .join("users/superadmin/default/repo/nodes/invalid");
+            .join("users/superadmin/default/data/nodes/invalid");
         std::fs::create_dir_all(invalid).expect("invalid package dir");
         let error = registry
             .refresh_project("superadmin", "default")
@@ -1168,11 +1168,11 @@ mod tests {
         // contract rejects it, so the refresh fails closed.
         let package_dir = temp
             .path()
-            .join("users/superadmin/default/repo/nodes")
+            .join("users/superadmin/default/data/nodes")
             .join("two");
         let stolen = std::fs::read_to_string(
             temp.path()
-                .join("users/superadmin/default/repo/nodes/one/definition.json"),
+                .join("users/superadmin/default/data/nodes/one/definition.json"),
         )
         .expect("source bundle")
         .replace("\"package\": \"one\"", "\"package\": \"two\"")
@@ -1210,7 +1210,7 @@ mod tests {
 
         let function = temp
             .path()
-            .join("users/superadmin/default/repo/nodes/gap/functions/main.zf.json");
+            .join("users/superadmin/default/data/nodes/gap/functions/main.zf.json");
         std::fs::remove_file(&function).expect("remove declared function");
 
         let error = registry
@@ -1238,7 +1238,7 @@ mod tests {
 
         std::fs::write(
             temp.path()
-                .join("users/superadmin/default/repo/nodes/broken/functions/main.zf.json"),
+                .join("users/superadmin/default/data/nodes/broken/functions/main.zf.json"),
             b"{\"not\":\"a pipeline\"}",
         )
         .expect("corrupt the function");
@@ -1270,7 +1270,7 @@ mod tests {
             .uninstall_package("superadmin", "default", "n.x.alpha.thing")
             .expect("uninstall alpha");
 
-        let nodes_dir = temp.path().join("users/superadmin/default/repo/nodes");
+        let nodes_dir = temp.path().join("users/superadmin/default/data/nodes");
         assert!(!nodes_dir.join("alpha").exists(), "owned files are removed");
         assert!(
             nodes_dir.join("beta").exists(),

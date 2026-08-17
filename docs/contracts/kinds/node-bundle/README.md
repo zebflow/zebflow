@@ -18,7 +18,8 @@ A bundle is the only install source. One node and many nodes use the same
 | Kind | `NodeBundle` |
 | Representation | Strict UTF-8 JSON envelope |
 | Owner | Platform node packaging |
-| Durable source | `{package-slug}/definition.json` |
+| Durable source | `data/nodes/{package-slug}/definition.json` |
+| Platform bundles | `src/pipeline/nodes/bundled/{package-slug}/`, consumed at build time |
 | Rust model | `src/platform/model.rs` |
 | Contract and validator | `src/contracts/kinds/node.rs` |
 | Runtime registry | `src/platform/services/node_registry.rs` |
@@ -41,6 +42,30 @@ A bundle is the only install source. One node and many nodes use the same
 
 Every artifact is a regular file inside the package root. Symlinks, absolute
 paths, parent traversal, and files outside the root are rejected.
+
+This layout is identical wherever a bundle appears: authored in
+`src/pipeline/nodes/bundled/` for platform bundles, published to the Hub, and
+materialized into `data/nodes/` on install. One layout, three consumers.
+
+### Why installed bundles live under `data/`
+
+A project has three areas, and they are categories of ownership rather than
+storage buckets:
+
+| | |
+| --- | --- |
+| `repo/` | what the human declares — authored, versioned, git-tracked |
+| `data/` | what the machine derives and keeps — materialized, rebuildable |
+| `files/` | what the application stores for its users |
+
+An installed bundle is not declared, it is *materialized from* a declaration.
+The declaration is `zeb.lock`, which is authored and stays in `repo/`. The bytes
+are the machine's output, so they belong in `data/nodes/`. This mirrors the
+split that already exists between `repo/pipelines/` and the activated snapshots
+under `data/runtime/pipelines/`.
+
+A bundle's `entry` path in `zeb.lock` is unchanged by this: it is still
+`nodes/{slug}/definition.json`, now resolved against the project's `data/` root.
 
 ## Canonical Shape
 
@@ -315,17 +340,17 @@ directory's normalized file inventory, computed by
 regular file under the package root, in sorted relative-path order, including
 each file's relative path and length. Symlinks fail the hash.
 
-Enforcement depends on the lock source, because the hash means different things:
+Nothing under `data/` is authored by hand, so a digest that no longer matches
+the lock means tampering or an interrupted write **whatever the bundle's
+source**. Every mismatch fails closed.
 
-| Lock source | Meaning | Behavior on mismatch |
-| --- | --- | --- |
-| `hub` | The bytes a publisher shipped | Hard failure. The bundle does not install and does not publish. |
-| `project` | The current state of the project's own code | The lock is updated to the observed hash and drift is reported. |
+The check runs in `record_discovered_node_bundles`, which every registry refresh
+calls before publication, so a drifted bundle fails the refresh and the previous
+registry stays active. The repair is to re-materialize from the lock, not to
+trust what is on disk.
 
-Both checks run in `record_discovered_node_bundles`, which every registry refresh
-calls before publication, so a tampered Hub bundle fails the refresh and the
-previous registry stays active. A project bundle is re-locked to the observed
-digest instead, since a developer is expected to edit their own package.
+A newly discovered package that no lock entry already provides is still pinned,
+which is how a restored project adopts bundles that arrived with it.
 
 Pipeline activation re-checks the digest of every bundle a pipeline depends on
 through `validate_pipeline_dependencies`, and hard-fails on any mismatch
@@ -359,7 +384,7 @@ because publication only happens on a fully validated refresh.
 
 The honest limit: steps 5, 6, and 7 touch separate durable objects. A process
 kill between them can leave files on disk that the lock and registry do not know
-about. The next refresh re-validates the whole `repo/nodes` tree and fails closed
+about. The next refresh re-validates the whole `data/nodes` tree and fails closed
 on an invalid bundle, so a partial install is detected rather than executed, but
 it is not silently repaired.
 

@@ -1855,8 +1855,11 @@ pub struct ProjectFileLayout {
     pub project_config_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
-    /// `.../repo/nodes` — installed composite/WASM node packages.
-    pub repo_nodes_dir: PathBuf,
+    /// `.../data/nodes` — installed node bundles.
+    ///
+    /// These are materialized from `zeb.lock`, not authored, so they live with
+    /// the machine's other derived state rather than in the source repository.
+    pub data_nodes_dir: PathBuf,
 }
 
 // ── Node package system ─────────────────────────────────────────────────────
@@ -2109,7 +2112,7 @@ pub struct MultiNodeEntryDefinition {
 /// Runtime-enriched entry for an installed node package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledNodePackage {
-    /// The slug (directory name under `repo/nodes/`).
+    /// The slug (directory name under `data/nodes/`).
     pub slug: String,
     /// Owner this package belongs to.
     pub owner: String,
