@@ -1361,6 +1361,70 @@ mod tests {
         );
     }
 
+    /// Install spans files, the lock, and the registry, so a killed process can
+    /// stop between them. This constructs the state each interruption would
+    /// leave and asserts the next refresh either recovers or fails closed.
+    ///
+    /// The contract calls install recoverable rather than atomic; this is what
+    /// that promise means in practice.
+    #[test]
+    fn refresh_recovers_or_fails_closed_after_an_interrupted_install() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        let nodes_dir = temp.path().join("users/superadmin/default/data/nodes");
+
+        // Interrupted after the files landed but before the lock was written.
+        // Nothing references the bundle yet, so the refresh adopts and pins it.
+        write_composite_bundle(temp.path(), "landed", "landed", "n.x.landed.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("a complete package with no lock entry is adopted");
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.landed.thing")
+                .is_some()
+        );
+        let lock = registry
+            .dependency_lock
+            .read("superadmin", "default")
+            .expect("lock");
+        assert!(
+            lock.nodes
+                .bundles
+                .values()
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "n.x.landed.thing")),
+            "the lock self-heals to describe what is on disk"
+        );
+
+        // Interrupted before definition.json was written, leaving a directory
+        // with artifacts but no manifest.
+        let partial = nodes_dir.join("partial");
+        std::fs::create_dir_all(partial.join("functions")).expect("partial dirs");
+        std::fs::write(partial.join("functions/main.zf.json"), b"{}").expect("orphan artifact");
+        let error = registry
+            .refresh_project("superadmin", "default")
+            .expect_err("a package without a manifest must fail refresh");
+        assert_eq!(error.code, "NODE_BUNDLE_MANIFEST_MISSING");
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.landed.thing")
+                .is_some(),
+            "the previously published registry stays active"
+        );
+
+        // Removing the half-written package is the recovery, and it restores a
+        // clean refresh without touching the bundle that did land.
+        std::fs::remove_dir_all(&partial).expect("clean up the partial package");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("refresh recovers once the partial package is gone");
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.landed.thing")
+                .is_some()
+        );
+    }
+
     /// Uninstall must remove only what the selected kind's package owns.
     #[test]
     fn uninstall_removes_only_the_owning_bundle() {

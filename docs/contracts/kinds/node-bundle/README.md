@@ -526,16 +526,27 @@ Registry, lock, and runtime tests in `src/platform/services/`:
 25. successful Hub install writes exact files, lock entry, and registry entries
 26. a real installed WASM bundle runs two nodes through distinct exports of one
     shared module under `zebflow-wasm-json-v1`
+27. a WASM trigger runs its handler export, so role and implementation are
+    genuinely independent at run time
+28. interfaces are written for third-party kinds only, pruned when the last
+    reference goes, and kept when their bundle disappears
+29. a carried interface resolves while its bundle is absent and yields to the
+    registry once it is installed
+30. an interrupted install recovers or fails closed: a package that landed
+    without a lock entry is adopted and pinned, a package without a manifest
+    fails the refresh with the previous registry still active, and removing the
+    partial package restores a clean refresh
 
 ### Still required before this kind is Frozen
 
-- interruption injected after each durable install step, meaning a killed
-  process rather than a returned error (files, pipelines, lock, registry
-  publication)
-- composite trigger activation and deactivation lifecycle at run time
-- WASM trigger handling at run time against a real module
+- re-verification of the live API and browser after the curated `n.*` namespace,
+  the move to `data/nodes/`, and node interfaces
+- composite trigger activation and deactivation lifecycle at run time, which
+  runs inside an API handler and is therefore verified by observing invocation
+  during activation rather than by a unit test
 - Hub browse and Add flow shown in the browser for a `node_bundle` asset
 - uninstall driven from the UI
+- the editor's three-state rendering: resolved, interface-only, unknown
 
 Local and remote Hub installs share one implementation, `install_artifact_payload`,
 which the installation tests above cover. Two-instance project transfer is proven
