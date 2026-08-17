@@ -1,0 +1,162 @@
+# Distribution
+
+Status: **Review**
+
+This document owns how a Zebflow resource leaves one instance and arrives at
+another. It is not a registered kind. It is the layer that several kinds share,
+written down once so each kind's review knows its role instead of rediscovering
+the same questions.
+
+Zebflow's premise is that a project can be created, shared, cloned, and
+installed easily. That premise only holds if distribution is one system with one
+safety model, rather than several install paths that happen to exist.
+
+## 1. What is distributable
+
+| Resource | Kind that owns its format | Channels | Direction |
+| --- | --- | --- | --- |
+| Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
+| RWE library | `LibraryManifest` | embedded in binary; Hub and Git planned | install only, today |
+| Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, install |
+| Template / page | `Pipeline`-adjacent RWE source | Hub asset (`template_bundle`) | export, publish, install |
+| Folder of project files | project source | Hub asset (`folder_bundle`) | export, publish, install |
+| Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, import, publish, clone |
+| Project files only | ZebFS objects | transfer archive (`files`) | export, import |
+| UI component | catalog entry | built-in catalog | install only |
+| Database schema | `DatabaseSchema` | schema export endpoint | export only |
+| Credential **values** | none | **none** | **never distributed** |
+
+The last row is a rule, not a gap. Credential values stay in the credential
+service. A package may declare credential *kinds* it needs; it never carries a
+secret.
+
+## 2. Channels
+
+A channel is a way bytes move. Each has a different trust story, and that is the
+reason they are listed separately rather than treated as one "install".
+
+| Channel | Source of bytes | Trust basis | Today |
+| --- | --- | --- | --- |
+| Embedded | the Zebflow binary | the release itself | libraries, official node bundles |
+| Local file | a document the user supplies | the reviewing user | node bundles |
+| Hub asset | this instance's Hub store | publisher identity + stored digest | all asset kinds |
+| Remote pack | another instance's Hub over HTTP | repository grant + artifact digest | packs, projects |
+| Transfer archive | an export file | whoever produced it | project bundle, files |
+| Git remote | a git repository | the remote's own access control | project `repo/` |
+| Git source install | a public repository | **undecided** | not implemented |
+
+**Embedded is not a channel a user invokes.** It is listed because it is how
+official content arrives, and because a resource moving from embedded to
+installed is a distribution change even though no bytes travel.
+
+## 3. One review, every channel
+
+Every channel that installs into a project runs the same package review from
+`src/platform/policy/package.rs`, producing the same `PackageSafetyReview`.
+
+A Hub package is not safer than a local file. It is published, which is a
+statement about provenance, not about behaviour. Treating them differently would
+mean the safest-looking path had the weakest checks.
+
+The review has three gates, described in full in
+[`kinds/node-bundle/README.md`](./kinds/node-bundle/README.md#security):
+
+1. the contract validator refuses malformed documents
+2. policy **violations** refuse unsafe ones, and are never overridable
+3. policy **warnings** are reported for the user to accept
+
+## 4. Identity and integrity
+
+Every distributed resource needs three things, and the kind that owns its format
+must supply all three:
+
+| Property | Question | Where it lives |
+| --- | --- | --- |
+| Identity | what is this, exactly? | package slug plus release version |
+| Integrity | are these the bytes that were published? | SHA-256 digest |
+| Provenance | where did it come from? | `DependencyLock` source and `source_id` |
+
+`DependencyLock` is frozen and already records all three for RWE libraries and
+node bundles. A new distributable resource should extend that lock rather than
+invent a parallel record.
+
+## 5. Reproducible versus carried
+
+This is the distinction that decides what an export must contain.
+
+A **reproducible** resource can be fetched again from its recorded source. The
+lock is enough; the bytes need not travel.
+
+A **carried** resource cannot. A bundle from a private repository or a local
+file is nameable and verifiable but not obtainable, so an export that omits it
+produces a project that cannot be made whole.
+
+| Source | Reproducible | Export must carry bytes |
+| --- | --- | --- |
+| `embedded` | yes, by the matching Zebflow release | no |
+| `hub` | yes, if the Hub is reachable | no |
+| `project` / local file | **no** | **yes** |
+
+Where bytes cannot travel and are not carried, the receiver must be told
+precisely what is missing. For node bundles this is what
+`repo/nodes/{kind}.json` provides: the interface survives so the graph stays
+readable and the node can be reimplemented. Other resources need an equivalent
+answer or an explicit statement that they have none.
+
+## 6. Where distributed bytes land
+
+Distribution follows the project's ownership model:
+
+| Area | Meaning | Example |
+| --- | --- | --- |
+| `repo/` | what the human declares | `zeb.lock`, pipelines, node interfaces |
+| `data/` | what the machine materialises | installed node bundles |
+| `files/` | what the application stores for users | ZebFS objects |
+
+An installed dependency is materialised from a declaration, so its bytes belong
+in `data/` while the declaration stays in `repo/`. A resource that is *authored*
+by the receiving project — a pipeline, a template, a folder of source — is the
+opposite: it lands in `repo/` and becomes that project's own work.
+
+That difference is why `node_bundle` installs under `data/` while
+`pipeline_bundle` and `template_bundle` install under `repo/`.
+
+## 7. Open decisions
+
+These belong to distribution rather than to any single kind, and are recorded
+here so each kind's review does not settle them separately.
+
+**Git source installation.** Installing a library or bundle directly from a
+public repository was deliberately deferred: the safety surface is large and the
+trust basis is unclear. `spec.hosts` and the `violations` tier are the shape of
+an answer but are declared, not enforced. Decide during the `LibraryManifest`
+review, and apply the decision to every channel at once.
+
+**Promotion into the curated namespace.** A third-party package adopted by
+Zebflow moves from `n.x.acme.thing` to `n.acme.thing`, which is a rename and
+therefore a breaking change. Promotion must be a deliberate versioned event, or
+must not happen to packages authored by others.
+
+**Reproducibility of official content.** Official node bundles and libraries are
+embedded in the binary and get no lock entry, so a project using them records
+nothing about what it depends on. Moving that project to an instance on a
+different Zebflow release changes its dependencies silently. Either official
+content becomes locked like anything else, or the lock records the runtime
+version it assumes.
+
+**Intra-project references.** `n.function.call` targets another pipeline by
+slug and nothing verifies the target resolves, so an export that omits it fails
+only at run time. Recorded against
+[`ProjectBundle`](./kinds/project-bundle/README.md).
+
+## 8. Freeze checklist for a distributable resource
+
+Before a kind that participates in distribution is frozen:
+
+- [ ] identity, integrity, and provenance are all recorded
+- [ ] every channel that can install it runs the one shared review
+- [ ] it is classified reproducible or carried, and export behaves accordingly
+- [ ] where it cannot be carried, the receiver is told exactly what is missing
+- [ ] its bytes land in the area matching what it is, declared or materialised
+- [ ] uninstall removes only what that resource owns
+- [ ] a failed install leaves the previous state usable
