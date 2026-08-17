@@ -192,6 +192,34 @@ fn command_accepts_opaque_body(prefix: &str) -> bool {
 }
 
 /// Expand short node kind alias to full qualified kind.
+/// Resolves an author-written node kind against the live catalog.
+///
+/// `expand_kind` only knows native shorthands, so anything provided by a bundle
+/// has to be resolved by existence. Namespace is deliberately not consulted: a
+/// curated `n.telegram.send` and a third-party `n.x.acme.thing` are both just
+/// kinds the catalog either has or does not.
+fn resolve_catalog_kind(raw_kind: &str, definitions: &[NodeDefinition]) -> Option<String> {
+    if let Some(kind) = expand_kind(raw_kind) {
+        return Some(kind.to_string());
+    }
+    if definitions.iter().any(|def| def.kind == raw_kind) {
+        return Some(raw_kind.to_string());
+    }
+    let prefixed = format!("n.{raw_kind}");
+    if definitions.iter().any(|def| def.kind == prefixed) {
+        return Some(prefixed);
+    }
+    None
+}
+
+/// Shape-only check used before a catalog is available.
+fn looks_like_node_kind(raw_kind: &str) -> bool {
+    expand_kind(raw_kind).is_some()
+        || raw_kind.starts_with("n.")
+        || raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
+        || raw_kind.starts_with("x.")
+}
+
 pub fn expand_kind(short: &str) -> Option<&'static str> {
     match short {
         "trigger.webhook" | "n.trigger.webhook" => Some("n.trigger.webhook"),
@@ -943,9 +971,7 @@ fn pipe_starts_node_segment(body: &str, pipe_pos: usize) -> bool {
         return false;
     };
     let kind = raw_kind.trim_matches(|ch: char| ch == ';' || ch == ',' || ch == ')');
-    expand_kind(kind).is_some()
-        || kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
-        || kind.starts_with("x.")
+    looks_like_node_kind(kind)
 }
 
 /// Build pipeline from graph notation: `[label] node_kind --flags...\n[from] -> [to]`
@@ -1059,9 +1085,7 @@ fn is_graph_node_statement(line: &str) -> bool {
     let Some(raw_kind) = tokens.first().map(String::as_str) else {
         return false;
     };
-    expand_kind(raw_kind).is_some()
-        || raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
-        || raw_kind.starts_with("x.")
+    looks_like_node_kind(raw_kind)
 }
 
 #[cfg(test)]
@@ -1301,6 +1325,48 @@ return { values };
         assert!(source.contains("return { values };"));
     }
 
+    /// Curated composites live in `n.*`, which no namespace rule can recognise,
+    /// so the parser has to resolve kinds against the catalog it is given.
+    #[test]
+    fn curated_and_third_party_kinds_both_resolve_from_the_catalog() {
+        let curated = NodeDefinition {
+            kind: "n.telegram.send".to_string(),
+            title: "Telegram Send".to_string(),
+            description: "Send a message.".to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string()],
+            ..Default::default()
+        };
+        let third_party = NodeDefinition {
+            kind: "n.x.acme.thing".to_string(),
+            title: "Acme Thing".to_string(),
+            description: "Do the thing.".to_string(),
+            input_pins: vec!["in".to_string()],
+            output_pins: vec!["out".to_string()],
+            ..Default::default()
+        };
+        let definitions = vec![curated, third_party];
+
+        assert_eq!(
+            super::resolve_catalog_kind("n.telegram.send", &definitions),
+            Some("n.telegram.send".to_string())
+        );
+        assert_eq!(
+            super::resolve_catalog_kind("telegram.send", &definitions),
+            Some("n.telegram.send".to_string()),
+            "the n. prefix stays optional for authors"
+        );
+        assert_eq!(
+            super::resolve_catalog_kind("n.x.acme.thing", &definitions),
+            Some("n.x.acme.thing".to_string())
+        );
+        assert_eq!(
+            super::resolve_catalog_kind("n.telegramm.send", &definitions),
+            None,
+            "a kind the catalog does not have is still rejected"
+        );
+    }
+
     #[test]
     fn registry_definitions_parse_composite_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
@@ -1493,15 +1559,10 @@ fn parse_graph_node(
     }
     let raw_kind = &tokens[0];
     let custom_kind: String;
-    let full_kind = match expand_kind(raw_kind) {
-        Some(k) => k,
-        None if raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
-            custom_kind = raw_kind.to_string();
-            &custom_kind
-        }
-        None if raw_kind.starts_with("x.") => {
-            custom_kind = format!("n.{raw_kind}");
-            &custom_kind
+    let full_kind: &str = match resolve_catalog_kind(raw_kind, definitions) {
+        Some(kind) => {
+            custom_kind = kind;
+            custom_kind.as_str()
         }
         None => return Err(format!("Unknown node kind: '{raw_kind}'")),
     };
@@ -1972,15 +2033,10 @@ fn build_pipe_mode(
 
         let raw_kind = &seg_tokens[0];
         let custom_kind: String;
-        let full_kind = match expand_kind(raw_kind) {
-            Some(k) => k,
-            None if raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
-                custom_kind = raw_kind.to_string();
-                &custom_kind
-            }
-            None if raw_kind.starts_with("x.") => {
-                custom_kind = format!("n.{raw_kind}");
-                &custom_kind
+        let full_kind: &str = match resolve_catalog_kind(raw_kind, definitions) {
+            Some(kind) => {
+                custom_kind = kind;
+                custom_kind.as_str()
             }
             None => return Err(format!("Unknown node kind: '{raw_kind}'")),
         };
