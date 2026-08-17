@@ -4972,10 +4972,7 @@ mod tests {
         // Rename the whole package identity: a kind is owned by its package, so
         // the slug, metadata name, and kind namespace must move together.
         let definition = include_str!("../../../composites/openai-embedding/definition.json")
-            .replace(
-                "n.x.openai_embedding.embed",
-                "n.x.openai_embedding_test.embed",
-            )
+            .replace("n.ai.embedding", "n.x.openai_embedding_test.embed")
             .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
         let function = include_str!("../../../composites/openai-embedding/functions/embed.zf.json");
         // The bundle declares an icon, so the install must ship it. A declared

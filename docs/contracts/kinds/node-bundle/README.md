@@ -188,25 +188,42 @@ may not share a slug.
 
 ### Node Kind Ownership
 
-A node kind is `n.x.{package_token}.{rest}` where `package_token` is
-`spec.package` with every hyphen replaced by an underscore.
+The namespace a bundle may use depends on **where it is consumed**, not on
+anything the document declares. One authoring contract, two consumption paths.
+
+| Scope | Consumed at | Namespace | Guaranteed present |
+| --- | --- | --- | --- |
+| `Platform` | build time, shipped in the binary | `n.*` | yes |
+| `Project` | install time, into one project | `n.x.{package_token}.*` | no |
+
+Zebflow curates `n.*` and guarantees uniqueness there, which is why a platform
+bundle needs no package scoping. Everyone else gets `n.x.{package_token}.*`,
+where `package_token` is `spec.package` with every hyphen replaced by an
+underscore, because kind segments allow underscores but not hyphens.
 
 ```text
+platform bundle             → n.telegram.send
 package "ml"                → n.x.ml.gb.train
 package "openai-embedding"  → n.x.openai_embedding.embed
 ```
 
-`n.x.` is reserved for installed nodes. A native node may not use it, and an
-installed node may not use any other prefix. Kind ownership is therefore
-structural: a kind names the package that provides it, so a collision between
-two installed bundles is impossible within a project, and uninstall can prove
-which kinds a bundle owns.
+For a project-scope bundle, kind ownership is structural: the kind names the
+package that provides it, so two installed bundles can never claim the same
+kind, and uninstall can prove which kinds a bundle owns.
+
+This rule is enforced by `validate_bundle_namespace(spec, scope)` rather than by
+`NodeBundleContract::validate`, because the same bytes are legal in one scope
+and illegal in the other. A curated bundle may not use `n.x.`, and an installed
+bundle may not claim a curated name.
 
 The remaining segments are free. `NodeDefinition` still governs kind syntax:
 lowercase dot-separated segments of ASCII letters, digits, and underscores.
 
-Implementation type is not encoded in the kind. A node may change between
-composite and WASM without changing its kind, so saved pipelines keep working.
+Neither implementation nor availability is encoded in the kind. A node may move
+between composite and WASM without changing its kind, and whether a node is
+currently installed is answered by the registry and `zeb.lock`, not by its name.
+Promoting a third-party package into the curated namespace is therefore a
+rename, and must be a deliberate versioned event rather than a quiet blessing.
 
 ### Run Binding
 

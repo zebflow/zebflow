@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use crate::contracts::decode_contract;
 use crate::contracts::kinds::{
-    DependencyLockNodeBundleSpec, DependencyLockSource, MAX_NODE_BUNDLE_FILES, NodeBundleContract,
-    decode_pipeline_graph, normalize_node_bundle, validate_node_definition_spec,
+    BundleScope, DependencyLockNodeBundleSpec, DependencyLockSource, MAX_NODE_BUNDLE_FILES,
+    NodeBundleContract, decode_pipeline_graph, normalize_node_bundle, validate_bundle_namespace,
+    validate_node_definition_spec,
 };
 use crate::infra::io::durable::directory_tree_sha256;
 use crate::pipeline::{NodeDefinition, PipelineGraph};
@@ -88,6 +89,11 @@ impl NodeRegistryService {
                     panic!("embedded node bundle '{slug}' is invalid: {error}")
                 });
             let pkg_def = document.spec;
+            // Bundles baked into the binary are curated by Zebflow, so their
+            // kinds live in `n.*` rather than the third-party namespace.
+            validate_bundle_namespace(&pkg_def, BundleScope::Platform).unwrap_or_else(|error| {
+                panic!("embedded node bundle '{slug}' has an invalid namespace: {error}")
+            });
             let manifests = normalize_node_bundle(&pkg_def)
                 .expect("decoded embedded node bundle must normalize");
             for manifest in manifests {
@@ -215,6 +221,9 @@ impl NodeRegistryService {
 
                 let (package, manifests) =
                     parse_multi_node_definition(&definition_path, &official_kinds)?;
+                validate_bundle_namespace(&package, BundleScope::Project).map_err(|error| {
+                    PlatformError::new("NODE_BUNDLE_NAMESPACE", error.to_string())
+                })?;
                 verify_bundle_artifacts(&path, &package)?;
                 let bundle =
                     project_bundle_lock_from_multi_node(nodes_dir, &path, &definition_path)?;
@@ -1179,7 +1188,7 @@ mod tests {
         let error = registry
             .refresh_project("superadmin", "default")
             .expect_err("a foreign kind must fail refresh");
-        assert_eq!(error.code, "NODE_MANIFEST_PARSE");
+        assert_eq!(error.code, "NODE_BUNDLE_NAMESPACE");
         // The previous valid registry stays active.
         assert!(
             registry

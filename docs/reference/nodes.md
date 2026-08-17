@@ -26,8 +26,10 @@ Use the embedded help topic `pipeline/nodes` for the full catalog. Use
 - `n.function.*` calls a declared function pipeline.
 - `n.script` runs a sandboxed script transformation.
 - `n.crypto` provides cryptographic helper operations.
-- `n.x.*` identifies installed nodes. The segment after `n.x.` is the package
-  that owns the kind, and the implementation is not encoded in the name.
+- `n.*` is Zebflow's curated namespace: native Rust nodes and official bundles
+  shipped with the platform.
+- `n.x.*` identifies third-party nodes. The segment after `n.x.` is the package
+  that owns the kind. Neither implementation nor availability is in the name.
 
 Every catalog item must include its kind, title, description, settings schema,
 input and output schemas, pins, DSL fields, UI fields, and tool use metadata.

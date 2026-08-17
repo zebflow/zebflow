@@ -53,7 +53,7 @@
     "modules": {},
     "nodes": [
       {
-        "kind": "n.x.telegram.trigger",
+        "kind": "n.telegram.trigger",
         "title": "Telegram Trigger",
         "description": "Receive Telegram bot updates via webhook.",
         "icon": "icons/trigger.svg",
@@ -131,7 +131,7 @@
         }
       },
       {
-        "kind": "n.x.telegram.send",
+        "kind": "n.telegram.send",
         "title": "Telegram Send Message",
         "description": "Send a text message via Telegram Bot API.",
         "icon": "icons/send.svg",
@@ -183,7 +183,7 @@
         }
       },
       {
-        "kind": "n.x.telegram.send.photo",
+        "kind": "n.telegram.send.photo",
         "title": "Telegram Send Photo",
         "description": "Send a photo via Telegram Bot API. Accepts a URL or file_id.",
         "icon": "icons/send-photo.svg",
@@ -235,7 +235,7 @@
         }
       },
       {
-        "kind": "n.x.telegram.send.document",
+        "kind": "n.telegram.send.document",
         "title": "Telegram Send Document",
         "description": "Send a document/file via Telegram Bot API. Accepts a URL or file_id.",
         "icon": "icons/send-document.svg",
@@ -287,7 +287,7 @@
         }
       },
       {
-        "kind": "n.x.telegram.edit",
+        "kind": "n.telegram.edit",
         "title": "Telegram Edit Message",
         "description": "Edit an existing text message via Telegram Bot API.",
         "icon": "icons/edit.svg",

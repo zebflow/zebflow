@@ -34,10 +34,64 @@ pub const MAX_NODE_BUNDLE_FILES: usize = 4096;
 /// WASM ABI supported by the stable v1 node contract.
 pub const WASM_JSON_ABI_V1: &str = "zebflow-wasm-json-v1";
 
-/// Reserved kind prefix for every installed node.
+/// Reserved kind prefix for third-party nodes.
 ///
-/// Native nodes may not use it, and an installed node may not use anything else.
+/// Zebflow curates `n.*` and guarantees uniqueness there. Everyone else gets
+/// `n.x.{package}.*`, which is collision-proof by construction because the kind
+/// embeds the package that provides it.
 pub const INSTALLED_NODE_KIND_PREFIX: &str = "n.x.";
+
+/// Where a bundle is consumed, which decides the namespace its kinds may use.
+///
+/// One authoring contract, two consumption paths. A bundle document is identical
+/// either way; only the namespace policy differs, because curation is a property
+/// of who ships a bundle rather than of the document itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleScope {
+    /// Consumed at build time and shipped inside the binary. Zebflow curates
+    /// these names, so they live in `n.*` and are guaranteed present.
+    Platform,
+    /// Installed into one project. These names are package-scoped under `n.x.`
+    /// so no two bundles can ever claim the same kind.
+    Project,
+}
+
+/// Validates that a bundle's node kinds match the namespace its scope allows.
+///
+/// This is deliberately outside [`NodeBundleContract::validate`]: the document
+/// does not declare its own scope, and the same bytes are legal in one scope and
+/// illegal in the other.
+pub fn validate_bundle_namespace(
+    spec: &MultiNodePackageDefinition,
+    scope: BundleScope,
+) -> Result<(), ContractError> {
+    match scope {
+        BundleScope::Platform => {
+            for node in &spec.nodes {
+                if node.kind.starts_with(INSTALLED_NODE_KIND_PREFIX) {
+                    return Err(ContractError::invalid(format!(
+                        "platform node kind '{}' must not use the third-party \
+                         '{INSTALLED_NODE_KIND_PREFIX}' namespace",
+                        node.kind
+                    )));
+                }
+            }
+        }
+        BundleScope::Project => {
+            let namespace = package_kind_namespace(&spec.package);
+            for node in &spec.nodes {
+                if !node.kind.starts_with(&namespace) || node.kind.len() == namespace.len() {
+                    return Err(ContractError::invalid(format!(
+                        "installed node kind '{}' must start with '{namespace}' owned by \
+                         package '{}'",
+                        node.kind, spec.package
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Trigger roles a bundle may declare.
 pub const BUNDLE_TRIGGER_TYPES: &[&str] = &["webhook", "ws", "ws_client", "cron"];
@@ -182,7 +236,6 @@ impl PlatformContract for NodeBundleContract {
             ));
         }
 
-        let namespace = package_kind_namespace(&spec.package);
         let manifests = normalize_node_bundle(spec)?;
         let mut kinds = HashSet::new();
         let mut used_functions = HashSet::new();
@@ -190,12 +243,6 @@ impl PlatformContract for NodeBundleContract {
 
         for (entry, manifest) in spec.nodes.iter().zip(&manifests) {
             let kind = &manifest.definition.kind;
-            if !kind.starts_with(&namespace) || kind.len() == namespace.len() {
-                return Err(ContractError::invalid(format!(
-                    "node kind '{kind}' must start with '{namespace}' owned by package '{}'",
-                    spec.package
-                )));
-            }
             if !kinds.insert(kind.clone()) {
                 return Err(ContractError::invalid(format!(
                     "spec.nodes contains duplicate node kind '{kind}'"
@@ -480,19 +527,8 @@ pub fn validate_normalized_node_definition(
 pub fn validate_node_definition_spec(spec: &NodePackageManifest) -> Result<(), ContractError> {
     validate_release_version(&spec.version)?;
     validate_normalized_node_definition(&spec.definition)?;
-    validate_installed_kind(&spec.definition.kind)?;
     validate_credentials(spec)?;
     validate_role_and_run(spec)
-}
-
-/// Every installed node lives under the reserved `n.x.` namespace.
-fn validate_installed_kind(kind: &str) -> Result<(), ContractError> {
-    if !kind.starts_with(INSTALLED_NODE_KIND_PREFIX) {
-        return Err(ContractError::invalid(format!(
-            "installed node kind '{kind}' must start with '{INSTALLED_NODE_KIND_PREFIX}'"
-        )));
-    }
-    Ok(())
 }
 
 /// Validates the node's role, its run binding, and every artifact reference.
@@ -940,22 +976,41 @@ mod tests {
         );
     }
 
+    /// The same document is legal in one scope and illegal in the other, which
+    /// is why the namespace rule cannot live inside the contract validator.
     #[test]
-    fn rejects_kind_outside_the_package_namespace() {
-        for kind in [
-            "n.x.other.load",
-            "n.c.composite.load",
-            "n.wasm.composite.load",
-            "n.x.composite",
-        ] {
+    fn namespace_rules_follow_the_consumption_scope() {
+        let project = bundle(V1_COMPOSITE).spec;
+        validate_bundle_namespace(&project, BundleScope::Project)
+            .expect("n.x.composite.* is owned by package 'composite'");
+        assert!(
+            validate_bundle_namespace(&project, BundleScope::Platform).is_err(),
+            "a curated bundle may not use the third-party namespace"
+        );
+
+        for kind in ["n.x.other.load", "n.composite.load", "n.x.composite"] {
+            let spec = bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["kind"] = serde_json::json!(kind);
+            }))
+            .spec;
             assert!(
-                decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
-                    value["spec"]["nodes"][0]["kind"] = serde_json::json!(kind);
-                }))
-                .is_err(),
-                "kind '{kind}' must be rejected"
+                validate_bundle_namespace(&spec, BundleScope::Project).is_err(),
+                "kind '{kind}' must be rejected in project scope"
             );
         }
+    }
+
+    #[test]
+    fn platform_scope_accepts_curated_kinds() {
+        let spec = bundle(&mutate(V1_COMPOSITE, |value| {
+            value["spec"]["nodes"][0]["kind"] = serde_json::json!("n.telegram.send");
+        }))
+        .spec;
+        validate_bundle_namespace(&spec, BundleScope::Platform).expect("curated kind is accepted");
+        assert!(
+            validate_bundle_namespace(&spec, BundleScope::Project).is_err(),
+            "an installed bundle may not claim a curated name"
+        );
     }
 
     #[test]
