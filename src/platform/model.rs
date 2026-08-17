@@ -1855,6 +1855,11 @@ pub struct ProjectFileLayout {
     pub project_config_file: PathBuf,
     /// `.../data/runtime/agent_docs` (AGENTS.md, SOUL.md, MEMORY.md — agent context)
     pub agent_docs_dir: PathBuf,
+    /// `.../repo/nodes` — interfaces of the third-party nodes this project uses.
+    ///
+    /// These are `NodeDefinition` documents, not bundles. They let a graph stay
+    /// readable and reimplementable on an instance where the bundle is absent.
+    pub repo_node_interfaces_dir: PathBuf,
     /// `.../data/nodes` — installed node bundles.
     ///
     /// These are materialized from `zeb.lock`, not authored, so they live with

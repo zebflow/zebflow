@@ -310,7 +310,7 @@ impl DependencyLockService {
                 })
                 .map(|(key, locked)| (key.clone(), locked.clone()));
 
-            let Some((key, locked)) = provider else {
+            let Some((_key, locked)) = provider else {
                 value.nodes.bundles.insert(name, entry);
                 changed = true;
                 continue;
@@ -684,7 +684,6 @@ impl DependencyLockService {
                 .map(|definition| definition.kind),
         );
 
-        let repo = self.repo_path(owner, project);
         let node_root = self.node_root(owner, project);
         let mut required = graph
             .nodes

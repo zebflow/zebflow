@@ -6,17 +6,18 @@
 //! Also loads official composite nodes embedded in the binary via
 //! `PLATFORM_COMPOSITE_NODE_ASSETS`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::contracts::decode_contract;
+use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::contracts::kinds::{
     BundleScope, DependencyLockNodeBundleSpec, DependencyLockSource, MAX_NODE_BUNDLE_FILES,
     NodeBundleContract, decode_pipeline_graph, normalize_node_bundle, validate_bundle_namespace,
     validate_node_definition_spec,
 };
-use crate::infra::io::durable::directory_tree_sha256;
+use crate::contracts::{ContractMetadata, decode_contract};
+use crate::infra::io::durable::{atomic_write, directory_tree_sha256};
 use crate::pipeline::{NodeDefinition, PipelineGraph};
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
@@ -1255,6 +1256,72 @@ mod tests {
         );
     }
 
+    /// The interface is what makes a graph survive a bundle it cannot obtain.
+    #[test]
+    fn third_party_interfaces_are_written_pruned_and_kept_when_the_bundle_goes() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        write_composite_bundle(temp.path(), "acme", "acme", "n.x.acme.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("refresh");
+
+        let project = temp.path().join("users/superadmin/default");
+        let pipelines = project.join("repo/pipelines");
+        std::fs::create_dir_all(&pipelines).expect("pipelines dir");
+        // Build from the golden Pipeline so the graph really decodes; the scan
+        // skips undecodable files, which would make this pass vacuously.
+        let mut graph: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/contracts/pipeline/v1-complete.json"
+        ))
+        .expect("golden pipeline");
+        let last = graph["spec"]["nodes"]
+            .as_array_mut()
+            .expect("nodes")
+            .last_mut()
+            .expect("at least one node");
+        last["kind"] = serde_json::json!("n.x.acme.thing");
+        std::fs::write(
+            pipelines.join("uses-acme.zf.json"),
+            serde_json::to_vec_pretty(&graph).expect("graph"),
+        )
+        .expect("write pipeline");
+
+        registry
+            .sync_project_node_interfaces("superadmin", "default")
+            .expect("sync");
+
+        let interface = project.join("repo/nodes/n.x.acme.thing.json");
+        assert!(interface.is_file(), "the interface is materialized");
+        let document = crate::contracts::kinds::decode_node_definition(
+            &std::fs::read(&interface).expect("read interface"),
+        )
+        .expect("interface is a valid NodeDefinition");
+        assert_eq!(document.spec.kind, "n.x.acme.thing");
+        assert_eq!(document.spec.output_pins, vec!["out".to_string()]);
+
+        // Curated nodes carry no portability risk, so they get no interface.
+        assert!(!project.join("repo/nodes/n.trigger.manual.json").exists());
+
+        // Losing the bundle must not lose the interface: it is now the only
+        // description of what the node was.
+        std::fs::remove_dir_all(project.join("data/nodes/acme")).expect("remove bundle");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("refresh without the bundle");
+        registry
+            .sync_project_node_interfaces("superadmin", "default")
+            .expect("sync without the bundle");
+        assert!(interface.is_file(), "the interface survives the bundle");
+
+        // Dropping the reference prunes it.
+        std::fs::remove_file(pipelines.join("uses-acme.zf.json")).expect("remove pipeline");
+        registry
+            .sync_project_node_interfaces("superadmin", "default")
+            .expect("sync after removing the reference");
+        assert!(!interface.exists(), "an unreferenced interface is pruned");
+    }
+
     /// Uninstall must remove only what the selected kind's package owns.
     #[test]
     fn uninstall_removes_only_the_owning_bundle() {
@@ -1326,4 +1393,138 @@ mod tests {
             .expect("declared icon");
         assert_eq!(icon, b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     }
+}
+
+// ── Third-party node interfaces ──────────────────────────────────────────────
+
+/// Collects every third-party node kind a project's pipelines reference.
+fn collect_referenced_third_party_kinds(
+    current: &Path,
+    kinds: &mut BTreeSet<String>,
+) -> Result<(), PlatformError> {
+    let entries = match std::fs::read_dir(current) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(PlatformError::new(
+                "NODE_INTERFACE_SCAN",
+                format!("failed reading {}: {error}", current.display()),
+            ));
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            PlatformError::new(
+                "NODE_INTERFACE_SCAN",
+                format!("failed reading entry in {}: {error}", current.display()),
+            )
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_referenced_third_party_kinds(&path, kinds)?;
+            continue;
+        }
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        let Ok(source) = std::fs::read(&path) else {
+            continue;
+        };
+        // A pipeline that no longer decodes is the pipeline contract's problem,
+        // not this scan's, so an unreadable file is skipped rather than fatal.
+        let Ok(document) = decode_pipeline_graph(&source) else {
+            continue;
+        };
+        for node in document.spec.nodes {
+            if node.kind.starts_with(INSTALLED_NODE_KIND_PREFIX) {
+                kinds.insert(node.kind);
+            }
+        }
+    }
+    Ok(())
+}
+
+impl NodeRegistryService {
+    /// Materializes the interface of every third-party node the project uses.
+    ///
+    /// `zeb.lock` says which bundle a project needs and how to verify it, but a
+    /// private or local source cannot always be re-obtained. Writing the frozen
+    /// `NodeDefinition` into `repo/nodes/` means the graph still states what the
+    /// node's pins, fields, and configuration are, so it stays readable and can
+    /// be reimplemented instead of failing opaquely.
+    ///
+    /// Curated `n.*` nodes are omitted: the platform guarantees them, so they
+    /// carry no portability risk.
+    pub fn sync_project_node_interfaces(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<(), PlatformError> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let layout = self.projects.project_layout(&owner, &project)?;
+
+        let mut referenced = BTreeSet::new();
+        collect_referenced_third_party_kinds(&layout.repo_pipelines_dir, &mut referenced)?;
+
+        let dir = &layout.repo_node_interfaces_dir;
+        let mut expected = HashSet::new();
+        for kind in &referenced {
+            let Some(definition) = self.definition_for_kind(&owner, &project, kind) else {
+                // The bundle is not installed here, so there is nothing to
+                // write. Any interface already on disk is left alone; it is the
+                // only remaining description of the node.
+                expected.insert(interface_file_name(kind));
+                continue;
+            };
+            let bytes = crate::contracts::kinds::encode_node_definition(
+                ContractMetadata::named(kind),
+                definition,
+            )
+            .map_err(|error| {
+                PlatformError::new(
+                    "NODE_INTERFACE_ENCODE",
+                    format!("failed encoding interface for '{kind}': {error}"),
+                )
+            })?;
+            let file_name = interface_file_name(kind);
+            std::fs::create_dir_all(dir).map_err(|error| {
+                PlatformError::new(
+                    "NODE_INTERFACE_WRITE",
+                    format!("failed creating {}: {error}", dir.display()),
+                )
+            })?;
+            atomic_write(&dir.join(&file_name), &bytes)?;
+            expected.insert(file_name);
+        }
+
+        // Drop interfaces for nodes the project no longer uses.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(INSTALLED_NODE_KIND_PREFIX)
+                    && name.ends_with(".json")
+                    && !expected.contains(&name)
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns the definition for one kind from any tier the project can see.
+    fn definition_for_kind(
+        &self,
+        owner: &str,
+        project: &str,
+        kind: &str,
+    ) -> Option<NodeDefinition> {
+        self.get_manifest(owner, project, kind)
+            .map(|manifest| manifest.definition)
+    }
+}
+
+fn interface_file_name(kind: &str) -> String {
+    format!("{kind}.json")
 }

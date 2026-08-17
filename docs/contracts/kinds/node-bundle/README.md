@@ -332,6 +332,49 @@ declared icon path must exist inside the package.
 
 Unknown fields are rejected in the envelope and every typed object.
 
+## Node Interfaces In `repo/`
+
+`zeb.lock` identifies a bundle and lets Zebflow verify it, but identifying is
+not the same as obtaining. A bundle from a private repository or a local archive
+can be named and verified and still be unavailable on another instance. That is
+the failure every plugin ecosystem hits: a shared graph that references modules
+the receiver cannot get, and no way to tell what they were.
+
+So a project also carries the **interface** of every third-party node it uses:
+
+```text
+repo/
+  zeb.lock                        which bundle, which digest, which source
+  pipelines/blog.zf.json          references n.x.acme.thing
+  nodes/
+    n.x.acme.thing.json           a frozen NodeDefinition document
+
+data/
+  nodes/acme/                     the materialized bundle
+```
+
+`NodeDefinition` is implementation-neutral by design, which is exactly what lets
+it travel without its implementation. With it present, a graph still states the
+node's pins, fields, and configuration, so the editor can render it, activation
+can validate config against it, and someone can reimplement the node against a
+known contract instead of guessing.
+
+Rules:
+
+- Only `n.x.*` kinds get an interface. Curated `n.*` nodes are guaranteed by the
+  platform and carry no portability risk.
+- Only kinds a project's pipelines actually reference. `repo/` states this
+  project's dependencies, not a mirror of everything installed.
+- The bundle stays authoritative. The interface is a copy pinned when written,
+  so comparing them detects a bundle changing its interface under a project,
+  which is a breaking change and should be visible as a source diff.
+- An interface is **not** removed when its bundle disappears. At that moment it
+  is the only remaining description of the node.
+- An interface **is** removed when the last pipeline reference goes.
+
+`NodeRegistryService::sync_project_node_interfaces` owns this, and runs after a
+pipeline is saved and after a bundle is installed.
+
 ## Integrity
 
 `zeb.lock` records one `integrity` value per bundle: a SHA-256 over the package

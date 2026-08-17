@@ -1964,6 +1964,10 @@ impl HubService {
                         source_id,
                         version,
                     )
+                })
+                .and_then(|_| {
+                    self.node_registry
+                        .sync_project_node_interfaces(&target_owner, &target_project)
                 });
             if let Err(error) = dependency_result {
                 return Err(self.recover_failed_install(

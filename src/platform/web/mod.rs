@@ -10754,7 +10754,21 @@ async fn api_upsert_pipeline_definition(
         &trigger_kind,
         &req.source,
     ) {
-        Ok(meta) => Json(json!({"ok": true, "meta": meta})).into_response(),
+        Ok(meta) => {
+            // The set of third-party nodes this project depends on may have
+            // changed, so refresh the interfaces it carries in repo/nodes.
+            if let Err(err) = state
+                .platform
+                .node_registry
+                .sync_project_node_interfaces(&owner, &project)
+            {
+                eprintln!(
+                    "node_interfaces: sync failed for {owner}/{project}: {}",
+                    err.message
+                );
+            }
+            Json(json!({"ok": true, "meta": meta})).into_response()
+        }
         Err(err) => internal_error(err),
     }
 }
