@@ -212,6 +212,12 @@ pub struct HubInstallReview {
     pub seed_data: Vec<String>,
     pub project_initialization: serde_json::Value,
     pub warnings: Vec<String>,
+    /// Findings that make this package uninstallable, whoever approves it.
+    #[serde(default)]
+    pub violations: Vec<String>,
+    /// True when nothing blocks installation. False means the Add action must
+    /// be refused rather than confirmed.
+    pub installable: bool,
     pub risk_level: String,
 }
 
@@ -1869,6 +1875,79 @@ impl HubService {
         )
     }
 
+    /// Reviews a node bundle supplied directly, without publishing it first.
+    ///
+    /// A bundle authored locally or received as a file has no Hub entry, so
+    /// there was previously no way in at all. It runs the identical review a
+    /// published package runs: a Hub package is not safer, only published.
+    pub fn review_local_node_bundle(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        artifact: Value,
+    ) -> Result<HubInstallReview, PlatformError> {
+        let target_owner = slug_segment(target_owner);
+        let target_project = slug_segment(target_project);
+        let payload = parse_local_node_bundle_artifact(artifact, "NODE_BUNDLE_INSTALL_REVIEW")?;
+        self.review_artifact_payload(
+            &target_owner,
+            &target_project,
+            package_id,
+            version,
+            target_folder,
+            &payload,
+        )
+    }
+
+    /// Installs a node bundle supplied directly.
+    ///
+    /// Refuses on any policy violation before touching disk, regardless of what
+    /// the caller approved: a violation is not a warning the user can accept.
+    pub fn install_local_node_bundle(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        artifact: Value,
+    ) -> Result<HubInstallResult, PlatformError> {
+        let target_owner = slug_segment(target_owner);
+        let target_project = slug_segment(target_project);
+        let payload = parse_local_node_bundle_artifact(artifact, "NODE_BUNDLE_INSTALL")?;
+
+        let review = self.review_artifact_payload(
+            &target_owner,
+            &target_project,
+            package_id,
+            version,
+            target_folder,
+            &payload,
+        )?;
+        if !review.violations.is_empty() {
+            return Err(PlatformError::new(
+                "NODE_BUNDLE_INSTALL_REFUSED",
+                format!(
+                    "package cannot be installed: {}",
+                    review.violations.join("; ")
+                ),
+            ));
+        }
+
+        self.install_artifact_payload(
+            target_owner,
+            target_project,
+            package_id,
+            version,
+            target_folder,
+            &format!("local/{package_id}"),
+            payload,
+        )
+    }
+
     fn install_artifact_payload(
         &self,
         target_owner: String,
@@ -2126,6 +2205,8 @@ impl HubService {
             seed_data: policy.seed_data,
             project_initialization: serde_json::to_value(&payload.project_initialization)
                 .unwrap_or_else(|_| Value::Null),
+            installable: policy.violations.is_empty(),
+            violations: policy.violations,
             warnings: policy.warnings,
             risk_level: policy.risk_level,
         })
@@ -4211,6 +4292,27 @@ fn parse_hub_artifact_bytes(
         .map_err(|err| PlatformError::new(error_code, err.to_string()))
 }
 
+/// Parses a locally supplied bundle and refuses anything that is not one.
+///
+/// The transport is the same `HubPackage` envelope a published artifact uses,
+/// so this reuses that contract rather than inventing a second package format.
+fn parse_local_node_bundle_artifact(
+    value: Value,
+    error_code: &'static str,
+) -> Result<HubArtifact, PlatformError> {
+    let payload = parse_hub_artifact_value(value, error_code)?;
+    if payload.asset_kind != HUB_ASSET_KIND_NODE_BUNDLE {
+        return Err(PlatformError::new(
+            error_code,
+            format!(
+                "this endpoint installs node bundles; the package declares asset_kind '{}'",
+                payload.asset_kind
+            ),
+        ));
+    }
+    Ok(payload)
+}
+
 fn parse_hub_artifact_value(
     value: Value,
     error_code: &'static str,
@@ -4763,6 +4865,129 @@ mod tests {
                 "dsl_flags": []
             }
         })
+    }
+
+    /// A bundle authored locally has no Hub entry, so before this there was no
+    /// way to install it at all. It runs the same review a published package
+    /// runs.
+    #[test]
+    fn a_local_bundle_installs_through_the_same_review_and_installer() {
+        use base64::Engine as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: root.path().to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let owner = "superadmin";
+        let project = "default";
+
+        let module =
+            include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
+        let definition = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "NodeBundle",
+            "metadata": { "name": "localpkg", "version": "1.0.0" },
+            "spec": {
+                "package": "localpkg",
+                "version": "1.0.0",
+                "title": "Local Package",
+                "description": "Installed from a file rather than from a Hub.",
+                "icon": "icon.svg",
+                "credentials": [],
+                "hosts": [],
+                "functions": {},
+                "modules": {
+                    "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
+                },
+                "nodes": [wasm_node_entry("n.x.localpkg.train", "Train", "e2e_train")]
+            }
+        })
+        .to_string();
+        let icon = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let artifact = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "HubPackage",
+            "metadata": { "name": "localpkg", "version": "1.0.0" },
+            "spec": {
+                "asset_kind": "node_bundle",
+                "title": "Local Package",
+                "description": "Installed from a file rather than from a Hub.",
+                "files": [
+                    { "rel_path": "definition.json", "kind": "node_definition",
+                      "size_bytes": definition.len(), "reason": "local", "content": definition },
+                    { "rel_path": "icon.svg", "kind": "asset",
+                      "size_bytes": icon.len(), "reason": "local", "content": icon },
+                    { "rel_path": "wasm/core.wasm", "kind": "asset",
+                      "size_bytes": module.len(), "reason": "local", "encoding": "base64",
+                      "content": base64::engine::general_purpose::STANDARD.encode(module) }
+                ]
+            }
+        });
+
+        let review = platform
+            .hub
+            .review_local_node_bundle(owner, project, "localpkg", "1.0.0", "", artifact.clone())
+            .expect("review succeeds");
+        assert_eq!(review.asset_kind, "node_bundle");
+        assert!(review.installable, "nothing blocks this package");
+        assert!(review.violations.is_empty());
+        assert!(
+            review
+                .files_added
+                .iter()
+                .any(|f| f.ends_with("definition.json")),
+            "the review reports what would be written"
+        );
+
+        platform
+            .hub
+            .install_local_node_bundle(owner, project, "localpkg", "1.0.0", "", artifact)
+            .expect("install succeeds");
+
+        let installed = platform
+            .node_registry
+            .get_by_kind(owner, project, "n.x.localpkg.train")
+            .expect("the node is installed");
+        assert_eq!(
+            installed.manifest.source,
+            crate::platform::model::NodePackageSource::Wasm
+        );
+    }
+
+    /// This endpoint installs node bundles, so anything else is refused rather
+    /// than quietly installed through a node-shaped door.
+    #[test]
+    fn a_local_install_refuses_a_package_that_is_not_a_node_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: root.path().to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let artifact = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "HubPackage",
+            "metadata": { "name": "notabundle", "version": "1.0.0" },
+            "spec": {
+                "asset_kind": "pipeline",
+                "title": "Not A Bundle",
+                "description": "A pipeline package offered to the node installer.",
+                "files": []
+            }
+        });
+        let error = platform
+            .hub
+            .install_local_node_bundle("superadmin", "default", "notabundle", "1.0.0", "", artifact)
+            .expect_err("a non-bundle must be refused");
+        assert_eq!(error.code, "NODE_BUNDLE_INSTALL");
     }
 
     /// A trigger's inbound handler is its run binding, so a WASM trigger runs

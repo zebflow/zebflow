@@ -476,6 +476,14 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             get(api_get_node_definition),
         )
         .route(
+            "/api/projects/{owner}/{project}/nodes/install/review",
+            post(api_review_local_node_bundle),
+        )
+        .route(
+            "/api/projects/{owner}/{project}/nodes/install",
+            post(api_install_local_node_bundle),
+        )
+        .route(
             "/api/projects/{owner}/{project}/nodes/uninstall/{kind}",
             delete(api_uninstall_node_package),
         )
@@ -8268,6 +8276,83 @@ async fn api_get_node_definition(
 }
 
 // ── Node package install/uninstall/icon ─────────────────────────────────────
+
+/// Body for installing a node bundle that is not published to a Hub.
+#[derive(Debug, Deserialize)]
+struct LocalNodeBundleRequest {
+    /// Package identifier used for the install root and lock provenance.
+    package_id: String,
+    /// Release version recorded in `zeb.lock`.
+    version: String,
+    /// Optional install folder override.
+    #[serde(default)]
+    target_folder: String,
+    /// The bundle itself, as a `HubPackage` envelope.
+    artifact: serde_json::Value,
+}
+
+/// Reports what a locally supplied node bundle would do, before installing it.
+async fn api_review_local_node_bundle(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<LocalNodeBundleRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    match state.platform.hub.review_local_node_bundle(
+        &owner,
+        &project,
+        &req.package_id,
+        &req.version,
+        &req.target_folder,
+        req.artifact,
+    ) {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
+        Err(err) => Json(json!({"ok": false, "error": format!("{}: {}", err.code, err.message)}))
+            .into_response(),
+    }
+}
+
+/// Installs a locally supplied node bundle.
+///
+/// The same review runs again here, so a violation refuses the install even if
+/// the caller never asked for a review.
+async fn api_install_local_node_bundle(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path((owner, project)): Path<(String, String)>,
+    Json(req): Json<LocalNodeBundleRequest>,
+) -> Response {
+    if let Err(response) = require_project_api_capability(
+        &state,
+        &headers,
+        &owner,
+        &project,
+        ProjectCapability::SettingsWrite,
+    ) {
+        return response;
+    }
+    match state.platform.hub.install_local_node_bundle(
+        &owner,
+        &project,
+        &req.package_id,
+        &req.version,
+        &req.target_folder,
+        req.artifact,
+    ) {
+        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Err(err) => Json(json!({"ok": false, "error": format!("{}: {}", err.code, err.message)}))
+            .into_response(),
+    }
+}
 
 async fn api_uninstall_node_package(
     State(state): State<PlatformAppState>,
