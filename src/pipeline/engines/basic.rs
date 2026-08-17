@@ -22,7 +22,6 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::composite_host::execute_installed_node;
-use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
@@ -1659,10 +1658,12 @@ impl BasicPipelineEngine {
                     ws_client_manager.clone(),
                 )?))
             }
-            // Nodes provided by an installed bundle. The manifest decides
-            // whether this is a composite action, a WASM action, or a trigger,
-            // so dispatch does not read the kind namespace beyond `n.x.`.
-            other if other.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
+            // Anything the arms above did not claim is not a native node, so it
+            // is provided by a bundle. Curated bundles live in `n.*` and
+            // third-party ones in `n.x.*`, so the namespace cannot be used to
+            // tell them apart; the manifest decides role and implementation at
+            // execution time, and reports a missing package if there is none.
+            other if other.starts_with("n.") => {
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
                         "FW_NODE_INSTALLED_NO_PLATFORM",

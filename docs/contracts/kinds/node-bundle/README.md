@@ -553,15 +553,43 @@ which the installation tests above cover. Two-instance project transfer is prove
 by `bundle_transfer_preserves_and_resolves_all_dependencies` in
 `src/platform/services/project_transfer.rs`.
 
-### Browser evidence
+### Live and browser evidence, 2026-08-17
 
-Superseded. The verification recorded on 2026-08-17 was run before the curated
-`n.*` namespace, the move of installed bundles to `data/nodes/`, and the
-introduction of node interfaces in `repo/nodes/`. It described kinds and paths
-that no longer exist, so it is not evidence for the current contract and has
-been removed rather than left to look current.
+Verified on an isolated instance after the curated `n.*` namespace, the move to
+`data/nodes/`, and node interfaces:
 
-Re-verification must cover, at minimum: the node API reporting curated and
-third-party kinds correctly, one node picker, the shared edit dialog, a pipeline
-that saves and activates and executes, interfaces appearing in `repo/nodes/` for
-third-party nodes only, and zero console errors and failed requests.
+- the node API returned 68 nodes with `n.telegram.*` and `n.ai.embedding` in the
+  curated namespace, `source` derived from the manifest, `available` present on
+  every item, and no kind left in a pre-`n.x.` namespace
+- native `n.ai.agent` and composite `n.ai.embedding` coexist in one curated
+  namespace without collision
+- the DSL registers a pipeline using a curated composite
+- activation runs the composite `on_activate` lifecycle hook, which executed
+  `register-webhook` and reached the Telegram API
+- the webhook route derived from the trigger's `path_template` resolves and
+  returns 200
+- a curated composite executes, running its function pipeline
+- the graph renders and the shared edit dialog opens `n.telegram.trigger` with
+  its credential and options fields
+- browser console errors: zero; failed application requests: zero
+
+Three regressions were found by this verification and fixed, none of which the
+test suite caught. Each had the same cause: `n.x.` was used as a proxy for
+"provided by a bundle", which stopped being true once curated bundles moved to
+`n.*`.
+
+1. the DSL could not resolve a curated composite kind
+2. lifecycle hooks were skipped for curated bundle nodes
+3. webhook routes were not extracted from curated composite triggers
+
+Resolution is now by existence — the catalog or the package manifest answers
+whether a kind is bundle-provided — rather than by namespace.
+
+### Not covered
+
+The third-party path could not be exercised live: there is no API to install a
+bundle from a local archive, and Hub install requires the bundle to already
+exist in a project. Interfaces, `n.x.*` resolution, and unavailable-node
+reporting are therefore proven by tests only.
+
+`n.function.call` targets are recorded against `ProjectBundle`.

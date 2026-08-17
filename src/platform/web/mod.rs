@@ -11959,12 +11959,9 @@ async fn run_composite_lifecycle_hooks(
 
     // Check each node for composite lifecycle hooks.
     for node in &graph.nodes {
-        if !node
-            .kind
-            .starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX)
-        {
-            continue;
-        }
+        // No namespace test: a curated bundle node and a third-party one both
+        // have lifecycle hooks, and the registry returns nothing for native
+        // kinds, so the manifest lookup below is the filter.
         let manifest = match state
             .platform
             .node_registry

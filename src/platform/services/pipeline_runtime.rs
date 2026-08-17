@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::kinds::{INSTALLED_NODE_KIND_PREFIX, decode_pipeline_graph};
+use crate::contracts::kinds::decode_pipeline_graph;
 use crate::pipeline::PipelineGraph;
 use crate::platform::error::PlatformError;
 use crate::platform::model::PipelineMeta;
@@ -435,9 +435,10 @@ impl CompiledPipeline {
                         });
                     }
                 }
-                // Installed nodes declare their trigger role in the package
-                // manifest, so the node kind is never parsed to find one.
-                other if other.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
+                // Bundle-provided nodes declare their trigger role in the
+                // package manifest. Curated and third-party bundles use
+                // different namespaces, so only the manifest can answer this.
+                other if other.starts_with("n.") => {
                     let Some(trigger) = registry
                         .and_then(|registry| {
                             registry.get_manifest(&meta.owner, &meta.project, other)
