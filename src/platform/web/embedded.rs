@@ -288,87 +288,9 @@ pub fn platform_node_icon_asset(path: &str) -> Option<&'static [u8]> {
         .map(|asset| asset.bytes)
 }
 
-/// Embedded official composite node packages.
-///
-/// Each package uses `{slug}/definition.json` plus its declared functions and icons.
-/// To add an official composite node bundle, create it under `composites/{slug}/`
-/// and add every required artifact here.
-pub const PLATFORM_COMPOSITE_NODE_ASSETS: &[EmbeddedAsset] = &[
-    // ── Telegram (multi-node package) ───────────────────────────────────
-    EmbeddedAsset {
-        path: "telegram/definition.json",
-        bytes: include_bytes!("../../../composites/telegram/definition.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icon.svg",
-        bytes: include_bytes!("../../../composites/telegram/icon.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icons/trigger.svg",
-        bytes: include_bytes!("../../../composites/telegram/icons/trigger.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icons/send.svg",
-        bytes: include_bytes!("../../../composites/telegram/icons/send.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icons/send-photo.svg",
-        bytes: include_bytes!("../../../composites/telegram/icons/send-photo.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icons/send-document.svg",
-        bytes: include_bytes!("../../../composites/telegram/icons/send-document.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/icons/edit.svg",
-        bytes: include_bytes!("../../../composites/telegram/icons/edit.svg"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/send-message.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/send-message.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/send-photo.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/send-photo.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/send-document.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/send-document.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/edit-message.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/edit-message.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/register-webhook.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/register-webhook.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/delete-webhook.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/delete-webhook.zf.json"),
-    },
-    EmbeddedAsset {
-        path: "telegram/functions/transform-update.zf.json",
-        bytes: include_bytes!("../../../composites/telegram/functions/transform-update.zf.json"),
-    },
-    // ── OpenAI Embedding ────────────────────────────────────────────────
-    EmbeddedAsset {
-        path: "openai-embedding/definition.json",
-        bytes: include_bytes!("../../../composites/openai-embedding/definition.json"),
-    },
-    EmbeddedAsset {
-        path: "openai-embedding/icon.svg",
-        bytes: include_bytes!("../../../composites/openai-embedding/icon.svg"),
-    },
-    EmbeddedAsset {
-        path: "openai-embedding/icons/embedding.svg",
-        bytes: include_bytes!("../../../composites/openai-embedding/icons/embedding.svg"),
-    },
-    EmbeddedAsset {
-        path: "openai-embedding/functions/embed.zf.json",
-        bytes: include_bytes!("../../../composites/openai-embedding/functions/embed.zf.json"),
-    },
-];
+// PLATFORM_COMPOSITE_NODE_ASSETS — auto-generated at build time from src/pipeline/nodes/bundled/.
+// Do not edit manually; add files to a bundle directory and recompile.
+include!(concat!(env!("OUT_DIR"), "/node_bundles_gen.rs"));
 
 pub fn platform_composite_node_asset(path: &str) -> Option<&'static [u8]> {
     let normalized = path.trim_start_matches('/').replace('\\', "/");

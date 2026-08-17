@@ -4,6 +4,7 @@ use std::path::Path;
 fn main() {
     generate_version();
     generate_platform_template_assets();
+    generate_node_bundle_assets();
     generate_help_index();
 }
 
@@ -113,6 +114,40 @@ fn generate_platform_template_assets() {
 
     // Re-run whenever any template file changes.
     println!("cargo:rerun-if-changed={templates_dir}");
+}
+
+// ── Bundled node asset generation ────────────────────────────────────────────
+
+/// Emits the asset table for NodeBundles shipped inside the binary.
+///
+/// These are consumed at build time rather than installed, so every artifact a
+/// bundle declares has to be embedded. Generating the table means adding a
+/// function pipeline or an icon needs no bookkeeping: drop the file in and
+/// recompile.
+fn generate_node_bundle_assets() {
+    let bundles_dir = "src/pipeline/nodes/bundled";
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let dest = Path::new(&out_dir).join("node_bundles_gen.rs");
+    println!("cargo:rerun-if-changed=build.rs");
+
+    let mut rel_paths: Vec<String> = Vec::new();
+    collect_files(Path::new(bundles_dir), bundles_dir, &mut rel_paths);
+    rel_paths.sort();
+
+    let mut code =
+        String::from("pub const PLATFORM_COMPOSITE_NODE_ASSETS: &[EmbeddedAsset] = &[\n");
+    for rel in &rel_paths {
+        code.push_str(&format!(
+            "    EmbeddedAsset {{ \
+                path: {rel:?}, \
+                bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/src/pipeline/nodes/bundled/{rel}\")) \
+            }},\n"
+        ));
+    }
+    code.push_str("];\n");
+
+    fs::write(&dest, code).expect("failed writing node_bundles_gen.rs");
+    println!("cargo:rerun-if-changed={bundles_dir}");
 }
 
 // ── Help index generation ─────────────────────────────────────────────────────

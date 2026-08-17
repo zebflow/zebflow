@@ -370,7 +370,7 @@ mod tests {
         let package_dir = source_layout.repo_nodes_dir.join("openai-embedding");
         copy_dir_recursive(
             &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("composites")
+                .join("src/pipeline/nodes/bundled")
                 .join("openai-embedding"),
             &package_dir,
         )

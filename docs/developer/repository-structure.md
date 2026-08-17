@@ -8,7 +8,7 @@ This page tells a platform developer where each part of Zebflow lives.
 zebflow/
 ├── .github/       GitHub issue, release, and build automation
 ├── charts/        Helm chart for Kubernetes installation
-├── composites/    composite node packages shipped with Zebflow
+├── src/pipeline/nodes/bundled/   NodeBundles shipped with Zebflow
 ├── docker/        container build files and container helpers
 ├── docs/          stable user, developer, contract, and reference knowledge
 ├── integrations/  files for named external integrations

@@ -45,4 +45,4 @@ checksums, and unsupported package formats before a node becomes available.
 - `src/pipeline/engines/wasm_host.rs`
 - `src/platform/services/node_registry.rs`
 - `src/platform/help/mod.rs`
-- `composites/`
+- `src/pipeline/nodes/bundled/`

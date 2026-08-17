@@ -4971,14 +4971,17 @@ mod tests {
         let project = "default";
         // Rename the whole package identity: a kind is owned by its package, so
         // the slug, metadata name, and kind namespace must move together.
-        let definition = include_str!("../../../composites/openai-embedding/definition.json")
-            .replace("n.ai.embedding", "n.x.openai_embedding_test.embed")
-            .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
-        let function = include_str!("../../../composites/openai-embedding/functions/embed.zf.json");
+        let definition =
+            include_str!("../../pipeline/nodes/bundled/openai-embedding/definition.json")
+                .replace("n.ai.embedding", "n.x.openai_embedding_test.embed")
+                .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
+        let function =
+            include_str!("../../pipeline/nodes/bundled/openai-embedding/functions/embed.zf.json");
         // The bundle declares an icon, so the install must ship it. A declared
         // artifact that never lands now fails the registry refresh.
-        let icon = include_str!("../../../composites/openai-embedding/icon.svg");
-        let node_icon = include_str!("../../../composites/openai-embedding/icons/embedding.svg");
+        let icon = include_str!("../../pipeline/nodes/bundled/openai-embedding/icon.svg");
+        let node_icon =
+            include_str!("../../pipeline/nodes/bundled/openai-embedding/icons/embedding.svg");
         let payload: HubArtifact = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "OpenAI embedding",
