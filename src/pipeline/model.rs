@@ -1028,6 +1028,13 @@ pub struct NodeContractItem {
     /// Node tier: `"official"` (native or platform-bundled) or `"community"` (installed per-project).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tier: String,
+    /// Whether this node can actually run here.
+    ///
+    /// False when the definition came from an interface carried in `repo/nodes/`
+    /// because the providing bundle is not installed. The node still renders
+    /// with its real pins and fields; it just cannot execute.
+    #[serde(default = "default_node_available")]
+    pub available: bool,
     /// Credential requirements declared by the node package.
     ///
     /// Native nodes usually express credentials through `fields` and `dsl_flags`.
@@ -1036,6 +1043,10 @@ pub struct NodeContractItem {
     /// see which project credential kind a composite node needs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub credential_requirements: Vec<NodeCredentialRequirement>,
+}
+
+fn default_node_available() -> bool {
+    true
 }
 
 fn default_node_source() -> String {
@@ -1115,6 +1126,9 @@ impl From<NodeDefinition> for NodeContractItem {
         let ui_category = value.ui_category;
         let ui_category_label = value.ui_category_label;
         Self {
+            // A definition on its own is always runnable; the registry marks it
+            // unavailable when it came from an interface with no bundle behind it.
+            available: true,
             kind: value.kind,
             title: value.title,
             description: value.description,

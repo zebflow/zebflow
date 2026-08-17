@@ -8187,6 +8187,22 @@ async fn api_list_node_definitions(
         })
         .collect();
 
+    // Nodes the project describes but cannot run: their interface travelled with
+    // the project while the bundle did not. They appear in the catalog so a
+    // graph stays readable, marked unavailable so nothing tries to execute them.
+    let mut items = items;
+    for definition in state
+        .platform
+        .node_registry
+        .unavailable_interface_definitions(&owner, &project)
+    {
+        let mut item = crate::pipeline::NodeContractItem::from(definition);
+        item.available = false;
+        item.tier = "community".to_string();
+        items.push(item);
+    }
+    items.sort_by(|a, b| a.kind.cmp(&b.kind));
+
     Json(json!({
         "ok": true,
         "items": items

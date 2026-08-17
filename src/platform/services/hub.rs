@@ -4765,6 +4765,129 @@ mod tests {
         })
     }
 
+    /// A trigger's inbound handler is its run binding, so a WASM trigger runs
+    /// the same way a WASM action does.
+    ///
+    /// This is the runtime half of separating role from implementation: before
+    /// the run binding existed, a trigger could only be composite.
+    #[tokio::test]
+    async fn a_wasm_trigger_runs_its_handler_export() {
+        use base64::Engine as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(
+                crate::platform::model::PlatformConfig {
+                    data_root: root.path().to_path_buf(),
+                    default_password: "test-password".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let owner = "superadmin";
+        let project = "default";
+
+        let module =
+            include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
+        let mut trigger = wasm_node_entry("n.x.wasmtrig.inbox", "Inbox", "e2e_train");
+        trigger["trigger"] = serde_json::json!({
+            "type": "webhook",
+            "path_template": "/wasmtrig/{{ hook_key }}"
+        });
+        trigger["definition"]["input_pins"] = serde_json::json!([]);
+        trigger["definition"]["config_schema"] = serde_json::json!({
+            "type": "object",
+            "properties": { "hook_key": { "type": "string" } }
+        });
+        trigger["definition"]["fields"] = serde_json::json!([{
+            "name": "hook_key",
+            "label": "Hook Key",
+            "type": "text",
+            "help": "Key used to build the public webhook path."
+        }]);
+
+        let definition = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "NodeBundle",
+            "metadata": { "name": "wasmtrig", "version": "1.0.0" },
+            "spec": {
+                "package": "wasmtrig",
+                "version": "1.0.0",
+                "title": "WASM Trigger",
+                "description": "A trigger whose inbound handler is a WASM export.",
+                "icon": "icon.svg",
+                "credentials": [],
+                "functions": {},
+                "modules": {
+                    "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
+                },
+                "nodes": [trigger]
+            }
+        })
+        .to_string();
+        let icon = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+            "asset_kind": "node_bundle",
+            "title": "WASM Trigger",
+            "description": "Exercises a WASM trigger handler.",
+            "files": [
+                { "rel_path": "definition.json", "kind": "node_definition",
+                  "size_bytes": definition.len(), "reason": "test", "content": definition },
+                { "rel_path": "icon.svg", "kind": "asset",
+                  "size_bytes": icon.len(), "reason": "test", "content": icon },
+                { "rel_path": "wasm/core.wasm", "kind": "asset",
+                  "size_bytes": module.len(), "reason": "test", "encoding": "base64",
+                  "content": base64::engine::general_purpose::STANDARD.encode(module) }
+            ]
+        }))
+        .unwrap();
+
+        platform
+            .hub
+            .install_artifact_payload(
+                owner.to_string(),
+                project.to_string(),
+                "wasmtrig",
+                "1.0.0",
+                "",
+                "test/wasmtrig",
+                payload,
+            )
+            .expect("install succeeds");
+
+        let installed = platform
+            .node_registry
+            .get_by_kind(owner, project, "n.x.wasmtrig.inbox")
+            .expect("trigger is installed");
+        assert!(
+            installed.manifest.trigger.is_some(),
+            "the node keeps its trigger role"
+        );
+        assert_eq!(
+            installed.manifest.source,
+            crate::platform::model::NodePackageSource::Wasm,
+            "and its implementation is WASM"
+        );
+
+        // The engine routes a trigger through its run binding, so the handler
+        // export is what actually processes the inbound event.
+        let (module_spec, export) = installed.manifest.wasm_target().expect("wasm target");
+        let output = crate::pipeline::engines::wasm_host::run_wasm_export(
+            "n.x.wasmtrig.inbox",
+            &installed.package_dir,
+            module_spec,
+            export,
+            &serde_json::json!({ "hook_key": "abc" }),
+            &serde_json::json!({ "update_id": 7 }),
+            &serde_json::json!({ "owner": owner, "project": project }),
+        )
+        .expect("handler runs");
+        assert_eq!(output["ok"], serde_json::json!(true));
+        assert_eq!(output["export"], serde_json::json!("e2e_train"));
+    }
+
     /// Installs a real WASM bundle whose two nodes share one module through
     /// distinct exports, then runs both.
     ///

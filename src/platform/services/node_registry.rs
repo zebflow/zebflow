@@ -1314,12 +1314,51 @@ mod tests {
             .expect("sync without the bundle");
         assert!(interface.is_file(), "the interface survives the bundle");
 
+        // The interface is now the only description of the node, so it must
+        // resolve even though nothing can run it.
+        let unavailable = registry.unavailable_interface_definitions("superadmin", "default");
+        assert_eq!(unavailable.len(), 1);
+        assert_eq!(unavailable[0].kind, "n.x.acme.thing");
+        assert_eq!(unavailable[0].output_pins, vec!["out".to_string()]);
+
         // Dropping the reference prunes it.
         std::fs::remove_file(pipelines.join("uses-acme.zf.json")).expect("remove pipeline");
         registry
             .sync_project_node_interfaces("superadmin", "default")
             .expect("sync after removing the reference");
         assert!(!interface.exists(), "an unreferenced interface is pruned");
+    }
+
+    /// While the bundle is installed the registry is the better answer, so the
+    /// interface must not produce a duplicate catalog entry.
+    #[test]
+    fn an_installed_bundle_is_not_also_reported_as_unavailable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        write_composite_bundle(temp.path(), "acme", "acme", "n.x.acme.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("refresh");
+
+        let interfaces = temp.path().join("users/superadmin/default/repo/nodes");
+        std::fs::create_dir_all(&interfaces).expect("interfaces dir");
+        let definition = registry
+            .get_manifest("superadmin", "default", "n.x.acme.thing")
+            .expect("installed")
+            .definition;
+        let bytes = crate::contracts::kinds::encode_node_definition(
+            crate::contracts::ContractMetadata::named("n.x.acme.thing"),
+            definition,
+        )
+        .expect("encode");
+        std::fs::write(interfaces.join("n.x.acme.thing.json"), bytes).expect("write interface");
+
+        assert!(
+            registry
+                .unavailable_interface_definitions("superadmin", "default")
+                .is_empty(),
+            "an installed kind is served by the registry, not by its interface"
+        );
     }
 
     /// Uninstall must remove only what the selected kind's package owns.
@@ -1527,4 +1566,50 @@ impl NodeRegistryService {
 
 fn interface_file_name(kind: &str) -> String {
     format!("{kind}.json")
+}
+
+impl NodeRegistryService {
+    /// Definitions carried as interfaces whose bundle is not installed here.
+    ///
+    /// These are the nodes a project can describe but not run. Returning them
+    /// keeps a graph readable on an instance that cannot obtain the bundle,
+    /// which is the entire reason the interface travels with the project.
+    pub fn unavailable_interface_definitions(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Vec<NodeDefinition> {
+        let owner = slug_segment(owner);
+        let project = slug_segment(project);
+        let Ok(layout) = self.projects.project_layout(&owner, &project) else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(&layout.repo_node_interfaces_dir) else {
+            return Vec::new();
+        };
+
+        let mut definitions = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(document) = crate::contracts::kinds::decode_node_definition(&bytes) else {
+                continue;
+            };
+            // An interface only matters while its bundle is absent. Once the
+            // bundle is installed the registry is the better answer.
+            if self
+                .get_manifest(&owner, &project, &document.spec.kind)
+                .is_none()
+            {
+                definitions.push(document.spec);
+            }
+        }
+        definitions.sort_by(|a, b| a.kind.cmp(&b.kind));
+        definitions
+    }
 }
