@@ -1,6 +1,6 @@
 # NodeBundle
 
-Status: **Candidate**
+Status: **Review**
 
 `NodeBundle` describes one installable package that provides one or more node
 kinds and the artifacts they run. It owns everything `NodeDefinition` refuses to
@@ -542,14 +542,15 @@ which the installation tests above cover. Two-instance project transfer is prove
 by `bundle_transfer_preserves_and_resolves_all_dependencies` in
 `src/platform/services/project_transfer.rs`.
 
-### Browser evidence, 2026-08-17
+### Browser evidence
 
-Verified on an isolated instance:
+Superseded. The verification recorded on 2026-08-17 was run before the curated
+`n.*` namespace, the move of installed bundles to `data/nodes/`, and the
+introduction of node interfaces in `repo/nodes/`. It described kinds and paths
+that no longer exist, so it is not evidence for the current contract and has
+been removed rather than left to look current.
 
-- the node API returned 68 nodes: 62 native and 6 installed, with no kind left in
-  a pre-`n.x.` namespace, and `source` derived from the package manifest
-- native and installed nodes appeared together in one node picker
-- the shared node edit dialog opened `n.x.telegram.send` with its title,
-  description, and scoped credential field
-- a pipeline using an installed node saved, activated, and executed
-- browser console errors: zero; failed application requests: zero
+Re-verification must cover, at minimum: the node API reporting curated and
+third-party kinds correctly, one node picker, the shared edit dialog, a pipeline
+that saves and activates and executes, interfaces appearing in `repo/nodes/` for
+third-party nodes only, and zero console errors and failed requests.
