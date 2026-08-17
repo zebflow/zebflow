@@ -6054,6 +6054,8 @@ async fn project_hub_tab_page(
                     "upload": format!("/api/projects/{owner}/{project}/files/upload"),
                     "access": format!("/api/projects/{owner}/{project}/hub/access"),
                     "repositories": format!("/api/projects/{owner}/{project}/hub/repositories"),
+                    "node_bundle_review": format!("/api/projects/{owner}/{project}/nodes/install/review"),
+                    "node_bundle_install": format!("/api/projects/{owner}/{project}/nodes/install"),
                 }
             });
             match render_page(&state, "platform-project-hub", &route, input) {

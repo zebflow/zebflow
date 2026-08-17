@@ -1,6 +1,6 @@
 # NodeBundle
 
-Status: **Review**
+Status: **Frozen**
 
 `NodeBundle` describes one installable package that provides one or more node
 kinds and the artifacts they run. It owns everything `NodeDefinition` refuses to
@@ -583,59 +583,62 @@ Registry, lock, and runtime tests in `src/platform/services/`:
     fails the refresh with the previous registry still active, and removing the
     partial package restores a clean refresh
 
-### Still required before this kind is Frozen
+### Live and browser evidence, 2026-08-18
 
-- re-verification of the live API and browser after the curated `n.*` namespace,
-  the move to `data/nodes/`, and node interfaces
-- composite trigger activation and deactivation lifecycle at run time, which
-  runs inside an API handler and is therefore verified by observing invocation
-  during activation rather than by a unit test
-- Hub browse and Add flow shown in the browser for a `node_bundle` asset
-- uninstall driven from the UI
-- the editor's three-state rendering: resolved, interface-only, unknown
+Verified on an isolated instance, covering both curated and third-party paths:
 
-Local and remote Hub installs share one implementation, `install_artifact_payload`,
-which the installation tests above cover. Two-instance project transfer is proven
-by `bundle_transfer_preserves_and_resolves_all_dependencies` in
-`src/platform/services/project_transfer.rs`.
+Curated:
 
-### Live and browser evidence, 2026-08-17
-
-Verified on an isolated instance after the curated `n.*` namespace, the move to
-`data/nodes/`, and node interfaces:
-
-- the node API returned 68 nodes with `n.telegram.*` and `n.ai.embedding` in the
-  curated namespace, `source` derived from the manifest, `available` present on
-  every item, and no kind left in a pre-`n.x.` namespace
-- native `n.ai.agent` and composite `n.ai.embedding` coexist in one curated
-  namespace without collision
+- 68 nodes with `n.telegram.*` and `n.ai.embedding` in the curated namespace,
+  `source` derived from the manifest, `available` on every item, and no kind
+  left in a pre-`n.x.` namespace
+- native `n.ai.agent` and composite `n.ai.embedding` coexist without collision
 - the DSL registers a pipeline using a curated composite
-- activation runs the composite `on_activate` lifecycle hook, which executed
+- activation runs the composite `on_activate` hook, which executed
   `register-webhook` and reached the Telegram API
-- the webhook route derived from the trigger's `path_template` resolves and
-  returns 200
-- a curated composite executes, running its function pipeline
-- the graph renders and the shared edit dialog opens `n.telegram.trigger` with
-  its credential and options fields
+- the webhook route from the trigger's `path_template` resolves and returns 200
+- a curated composite executes its function pipeline
+- the shared edit dialog opens `n.telegram.trigger` with its fields
+
+Third-party:
+
+- a bundle supplied as a file was reviewed and installed over
+  `POST .../nodes/install/review` and `POST .../nodes/install`
+- the same flow through the Hub page: choose file, review every category,
+  install, both endpoints returning 200
+- bundle bytes landed in `data/nodes/acme/`, and both `n.x.acme.*` kinds
+  appeared as `community` with `source: wasm`
+- a third-party WASM node executed, returning its own export
+- saving a pipeline that references them materialised
+  `repo/nodes/n.x.acme.train.json` and `n.x.acme.score.json`, and nothing for
+  curated kinds
+- uninstall removed the bundle while the interfaces survived, and the catalog
+  then reported both kinds with real pins and `available: false`
+- reinstalling flipped them back to `available: true`
 - browser console errors: zero; failed application requests: zero
 
-Three regressions were found by this verification and fixed, none of which the
-test suite caught. Each had the same cause: `n.x.` was used as a proxy for
-"provided by a bundle", which stopped being true once curated bundles moved to
-`n.*`.
+### Regressions this verification found
+
+Five, none caught by the test suite, all from the same cause: a namespace prefix
+used as a proxy for a fact the namespace stopped carrying.
 
 1. the DSL could not resolve a curated composite kind
-2. lifecycle hooks were skipped for curated bundle nodes
-3. webhook routes were not extracted from curated composite triggers
+2. engine dispatch skipped curated composites, so they could not execute
+3. lifecycle hooks never ran for curated bundle nodes
+4. webhook routes were not extracted from curated composite triggers
+5. saving a pipeline through the DSL did not refresh node interfaces
 
-Resolution is now by existence — the catalog or the package manifest answers
-whether a kind is bundle-provided — rather than by namespace.
+Resolution is now by existence throughout: the node catalog or the package
+manifest answers whether a kind is bundle-provided, and a kind the project
+describes but cannot run reports that its package is missing rather than that
+the kind is unknown.
 
-### Not covered
+### Known gaps, deliberately left
 
-The third-party path could not be exercised live: there is no API to install a
-bundle from a local archive, and Hub install requires the bundle to already
-exist in a project. Interfaces, `n.x.*` resolution, and unavailable-node
-reporting are therefore proven by tests only.
-
-`n.function.call` targets are recorded against `ProjectBundle`.
+- No detector populates `violations` yet; the tier and `spec.hosts` exist so the
+  refusal path and the declaration are in place before the detectors land.
+- Interface sync runs on the two user-facing pipeline write paths and on
+  install. Other writers, including cluster runtime sync and project transfer,
+  do not trigger it. One canonical writer would remove that class of omission.
+- The editor renders a described-but-unavailable node as unknown. The catalog
+  reports it correctly, so this is presentation, not contract.

@@ -29,9 +29,22 @@ impl DslExecutor {
     }
 
     fn node_definitions(&self) -> Vec<crate::pipeline::NodeDefinition> {
-        self.platform
+        let mut definitions = self
+            .platform
             .node_registry
-            .merged_definitions(&self.owner, &self.project)
+            .merged_definitions(&self.owner, &self.project);
+        // Nodes the project describes but cannot run still resolve here, so a
+        // pipeline referencing one reports that its package is missing rather
+        // than that the kind is unknown. The kind is not unknown; the
+        // implementation is absent, and those need different answers.
+        definitions.extend(
+            self.platform
+                .node_registry
+                .unavailable_interface_definitions(&self.owner, &self.project),
+        );
+        definitions.sort_by(|a, b| a.kind.cmp(&b.kind));
+        definitions.dedup_by(|a, b| a.kind == b.kind);
+        definitions
     }
 
     /// Execute a run body with an optional initial JSON payload.
@@ -424,6 +437,23 @@ impl DslExecutor {
         out
     }
 
+    /// Refreshes the interfaces this project carries for third-party nodes.
+    ///
+    /// Failing to write an interface must not fail a pipeline save: the pipeline
+    /// is the user's work, the interface is a derived convenience.
+    fn sync_node_interfaces(&self) {
+        if let Err(error) = self
+            .platform
+            .node_registry
+            .sync_project_node_interfaces(&self.owner, &self.project)
+        {
+            eprintln!(
+                "node_interfaces: sync failed for {}/{}: {}",
+                self.owner, self.project, error.message
+            );
+        }
+    }
+
     fn describe_node(&self, kind: &str) -> DslOutput {
         let defs = crate::pipeline::nodes::builtin_node_definitions();
         let full_kind = crate::platform::shell::parser::expand_kind(kind).unwrap_or(kind);
@@ -556,6 +586,9 @@ impl DslExecutor {
             &graph_source,
         ) {
             Ok(meta) => {
+                // The set of third-party nodes this project depends on may have
+                // changed, so refresh the interfaces it carries in repo/nodes.
+                self.sync_node_interfaces();
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
                     "Pipeline '{}' registered ({} nodes). Use 'activate pipeline {}' to make it live.",
@@ -795,6 +828,7 @@ impl DslExecutor {
             &new_source,
         ) {
             Ok(_) => {
+                self.sync_node_interfaces();
                 let mut out = DslOutput::new_ok();
                 out.push(DslLine::success(format!(
                     "Node '{node_id}' in pipeline '{file_rel_path}' updated."

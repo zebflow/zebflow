@@ -127,6 +127,24 @@ function ReviewList({ title, items, danger = false }) {
   );
 }
 
+function BundleReviewList({ title, items }) {
+  const values = Array.isArray(items) ? items : [];
+  return (
+    <div className="rounded-lg border border-ui-border bg-ui-bg-muted/20 px-3 py-2">
+      <p className="text-xs font-medium uppercase tracking-wide text-ui-text-soft">{title}</p>
+      {values.length ? (
+        <ul className="mt-1 list-disc pl-5 text-sm text-ui-text">
+          {values.map((item, index) => (
+            <li key={`${title}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1 text-sm text-ui-text-soft">None</p>
+      )}
+    </div>
+  );
+}
+
 export default function Page(input) {
   const tabs = Array.isArray(input?.hub_tabs) ? input.hub_tabs : [];
   const tabFlags = input?.tab_flags ?? {};
@@ -142,6 +160,10 @@ export default function Page(input) {
   const [publishReviewDirty, setPublishReviewDirty] = useState(true);
   const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [bundleFileName, setBundleFileName] = useState("");
+  const [bundleArtifact, setBundleArtifact] = useState(null);
+  const [bundleReview, setBundleReview] = useState(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
   const publishOptions = input?.publish_options ?? {};
   const availableLibraries = Array.isArray(publishOptions?.libraries) ? publishOptions.libraries : [];
   const sekejapSchemaAvailable = !!publishOptions?.sekejap_schema?.available;
@@ -447,6 +469,69 @@ export default function Page(input) {
   const projectSources = hubSources.filter((item) => item?.source_scope === "project_local" || item?.editable);
   const sharedSources = hubSources.filter((item) => item?.source_scope !== "project_local" && !item?.editable);
 
+  const bundleIdentity = () => {
+    const metadata = bundleArtifact?.metadata ?? {};
+    return {
+      package_id: String(metadata.name ?? ""),
+      version: String(metadata.version ?? ""),
+    };
+  };
+
+  const onPickBundleFile = (event) => {
+    const file = event?.target?.files?.[0];
+    if (!file) return;
+    setBundleReview(null);
+    setBundleArtifact(null);
+    setBundleFileName(file.name);
+    file
+      .text()
+      .then((text) => {
+        const parsed = JSON.parse(text);
+        setBundleArtifact(parsed);
+        showStatus(`Loaded ${file.name}. Review it before installing.`);
+      })
+      .catch(() => {
+        setBundleFileName("");
+        showStatus("That file is not a readable Zebflow package document.");
+      });
+  };
+
+  const reviewBundle = () => {
+    const identity = bundleIdentity();
+    if (!bundleArtifact || !identity.package_id || !identity.version) {
+      showStatus("Choose a package file that declares metadata.name and metadata.version.");
+      return;
+    }
+    setBundleBusy(true);
+    requestJson(api.node_bundle_review, {
+      method: "POST",
+      body: JSON.stringify({ ...identity, target_folder: "", artifact: bundleArtifact }),
+    })
+      .then((payload) => {
+        setBundleReview(payload?.review ?? null);
+        showStatus("Reviewed. Check what this package does before installing.");
+      })
+      .catch((err) => showStatus(err?.message || err))
+      .then(() => setBundleBusy(false));
+  };
+
+  const installBundle = () => {
+    const identity = bundleIdentity();
+    setBundleBusy(true);
+    requestJson(api.node_bundle_install, {
+      method: "POST",
+      body: JSON.stringify({ ...identity, target_folder: "", artifact: bundleArtifact }),
+    })
+      .then(() => {
+        setBundleReview(null);
+        setBundleArtifact(null);
+        setBundleFileName("");
+        showStatus(`Installed ${identity.package_id} ${identity.version}.`);
+      })
+      .catch((err) => showStatus(err?.message || err))
+      .then(() => setBundleBusy(false));
+  };
+
   return (
       <ProjectStudioShell
         projectHref={input.project_href}
@@ -486,6 +571,84 @@ export default function Page(input) {
                       <span className="font-medium text-ui-text">Status:</span> {status}
                     </div>
                   ) : null}
+
+                  <section className="rounded-lg border border-ui-border bg-ui-bg p-4">
+                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <p className="project-content-subtitle">Node Bundle From File</p>
+                        <p className="text-sm text-ui-text-soft">
+                          Install a node bundle you authored locally or received as a file. It runs the same
+                          review a published package runs: a Hub package is not safer, only published.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button as="label" type="button" variant="outline" size="sm">
+                          Choose file
+                          <input
+                            type="file"
+                            accept="application/json,.json"
+                            className="sr-only"
+                            onChange={onPickBundleFile}
+                          />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!bundleArtifact || bundleBusy}
+                          onClick={reviewBundle}
+                        >
+                          Review
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={!bundleReview?.installable || bundleBusy}
+                          onClick={installBundle}
+                        >
+                          Install
+                        </Button>
+                      </div>
+                    </div>
+
+                    {bundleFileName ? (
+                      <p className="mt-3 text-sm text-ui-text-soft">
+                        Selected: <span className="font-medium text-ui-text">{bundleFileName}</span>
+                      </p>
+                    ) : null}
+
+                    {bundleReview ? (
+                      <div className="mt-4 space-y-3">
+                        {bundleReview.violations?.length ? (
+                          <div className="rounded-lg border border-ui-border bg-ui-bg-muted/30 px-4 py-3 text-sm">
+                            <p className="font-medium text-ui-text">This package cannot be installed</p>
+                            <ul className="mt-1 list-disc pl-5 text-ui-text-soft">
+                              {bundleReview.violations.map((item, index) => (
+                                <li key={`violation-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <BundleReviewList title="Nodes provided" items={bundleReview.nodes_used} />
+                          <BundleReviewList title="Credentials requested" items={bundleReview.credentials_required} />
+                          <BundleReviewList title="External URLs contacted" items={bundleReview.external_urls} />
+                          <BundleReviewList title="Public endpoints created" items={bundleReview.public_endpoints} />
+                          <BundleReviewList title="Database effects" items={bundleReview.database_effects} />
+                          <BundleReviewList title="File effects" items={bundleReview.filesystem_effects} />
+                          <BundleReviewList title="Schedules" items={bundleReview.schedules} />
+                          <BundleReviewList title="Files written" items={bundleReview.files_added} />
+                          <BundleReviewList title="Files overwritten" items={bundleReview.files_overwritten} />
+                          <BundleReviewList title="Warnings" items={bundleReview.warnings} />
+                        </div>
+
+                        <p className="text-sm text-ui-text-soft">
+                          Risk level: <span className="font-medium text-ui-text">{bundleReview.risk_level}</span>
+                        </p>
+                      </div>
+                    ) : null}
+                  </section>
 
                   {tabFlags?.packs ? (
                     <>
