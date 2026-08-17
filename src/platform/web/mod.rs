@@ -8067,6 +8067,8 @@ fn apply_manifest_metadata_to_node_contract(
     manifest: Option<&NodePackageManifest>,
 ) {
     if let Some(manifest) = manifest {
+        // The manifest is the only authority on how a node is implemented.
+        item.source = manifest.source.as_str().to_string();
         item.credential_requirements = node_credential_requirements_from_manifest(item, manifest);
     }
 }
@@ -11820,11 +11822,90 @@ async fn api_deactivate_pipeline_definition(
     }
 }
 
-/// Runs composite lifecycle hooks (on_activate or on_deactivate) for all composite
-/// nodes found in a pipeline graph.
+/// Runs one WASM lifecycle hook for an installed node.
+///
+/// Failures are logged and never block activation, matching the composite hook
+/// behavior.
+async fn run_wasm_lifecycle_hook(
+    state: &PlatformAppState,
+    owner: &str,
+    project: &str,
+    file_rel_path: &str,
+    hook: &str,
+    node: &crate::pipeline::model::PipelineNode,
+) {
+    let Some(installed) = state
+        .platform
+        .node_registry
+        .get_by_kind(owner, project, &node.kind)
+    else {
+        return;
+    };
+    let lifecycle = match installed.manifest.lifecycle.as_ref() {
+        Some(lifecycle) => lifecycle,
+        None => return,
+    };
+    let binding = match hook {
+        "on_activate" => lifecycle.on_activate.as_ref(),
+        "on_deactivate" => lifecycle.on_deactivate.as_ref(),
+        _ => None,
+    };
+    let Some(binding) = binding else {
+        return;
+    };
+    let (Some(module_name), Some(export)) = (binding.module.as_deref(), binding.export.as_deref())
+    else {
+        return;
+    };
+    let Some(module_spec) = installed.manifest.modules.get(module_name) else {
+        eprintln!(
+            "wasm_lifecycle: {hook} for '{}' references undeclared module '{module_name}'",
+            node.kind
+        );
+        return;
+    };
+
+    let public_url = std::env::var("ZEBFLOW_PLATFORM_BASE_URL").unwrap_or_else(|_| {
+        let port = std::env::var("ZEBFLOW_PORT").unwrap_or_else(|_| "10611".to_string());
+        format!("http://localhost:{}", port)
+    });
+    let payload = serde_json::json!({
+        "node_id": node.id,
+        "node_kind": node.kind,
+        "config": node.config,
+        "hook": hook,
+        "pipeline": file_rel_path,
+        "owner": owner,
+        "project": project,
+        "platform": { "public_url": public_url },
+    });
+    let metadata = serde_json::json!({ "owner": owner, "project": project });
+
+    match crate::pipeline::engines::wasm_host::run_wasm_export(
+        &node.kind,
+        &installed.package_dir,
+        module_spec,
+        export,
+        &node.config,
+        &payload,
+        &metadata,
+    ) {
+        Ok(output) => eprintln!(
+            "wasm_lifecycle: {hook} for '{}' in '{}' OK: {}",
+            node.kind, file_rel_path, output
+        ),
+        Err(err) => eprintln!(
+            "wasm_lifecycle: {hook} for '{}' in '{}' failed: {}",
+            node.kind, file_rel_path, err.message
+        ),
+    }
+}
+
+/// Runs lifecycle hooks (on_activate or on_deactivate) for every installed node
+/// found in a pipeline graph.
 ///
 /// Scans the pipeline graph nodes, checks each against the node registry for lifecycle
-/// hooks, and executes the corresponding function pipeline.
+/// hooks, and executes the corresponding composite function or WASM export.
 async fn run_composite_lifecycle_hooks(
     state: &PlatformAppState,
     owner: &str,
@@ -11848,7 +11929,10 @@ async fn run_composite_lifecycle_hooks(
 
     // Check each node for composite lifecycle hooks.
     for node in &graph.nodes {
-        if !node.kind.starts_with("n.c.") {
+        if !node
+            .kind
+            .starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX)
+        {
             continue;
         }
         let manifest = match state
@@ -11863,12 +11947,24 @@ async fn run_composite_lifecycle_hooks(
             Some(lc) => lc,
             None => continue,
         };
-        let function_name = match hook {
-            "on_activate" => lifecycle.on_activate.as_deref(),
-            "on_deactivate" => lifecycle.on_deactivate.as_deref(),
+        let binding = match hook {
+            "on_activate" => lifecycle.on_activate.as_ref(),
+            "on_deactivate" => lifecycle.on_deactivate.as_ref(),
             _ => None,
         };
-        let function_name = match function_name {
+        let binding = match binding {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // A WASM hook runs its declared export directly. Composite and WASM
+        // hooks receive the same payload.
+        if binding.module.is_some() {
+            run_wasm_lifecycle_hook(state, owner, project, file_rel_path, hook, node).await;
+            continue;
+        }
+
+        let function_name = match binding.function.as_deref() {
             Some(f) => f,
             None => continue,
         };

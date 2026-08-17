@@ -27,12 +27,27 @@ All installable node sources use one source package shape:
 `definition.json` is used for one node or many nodes. A single node is simply a
 package with `nodes.length == 1`.
 
-Composite and WASM are implementation worlds, not separate installer worlds:
+Every installed node kind is `n.x.{package}.{rest}`, so a kind names the package
+that provides it. Two bundles can never claim the same kind.
 
-- composite nodes use `source: "composite"` and function pipeline artifacts
-- WASM nodes use `source: "wasm"` and WASM module artifacts
+Composite and WASM are implementation worlds, not separate installer worlds. A
+node declares where its code lives with one `run` binding:
+
+- composite nodes use `run: { "function": "name" }`, a key in `functions`
+- WASM nodes use `run: { "module": "name", "export": "symbol" }`, a key in `modules`
+
+`export` is always required, so two WASM nodes in one bundle never resolve to the
+same entry point. There is no `source` field: the implementation is derived from
+the binding, so a bundle cannot claim an implementation that disagrees with the
+artifact it points at. A node can therefore move between composite and WASM
+without changing its kind, and saved pipelines keep working.
+
+`trigger` declares a role and sits beside `run`, so a trigger may be implemented
+either way. Lifecycle hooks are run bindings too.
 
 Every source is normalized into Zebflow's canonical installed node format before
 runtime indexing. Invalid package format must fail at install time.
+
+The full rules are in `docs/contracts/kinds/node-bundle/README.md`.
 
 Use the child node catalog entry for the live reference.

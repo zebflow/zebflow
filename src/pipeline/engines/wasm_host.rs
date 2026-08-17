@@ -1,4 +1,4 @@
-//! Runtime host for installed `n.wasm.*` node packages.
+//! Runtime host for installed WASM nodes.
 //!
 //! Package discovery and node contracts live in
 //! `src/platform/services/node_registry.rs`.  This module only executes an
@@ -14,10 +14,9 @@ use wasmtime::{Engine, Instance, Module, Store};
 use crate::contracts::kinds::WASM_JSON_ABI_V1;
 use crate::pipeline::model::PipelineError;
 use crate::pipeline::nodes::{NodeExecutionInput, NodeExecutionOutput};
-use crate::platform::model::{NodePackageSource, WasmNodeRuntime};
+use crate::platform::model::{NodePackageSource, WasmModuleSpec};
 use crate::platform::services::PlatformService;
 
-const DEFAULT_MAIN_EXPORT: &str = "zebflow_wasm_run";
 const DEFAULT_ALLOC_EXPORT: &str = "zebflow_alloc";
 const DEFAULT_DEALLOC_EXPORT: &str = "zebflow_dealloc";
 const MAX_WASM_MODULE_BYTES: u64 = 32 * 1024 * 1024;
@@ -86,14 +85,59 @@ fn execute_wasm_node_blocking(
             format!("node '{kind}' is installed but is not a WASM package"),
         ));
     }
-    let runtime = installed.manifest.wasm_runtime.as_ref().ok_or_else(|| {
+    let (module_spec, export) = installed.manifest.wasm_target().ok_or_else(|| {
         PipelineError::new(
             "FW_NODE_WASM_RUNTIME",
-            format!("WASM node '{kind}' has no wasm_runtime/module declaration"),
+            format!("WASM node '{kind}' has no resolvable module and export"),
         )
     })?;
-    let module_path = resolve_package_file(&installed.package_dir, &runtime.module)?;
-    let metadata = std::fs::metadata(&module_path).map_err(|err| {
+    let payload = run_wasm_export(
+        &kind,
+        &installed.package_dir,
+        module_spec,
+        export,
+        &config,
+        &input.payload,
+        &input.metadata,
+    )?;
+
+    Ok(vec![NodeExecutionOutput {
+        output_pins: vec!["out".to_string()],
+        payload,
+        trace: vec![
+            format!("node_kind={kind}"),
+            format!("wasm_module={}", module_spec.path),
+            format!("wasm_export={export}"),
+            format!("wasm_abi={}", module_spec.abi),
+        ],
+    }])
+}
+
+/// Runs one export inside one declared module.
+///
+/// This is the single WASM entry point. Node execution and trigger lifecycle
+/// hooks both call it, so a WASM node and a WASM hook behave identically.
+pub fn run_wasm_export(
+    label: &str,
+    package_dir: &str,
+    module_spec: &WasmModuleSpec,
+    export: &str,
+    config: &Value,
+    payload: &Value,
+    metadata: &Value,
+) -> Result<Value, PipelineError> {
+    let kind = label;
+    if module_spec.abi != WASM_JSON_ABI_V1 {
+        return Err(PipelineError::new(
+            "FW_NODE_WASM_ABI",
+            format!(
+                "WASM node '{kind}' declares unsupported ABI '{}'; expected '{WASM_JSON_ABI_V1}'",
+                module_spec.abi
+            ),
+        ));
+    }
+    let module_path = resolve_package_file(package_dir, &module_spec.path)?;
+    let module_metadata = std::fs::metadata(&module_path).map_err(|err| {
         PipelineError::new(
             "FW_NODE_WASM_MODULE",
             format!(
@@ -102,12 +146,12 @@ fn execute_wasm_node_blocking(
             ),
         )
     })?;
-    if metadata.len() > MAX_WASM_MODULE_BYTES {
+    if module_metadata.len() > MAX_WASM_MODULE_BYTES {
         return Err(PipelineError::new(
             "FW_NODE_WASM_MODULE_TOO_LARGE",
             format!(
                 "WASM node '{kind}' module is {} bytes; limit is {MAX_WASM_MODULE_BYTES}",
-                metadata.len()
+                module_metadata.len()
             ),
         ));
     }
@@ -130,39 +174,16 @@ fn execute_wasm_node_blocking(
         )
     })?;
 
-    let main_export = runtime
-        .exports
-        .get("main")
-        .map(String::as_str)
-        .unwrap_or(DEFAULT_MAIN_EXPORT);
-    if runtime.abi != WASM_JSON_ABI_V1 {
-        return Err(PipelineError::new(
-            "FW_NODE_WASM_ABI",
-            format!(
-                "WASM node '{kind}' declares unsupported ABI '{}'; expected '{WASM_JSON_ABI_V1}'",
-                runtime.abi
-            ),
-        ));
-    }
-    let payload = execute_json_abi(
-        &kind,
-        runtime,
+    execute_json_abi(
+        kind,
+        module_spec,
         &mut store,
         &instance,
-        main_export,
-        &config,
-        &input,
-    )?;
-
-    Ok(vec![NodeExecutionOutput {
-        output_pins: vec!["out".to_string()],
+        export,
+        config,
         payload,
-        trace: vec![
-            format!("node_kind={kind}"),
-            format!("wasm_module={}", runtime.module),
-            format!("wasm_abi={}", runtime.abi),
-        ],
-    }])
+        metadata,
+    )
 }
 
 fn resolve_package_file(package_dir: &str, rel_path: &str) -> Result<PathBuf, PipelineError> {
@@ -180,19 +201,21 @@ fn resolve_package_file(package_dir: &str, rel_path: &str) -> Result<PathBuf, Pi
     Ok(Path::new(package_dir).join(rel))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_json_abi(
     kind: &str,
-    runtime: &WasmNodeRuntime,
+    module_spec: &WasmModuleSpec,
     store: &mut Store<()>,
     instance: &Instance,
     main_export: &str,
     config: &Value,
-    input: &NodeExecutionInput,
+    payload: &Value,
+    metadata: &Value,
 ) -> Result<Value, PipelineError> {
     let request = json!({
         "config": config,
-        "input": input.payload,
-        "context": input.metadata,
+        "input": payload,
+        "context": metadata,
     });
     let bytes = serde_json::to_vec(&request).map_err(|err| {
         PipelineError::new(
@@ -215,7 +238,7 @@ fn execute_json_abi(
             "FW_NODE_WASM_MEMORY",
             format!(
                 "WASM node '{kind}' ABI '{}' requires exported memory",
-                runtime.abi
+                module_spec.abi
             ),
         )
     })?;

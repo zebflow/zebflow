@@ -1,0 +1,83 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": {
+    "name": "composite",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "package": "composite",
+    "version": "1.0.0",
+    "title": "Composite Example",
+    "description": "One composite action node built from a function pipeline.",
+    "icon": "icon.svg",
+    "credentials": [
+      {
+        "kind": "composite_api",
+        "title": "Service API Key",
+        "description": "Credential used to reach the example service.",
+        "fields": [],
+        "config_key": "credential_id"
+      }
+    ],
+    "functions": {
+      "load": "functions/load.zf.json"
+    },
+    "modules": {},
+    "nodes": [
+      {
+        "kind": "n.x.composite.load",
+        "title": "Load Dataset",
+        "description": "Fetch and parse a dataset.",
+        "icon": "",
+        "ui_category": "data",
+        "ui_category_label": "Data",
+        "uses_credentials": [
+          "composite_api"
+        ],
+        "run": {
+          "function": "load"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "credential_id": {
+                "type": "string"
+              }
+            }
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [
+            {
+              "name": "credential_id",
+              "label": "Credential",
+              "type": "select",
+              "help": "Credential used for this call.",
+              "readonly": false
+            }
+          ],
+          "layout": [],
+          "dsl_flags": [
+            {
+              "flag": "--credential",
+              "config_key": "credential_id",
+              "description": "Credential id used for this call.",
+              "kind": "scalar",
+              "required": false
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

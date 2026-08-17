@@ -217,11 +217,8 @@ fn ui_category_for_kind(kind: &str) -> (&'static str, &'static str) {
     if kind.starts_with("n.fs.") {
         return ("files.fs", "File System");
     }
-    if kind.starts_with("n.c.") {
-        return ("composite", "");
-    }
-    if kind.starts_with("n.wasm.") {
-        return ("wasm", "");
+    if kind.starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX) {
+        return ("installed", "Installed");
     }
     ("other", "")
 }

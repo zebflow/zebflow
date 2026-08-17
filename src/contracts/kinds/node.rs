@@ -3,13 +3,86 @@ use std::collections::HashSet;
 use std::path::{Component, Path};
 
 use crate::pipeline::NodeDefinition;
-use crate::platform::model::{MultiNodePackageDefinition, NodePackageManifest, NodePackageSource};
+use crate::platform::model::{
+    MultiNodePackageDefinition, NodePackageManifest, NodePackageSource, RunBinding,
+};
 
 /// Maximum serialized size of one standalone normalized node definition.
 pub const MAX_NODE_DEFINITION_BYTES: usize = 512 * 1024;
 
+/// Maximum serialized size of one `definition.json` bundle document.
+pub const MAX_NODE_BUNDLE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Maximum node entries in one bundle.
+///
+/// Matches `MAX_DEPENDENCY_LOCK_BUNDLE_DEFINITIONS` so a valid bundle can always
+/// be recorded in `zeb.lock`.
+pub const MAX_NODE_BUNDLE_NODES: usize = 256;
+
+/// Maximum function pipelines declared by one bundle.
+pub const MAX_NODE_BUNDLE_FUNCTIONS: usize = 256;
+
+/// Maximum WASM modules declared by one bundle.
+pub const MAX_NODE_BUNDLE_MODULES: usize = 64;
+
+/// Maximum credential definitions declared by one bundle.
+pub const MAX_NODE_BUNDLE_CREDENTIALS: usize = 32;
+
+/// Maximum regular files inside one installed package directory.
+pub const MAX_NODE_BUNDLE_FILES: usize = 4096;
+
 /// WASM ABI supported by the stable v1 node contract.
 pub const WASM_JSON_ABI_V1: &str = "zebflow-wasm-json-v1";
+
+/// Reserved kind prefix for every installed node.
+///
+/// Native nodes may not use it, and an installed node may not use anything else.
+pub const INSTALLED_NODE_KIND_PREFIX: &str = "n.x.";
+
+/// Trigger roles a bundle may declare.
+pub const BUNDLE_TRIGGER_TYPES: &[&str] = &["webhook", "ws", "ws_client", "cron"];
+
+/// Converts a package slug into its node-kind segment.
+///
+/// Kind segments allow underscores but not hyphens, so `openai-embedding`
+/// owns `n.x.openai_embedding.`.
+pub fn package_kind_token(package: &str) -> String {
+    package.replace('-', "_")
+}
+
+/// Returns the kind prefix a package owns.
+pub fn package_kind_namespace(package: &str) -> String {
+    format!(
+        "{INSTALLED_NODE_KIND_PREFIX}{}.",
+        package_kind_token(package)
+    )
+}
+
+/// Decode one bounded canonical NodeBundle document.
+pub fn decode_node_bundle(
+    bytes: &[u8],
+) -> Result<crate::contracts::ContractDocument<MultiNodePackageDefinition>, ContractError> {
+    if bytes.len() > MAX_NODE_BUNDLE_BYTES {
+        return Err(ContractError::invalid(format!(
+            "NodeBundle exceeds the {MAX_NODE_BUNDLE_BYTES} byte limit"
+        )));
+    }
+    crate::contracts::decode_contract::<NodeBundleContract>(bytes)
+}
+
+/// Encode one bounded canonical NodeBundle document.
+pub fn encode_node_bundle(
+    metadata: ContractMetadata,
+    spec: MultiNodePackageDefinition,
+) -> Result<Vec<u8>, ContractError> {
+    let bytes = crate::contracts::encode_contract::<NodeBundleContract>(metadata, spec)?;
+    if bytes.len() > MAX_NODE_BUNDLE_BYTES {
+        return Err(ContractError::invalid(format!(
+            "NodeBundle exceeds the {MAX_NODE_BUNDLE_BYTES} byte limit"
+        )));
+    }
+    Ok(bytes)
+}
 
 /// Decode one bounded canonical NodeDefinition document.
 pub fn decode_node_definition(
@@ -47,6 +120,7 @@ impl PlatformContract for NodeBundleContract {
     fn validate(metadata: &ContractMetadata, spec: &Self::Spec) -> Result<(), ContractError> {
         validate_release_metadata(metadata, &spec.package, &spec.version)?;
         validate_package_slug(&spec.package)?;
+        validate_release_version(&spec.version)?;
         if spec.title.trim().is_empty() || spec.description.trim().is_empty() {
             return Err(ContractError::invalid(
                 "spec.title and spec.description must not be empty",
@@ -55,34 +129,155 @@ impl PlatformContract for NodeBundleContract {
         if !spec.icon.is_empty() {
             validate_relative_file("spec.icon", &spec.icon)?;
         }
+
+        validate_limit("spec.nodes", spec.nodes.len(), MAX_NODE_BUNDLE_NODES)?;
+        validate_limit(
+            "spec.functions",
+            spec.functions.len(),
+            MAX_NODE_BUNDLE_FUNCTIONS,
+        )?;
+        validate_limit("spec.modules", spec.modules.len(), MAX_NODE_BUNDLE_MODULES)?;
+        validate_limit(
+            "spec.credentials",
+            spec.credentials.len(),
+            MAX_NODE_BUNDLE_CREDENTIALS,
+        )?;
+
         for (name, path) in &spec.functions {
-            if name.trim().is_empty() {
-                return Err(ContractError::invalid(
-                    "spec.functions names must not be empty",
-                ));
-            }
+            validate_artifact_name(&format!("spec.functions.{name}"), name)?;
             validate_relative_file(&format!("spec.functions.{name}"), path)?;
         }
+        for (name, module) in &spec.modules {
+            validate_artifact_name(&format!("spec.modules.{name}"), name)?;
+            validate_relative_file(&format!("spec.modules.{name}.path"), &module.path)?;
+            if module.abi != WASM_JSON_ABI_V1 {
+                return Err(ContractError::invalid(format!(
+                    "spec.modules.{name}.abi must be '{WASM_JSON_ABI_V1}'"
+                )));
+            }
+        }
+
+        let mut credential_kinds = HashSet::new();
+        for credential in &spec.credentials {
+            if credential.kind.trim().is_empty()
+                || credential.title.trim().is_empty()
+                || credential.description.trim().is_empty()
+                || credential.config_key.trim().is_empty()
+            {
+                return Err(ContractError::invalid(
+                    "credential kind, title, description, and config_key must not be empty",
+                ));
+            }
+            if !credential_kinds.insert(credential.kind.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.credentials declares kind '{}' more than once",
+                    credential.kind
+                )));
+            }
+        }
+
         if spec.nodes.is_empty() {
             return Err(ContractError::invalid(
                 "NodeBundle must contain at least one node",
             ));
         }
-        let definitions = normalize_node_bundle(spec)?;
+
+        let namespace = package_kind_namespace(&spec.package);
+        let manifests = normalize_node_bundle(spec)?;
         let mut kinds = HashSet::new();
-        for (entry, definition) in spec.nodes.iter().zip(definitions) {
-            if !entry.icon.is_empty() {
-                validate_relative_file(&format!("spec.nodes[{}].icon", entry.kind), &entry.icon)?;
-            }
-            if !kinds.insert(definition.definition.kind.clone()) {
+        let mut used_functions = HashSet::new();
+        let mut used_modules = HashSet::new();
+
+        for (entry, manifest) in spec.nodes.iter().zip(&manifests) {
+            let kind = &manifest.definition.kind;
+            if !kind.starts_with(&namespace) || kind.len() == namespace.len() {
                 return Err(ContractError::invalid(format!(
-                    "spec.nodes contains duplicate node kind '{}'",
-                    definition.definition.kind
+                    "node kind '{kind}' must start with '{namespace}' owned by package '{}'",
+                    spec.package
                 )));
             }
-            validate_node_definition_spec(&definition)?;
+            if !kinds.insert(kind.clone()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.nodes contains duplicate node kind '{kind}'"
+                )));
+            }
+            if !entry.icon.is_empty() {
+                validate_relative_file(&format!("spec.nodes[{kind}].icon"), &entry.icon)?;
+            }
+            for name in entry.uses_credentials.iter() {
+                if !credential_kinds.contains(name.as_str()) {
+                    return Err(ContractError::invalid(format!(
+                        "node '{kind}' uses undeclared credential kind '{name}'"
+                    )));
+                }
+            }
+            validate_node_definition_spec(manifest)?;
+            collect_run_references(manifest, &mut used_functions, &mut used_modules);
+        }
+
+        for name in spec.functions.keys() {
+            if !used_functions.contains(name.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.functions.{name} is declared but no node references it"
+                )));
+            }
+        }
+        for name in spec.modules.keys() {
+            if !used_modules.contains(name.as_str()) {
+                return Err(ContractError::invalid(format!(
+                    "spec.modules.{name} is declared but no node references it"
+                )));
+            }
         }
         Ok(())
+    }
+}
+
+fn validate_limit(path: &str, actual: usize, limit: usize) -> Result<(), ContractError> {
+    if actual > limit {
+        return Err(ContractError::invalid(format!(
+            "{path} exceeds the limit of {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_artifact_name(path: &str, value: &str) -> Result<(), ContractError> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(ContractError::invalid(format!(
+            "{path} must be a non-empty name of letters, digits, '-', '_', or '.'"
+        )));
+    }
+    Ok(())
+}
+
+fn collect_run_references<'a>(
+    manifest: &'a NodePackageManifest,
+    functions: &mut HashSet<&'a str>,
+    modules: &mut HashSet<&'a str>,
+) {
+    let mut record = |binding: &'a RunBinding| {
+        if let Some(name) = binding.function.as_deref() {
+            functions.insert(name);
+        }
+        if let Some(name) = binding.module.as_deref() {
+            modules.insert(name);
+        }
+    };
+    if let Some(run) = manifest.run.as_ref() {
+        record(run);
+    }
+    if let Some(lifecycle) = manifest.lifecycle.as_ref() {
+        if let Some(hook) = lifecycle.on_activate.as_ref() {
+            record(hook);
+        }
+        if let Some(hook) = lifecycle.on_deactivate.as_ref() {
+            record(hook);
+        }
     }
 }
 
@@ -134,7 +329,6 @@ pub fn normalize_node_bundle(
 ) -> Result<Vec<NodePackageManifest>, ContractError> {
     let mut manifests = Vec::with_capacity(package.nodes.len());
     for node in &package.nodes {
-        let is_wasm = node.kind.starts_with("n.wasm.");
         let definition = NodeDefinition {
             kind: node.kind.clone(),
             title: node.title.clone(),
@@ -153,28 +347,29 @@ pub fn normalize_node_bundle(
             ui_category_label: node.ui_category_label.clone(),
             ..Default::default()
         };
+        // The implementation type always follows the run binding. A malformed
+        // binding is reported by `validate_node_definition_spec`, so the
+        // placeholder here never reaches a validated manifest.
+        let source = node
+            .run
+            .as_ref()
+            .and_then(RunBinding::source)
+            .unwrap_or(NodePackageSource::Declarative);
         manifests.push(NodePackageManifest {
-            source: if is_wasm {
-                NodePackageSource::Wasm
-            } else {
-                NodePackageSource::Composite
-            },
+            source,
             version: package.version.clone(),
             definition,
-            credentials: package.credentials.clone(),
-            wasm_runtime: is_wasm.then(|| package.wasm_runtime.clone()).flatten(),
-            functions: if is_wasm {
-                Default::default()
-            } else {
-                package.functions.clone()
-            },
-            main_function: if is_wasm { None } else { node.main.clone() },
-            trigger: if is_wasm { None } else { node.trigger.clone() },
-            lifecycle: if is_wasm {
-                None
-            } else {
-                node.lifecycle.clone()
-            },
+            credentials: package
+                .credentials
+                .iter()
+                .filter(|credential| node.uses_credentials.contains(&credential.kind))
+                .cloned()
+                .collect(),
+            run: node.run.clone(),
+            trigger: node.trigger.clone(),
+            lifecycle: node.lifecycle.clone(),
+            functions: package.functions.clone(),
+            modules: package.modules.clone(),
         });
     }
     Ok(manifests)
@@ -285,12 +480,158 @@ pub fn validate_normalized_node_definition(
 pub fn validate_node_definition_spec(spec: &NodePackageManifest) -> Result<(), ContractError> {
     validate_release_version(&spec.version)?;
     validate_normalized_node_definition(&spec.definition)?;
+    validate_installed_kind(&spec.definition.kind)?;
     validate_credentials(spec)?;
+    validate_role_and_run(spec)
+}
 
-    match spec.source {
-        NodePackageSource::Composite => validate_composite_runtime(spec),
-        NodePackageSource::Wasm => validate_wasm_runtime(spec),
+/// Every installed node lives under the reserved `n.x.` namespace.
+fn validate_installed_kind(kind: &str) -> Result<(), ContractError> {
+    if !kind.starts_with(INSTALLED_NODE_KIND_PREFIX) {
+        return Err(ContractError::invalid(format!(
+            "installed node kind '{kind}' must start with '{INSTALLED_NODE_KIND_PREFIX}'"
+        )));
     }
+    Ok(())
+}
+
+/// Validates the node's role, its run binding, and every artifact reference.
+fn validate_role_and_run(spec: &NodePackageManifest) -> Result<(), ContractError> {
+    let kind = &spec.definition.kind;
+
+    if let Some(trigger) = &spec.trigger {
+        if !BUNDLE_TRIGGER_TYPES.contains(&trigger.trigger_type.as_str()) {
+            return Err(ContractError::invalid(format!(
+                "node '{kind}' declares unsupported trigger type '{}'; expected one of {}",
+                trigger.trigger_type,
+                BUNDLE_TRIGGER_TYPES.join(", ")
+            )));
+        }
+        if let Some(template) = &trigger.path_template {
+            validate_path_template(kind, template, &spec.definition.config_schema)?;
+        }
+        if !spec.definition.input_pins.is_empty() {
+            return Err(ContractError::invalid(format!(
+                "trigger node '{kind}' must not declare input pins"
+            )));
+        }
+    } else if spec.lifecycle.is_some() {
+        return Err(ContractError::invalid(format!(
+            "node '{kind}' declares lifecycle hooks without a trigger"
+        )));
+    }
+
+    match &spec.run {
+        None => {
+            if spec.trigger.is_none() {
+                return Err(ContractError::invalid(format!(
+                    "action node '{kind}' must declare a run binding"
+                )));
+            }
+            if spec.source != NodePackageSource::Declarative {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' has no run binding but is not declarative"
+                )));
+            }
+        }
+        Some(run) => {
+            validate_run_binding(kind, "run", run, spec)?;
+            let derived = run.source().expect("validated binding resolves a source");
+            if spec.source != derived {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' source must be derived from its run binding"
+                )));
+            }
+        }
+    }
+
+    if let Some(lifecycle) = &spec.lifecycle {
+        if let Some(hook) = &lifecycle.on_activate {
+            validate_run_binding(kind, "lifecycle.on_activate", hook, spec)?;
+        }
+        if let Some(hook) = &lifecycle.on_deactivate {
+            validate_run_binding(kind, "lifecycle.on_deactivate", hook, spec)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validates one run binding form and resolves it against declared artifacts.
+fn validate_run_binding(
+    kind: &str,
+    path: &str,
+    binding: &RunBinding,
+    spec: &NodePackageManifest,
+) -> Result<(), ContractError> {
+    match binding.source() {
+        Some(NodePackageSource::Composite) => {
+            let name = binding.function.as_deref().unwrap_or_default();
+            if !spec.functions.contains_key(name) {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' {path} references undeclared function '{name}'"
+                )));
+            }
+        }
+        Some(NodePackageSource::Wasm) => {
+            let module = binding.module.as_deref().unwrap_or_default();
+            let export = binding.export.as_deref().unwrap_or_default();
+            let Some(spec_module) = spec.modules.get(module) else {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' {path} references undeclared module '{module}'"
+                )));
+            };
+            if spec_module.abi != WASM_JSON_ABI_V1 {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' {path} module '{module}' must use ABI '{WASM_JSON_ABI_V1}'"
+                )));
+            }
+            validate_relative_file(&format!("{path}.module"), &spec_module.path)?;
+            if export.trim().is_empty() {
+                return Err(ContractError::invalid(format!(
+                    "node '{kind}' {path} must name a WASM export"
+                )));
+            }
+        }
+        Some(NodePackageSource::Declarative) | None => {
+            return Err(ContractError::invalid(format!(
+                "node '{kind}' {path} must declare either 'function' or both 'module' and 'export'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every `{{ key }}` in a trigger path template must be a declared config key.
+fn validate_path_template(
+    kind: &str,
+    template: &str,
+    config_schema: &serde_json::Value,
+) -> Result<(), ContractError> {
+    let properties = config_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object);
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            return Err(ContractError::invalid(format!(
+                "node '{kind}' trigger path_template has an unterminated placeholder"
+            )));
+        };
+        let key = after[..end].trim();
+        if key.is_empty() {
+            return Err(ContractError::invalid(format!(
+                "node '{kind}' trigger path_template has an empty placeholder"
+            )));
+        }
+        if !properties.is_some_and(|values| values.contains_key(key)) {
+            return Err(ContractError::invalid(format!(
+                "node '{kind}' trigger path_template references undeclared config key '{key}'"
+            )));
+        }
+        rest = &after[end + 2..];
+    }
+    Ok(())
 }
 
 fn validate_release_version(version: &str) -> Result<(), ContractError> {
@@ -377,92 +718,6 @@ fn validate_credentials(spec: &NodePackageManifest) -> Result<(), ContractError>
     Ok(())
 }
 
-fn validate_composite_runtime(spec: &NodePackageManifest) -> Result<(), ContractError> {
-    let kind = &spec.definition.kind;
-    if !kind.starts_with("n.c.") {
-        return Err(ContractError::invalid(format!(
-            "composite node kind '{kind}' must start with 'n.c.'"
-        )));
-    }
-    if spec.wasm_runtime.is_some() {
-        return Err(ContractError::invalid(
-            "composite node must not declare spec.wasm_runtime",
-        ));
-    }
-    if spec.main_function.is_none() && spec.trigger.is_none() {
-        return Err(ContractError::invalid(
-            "composite node must declare main_function or trigger",
-        ));
-    }
-    for (name, path) in &spec.functions {
-        if name.trim().is_empty() {
-            return Err(ContractError::invalid(
-                "spec.functions names must not be empty",
-            ));
-        }
-        validate_relative_file(&format!("spec.functions.{name}"), path)?;
-    }
-    for (path, reference) in [
-        ("spec.main_function", spec.main_function.as_ref()),
-        (
-            "spec.trigger.on_message",
-            spec.trigger
-                .as_ref()
-                .and_then(|value| value.on_message.as_ref()),
-        ),
-        (
-            "spec.lifecycle.on_activate",
-            spec.lifecycle
-                .as_ref()
-                .and_then(|value| value.on_activate.as_ref()),
-        ),
-        (
-            "spec.lifecycle.on_deactivate",
-            spec.lifecycle
-                .as_ref()
-                .and_then(|value| value.on_deactivate.as_ref()),
-        ),
-    ] {
-        if let Some(reference) = reference
-            && !spec.functions.contains_key(reference)
-        {
-            return Err(ContractError::invalid(format!(
-                "{path} references missing function '{reference}'"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_wasm_runtime(spec: &NodePackageManifest) -> Result<(), ContractError> {
-    let kind = &spec.definition.kind;
-    if !kind.starts_with("n.wasm.") {
-        return Err(ContractError::invalid(format!(
-            "WASM node kind '{kind}' must start with 'n.wasm.'"
-        )));
-    }
-    if !spec.functions.is_empty()
-        || spec.main_function.is_some()
-        || spec.trigger.is_some()
-        || spec.lifecycle.is_some()
-    {
-        return Err(ContractError::invalid(
-            "WASM node must not declare composite runtime fields",
-        ));
-    }
-    let runtime = spec
-        .wasm_runtime
-        .as_ref()
-        .ok_or_else(|| ContractError::invalid("WASM node must declare spec.wasm_runtime"))?;
-    validate_relative_file("spec.wasm_runtime.module", &runtime.module)?;
-    if runtime.abi != WASM_JSON_ABI_V1 {
-        return Err(ContractError::invalid(format!(
-            "spec.wasm_runtime.abi must be '{WASM_JSON_ABI_V1}'"
-        )));
-    }
-    Ok(())
-}
-
 fn validate_relative_file(path: &str, value: &str) -> Result<(), ContractError> {
     let value_path = Path::new(value);
     if value.is_empty()
@@ -507,173 +762,415 @@ fn validate_release_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::ContractDocument;
 
-    const V1_COMPLETE: &[u8] =
+    const V1_DEFINITION: &[u8] =
         include_bytes!("../../../tests/fixtures/contracts/node-definition/v1-complete.json");
+    const V1_COMPOSITE: &[u8] =
+        include_bytes!("../../../tests/fixtures/contracts/node-bundle/v1-composite.json");
+    const V1_WASM: &[u8] =
+        include_bytes!("../../../tests/fixtures/contracts/node-bundle/v1-wasm.json");
+    const V1_MIXED: &[u8] =
+        include_bytes!("../../../tests/fixtures/contracts/node-bundle/v1-mixed.json");
 
-    fn wasm_manifest() -> NodePackageManifest {
-        serde_json::from_value(serde_json::json!({
-            "source": "wasm",
-            "version": "1.2.3",
-            "definition": {
-                "kind": "n.wasm.test",
-                "title": "WASM Test",
-                "description": "Execute a test WASM module.",
-                "config_schema": {},
-                "input_pins": ["in"],
-                "output_pins": ["out"]
-            },
-            "wasm_runtime": {
-                "module": "dist/module.wasm",
-                "abi": "zebflow-wasm-json-v1"
-            }
-        }))
-        .expect("manifest")
+    fn bundle(bytes: &[u8]) -> ContractDocument<MultiNodePackageDefinition> {
+        decode_node_bundle(bytes).expect("decode bundle")
+    }
+
+    fn mutate(bytes: &[u8], mutation: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+        let mut value: serde_json::Value = serde_json::from_slice(bytes).expect("json");
+        mutation(&mut value);
+        serde_json::to_vec(&value).expect("json bytes")
+    }
+
+    // ── Golden round-trips ──────────────────────────────────────────────
+
+    #[test]
+    fn golden_bundles_roundtrip_without_schema_drift() {
+        for bytes in [V1_COMPOSITE, V1_WASM, V1_MIXED] {
+            let document = bundle(bytes);
+            let encoded =
+                encode_node_bundle(document.metadata, document.spec).expect("encode bundle");
+            assert_eq!(encoded, bytes);
+        }
     }
 
     #[test]
-    fn accepts_complete_wasm_definition() {
-        validate_node_definition_spec(&wasm_manifest()).expect("valid manifest");
+    fn golden_definition_roundtrips_without_schema_drift() {
+        let document = decode_node_definition(V1_DEFINITION).expect("decode golden definition");
+        let encoded =
+            encode_node_definition(document.metadata, document.spec).expect("encode definition");
+        assert_eq!(encoded, V1_DEFINITION);
+    }
+
+    // ── Implementation is derived, never authored ───────────────────────
+
+    #[test]
+    fn implementation_type_follows_the_run_binding() {
+        let manifests = normalize_node_bundle(&bundle(V1_MIXED).spec).expect("normalize");
+        let sources: Vec<_> = manifests
+            .iter()
+            .map(|manifest| (manifest.definition.kind.as_str(), manifest.source))
+            .collect();
+        assert_eq!(
+            sources,
+            vec![
+                ("n.x.mixed.load", NodePackageSource::Composite),
+                ("n.x.mixed.crunch", NodePackageSource::Wasm),
+                ("n.x.mixed.inbox", NodePackageSource::Declarative),
+            ]
+        );
     }
 
     #[test]
-    fn golden_v1_roundtrips_without_schema_drift() {
-        let document = decode_node_definition(V1_COMPLETE).expect("decode golden definition");
-        let encoded = encode_node_definition(document.metadata, document.spec)
-            .expect("encode golden definition");
-        assert_eq!(encoded, V1_COMPLETE);
+    fn two_wasm_nodes_resolve_distinct_exports() {
+        let manifests = normalize_node_bundle(&bundle(V1_WASM).spec).expect("normalize");
+        let targets: Vec<_> = manifests
+            .iter()
+            .map(|manifest| {
+                let (module, export) = manifest.wasm_target().expect("wasm target");
+                (module.path.as_str(), export)
+            })
+            .collect();
+        assert_eq!(
+            targets,
+            vec![
+                ("wasm/core.wasm", "gb_train"),
+                ("wasm/core.wasm", "gb_score"),
+            ]
+        );
     }
 
     #[test]
-    fn rejects_definition_identity_mismatch_and_release_version() {
-        let document = decode_node_definition(V1_COMPLETE).expect("definition");
-        let mut wrong_name = document.metadata.clone();
-        wrong_name.name = "n.example.other".into();
-        assert!(encode_node_definition(wrong_name, document.spec.clone()).is_err());
+    fn credentials_are_scoped_to_the_nodes_that_use_them() {
+        let manifests = normalize_node_bundle(&bundle(V1_MIXED).spec).expect("normalize");
+        let load = &manifests[0];
+        let crunch = &manifests[1];
+        assert_eq!(load.definition.kind, "n.x.mixed.load");
+        assert_eq!(
+            load.credentials
+                .iter()
+                .map(|credential| credential.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mixed_api"]
+        );
+        // A node that uses no credential carries no credential obligation,
+        // which is what allows one bundle to provide unrelated nodes.
+        assert!(crunch.credentials.is_empty());
+    }
 
-        let mut versioned = document.metadata;
-        versioned.version = Some("1.0.0".into());
-        assert!(encode_node_definition(versioned, document.spec).is_err());
+    // ── Identity and release rules ──────────────────────────────────────
+
+    #[test]
+    fn rejects_metadata_and_spec_identity_mismatch() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["metadata"]["name"] = serde_json::json!("other");
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["metadata"]["version"] = serde_json::json!("9.9.9");
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_kind_and_future_version() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["kind"] = serde_json::json!("Pipeline");
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["apiVersion"] = serde_json::json!("zebflow.com/v2");
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_slug_and_release_version() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["metadata"]["name"] = serde_json::json!("Bad_Slug");
+                value["spec"]["package"] = serde_json::json!("Bad_Slug");
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["metadata"]["version"] = serde_json::json!("1.0");
+                value["spec"]["version"] = serde_json::json!("1.0");
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn rejects_unknown_fields_and_oversized_documents() {
-        let mut value: serde_json::Value = serde_json::from_slice(V1_COMPLETE).expect("json");
-        value["spec"]["unknown"] = serde_json::json!(true);
-        assert!(decode_node_definition(&serde_json::to_vec(&value).expect("json bytes")).is_err());
-        assert!(decode_node_definition(&vec![b' '; MAX_NODE_DEFINITION_BYTES + 1]).is_err());
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["unknown"] = serde_json::json!(true);
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["source"] = serde_json::json!("composite");
+            }))
+            .is_err(),
+            "an authored source field must not be accepted"
+        );
+        assert!(decode_node_bundle(&vec![b' '; MAX_NODE_BUNDLE_BYTES + 1]).is_err());
     }
 
+    // ── Kind ownership ──────────────────────────────────────────────────
+
     #[test]
-    fn bundle_normalization_preserves_payload_schemas() {
-        let package: MultiNodePackageDefinition = serde_json::from_value(serde_json::json!({
-            "package": "schema-test",
-            "version": "1.0.0",
-            "title": "Schema Test",
-            "description": "Prove that package normalization preserves node payload schemas.",
-            "functions": {"main": "functions/main.zf.json"},
-            "nodes": [{
-                "kind": "n.c.schema.test",
-                "title": "Schema Test",
-                "description": "Return a typed result.",
-                "main": "main",
-                "definition": {
-                    "config_schema": {},
-                    "input_schema": {"type": "object", "required": ["value"]},
-                    "output_schema": {"type": "object", "required": ["result"]},
-                    "examples": [{
-                        "title": "Typed result",
-                        "input": {"value": 2},
-                        "output": {"result": 4}
-                    }],
-                    "failure_semantics": [{
-                        "code": "FW_SCHEMA_TEST_INVALID",
-                        "description": "The value is invalid.",
-                        "retryable": false
-                    }],
-                    "input_pins": ["in"],
-                    "output_pins": ["out"]
-                }
-            }]
-        }))
-        .expect("bundle");
-        let normalized = normalize_node_bundle(&package).expect("normalize");
-        assert_eq!(normalized.len(), 1);
+    fn package_owns_its_kind_namespace() {
+        assert_eq!(package_kind_namespace("ml"), "n.x.ml.");
         assert_eq!(
-            normalized[0].definition.input_schema["required"][0],
-            "value"
-        );
-        assert_eq!(
-            normalized[0].definition.output_schema["required"][0],
-            "result"
-        );
-        assert_eq!(normalized[0].definition.examples[0].title, "Typed result");
-        assert_eq!(
-            normalized[0].definition.failure_semantics[0].code,
-            "FW_SCHEMA_TEST_INVALID"
-        );
-        let api_item = crate::pipeline::NodeContractItem::from(normalized[0].definition.clone());
-        assert_eq!(api_item.examples, normalized[0].definition.examples);
-        assert_eq!(
-            api_item.failure_semantics,
-            normalized[0].definition.failure_semantics
+            package_kind_namespace("openai-embedding"),
+            "n.x.openai_embedding."
         );
     }
 
     #[test]
-    fn rejects_invalid_examples_and_duplicate_failure_codes() {
-        let mut manifest = wasm_manifest();
-        manifest
-            .definition
-            .examples
-            .push(crate::pipeline::NodeExample {
-                title: String::new(),
-                config: serde_json::json!([]),
-                ..Default::default()
-            });
-        assert!(validate_node_definition_spec(&manifest).is_err());
-
-        manifest.definition.examples.clear();
-        manifest.definition.failure_semantics = vec![
-            crate::pipeline::NodeFailureSemantic {
-                code: "FW_DUPLICATE".into(),
-                description: "First meaning.".into(),
-                ..Default::default()
-            },
-            crate::pipeline::NodeFailureSemantic {
-                code: "FW_DUPLICATE".into(),
-                description: "Second meaning.".into(),
-                ..Default::default()
-            },
-        ];
-        assert!(validate_node_definition_spec(&manifest).is_err());
+    fn rejects_kind_outside_the_package_namespace() {
+        for kind in [
+            "n.x.other.load",
+            "n.c.composite.load",
+            "n.wasm.composite.load",
+            "n.x.composite",
+        ] {
+            assert!(
+                decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                    value["spec"]["nodes"][0]["kind"] = serde_json::json!(kind);
+                }))
+                .is_err(),
+                "kind '{kind}' must be rejected"
+            );
+        }
     }
 
     #[test]
-    fn rejects_wasm_definition_without_runtime() {
-        let mut manifest = wasm_manifest();
-        manifest.wasm_runtime = None;
-        assert!(validate_node_definition_spec(&manifest).is_err());
+    fn rejects_duplicate_node_kind() {
+        assert!(
+            decode_node_bundle(&mutate(V1_WASM, |value| {
+                value["spec"]["nodes"][1]["kind"] = serde_json::json!("n.x.wasmpkg.train");
+            }))
+            .is_err()
+        );
+    }
+
+    // ── Run binding ─────────────────────────────────────────────────────
+
+    #[test]
+    fn rejects_module_without_export() {
+        assert!(
+            decode_node_bundle(&mutate(V1_WASM, |value| {
+                value["spec"]["nodes"][0]["run"]
+                    .as_object_mut()
+                    .expect("run object")
+                    .remove("export");
+            }))
+            .is_err(),
+            "a default export symbol would make two WASM nodes collide"
+        );
     }
 
     #[test]
-    fn rejects_unsafe_wasm_module_path() {
-        let mut manifest = wasm_manifest();
-        manifest.wasm_runtime.as_mut().expect("runtime").module = "../module.wasm".into();
-        assert!(validate_node_definition_spec(&manifest).is_err());
+    fn rejects_mixed_and_empty_run_forms() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["run"] =
+                    serde_json::json!({ "function": "load", "module": "core", "export": "run" });
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["run"] = serde_json::json!({});
+            }))
+            .is_err()
+        );
     }
 
     #[test]
-    fn rejects_mixed_wasm_and_composite_runtime() {
-        let mut manifest = wasm_manifest();
-        manifest.main_function = Some("main".into());
-        assert!(validate_node_definition_spec(&manifest).is_err());
+    fn rejects_action_node_without_run() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]
+                    .as_object_mut()
+                    .expect("node object")
+                    .remove("run");
+            }))
+            .is_err()
+        );
     }
 
     #[test]
-    fn rejects_duplicate_pins() {
-        let mut manifest = wasm_manifest();
-        manifest.definition.output_pins = vec!["out".into(), "out".into()];
-        assert!(validate_node_definition_spec(&manifest).is_err());
+    fn rejects_unresolvable_function_and_module_references() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["run"] = serde_json::json!({ "function": "missing" });
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_WASM, |value| {
+                value["spec"]["nodes"][0]["run"] =
+                    serde_json::json!({ "module": "missing", "export": "gb_train" });
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_declared_but_unreferenced_artifacts() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["functions"]["orphan"] =
+                    serde_json::json!("functions/orphan.zf.json");
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_WASM, |value| {
+                value["spec"]["modules"]["orphan"] = serde_json::json!({
+                    "path": "wasm/orphan.wasm",
+                    "abi": WASM_JSON_ABI_V1
+                });
+            }))
+            .is_err()
+        );
+    }
+
+    // ── Trigger and lifecycle ───────────────────────────────────────────
+
+    #[test]
+    fn rejects_lifecycle_on_a_non_trigger_node() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["lifecycle"] =
+                    serde_json::json!({ "on_activate": { "function": "load" } });
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_trigger_type_and_input_pins() {
+        assert!(
+            decode_node_bundle(&mutate(V1_MIXED, |value| {
+                value["spec"]["nodes"][2]["trigger"]["type"] = serde_json::json!("carrier_pigeon");
+            }))
+            .is_err()
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_MIXED, |value| {
+                value["spec"]["nodes"][2]["definition"]["input_pins"] = serde_json::json!(["in"]);
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_path_template_with_undeclared_config_key() {
+        assert!(
+            decode_node_bundle(&mutate(V1_MIXED, |value| {
+                value["spec"]["nodes"][2]["trigger"]["path_template"] =
+                    serde_json::json!("/mixed/{{ nope }}");
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_a_wasm_trigger_handler() {
+        let bytes = mutate(V1_MIXED, |value| {
+            value["spec"]["nodes"][2]["run"] =
+                serde_json::json!({ "module": "core", "export": "on_event" });
+        });
+        let document = decode_node_bundle(&bytes).expect("wasm trigger is expressible");
+        let manifests = normalize_node_bundle(&document.spec).expect("normalize");
+        assert_eq!(manifests[2].source, NodePackageSource::Wasm);
+        assert!(manifests[2].trigger.is_some());
+    }
+
+    // ── Artifacts, ABI, credentials ─────────────────────────────────────
+
+    #[test]
+    fn rejects_unsafe_artifact_paths() {
+        for path in [
+            "../escape.zf.json",
+            "/abs/escape.zf.json",
+            "./escape.zf.json",
+        ] {
+            assert!(
+                decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                    value["spec"]["functions"]["load"] = serde_json::json!(path);
+                }))
+                .is_err(),
+                "path '{path}' must be rejected"
+            );
+        }
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["icon"] = serde_json::json!("../icon.svg");
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_wasm_abi() {
+        assert!(
+            decode_node_bundle(&mutate(V1_WASM, |value| {
+                value["spec"]["modules"]["core"]["abi"] = serde_json::json!("zebflow-wasm-json-v2");
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_credential_problems() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"][0]["uses_credentials"] = serde_json::json!(["nope"]);
+            }))
+            .is_err(),
+            "a node may not use an undeclared credential kind"
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                let credential = value["spec"]["credentials"][0].clone();
+                value["spec"]["credentials"] = serde_json::json!([credential.clone(), credential]);
+            }))
+            .is_err(),
+            "duplicate credential kinds must be rejected"
+        );
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["credentials"][0]["config_key"] = serde_json::json!("absent_key");
+            }))
+            .is_err(),
+            "a used credential must map to a declared config key"
+        );
+    }
+
+    #[test]
+    fn rejects_limit_violations() {
+        assert!(
+            decode_node_bundle(&mutate(V1_COMPOSITE, |value| {
+                value["spec"]["nodes"] = serde_json::json!([]);
+            }))
+            .is_err()
+        );
     }
 }

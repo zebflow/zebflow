@@ -1,0 +1,161 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": {
+    "name": "mixed",
+    "version": "1.4.2"
+  },
+  "spec": {
+    "package": "mixed",
+    "version": "1.4.2",
+    "title": "Mixed Example",
+    "description": "Composite, WASM, and declarative trigger nodes in one bundle.",
+    "icon": "icon.svg",
+    "credentials": [
+      {
+        "kind": "mixed_api",
+        "title": "Service API Key",
+        "description": "Credential used to reach the example service.",
+        "fields": [],
+        "config_key": "credential_id"
+      }
+    ],
+    "functions": {
+      "load": "functions/load.zf.json"
+    },
+    "modules": {
+      "core": {
+        "path": "wasm/core.wasm",
+        "abi": "zebflow-wasm-json-v1"
+      }
+    },
+    "nodes": [
+      {
+        "kind": "n.x.mixed.load",
+        "title": "Load Dataset",
+        "description": "Fetch and parse a dataset.",
+        "icon": "",
+        "ui_category": "data",
+        "ui_category_label": "Data",
+        "uses_credentials": [
+          "mixed_api"
+        ],
+        "run": {
+          "function": "load"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "credential_id": {
+                "type": "string"
+              }
+            }
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [
+            {
+              "name": "credential_id",
+              "label": "Credential",
+              "type": "select",
+              "help": "Credential used for this call.",
+              "readonly": false
+            }
+          ],
+          "layout": [],
+          "dsl_flags": [
+            {
+              "flag": "--credential",
+              "config_key": "credential_id",
+              "description": "Credential id used for this call.",
+              "kind": "scalar",
+              "required": false
+            }
+          ]
+        }
+      },
+      {
+        "kind": "n.x.mixed.crunch",
+        "title": "Crunch Numbers",
+        "description": "Run a compute-heavy transform.",
+        "icon": "",
+        "ui_category": "data",
+        "ui_category_label": "Data",
+        "uses_credentials": [],
+        "run": {
+          "module": "core",
+          "export": "crunch"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object"
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [],
+          "layout": [],
+          "dsl_flags": []
+        }
+      },
+      {
+        "kind": "n.x.mixed.inbox",
+        "title": "On Inbound Event",
+        "description": "Start a pipeline when an event arrives.",
+        "icon": "",
+        "ui_category": "data",
+        "ui_category_label": "Data",
+        "uses_credentials": [],
+        "trigger": {
+          "type": "webhook",
+          "path_template": "/mixed/{{ hook_key }}"
+        },
+        "definition": {
+          "input_pins": [],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object",
+            "properties": {
+              "hook_key": {
+                "type": "string"
+              }
+            }
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [
+            {
+              "name": "hook_key",
+              "label": "Hook Key",
+              "type": "text",
+              "help": "Key used to build the public webhook path.",
+              "readonly": false
+            }
+          ],
+          "layout": [],
+          "dsl_flags": []
+        }
+      }
+    ]
+  }
+}

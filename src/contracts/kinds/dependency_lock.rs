@@ -260,15 +260,13 @@ fn validate_namespaced_name(path: &str, value: &str) -> Result<(), ContractError
     Ok(())
 }
 
+/// Validates one locked node kind as a well-formed logical name.
+///
+/// The lock deliberately does not police the node namespace. Which prefixes an
+/// installed node may use is a `NodeBundle` rule, and keeping it there means the
+/// namespace is enforced in exactly one place.
 fn validate_node_kind(path: &str, value: &str) -> Result<(), ContractError> {
-    validate_logical_name(path, value, false)?;
-    if !value.starts_with("n.c.") && !value.starts_with("n.wasm.") {
-        return Err(ContractError::violation(
-            "ZF_DEPENDENCY_LOCK_NODE_KIND",
-            format!("{path} value '{value}' must start with n.c. or n.wasm."),
-        ));
-    }
-    Ok(())
+    validate_logical_name(path, value, false)
 }
 
 fn validate_logical_name(path: &str, value: &str, allow_slash: bool) -> Result<(), ContractError> {

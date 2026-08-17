@@ -162,7 +162,10 @@ impl PlatformService {
             config.data_root.clone(),
             config.data_root.join("platform").join("project-operations"),
         ));
-        let pipeline_runtime = Arc::new(PipelineRuntimeService::new(projects.clone()));
+        let pipeline_runtime = Arc::new(PipelineRuntimeService::new(
+            projects.clone(),
+            node_registry.clone(),
+        ));
         let pipeline_hits = Arc::new(PipelineHitsService::new(10));
         let mcp_sessions = Arc::new(McpSessionService::new(
             data.clone(),

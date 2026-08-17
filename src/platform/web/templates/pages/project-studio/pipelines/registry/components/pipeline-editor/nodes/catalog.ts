@@ -66,8 +66,7 @@ const NODE_KIND_COLORS: Record<string, string> = {
 
 export function nodeColor(kind: string): string {
   if (NODE_KIND_COLORS[kind]) return NODE_KIND_COLORS[kind];
-  if (kind.startsWith("n.c.")) return "#6d28d9";
-  if (kind.startsWith("n.wasm.")) return "#dc2626";
+  if (kind.startsWith("n.x.")) return "#6d28d9";
   return "#334155";
 }
 
@@ -98,8 +97,9 @@ export function categoryForNodeKind(kind: string): string {
   if (canonical.startsWith("n.auth.") || canonical.startsWith("n.crypto")) return "security";
   if (canonical.startsWith("n.web.") || canonical.startsWith("n.ws.") || canonical.startsWith("n.http.") || canonical.startsWith("n.browser.")) return "web";
   if (canonical.startsWith("n.geo.") || canonical.startsWith("n.kv.") || canonical.startsWith("n.mem.") || canonical.startsWith("n.pg.") || canonical.startsWith("n.sqlite.") || canonical.startsWith("n.sekejap.") || canonical.startsWith("n.table.")) return "data";
-  if (canonical.startsWith("n.c.")) return categoryForNodeKind("n." + canonical.slice(4));
-  if (canonical.startsWith("n.wasm.")) return "wasm";
+  // Installed nodes carry their own ui_category. This fallback only runs when a
+  // bundle left it empty, and the kind never encodes the implementation.
+  if (canonical.startsWith("n.x.")) return "installed";
   if (canonical === "n.script") return "logic";
   return "other";
 }

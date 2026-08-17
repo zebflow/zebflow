@@ -74,7 +74,7 @@ reference allows the dependency service to remove the unused lock entry.
           "entry": "nodes/sim-des/definition.json",
           "integrity": "sha256:3ac2f46cf9e862d73b115e2806c86d1794fa2ca6c3025dcfea1f337a48d72ef3",
           "definitions": [
-            "n.wasm.sim.des"
+            "n.x.sim.des"
           ]
         }
       }
@@ -149,8 +149,9 @@ Each node bundle adds:
 | --- | --- |
 | `definitions` | Sorted, unique node kinds provided by the resolved bundle |
 
-Every definition must use a valid node kind such as `n.c.telegram.send` or
-`n.wasm.sim.des`. A node kind cannot be provided by two locked bundles in the
+Every definition must use a valid node kind such as `n.x.telegram.send` or
+`n.x.sim.des`. The lock does not police the node namespace; that rule belongs to
+`NodeBundle`. A node kind cannot be provided by two locked bundles in the
 same project.
 
 Native nodes compiled into Zebflow are runtime capabilities and are not lock

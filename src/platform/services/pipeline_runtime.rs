@@ -10,11 +10,11 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 
-use crate::contracts::kinds::decode_pipeline_graph;
+use crate::contracts::kinds::{INSTALLED_NODE_KIND_PREFIX, decode_pipeline_graph};
 use crate::pipeline::PipelineGraph;
 use crate::platform::error::PlatformError;
 use crate::platform::model::PipelineMeta;
-use crate::platform::services::ProjectService;
+use crate::platform::services::{NodeRegistryService, ProjectService};
 
 /// Stable active pipeline key.
 pub type ActivePipelineKey = String;
@@ -151,7 +151,16 @@ pub struct CompiledPipeline {
 
 impl CompiledPipeline {
     /// Builds one compiled runtime entry from active metadata and snapshot source.
-    pub fn from_active_meta(meta: &PipelineMeta, source: &str) -> Result<Self, PlatformError> {
+    /// Compiles one activated pipeline.
+    ///
+    /// `registry` resolves trigger roles for installed (`n.x.*`) nodes. Pass
+    /// `None` when only compile validity is needed; installed trigger routes are
+    /// then skipped because their role cannot be resolved.
+    pub fn from_active_meta(
+        meta: &PipelineMeta,
+        source: &str,
+        registry: Option<&crate::platform::services::NodeRegistryService>,
+    ) -> Result<Self, PlatformError> {
         let graph = decode_pipeline_graph(source.as_bytes())
             .map_err(|err| {
                 PlatformError::new(
@@ -426,32 +435,32 @@ impl CompiledPipeline {
                         });
                     }
                 }
-                // Composite trigger nodes (n.c.trigger.*): extract webhook trigger
-                // from the node's trigger metadata in the package manifest.
-                other if other.starts_with("n.c.trigger.") => {
-                    // Composite triggers embed their trigger type in the package
-                    // manifest.  At compile-time we don't have the node registry,
-                    // so we derive the webhook path from a `path` config key on
-                    // the node (set by DSL / UI).  If no explicit path, fall back
-                    // to a conventional `/tg/{credential_id}` style path built
-                    // from `path_template` or node kind suffix + credential id.
+                // Installed nodes declare their trigger role in the package
+                // manifest, so the node kind is never parsed to find one.
+                other if other.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
+                    let Some(trigger) = registry
+                        .and_then(|registry| {
+                            registry.get_manifest(&meta.owner, &meta.project, other)
+                        })
+                        .and_then(|manifest| manifest.trigger)
+                        .filter(|trigger| trigger.trigger_type == "webhook")
+                    else {
+                        continue;
+                    };
+                    // An explicit `path` always wins. Otherwise the manifest's
+                    // template is rendered against this node's configuration.
                     let path = node
                         .config
                         .get("path")
                         .and_then(serde_json::Value::as_str)
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            // Convention: /{kind_suffix}/{credential_id}
-                            // e.g. n.c.trigger.tg → /tg/{bot_credential_id}
-                            let suffix = other.strip_prefix("n.c.trigger.").unwrap_or("hook");
-                            let cred_id = node
-                                .config
-                                .get("bot_credential_id")
-                                .or_else(|| node.config.get("credential_id"))
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("default");
-                            format!("/{}/{}", suffix, cred_id)
-                        });
+                        .map(|value| value.to_string())
+                        .or_else(|| {
+                            trigger
+                                .path_template
+                                .as_deref()
+                                .map(|template| render_trigger_path(template, &node.config))
+                        })
+                        .unwrap_or_else(|| format!("/{}", node.id));
                     let method = node
                         .config
                         .get("method")
@@ -493,13 +502,15 @@ impl CompiledPipeline {
 /// Production runtime registry for activated pipelines.
 pub struct PipelineRuntimeService {
     projects: Arc<ProjectService>,
+    node_registry: Arc<NodeRegistryService>,
     inner: ArcSwap<HashMap<ActivePipelineKey, CompiledPipeline>>,
 }
 
 impl PipelineRuntimeService {
-    pub fn new(projects: Arc<ProjectService>) -> Self {
+    pub fn new(projects: Arc<ProjectService>, node_registry: Arc<NodeRegistryService>) -> Self {
         Self {
             projects,
+            node_registry,
             inner: ArcSwap::new(Arc::new(HashMap::new())),
         }
     }
@@ -526,7 +537,11 @@ impl PipelineRuntimeService {
                     continue;
                 }
             };
-            let compiled = match CompiledPipeline::from_active_meta(meta, &source) {
+            let compiled = match CompiledPipeline::from_active_meta(
+                meta,
+                &source,
+                Some(&self.node_registry),
+            ) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!(
@@ -570,7 +585,8 @@ impl PipelineRuntimeService {
             let source = self
                 .projects
                 .read_active_pipeline_source(&owner, &project, &meta)?;
-            let compiled = CompiledPipeline::from_active_meta(&meta, &source)?;
+            let compiled =
+                CompiledPipeline::from_active_meta(&meta, &source, Some(&self.node_registry))?;
             next.insert(compiled.key.clone(), compiled);
         }
 
@@ -615,4 +631,31 @@ pub fn active_pipeline_key(owner: &str, project: &str, file_rel_path: &str) -> A
         crate::platform::model::slug_segment(project),
         file_rel_path.trim().replace('\\', "/")
     )
+}
+
+/// Renders a manifest trigger path template against a node's configuration.
+///
+/// `{{ key }}` is replaced by the string value of that configuration key. An
+/// unset key renders as `default`, which keeps a route stable instead of
+/// producing an unroutable path.
+fn render_trigger_path(template: &str, config: &serde_json::Value) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let key = after[..end].trim();
+        let value = config
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("default");
+        out.push_str(value);
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
 }

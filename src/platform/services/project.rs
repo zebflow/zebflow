@@ -807,7 +807,7 @@ impl ProjectService {
         // uses this same constructor after commit, so an invalid candidate can
         // never replace the last executable snapshot.
         crate::platform::services::pipeline_runtime::CompiledPipeline::from_active_meta(
-            &meta, &source,
+            &meta, &source, None,
         )?;
 
         let snapshot_path =

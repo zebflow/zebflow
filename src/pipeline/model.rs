@@ -1108,13 +1108,10 @@ impl From<NodeDefinition> for NodeContractItem {
             .as_ref()
             .map(|bridge| (bridge.name.clone(), bridge.enabled))
             .unwrap_or_else(|| (String::new(), false));
-        let source = if value.kind.starts_with("n.c.") {
-            "composite".to_string()
-        } else if value.kind.starts_with("n.wasm.") {
-            "wasm".to_string()
-        } else {
-            default_node_source()
-        };
+        // A definition is implementation-neutral, so it cannot know how a node
+        // is built. Bundle-provided nodes get their real source from the
+        // package manifest when the API enriches this item.
+        let source = default_node_source();
         let ui_category = value.ui_category;
         let ui_category_label = value.ui_category_label;
         Self {

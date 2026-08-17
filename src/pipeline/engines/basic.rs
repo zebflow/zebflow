@@ -21,6 +21,7 @@ use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::infra::io::state::{DynStateBus, MemStateBus};
 use crate::infra::mem::MemHub;
 use crate::infra::transport::ws::WsHub;
@@ -1657,52 +1658,20 @@ impl BasicPipelineEngine {
                     ws_client_manager.clone(),
                 )?))
             }
-            // Composite trigger nodes act as pipeline entry points.
-            // They pass through the webhook payload, optionally running the
-            // package's `on_message` transform function.
-            other if other.starts_with("n.c.trigger.") => {
+            // Nodes provided by an installed bundle. The manifest decides
+            // whether this is a composite action, a WASM action, or a trigger,
+            // so dispatch does not read the kind namespace beyond `n.x.`.
+            other if other.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
                 let Some(platform) = &self.platform else {
                     return Err(PipelineError::new(
-                        "FW_NODE_COMPOSITE_NO_PLATFORM",
+                        "FW_NODE_INSTALLED_NO_PLATFORM",
                         format!(
-                            "composite trigger '{}': platform service not injected into engine",
+                            "installed node '{}': platform service not injected into engine",
                             other
                         ),
                     ));
                 };
-                Ok(NodeDispatch::CompositeTrigger {
-                    kind: other.to_string(),
-                    config: node.config.clone(),
-                    platform: platform.clone(),
-                })
-            }
-            other if other.starts_with("n.c.") => {
-                let Some(platform) = &self.platform else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_COMPOSITE_NO_PLATFORM",
-                        format!(
-                            "composite node '{}': platform service not injected into engine",
-                            other
-                        ),
-                    ));
-                };
-                Ok(NodeDispatch::CompositeNode {
-                    kind: other.to_string(),
-                    config: node.config.clone(),
-                    platform: platform.clone(),
-                })
-            }
-            other if other.starts_with("n.wasm.") => {
-                let Some(platform) = &self.platform else {
-                    return Err(PipelineError::new(
-                        "FW_NODE_WASM_NO_PLATFORM",
-                        format!(
-                            "WASM node '{}': platform service not injected into engine",
-                            other
-                        ),
-                    ));
-                };
-                Ok(NodeDispatch::WasmNode {
+                Ok(NodeDispatch::InstalledNode {
                     kind: other.to_string(),
                     config: node.config.clone(),
                     platform: platform.clone(),
@@ -2632,30 +2601,11 @@ impl PipelineEngine for BasicPipelineEngine {
                     NodeDispatch::WsClientSend(node) => {
                         node.execute_many_async(input_for_exec).await
                     }
-                    NodeDispatch::CompositeTrigger {
+                    NodeDispatch::InstalledNode {
                         kind,
                         config,
                         platform,
-                    } => {
-                        execute_composite_trigger(&kind, &config, &platform, vec![input_for_exec])
-                            .await
-                    }
-                    NodeDispatch::CompositeNode {
-                        kind,
-                        config,
-                        platform,
-                    } => {
-                        execute_composite_node(&kind, &config, &platform, vec![input_for_exec])
-                            .await
-                    }
-                    NodeDispatch::WasmNode {
-                        kind,
-                        config,
-                        platform,
-                    } => {
-                        super::wasm_host::execute_wasm_node(kind, config, platform, input_for_exec)
-                            .await
-                    }
+                    } => execute_installed_node(kind, config, platform, input_for_exec).await,
                 }
             }; // end exec_fut
             let timeout_node_id = trace_node_id.clone();
@@ -4029,21 +3979,12 @@ enum NodeDispatch {
     WsClientTrigger(trigger_ws_client::Node),
     WsClientSend(ws_client_send::Node),
     McpTrigger(mcp_trigger::Node),
-    /// Composite trigger node: acts as pipeline entry point, runs `on_message`
-    /// transform function from the package manifest on the incoming payload.
-    CompositeTrigger {
-        kind: String,
-        config: serde_json::Value,
-        platform: std::sync::Arc<crate::platform::services::PlatformService>,
-    },
-    /// Composite node: executes an inner function pipeline with placeholder injection.
-    CompositeNode {
-        kind: String,
-        config: serde_json::Value,
-        platform: std::sync::Arc<crate::platform::services::PlatformService>,
-    },
-    /// WASM node package installed under the project's node registry.
-    WasmNode {
+    /// A node provided by an installed bundle (`n.x.*`).
+    ///
+    /// Role and implementation come from the package manifest at execution
+    /// time, not from the node kind, so a node may move between composite and
+    /// WASM without changing its kind.
+    InstalledNode {
         kind: String,
         config: serde_json::Value,
         platform: std::sync::Arc<crate::platform::services::PlatformService>,
@@ -4059,13 +4000,127 @@ fn is_logic_collect(node: &PipelineNode) -> bool {
 /// Reuses the same pattern as `PlatformService::execute_function_pipeline`:
 /// loads the inner pipeline graph, creates a sub-engine, and executes it.
 ///
-/// Executes a composite trigger node (`n.c.trigger.*`).
+/// Executes a trigger node provided by an installed bundle.
 ///
 /// Composite triggers act as pipeline entry points. If the package manifest declares
 /// an `on_message` function, the raw inbound payload is transformed through that
 /// function pipeline. Otherwise the payload passes through unchanged (like
 /// `n.trigger.webhook`).
-async fn execute_composite_trigger(
+/// Routes one installed node to its implementation.
+///
+/// The package manifest is the authority. A trigger runs its inbound handler, an
+/// action runs its composite function or WASM export. The node kind is never
+/// parsed to decide this.
+async fn execute_installed_node(
+    kind: String,
+    config: Value,
+    platform: Arc<crate::platform::services::PlatformService>,
+    input: crate::pipeline::nodes::NodeExecutionInput,
+) -> Result<Vec<crate::pipeline::nodes::NodeExecutionOutput>, PipelineError> {
+    use crate::platform::model::NodePackageSource;
+
+    let owner = input
+        .metadata
+        .get("owner")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let project = input
+        .metadata
+        .get("project")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let Some(manifest) = platform.node_registry.get_manifest(&owner, &project, &kind) else {
+        return Err(PipelineError::new(
+            "FW_NODE_PACKAGE_NOT_FOUND",
+            format!("node package for '{kind}' is not installed"),
+        ));
+    };
+
+    if manifest.trigger.is_some() {
+        return execute_installed_trigger(&kind, &config, &platform, vec![input]).await;
+    }
+
+    match manifest.source {
+        NodePackageSource::Wasm => {
+            super::wasm_host::execute_wasm_node(kind, config, platform, input).await
+        }
+        NodePackageSource::Composite => {
+            execute_composite_node(&kind, &config, &platform, vec![input]).await
+        }
+        NodePackageSource::Declarative => Err(PipelineError::new(
+            "FW_NODE_PACKAGE_NOT_EXECUTABLE",
+            format!("node '{kind}' declares no run binding and is not a trigger"),
+        )),
+    }
+}
+
+/// Runs a WASM trigger handler for one inbound event.
+///
+/// A failing handler passes the raw payload through, matching the composite
+/// handler's behavior so a trigger never drops an event.
+fn execute_wasm_trigger_handler(
+    kind: &str,
+    config: &Value,
+    owner: &str,
+    project: &str,
+    platform: &Arc<crate::platform::services::PlatformService>,
+    input: &crate::pipeline::nodes::NodeExecutionInput,
+) -> crate::pipeline::nodes::NodeExecutionOutput {
+    use crate::pipeline::nodes::NodeExecutionOutput;
+
+    let passthrough = |reason: String| NodeExecutionOutput {
+        output_pins: vec!["out".to_string()],
+        payload: input.payload.clone(),
+        trace: vec![reason],
+    };
+
+    let Some(installed) = platform.node_registry.get_by_kind(owner, project, kind) else {
+        return passthrough(format!(
+            "wasm trigger '{kind}' package not installed, raw passthrough"
+        ));
+    };
+    let Some((module_spec, export)) = installed.manifest.wasm_target() else {
+        return passthrough(format!(
+            "wasm trigger '{kind}' has no resolvable export, raw passthrough"
+        ));
+    };
+    let handler_input = input
+        .payload
+        .get("body")
+        .cloned()
+        .unwrap_or_else(|| input.payload.clone());
+
+    match crate::pipeline::engines::wasm_host::run_wasm_export(
+        kind,
+        &installed.package_dir,
+        module_spec,
+        export,
+        config,
+        &handler_input,
+        &input.metadata,
+    ) {
+        Ok(payload) => NodeExecutionOutput {
+            output_pins: vec!["out".to_string()],
+            payload,
+            trace: vec![format!("wasm trigger '{kind}' export '{export}' ok")],
+        },
+        Err(err) => {
+            eprintln!(
+                "wasm_trigger: export '{export}' failed for '{kind}': {}, passing through raw",
+                err.message
+            );
+            passthrough(format!(
+                "wasm trigger '{kind}' export error: {}, raw passthrough",
+                err.message
+            ))
+        }
+    }
+}
+
+async fn execute_installed_trigger(
     kind: &str,
     config: &Value,
     platform: &Arc<crate::platform::services::PlatformService>,
@@ -4089,11 +4144,23 @@ async fn execute_composite_trigger(
             .unwrap_or_default()
             .to_string();
 
-        // Check manifest for on_message transform function.
-        let on_message_fn = platform
+        // The inbound handler is the node's run binding, so a trigger may be
+        // implemented as a composite function or as a WASM export.
+        let run_binding = platform
             .node_registry
             .get_manifest(&owner, &project, kind)
-            .and_then(|m| m.trigger.and_then(|t| t.on_message));
+            .and_then(|manifest| manifest.run.clone());
+
+        if let Some(binding) = run_binding.as_ref()
+            && binding.module.is_some()
+        {
+            results.push(execute_wasm_trigger_handler(
+                kind, config, &owner, &project, platform, &input,
+            ));
+            continue;
+        }
+
+        let on_message_fn = run_binding.and_then(|binding| binding.function);
 
         if let Some(fn_name) = on_message_fn {
             // Load and execute the on_message transform pipeline.

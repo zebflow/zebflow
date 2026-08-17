@@ -94,7 +94,7 @@ const CAT_ICONS: Record<string, any> = {
       <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
     </svg>
   ),
-  wasm: (
+  installed: (
     <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4">
       <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round"/>
       <path d="M12 12L3 7M12 12l9-5M12 12v10" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>

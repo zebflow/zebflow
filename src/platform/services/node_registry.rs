@@ -7,13 +7,13 @@
 //! `PLATFORM_COMPOSITE_NODE_ASSETS`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::contracts::decode_contract;
 use crate::contracts::kinds::{
-    DependencyLockNodeBundleSpec, DependencyLockSource, NodeBundleContract, decode_pipeline_graph,
-    normalize_node_bundle, validate_node_definition_spec,
+    DependencyLockNodeBundleSpec, DependencyLockSource, MAX_NODE_BUNDLE_FILES, NodeBundleContract,
+    decode_pipeline_graph, normalize_node_bundle, validate_node_definition_spec,
 };
 use crate::infra::io::durable::directory_tree_sha256;
 use crate::pipeline::{NodeDefinition, PipelineGraph};
@@ -215,6 +215,7 @@ impl NodeRegistryService {
 
                 let (package, manifests) =
                     parse_multi_node_definition(&definition_path, &official_kinds)?;
+                verify_bundle_artifacts(&path, &package)?;
                 let bundle =
                     project_bundle_lock_from_multi_node(nodes_dir, &path, &definition_path)?;
                 if discovered_bundles
@@ -410,7 +411,7 @@ impl NodeRegistryService {
         // Determine which function to load.
         let fn_name = function_name
             .map(|s| s.to_string())
-            .or_else(|| embedded.manifest.main_function.clone());
+            .or_else(|| embedded.manifest.main_function().map(str::to_string));
 
         if let Some(fn_name) = &fn_name {
             // Multi-node: resolve function name → file path → embedded asset.
@@ -467,7 +468,7 @@ impl NodeRegistryService {
     ) -> Result<PipelineGraph, PlatformError> {
         let fn_name = function_name
             .map(|s| s.to_string())
-            .or_else(|| pkg.manifest.main_function.clone());
+            .or_else(|| pkg.manifest.main_function().map(str::to_string));
 
         let pipeline_path = if let Some(fn_name) = &fn_name {
             // Multi-node: resolve function name → file path.
@@ -552,8 +553,8 @@ impl NodeRegistryService {
     ///
     /// Official nodes cannot be uninstalled.
     pub fn is_official(&self, kind: &str) -> bool {
-        // Native nodes (non-composite, non-wasm) are always official.
-        if !kind.starts_with("n.c.") && !kind.starts_with("n.wasm.") {
+        // Anything outside the installed namespace is native, so it is official.
+        if !kind.starts_with(crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX) {
             return true;
         }
         // Embedded composites are official.
@@ -592,6 +593,144 @@ impl NodeRegistryService {
             .remove_node_bundle_providing(&owner, &project, kind)?;
         Ok(())
     }
+}
+
+/// Verifies that every artifact a bundle declares actually exists on disk.
+///
+/// The contract validator can only check that a path is *shaped* safely. Without
+/// this, a bundle referencing a missing function or module publishes cleanly and
+/// fails much later, at run time, far from the cause.
+fn verify_bundle_artifacts(
+    package_dir: &Path,
+    package: &MultiNodePackageDefinition,
+) -> Result<(), PlatformError> {
+    let missing = |label: &str, relative: &str| {
+        PlatformError::new(
+            "NODE_BUNDLE_ARTIFACT_MISSING",
+            format!(
+                "node bundle '{}' declares {label} '{relative}' which is not a file in {}",
+                package.package,
+                package_dir.display()
+            ),
+        )
+    };
+    let resolve = |relative: &str| -> Result<PathBuf, PlatformError> {
+        let path = Path::new(relative);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(PlatformError::new(
+                "NODE_BUNDLE_PATH",
+                format!(
+                    "node bundle '{}' declares unsafe path '{relative}'",
+                    package.package
+                ),
+            ));
+        }
+        Ok(package_dir.join(path))
+    };
+
+    for (name, relative) in &package.functions {
+        let path = resolve(relative)?;
+        if !path.is_file() {
+            return Err(missing(&format!("function '{name}'"), relative));
+        }
+        // A composite function is a Pipeline document. Decoding it here keeps a
+        // malformed function from reaching the registry and failing at run time.
+        let source = std::fs::read(&path).map_err(|error| {
+            PlatformError::new(
+                "NODE_BUNDLE_ARTIFACT_UNREADABLE",
+                format!(
+                    "node bundle '{}' cannot read function '{name}' at '{relative}': {error}",
+                    package.package
+                ),
+            )
+        })?;
+        decode_pipeline_graph(&source).map_err(|error| {
+            PlatformError::new(
+                "NODE_BUNDLE_FUNCTION_INVALID",
+                format!(
+                    "node bundle '{}' function '{name}' is not a valid pipeline: {} ({})",
+                    package.package,
+                    error,
+                    error.category()
+                ),
+            )
+        })?;
+    }
+    for (name, module) in &package.modules {
+        if !resolve(&module.path)?.is_file() {
+            return Err(missing(&format!("module '{name}'"), &module.path));
+        }
+    }
+    if !package.icon.is_empty() && !resolve(&package.icon)?.is_file() {
+        return Err(missing("package icon", &package.icon));
+    }
+    for node in &package.nodes {
+        if !node.icon.is_empty() && !resolve(&node.icon)?.is_file() {
+            return Err(missing(&format!("icon for '{}'", node.kind), &node.icon));
+        }
+    }
+
+    let files = count_package_files(package_dir)?;
+    if files > MAX_NODE_BUNDLE_FILES {
+        return Err(PlatformError::new(
+            "NODE_BUNDLE_FILE_LIMIT",
+            format!(
+                "node bundle '{}' contains {files} files; the limit is {MAX_NODE_BUNDLE_FILES}",
+                package.package
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Counts regular files under a package directory, rejecting symlinks.
+fn count_package_files(root: &Path) -> Result<usize, PlatformError> {
+    let mut total = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current).map_err(|error| {
+            PlatformError::new(
+                "NODE_BUNDLE_SCAN",
+                format!("failed reading {}: {error}", current.display()),
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                PlatformError::new(
+                    "NODE_BUNDLE_SCAN",
+                    format!("failed reading entry in {}: {error}", current.display()),
+                )
+            })?;
+            let file_type = entry.file_type().map_err(|error| {
+                PlatformError::new(
+                    "NODE_BUNDLE_SCAN",
+                    format!("failed reading type of {}: {error}", entry.path().display()),
+                )
+            })?;
+            if file_type.is_symlink() {
+                return Err(PlatformError::new(
+                    "NODE_BUNDLE_PATH",
+                    format!(
+                        "node bundle must not contain a symlink: {}",
+                        entry.path().display()
+                    ),
+                ));
+            }
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file() {
+                total += 1;
+                if total > MAX_NODE_BUNDLE_FILES {
+                    return Ok(total);
+                }
+            }
+        }
+    }
+    Ok(total)
 }
 
 fn project_bundle_lock_from_multi_node(
@@ -788,7 +927,7 @@ mod tests {
                     "title": "Test Node",
                     "description": "Return the incoming test payload.",
                     "icon": icon,
-                    "main": "main",
+                    "run": { "function": "main" },
                     "definition": {
                         "config_schema": {},
                         "input_schema": {"type": "object"},
@@ -817,6 +956,47 @@ mod tests {
         }
     }
 
+    /// A node that exposes a credential's config key must declare that
+    /// credential kind, or the UI silently offers the wrong provider list.
+    #[test]
+    fn embedded_official_nodes_declare_every_credential_they_expose() {
+        use crate::contracts::decode_contract;
+        use crate::contracts::kinds::NodeBundleContract;
+        use crate::platform::web::embedded::PLATFORM_COMPOSITE_NODE_ASSETS;
+
+        for (slug, bytes) in PLATFORM_COMPOSITE_NODE_ASSETS
+            .iter()
+            .filter(|asset| asset.path.ends_with("/definition.json"))
+            .map(|asset| (asset.path, asset.bytes))
+        {
+            let package = decode_contract::<NodeBundleContract>(bytes)
+                .unwrap_or_else(|error| panic!("{slug} decodes: {error}"))
+                .spec;
+            for node in &package.nodes {
+                let properties = node
+                    .definition
+                    .config_schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object);
+                let expected: Vec<&str> = package
+                    .credentials
+                    .iter()
+                    .filter(|credential| {
+                        properties.is_some_and(|values| values.contains_key(&credential.config_key))
+                    })
+                    .map(|credential| credential.kind.as_str())
+                    .collect();
+                for kind in expected {
+                    assert!(
+                        node.uses_credentials.iter().any(|used| used == kind),
+                        "{slug}: node '{}' exposes a config key for credential '{kind}' but does not declare it",
+                        node.kind
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn embedded_official_manifests_have_complete_node_contracts() {
         let builtin_kinds: HashSet<String> = crate::pipeline::nodes::builtin_node_definitions()
@@ -842,21 +1022,18 @@ mod tests {
   "title": "WASM Test Add",
   "description": "Tiny local WASM node package smoke test.",
   "icon": "icon.svg",
-  "wasm": {
-    "module": "module.wasm",
-    "abi": "zebflow-wasm-json-v1",
-    "exports": {
-      "main": "zebflow_add"
-    }
+  "modules": {
+    "core": { "path": "module.wasm", "abi": "zebflow-wasm-json-v1" }
   },
   "nodes": [
     {
-      "kind": "n.wasm.test.add",
+      "kind": "n.x.wasm_test_add.add",
       "title": "WASM Test Add",
       "description": "Run a tiny WASM addition function for local node package smoke tests.",
       "icon": "icon.svg",
       "ui_category": "wasm.test",
       "ui_category_label": "WASM Test",
+      "run": { "module": "core", "export": "zebflow_add" },
       "definition": {
         "input_pins": ["in"],
         "output_pins": ["out", "error"],
@@ -916,11 +1093,10 @@ mod tests {
             manifest.source,
             crate::platform::model::NodePackageSource::Wasm
         );
-        assert_eq!(manifest.definition.kind, "n.wasm.test.add");
-        assert_eq!(
-            manifest.wasm_runtime.as_ref().expect("wasm runtime").module,
-            "module.wasm"
-        );
+        assert_eq!(manifest.definition.kind, "n.x.wasm_test_add.add");
+        let (module, export) = manifest.wasm_target().expect("wasm target");
+        assert_eq!(module.path, "module.wasm");
+        assert_eq!(export, "zebflow_add");
 
         let builtin_kinds: HashSet<String> = crate::pipeline::nodes::builtin_node_definitions()
             .iter()
@@ -937,7 +1113,7 @@ mod tests {
             temp.path(),
             "alpha",
             "alpha",
-            "n.c.test.alpha",
+            "n.x.alpha.thing",
             "icons/alpha.svg",
         );
         registry
@@ -945,7 +1121,7 @@ mod tests {
             .expect("initial refresh");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "n.c.test.alpha")
+                .get_by_kind("superadmin", "default", "n.x.alpha.thing")
                 .is_some()
         );
 
@@ -959,26 +1135,166 @@ mod tests {
         assert_eq!(error.code, "NODE_BUNDLE_MANIFEST_MISSING");
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "n.c.test.alpha")
+                .get_by_kind("superadmin", "default", "n.x.alpha.thing")
                 .is_some(),
             "failed refresh must not publish a partial registry"
         );
     }
 
+    /// Two bundles cannot claim one kind, because a kind names its package.
+    ///
+    /// Ownership is structural rather than discovered at refresh time, so this
+    /// asserts the disk boundary still refuses a bundle that tries to escape
+    /// its namespace instead of publishing a package that owns a foreign kind.
     #[test]
-    fn refresh_rejects_cross_bundle_kind_collisions() {
+    fn refresh_rejects_a_bundle_claiming_a_foreign_kind() {
         let temp = tempfile::tempdir().expect("temp dir");
         let registry = make_registry(temp.path());
-        write_composite_bundle(temp.path(), "one", "one", "n.c.test.same", "");
-        write_composite_bundle(temp.path(), "two", "two", "n.c.test.same", "");
+        write_composite_bundle(temp.path(), "one", "one", "n.x.one.same", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("owned kind refreshes");
+
+        // Hand-write a second bundle that claims the first package's kind. The
+        // contract rejects it, so the refresh fails closed.
+        let package_dir = temp
+            .path()
+            .join("users/superadmin/default/repo/nodes")
+            .join("two");
+        let stolen = std::fs::read_to_string(
+            temp.path()
+                .join("users/superadmin/default/repo/nodes/one/definition.json"),
+        )
+        .expect("source bundle")
+        .replace("\"package\": \"one\"", "\"package\": \"two\"")
+        .replace("\"name\": \"one\"", "\"name\": \"two\"");
+        std::fs::create_dir_all(package_dir.join("functions")).expect("package dirs");
+        std::fs::write(package_dir.join("definition.json"), stolen).expect("definition");
+        std::fs::write(
+            package_dir.join("functions/main.zf.json"),
+            include_bytes!("../../../tests/fixtures/contracts/pipeline/v1-complete.json"),
+        )
+        .expect("function");
+
         let error = registry
             .refresh_project("superadmin", "default")
-            .expect_err("collision must fail refresh");
-        assert_eq!(error.code, "NODE_KIND_COLLISION");
+            .expect_err("a foreign kind must fail refresh");
+        assert_eq!(error.code, "NODE_MANIFEST_PARSE");
+        // The previous valid registry stays active.
         assert!(
             registry
-                .get_by_kind("superadmin", "default", "n.c.test.same")
+                .get_by_kind("superadmin", "default", "n.x.one.same")
+                .is_some()
+        );
+    }
+
+    /// A declared artifact that is not on disk must fail the refresh, not
+    /// publish and fail later at run time.
+    #[test]
+    fn refresh_rejects_a_bundle_with_a_missing_artifact() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        write_composite_bundle(temp.path(), "gap", "gap", "n.x.gap.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("complete bundle refreshes");
+
+        let function = temp
+            .path()
+            .join("users/superadmin/default/repo/nodes/gap/functions/main.zf.json");
+        std::fs::remove_file(&function).expect("remove declared function");
+
+        let error = registry
+            .refresh_project("superadmin", "default")
+            .expect_err("a missing declared artifact must fail refresh");
+        assert_eq!(error.code, "NODE_BUNDLE_ARTIFACT_MISSING");
+        // The previous valid registry stays active.
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.gap.thing")
+                .is_some()
+        );
+    }
+
+    /// A composite function is a Pipeline document. A malformed one must fail
+    /// the refresh rather than reach the registry and fail at run time.
+    #[test]
+    fn refresh_rejects_a_bundle_with_an_invalid_function_pipeline() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        write_composite_bundle(temp.path(), "broken", "broken", "n.x.broken.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("valid bundle refreshes");
+
+        std::fs::write(
+            temp.path()
+                .join("users/superadmin/default/repo/nodes/broken/functions/main.zf.json"),
+            b"{\"not\":\"a pipeline\"}",
+        )
+        .expect("corrupt the function");
+
+        let error = registry
+            .refresh_project("superadmin", "default")
+            .expect_err("an invalid function must fail refresh");
+        assert_eq!(error.code, "NODE_BUNDLE_FUNCTION_INVALID");
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.broken.thing")
+                .is_some(),
+            "the previous valid registry stays active"
+        );
+    }
+
+    /// Uninstall must remove only what the selected kind's package owns.
+    #[test]
+    fn uninstall_removes_only_the_owning_bundle() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let registry = make_registry(temp.path());
+        write_composite_bundle(temp.path(), "alpha", "alpha", "n.x.alpha.thing", "");
+        write_composite_bundle(temp.path(), "beta", "beta", "n.x.beta.thing", "");
+        registry
+            .refresh_project("superadmin", "default")
+            .expect("refresh");
+
+        registry
+            .uninstall_package("superadmin", "default", "n.x.alpha.thing")
+            .expect("uninstall alpha");
+
+        let nodes_dir = temp.path().join("users/superadmin/default/repo/nodes");
+        assert!(!nodes_dir.join("alpha").exists(), "owned files are removed");
+        assert!(
+            nodes_dir.join("beta").exists(),
+            "an unrelated bundle must survive"
+        );
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.alpha.thing")
                 .is_none()
+        );
+        assert!(
+            registry
+                .get_by_kind("superadmin", "default", "n.x.beta.thing")
+                .is_some()
+        );
+
+        let lock = registry
+            .dependency_lock
+            .read("superadmin", "default")
+            .expect("lock");
+        assert!(
+            !lock
+                .nodes
+                .bundles
+                .values()
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "n.x.alpha.thing"))
+        );
+        assert!(
+            lock.nodes
+                .bundles
+                .values()
+                .any(|bundle| bundle.definitions.iter().any(|k| k == "n.x.beta.thing")),
+            "the surviving bundle keeps its lock entry"
         );
     }
 
@@ -990,14 +1306,14 @@ mod tests {
             temp.path(),
             "icon-test",
             "icon-test",
-            "n.c.test.icon",
+            "n.x.icon_test.badge",
             "icons/custom.svg",
         );
         registry
             .refresh_project("superadmin", "default")
             .expect("refresh");
         let icon = registry
-            .load_icon("superadmin", "default", "n.c.test.icon")
+            .load_icon("superadmin", "default", "n.x.icon_test.badge")
             .expect("declared icon");
         assert_eq!(icon, b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
     }

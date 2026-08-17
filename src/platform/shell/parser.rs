@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
 
+use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::pipeline::auto_tidy_pipeline_graph;
 use crate::pipeline::model::{
     DslFlag, DslFlagKind, NodeDefinition, PipelineEdge, PipelineGraph, PipelineNode,
@@ -943,10 +944,8 @@ fn pipe_starts_node_segment(body: &str, pipe_pos: usize) -> bool {
     };
     let kind = raw_kind.trim_matches(|ch: char| ch == ';' || ch == ',' || ch == ')');
     expand_kind(kind).is_some()
-        || kind.starts_with("n.c.")
-        || kind.starts_with("c.")
-        || kind.starts_with("n.wasm.")
-        || kind.starts_with("wasm.")
+        || kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
+        || kind.starts_with("x.")
 }
 
 /// Build pipeline from graph notation: `[label] node_kind --flags...\n[from] -> [to]`
@@ -1060,7 +1059,9 @@ fn is_graph_node_statement(line: &str) -> bool {
     let Some(raw_kind) = tokens.first().map(String::as_str) else {
         return false;
     };
-    expand_kind(raw_kind).is_some() || raw_kind.starts_with("n.c.") || raw_kind.starts_with("c.")
+    expand_kind(raw_kind).is_some()
+        || raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX)
+        || raw_kind.starts_with("x.")
 }
 
 #[cfg(test)]
@@ -1304,7 +1305,7 @@ return { values };
     fn registry_definitions_parse_composite_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "n.c.ai.embedding".to_string(),
+            kind: "n.x.openai_embedding.embed".to_string(),
             title: "AI Embedding".to_string(),
             description: "Composite embedding node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -1339,7 +1340,7 @@ return { values };
             "composite-embedding-dsl",
             r#"
 | trigger.manual
-| n.c.ai.embedding --credential qwen-embed --model text-embedding-v4 --input-expr input.text
+| n.x.openai_embedding.embed --credential qwen-embed --model text-embedding-v4 --input-expr input.text
 "#,
             &definitions,
         )
@@ -1347,7 +1348,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "n.c.ai.embedding")
+            .find(|node| node.kind == "n.x.openai_embedding.embed")
             .expect("composite node");
         assert_eq!(node.config["credential_id"], json!("qwen-embed"));
         assert_eq!(node.config["model"], json!("text-embedding-v4"));
@@ -1358,7 +1359,7 @@ return { values };
     fn registry_definitions_parse_wasm_node_dsl_flags() {
         let mut definitions = crate::pipeline::nodes::builtin_node_definitions();
         definitions.push(NodeDefinition {
-            kind: "n.wasm.test.add".to_string(),
+            kind: "n.x.wasmpkg.add".to_string(),
             title: "WASM Test Add".to_string(),
             description: "WASM test node.".to_string(),
             input_pins: vec!["in".to_string()],
@@ -1386,7 +1387,7 @@ return { values };
             "wasm-test-dsl",
             r#"
 | trigger.manual
-| wasm.test.add --a 2 --b 3
+| x.wasmpkg.add --a 2 --b 3
 "#,
             &definitions,
         )
@@ -1394,7 +1395,7 @@ return { values };
         let node = graph
             .nodes
             .iter()
-            .find(|node| node.kind == "n.wasm.test.add")
+            .find(|node| node.kind == "n.x.wasmpkg.add")
             .expect("wasm node");
         assert_eq!(node.config["a"], json!(2));
         assert_eq!(node.config["b"], json!(3));
@@ -1494,19 +1495,11 @@ fn parse_graph_node(
     let custom_kind: String;
     let full_kind = match expand_kind(raw_kind) {
         Some(k) => k,
-        None if raw_kind.starts_with("n.c.") => {
+        None if raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
             custom_kind = raw_kind.to_string();
             &custom_kind
         }
-        None if raw_kind.starts_with("c.") => {
-            custom_kind = format!("n.{raw_kind}");
-            &custom_kind
-        }
-        None if raw_kind.starts_with("n.wasm.") => {
-            custom_kind = raw_kind.to_string();
-            &custom_kind
-        }
-        None if raw_kind.starts_with("wasm.") => {
+        None if raw_kind.starts_with("x.") => {
             custom_kind = format!("n.{raw_kind}");
             &custom_kind
         }
@@ -1981,19 +1974,11 @@ fn build_pipe_mode(
         let custom_kind: String;
         let full_kind = match expand_kind(raw_kind) {
             Some(k) => k,
-            None if raw_kind.starts_with("n.c.") => {
+            None if raw_kind.starts_with(INSTALLED_NODE_KIND_PREFIX) => {
                 custom_kind = raw_kind.to_string();
                 &custom_kind
             }
-            None if raw_kind.starts_with("c.") => {
-                custom_kind = format!("n.{raw_kind}");
-                &custom_kind
-            }
-            None if raw_kind.starts_with("n.wasm.") => {
-                custom_kind = raw_kind.to_string();
-                &custom_kind
-            }
-            None if raw_kind.starts_with("wasm.") => {
+            None if raw_kind.starts_with("x.") => {
                 custom_kind = format!("n.{raw_kind}");
                 &custom_kind
             }

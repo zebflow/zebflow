@@ -25,7 +25,7 @@
           "entry": "nodes/sim-des/definition.json",
           "integrity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "definitions": [
-            "n.wasm.sim.des"
+            "n.x.sim.des"
           ]
         }
       }

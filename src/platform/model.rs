@@ -1,6 +1,6 @@
 //! Platform domain models and configuration.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -1861,27 +1861,75 @@ pub struct ProjectFileLayout {
 
 // ── Node package system ─────────────────────────────────────────────────────
 
-/// Source type of a node package.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Implementation type of one node in a bundle.
+///
+/// This is always derived from the node's [`RunBinding`]. It is never authored,
+/// so a bundle cannot declare an implementation that disagrees with the artifact
+/// the node actually points at.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NodePackageSource {
-    /// Composite node: function pipeline + manifest.
+    /// Composite node: the behavior is a function pipeline.
     Composite,
-    /// WASM node: sandboxed binary module (Extism).
+    /// WASM node: the behavior is an export in a compiled module.
     Wasm,
+    /// Trigger node with no user code; the event payload passes through.
+    Declarative,
 }
 
-/// Runtime configuration for a WASM node package (future).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl NodePackageSource {
+    /// Stable string used by the node API and UI.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Composite => "composite",
+            Self::Wasm => "wasm",
+            Self::Declarative => "declarative",
+        }
+    }
+}
+
+/// One compiled WASM artifact declared by a bundle.
+///
+/// The ABI belongs to the module because a bundle may carry artifacts compiled
+/// at different times.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct WasmNodeRuntime {
-    /// Relative filename of the WASM module (e.g. `"module.wasm"`).
-    pub module: String,
-    /// ABI identifier (currently `"zebflow-wasm-json-v1"`).
+pub struct WasmModuleSpec {
+    /// Package-relative path of the module (e.g. `"wasm/ml.wasm"`).
+    pub path: String,
+    /// ABI identifier. Only `zebflow-wasm-json-v1` is accepted under v1.
     pub abi: String,
-    /// Export function map.
-    #[serde(default)]
-    pub exports: HashMap<String, String>,
+}
+
+/// Where one node's code lives.
+///
+/// Exactly one form is valid: `function` names a key in `spec.functions`, or
+/// `module` plus `export` names a key in `spec.modules` and a symbol inside it.
+/// `export` is never optional, because a default symbol would make two WASM
+/// nodes in one bundle resolve to the same entry point.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RunBinding {
+    /// Composite form: a key in `spec.functions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// WASM form: a key in `spec.modules`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// WASM form: the exported symbol to call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<String>,
+}
+
+impl RunBinding {
+    /// Implementation type implied by this binding, if it is well formed.
+    pub fn source(&self) -> Option<NodePackageSource> {
+        match (&self.function, &self.module, &self.export) {
+            (Some(_), None, None) => Some(NodePackageSource::Composite),
+            (None, Some(_), Some(_)) => Some(NodePackageSource::Wasm),
+            _ => None,
+        }
+    }
 }
 
 /// Runtime-normalized manifest for one node from an installed `definition.json` bundle.
@@ -1892,34 +1940,52 @@ pub struct WasmNodeRuntime {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NodePackageManifest {
-    /// Package source type.
+    /// Implementation type, derived from `run`.
     pub source: NodePackageSource,
-    /// Semver version string.
+    /// Package release version.
     pub version: String,
     /// The node definition (same struct as native nodes).
     pub definition: crate::pipeline::NodeDefinition,
-    /// Custom credential type definitions provided by this package.
+    /// Credential type definitions this node declares through `uses_credentials`.
     #[serde(default)]
     pub credentials: Vec<CredentialTypeDef>,
-    /// WASM runtime config (present when `source == Wasm`).
-    #[serde(default)]
-    pub wasm_runtime: Option<WasmNodeRuntime>,
-    /// Function name → relative file path map (multi-node packages).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub functions: HashMap<String, String>,
-    /// Name of the main function (action nodes in multi-node packages).
+    /// Where this node's code lives. Absent only for a declarative trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub main_function: Option<String>,
-    /// Trigger configuration (composite trigger nodes).
+    pub run: Option<RunBinding>,
+    /// Trigger role configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<PackageTriggerConfig>,
-    /// Lifecycle hooks (on_activate, on_deactivate).
+    /// Lifecycle hooks. Valid only on a trigger node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<PackageLifecycleConfig>,
+    /// Function name → package-relative pipeline path.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub functions: BTreeMap<String, String>,
+    /// Module name → compiled WASM artifact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, WasmModuleSpec>,
 }
 
-/// Trigger configuration for a composite trigger node.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+impl NodePackageManifest {
+    /// Name of the composite function this node runs, if it is a composite node.
+    pub fn main_function(&self) -> Option<&str> {
+        self.run.as_ref()?.function.as_deref()
+    }
+
+    /// Resolves the WASM module and export this node runs, if it is a WASM node.
+    pub fn wasm_target(&self) -> Option<(&WasmModuleSpec, &str)> {
+        let run = self.run.as_ref()?;
+        let module = run.module.as_deref()?;
+        let export = run.export.as_deref()?;
+        Some((self.modules.get(module)?, export))
+    }
+}
+
+/// Trigger role configuration for a node that starts a pipeline.
+///
+/// This declares a role, not an implementation. The inbound handler is the
+/// node's `run` binding, which is why a WASM trigger is expressible.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PackageTriggerConfig {
     /// Trigger type: "webhook", "ws", "ws_client", "cron".
@@ -1927,35 +1993,33 @@ pub struct PackageTriggerConfig {
     pub trigger_type: String,
     /// Webhook path template with `{{ config_key }}` placeholders.
     /// E.g. `"/tg/{{ bot_credential_id }}"` resolves from node config.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_template: Option<String>,
-    /// Function name that transforms inbound events.
-    #[serde(default)]
-    pub on_message: Option<String>,
 }
 
-/// Lifecycle hook configuration for a composite node.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Lifecycle hooks for a trigger node. Each hook is a run binding, so composite
+/// and WASM nodes have the same lifecycle capability.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PackageLifecycleConfig {
-    /// Function to run when the pipeline is activated.
-    #[serde(default)]
-    pub on_activate: Option<String>,
-    /// Function to run when the pipeline is deactivated.
-    #[serde(default)]
-    pub on_deactivate: Option<String>,
+    /// Runs when a pipeline using this trigger is activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_activate: Option<RunBinding>,
+    /// Runs when a pipeline using this trigger is deactivated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_deactivate: Option<RunBinding>,
 }
 
 /// Multi-node package definition (`definition.json` format).
 ///
 /// A single file declaring N nodes, shared credentials, and reusable function pipelines.
 /// The loader explodes this into N `NodePackageManifest` entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodePackageDefinition {
-    /// Package identifier.
+    /// Package identifier. Owns the `n.x.{package_token}.` kind namespace.
     pub package: String,
-    /// Semver version.
+    /// Release version, `major.minor.patch`.
     pub version: String,
     /// Human-readable title.
     pub title: String,
@@ -1965,24 +2029,24 @@ pub struct MultiNodePackageDefinition {
     /// Package-level icon path.
     #[serde(default)]
     pub icon: String,
-    /// Credential type definitions shared by all nodes.
+    /// Credential kinds this package can use. Nodes opt in per entry.
     #[serde(default)]
     pub credentials: Vec<CredentialTypeDef>,
-    /// Function name → relative pipeline file path.
+    /// Function name → package-relative pipeline path.
     #[serde(default)]
-    pub functions: HashMap<String, String>,
-    /// WASM runtime config shared by WASM node entries in this package.
-    #[serde(default, rename = "wasm")]
-    pub wasm_runtime: Option<WasmNodeRuntime>,
+    pub functions: BTreeMap<String, String>,
+    /// Module name → compiled WASM artifact.
+    #[serde(default)]
+    pub modules: BTreeMap<String, WasmModuleSpec>,
     /// Node entries.
     pub nodes: Vec<MultiNodeEntry>,
 }
 
 /// A single node entry within a multi-node package.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodeEntry {
-    /// Node kind (e.g. `"n.c.tg.send"`).
+    /// Node kind. Must be `n.x.{package_token}.{rest}`.
     pub kind: String,
     /// Node title.
     pub title: String,
@@ -1998,14 +2062,17 @@ pub struct MultiNodeEntry {
     /// UI category label.
     #[serde(default)]
     pub ui_category_label: String,
-    /// Main function name (action nodes).
+    /// Credential kinds this node uses, declared in `spec.credentials`.
     #[serde(default)]
-    pub main: Option<String>,
-    /// Trigger configuration (trigger nodes).
-    #[serde(default)]
+    pub uses_credentials: Vec<String>,
+    /// Where this node's code lives. Required unless the node is a trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunBinding>,
+    /// Trigger role configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<PackageTriggerConfig>,
-    /// Lifecycle hooks.
-    #[serde(default)]
+    /// Lifecycle hooks. Valid only alongside `trigger`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<PackageLifecycleConfig>,
     /// Node definition (pins, schema, fields, layout, dsl_flags).
     pub definition: MultiNodeEntryDefinition,
@@ -2014,7 +2081,7 @@ pub struct MultiNodeEntry {
 /// Partial node definition within a multi-node entry.
 /// The full `NodeDefinition` is constructed by the loader, filling in kind/title/description
 /// from the parent `MultiNodeEntry`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MultiNodeEntryDefinition {
     #[serde(default)]

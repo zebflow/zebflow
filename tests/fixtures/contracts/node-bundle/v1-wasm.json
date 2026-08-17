@@ -1,0 +1,87 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "NodeBundle",
+  "metadata": {
+    "name": "wasmpkg",
+    "version": "2.1.0"
+  },
+  "spec": {
+    "package": "wasmpkg",
+    "version": "2.1.0",
+    "title": "WASM Example",
+    "description": "Two WASM nodes sharing one module through distinct exports.",
+    "icon": "icon.svg",
+    "credentials": [],
+    "functions": {},
+    "modules": {
+      "core": {
+        "path": "wasm/core.wasm",
+        "abi": "zebflow-wasm-json-v1"
+      }
+    },
+    "nodes": [
+      {
+        "kind": "n.x.wasmpkg.train",
+        "title": "Train Model",
+        "description": "Train a gradient boosting model.",
+        "icon": "icons/train.svg",
+        "ui_category": "ml",
+        "ui_category_label": "Machine Learning",
+        "uses_credentials": [],
+        "run": {
+          "module": "core",
+          "export": "gb_train"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object"
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [],
+          "layout": [],
+          "dsl_flags": []
+        }
+      },
+      {
+        "kind": "n.x.wasmpkg.score",
+        "title": "Score Model",
+        "description": "Score rows against a trained model.",
+        "icon": "",
+        "ui_category": "ml",
+        "ui_category_label": "Machine Learning",
+        "uses_credentials": [],
+        "run": {
+          "module": "core",
+          "export": "gb_score"
+        },
+        "definition": {
+          "input_pins": [
+            "in"
+          ],
+          "output_pins": [
+            "out"
+          ],
+          "config_schema": {
+            "type": "object"
+          },
+          "input_schema": {},
+          "output_schema": {},
+          "examples": [],
+          "failure_semantics": [],
+          "fields": [],
+          "layout": [],
+          "dsl_flags": []
+        }
+      }
+    ]
+  }
+}

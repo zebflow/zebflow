@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use crate::contracts::kinds::INSTALLED_NODE_KIND_PREFIX;
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_BACKUP_FILE, DEPENDENCY_LOCK_FILE, DependencyLockArtifactSpec,
     DependencyLockNodeBundleSpec, DependencyLockSource, DependencyLockSpec, NodeBundleContract,
@@ -261,11 +262,17 @@ impl DependencyLockService {
         })
     }
 
-    /// Adds project-local bundle pins for newly discovered package sources.
+    /// Reconciles discovered package sources against the lock.
     ///
-    /// Existing providers are never rewritten here. Their exact digest and
-    /// provenance remain the expected state so a modified package is reported
-    /// as a mismatch instead of being trusted automatically.
+    /// The digest means different things depending on where a bundle came from,
+    /// so enforcement differs:
+    ///
+    /// - A `hub` bundle's digest is a security claim about the bytes a publisher
+    ///   shipped. A mismatch is tampering or corruption and fails closed.
+    /// - A `project` bundle is the project's own source, which a developer is
+    ///   expected to edit, so its digest is re-recorded from what is on disk.
+    ///
+    /// A newly discovered package that nothing already provides is pinned.
     pub fn record_discovered_node_bundles(
         &self,
         owner: &str,
@@ -281,15 +288,52 @@ impl DependencyLockService {
         let mut value = self.read_unlocked(&path, project)?;
         let mut changed = false;
         for (name, entry) in discovered {
-            let already_provided = value.nodes.bundles.values().any(|locked| {
-                locked
-                    .definitions
-                    .iter()
-                    .any(|kind| entry.definitions.binary_search(kind).is_ok())
-            });
-            if !already_provided && !value.nodes.bundles.contains_key(&name) {
+            let provider = value
+                .nodes
+                .bundles
+                .iter()
+                .find(|(key, locked)| {
+                    *key == &name
+                        || locked
+                            .definitions
+                            .iter()
+                            .any(|kind| entry.definitions.binary_search(kind).is_ok())
+                })
+                .map(|(key, locked)| (key.clone(), locked.clone()));
+
+            let Some((key, locked)) = provider else {
                 value.nodes.bundles.insert(name, entry);
                 changed = true;
+                continue;
+            };
+
+            if locked.integrity == entry.integrity {
+                continue;
+            }
+            match locked.source {
+                DependencyLockSource::Hub | DependencyLockSource::Embedded => {
+                    return Err(PlatformError::new(
+                        "PLATFORM_DEPENDENCY_INTEGRITY",
+                        format!(
+                            "node bundle '{}' no longer matches the digest recorded in zeb.lock",
+                            locked.source_id
+                        ),
+                    ));
+                }
+                DependencyLockSource::Project => {
+                    value.nodes.bundles.insert(
+                        key,
+                        DependencyLockNodeBundleSpec {
+                            version: entry.version,
+                            source: locked.source,
+                            source_id: locked.source_id,
+                            entry: entry.entry,
+                            integrity: entry.integrity,
+                            definitions: entry.definitions,
+                        },
+                    );
+                    changed = true;
+                }
             }
         }
         if changed {
@@ -532,7 +576,7 @@ impl DependencyLockService {
             if available.contains(&kind) {
                 continue;
             }
-            let (status, message) = if kind.starts_with("n.c.") || kind.starts_with("n.wasm.") {
+            let (status, message) = if kind.starts_with(INSTALLED_NODE_KIND_PREFIX) {
                 (
                     DependencyResolutionStatus::Missing,
                     "required node kind has no resolved node bundle".to_string(),
@@ -1581,7 +1625,7 @@ mod tests {
 	                "title":"Example",
 	                "description":"Example composite node bundle.",
 	                "nodes":[{
-	                  "kind":"n.c.example",
+	                  "kind":"n.x.example.thing",
 	                  "title":"Example",
 	                  "description":"Execute the example function.",
 	                  "trigger":{"type":"webhook"},
@@ -1600,7 +1644,7 @@ mod tests {
                 source_id: "project/example".to_string(),
                 entry: "nodes/example/definition.json".to_string(),
                 integrity: directory_tree_sha256(&package_dir).unwrap(),
-                definitions: vec!["n.c.example".to_string()],
+                definitions: vec!["n.x.example.thing".to_string()],
             },
         );
         service.write("owner", "project", &lock).unwrap();
@@ -1633,7 +1677,7 @@ mod tests {
             entry_nodes: vec!["custom".to_string()],
             nodes: vec![PipelineNode {
                 id: "custom".to_string(),
-                kind: "n.c.not-installed".to_string(),
+                kind: "n.x.example.absent".to_string(),
                 input_pins: Vec::new(),
                 output_pins: vec!["out".to_string()],
                 config: serde_json::json!({}),
@@ -1667,7 +1711,7 @@ mod tests {
                 "entry_nodes":["custom"],
                 "nodes":[{
                   "id":"custom",
-                  "kind":"n.c.example",
+                  "kind":"n.x.example.thing",
                   "output_pins":["out"]
                 }],
                 "edges":[]
@@ -1682,46 +1726,85 @@ mod tests {
         assert!(!report.ok);
         assert!(report.items.iter().any(|item| {
             item.family == "node_kind"
-                && item.name == "n.c.example"
+                && item.name == "n.x.example.thing"
                 && item.status == DependencyResolutionStatus::Missing
         }));
     }
 
+    fn locked_bundle(source: DependencyLockSource, digest: char) -> DependencyLockNodeBundleSpec {
+        DependencyLockNodeBundleSpec {
+            version: "1.0.0".to_string(),
+            source,
+            source_id: "official/example".to_string(),
+            entry: "nodes/example/definition.json".to_string(),
+            integrity: format!("sha256:{}", digest.to_string().repeat(64)),
+            definitions: vec!["n.x.example.thing".to_string()],
+        }
+    }
+
+    /// A Hub digest is a claim about the bytes a publisher shipped, so drift is
+    /// tampering and must fail closed with the previous lock intact.
     #[test]
-    fn discovery_never_rewrites_existing_provider() {
+    fn hub_bundle_digest_drift_fails_closed() {
         let root = tempfile::tempdir().unwrap();
         let service = DependencyLockService::new(root.path().join("users"));
         let mut lock = DependencyLockSpec::default();
-        let existing = DependencyLockNodeBundleSpec {
-            version: "1.0.0".to_string(),
-            source: DependencyLockSource::Hub,
-            source_id: "official/example".to_string(),
-            entry: "nodes/example/definition.json".to_string(),
-            integrity: format!("sha256:{}", "a".repeat(64)),
-            definitions: vec!["n.c.example".to_string()],
-        };
-        lock.nodes
-            .bundles
-            .insert("hub/official/example".to_string(), existing.clone());
+        lock.nodes.bundles.insert(
+            "hub/official/example".to_string(),
+            locked_bundle(DependencyLockSource::Hub, 'a'),
+        );
         service.write("owner", "project", &lock).unwrap();
-        let discovered = DependencyLockNodeBundleSpec {
-            source: DependencyLockSource::Project,
-            source_id: "project/example".to_string(),
-            integrity: format!("sha256:{}", "b".repeat(64)),
-            ..existing
-        };
-        service
+
+        let error = service
             .record_discovered_node_bundles(
                 "owner",
                 "project",
-                vec![("project/example".to_string(), discovered)],
+                vec![(
+                    "project/example".to_string(),
+                    locked_bundle(DependencyLockSource::Project, 'b'),
+                )],
             )
-            .unwrap();
+            .expect_err("tampered hub bundle must fail closed");
+        assert_eq!(error.code, "PLATFORM_DEPENDENCY_INTEGRITY");
+
         let after = service.read("owner", "project").unwrap();
         assert_eq!(after.nodes.bundles.len(), 1);
         assert_eq!(
             after.nodes.bundles["hub/official/example"].integrity,
-            format!("sha256:{}", "a".repeat(64))
+            format!("sha256:{}", "a".repeat(64)),
+            "a failed reconcile must preserve the previous lock"
+        );
+    }
+
+    /// A project bundle is the project's own source. A developer is expected to
+    /// edit it, so the observed digest is re-recorded instead of failing.
+    #[test]
+    fn project_bundle_digest_drift_is_relocked() {
+        let root = tempfile::tempdir().unwrap();
+        let service = DependencyLockService::new(root.path().join("users"));
+        let mut lock = DependencyLockSpec::default();
+        lock.nodes.bundles.insert(
+            "project/example".to_string(),
+            locked_bundle(DependencyLockSource::Project, 'a'),
+        );
+        service.write("owner", "project", &lock).unwrap();
+
+        service
+            .record_discovered_node_bundles(
+                "owner",
+                "project",
+                vec![(
+                    "project/example".to_string(),
+                    locked_bundle(DependencyLockSource::Project, 'b'),
+                )],
+            )
+            .expect("project drift is re-locked");
+
+        let after = service.read("owner", "project").unwrap();
+        assert_eq!(after.nodes.bundles.len(), 1);
+        assert_eq!(
+            after.nodes.bundles["project/example"].integrity,
+            format!("sha256:{}", "b".repeat(64))
         );
     }
 }

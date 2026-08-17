@@ -4729,6 +4729,172 @@ mod tests {
         assert!(err.message.contains("unsupported apiVersion"));
     }
 
+    fn wasm_node_entry(kind: &str, title: &str, export: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind,
+            "title": title,
+            "description": "E2E WASM node used by installation and runtime tests.",
+            "icon": "",
+            "ui_category": "wasm.e2e",
+            "ui_category_label": "WASM E2E",
+            "uses_credentials": [],
+            "run": { "module": "core", "export": export },
+            "definition": {
+                "input_pins": ["in"],
+                "output_pins": ["out"],
+                "config_schema": { "type": "object" },
+                "input_schema": {},
+                "output_schema": {},
+                "examples": [],
+                "failure_semantics": [],
+                "fields": [],
+                "layout": [],
+                "dsl_flags": []
+            }
+        })
+    }
+
+    /// Installs a real WASM bundle whose two nodes share one module through
+    /// distinct exports, then runs both.
+    ///
+    /// This is the regression guard for the entry-point collision: before the
+    /// run binding existed, every WASM node in a package resolved to the same
+    /// default export.
+    #[tokio::test]
+    async fn installed_wasm_nodes_execute_their_own_exports() {
+        use base64::Engine as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(
+                crate::platform::model::PlatformConfig {
+                    data_root: root.path().to_path_buf(),
+                    default_password: "test-password".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        let owner = "superadmin";
+        let project = "default";
+
+        let module =
+            include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
+        let definition = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "NodeBundle",
+            "metadata": { "name": "e2ewasm", "version": "1.0.0" },
+            "spec": {
+                "package": "e2ewasm",
+                "version": "1.0.0",
+                "title": "E2E WASM Bundle",
+                "description": "Two WASM nodes sharing one module through distinct exports.",
+                "icon": "icon.svg",
+                "credentials": [],
+                "functions": {},
+                "modules": {
+                    "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
+                },
+                "nodes": [
+                    wasm_node_entry("n.x.e2ewasm.train", "E2E Train", "e2e_train"),
+                    wasm_node_entry("n.x.e2ewasm.score", "E2E Score", "e2e_score")
+                ]
+            }
+        })
+        .to_string();
+        let icon = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+            "asset_kind": "node_bundle",
+            "title": "E2E WASM",
+            "description": "Exercises per-node WASM export resolution.",
+            "files": [
+                {
+                    "rel_path": "definition.json",
+                    "kind": "node_definition",
+                    "size_bytes": definition.len(),
+                    "reason": "test",
+                    "content": definition
+                },
+                {
+                    "rel_path": "icon.svg",
+                    "kind": "asset",
+                    "size_bytes": icon.len(),
+                    "reason": "test",
+                    "content": icon
+                },
+                {
+                    "rel_path": "wasm/core.wasm",
+                    "kind": "asset",
+                    "size_bytes": module.len(),
+                    "reason": "test",
+                    "encoding": "base64",
+                    "content": base64::engine::general_purpose::STANDARD.encode(module)
+                }
+            ]
+        }))
+        .unwrap();
+
+        platform
+            .hub
+            .install_artifact_payload(
+                owner.to_string(),
+                project.to_string(),
+                "e2ewasm",
+                "1.0.0",
+                "",
+                "test/e2ewasm",
+                payload,
+            )
+            .expect("install succeeds");
+
+        // Each node resolves its own export from the shared module.
+        for (kind, export) in [
+            ("n.x.e2ewasm.train", "e2e_train"),
+            ("n.x.e2ewasm.score", "e2e_score"),
+        ] {
+            let installed = platform
+                .node_registry
+                .get_by_kind(owner, project, kind)
+                .unwrap_or_else(|| panic!("{kind} is installed"));
+            assert_eq!(
+                installed.manifest.source,
+                crate::platform::model::NodePackageSource::Wasm
+            );
+            let (module_spec, resolved) = installed.manifest.wasm_target().expect("wasm target");
+            assert_eq!(module_spec.path, "wasm/core.wasm");
+            assert_eq!(resolved, export);
+
+            let output = crate::pipeline::engines::wasm_host::execute_wasm_node(
+                kind.to_string(),
+                serde_json::json!({}),
+                platform.clone(),
+                crate::pipeline::nodes::NodeExecutionInput {
+                    node_id: "n1".to_string(),
+                    input_pin: "in".to_string(),
+                    payload: serde_json::json!({ "value": 2 }),
+                    metadata: serde_json::json!({ "owner": owner, "project": project }),
+                    bus: None,
+                },
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{kind} executes: {}", err.message));
+
+            assert_eq!(output.len(), 1);
+            assert_eq!(output[0].payload["ok"], serde_json::json!(true));
+            assert_eq!(output[0].payload["engine"], serde_json::json!("wasm"));
+            assert_eq!(
+                output[0].payload["contract"],
+                serde_json::json!("zebflow-wasm-json-v1")
+            );
+            assert_eq!(
+                output[0].payload["export"],
+                serde_json::json!(export),
+                "each node must run its own export, not a shared default"
+            );
+        }
+    }
+
     #[test]
     fn failed_node_bundle_install_restores_files_and_dependency_lock() {
         let root = tempfile::tempdir().unwrap();
@@ -4803,9 +4969,19 @@ mod tests {
         .unwrap();
         let owner = "superadmin";
         let project = "default";
+        // Rename the whole package identity: a kind is owned by its package, so
+        // the slug, metadata name, and kind namespace must move together.
         let definition = include_str!("../../../composites/openai-embedding/definition.json")
-            .replace("n.c.ai.embedding", "n.c.test.embedding");
+            .replace(
+                "n.x.openai_embedding.embed",
+                "n.x.openai_embedding_test.embed",
+            )
+            .replace("\"openai-embedding\"", "\"openai-embedding-test\"");
         let function = include_str!("../../../composites/openai-embedding/functions/embed.zf.json");
+        // The bundle declares an icon, so the install must ship it. A declared
+        // artifact that never lands now fails the registry refresh.
+        let icon = include_str!("../../../composites/openai-embedding/icon.svg");
+        let node_icon = include_str!("../../../composites/openai-embedding/icons/embedding.svg");
         let payload: HubArtifact = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "OpenAI embedding",
@@ -4824,6 +5000,20 @@ mod tests {
                     "size_bytes": function.len(),
                     "reason": "test",
                     "content": function
+                },
+                {
+                    "rel_path": "icon.svg",
+                    "kind": "asset",
+                    "size_bytes": icon.len(),
+                    "reason": "test",
+                    "content": icon
+                },
+                {
+                    "rel_path": "icons/embedding.svg",
+                    "kind": "asset",
+                    "size_bytes": node_icon.len(),
+                    "reason": "test",
+                    "content": node_icon
                 }
             ]
         }))
@@ -4847,14 +5037,14 @@ mod tests {
                 .node_registry
                 .merged_definitions(owner, project)
                 .iter()
-                .any(|definition| definition.kind == "n.c.test.embedding")
+                .any(|definition| definition.kind == "n.x.openai_embedding_test.embed")
         );
         let lock = platform.dependency_lock.read(owner, project).unwrap();
         let bundle = lock
             .nodes
             .bundles
             .values()
-            .find(|bundle| bundle.definitions == ["n.c.test.embedding"])
+            .find(|bundle| bundle.definitions == ["n.x.openai_embedding_test.embed"])
             .unwrap();
         assert_eq!(
             bundle.source,
