@@ -444,14 +444,18 @@ Registry, lock, and runtime tests in `src/platform/services/`:
 
 ### Still required before this kind is Frozen
 
-- interruption injected after each durable install step (files, pipelines,
-  lock, registry publication)
-- equivalent install coverage for every non-Hub source
+- interruption injected after each durable install step, meaning a killed
+  process rather than a returned error (files, pipelines, lock, registry
+  publication)
 - composite trigger activation and deactivation lifecycle at run time
 - WASM trigger handling at run time against a real module
-- two-instance project transfer preserving exact bundle bytes and node kinds
 - Hub browse and Add flow shown in the browser for a `node_bundle` asset
 - uninstall driven from the UI
+
+Local and remote Hub installs share one implementation, `install_artifact_payload`,
+which the installation tests above cover. Two-instance project transfer is proven
+by `bundle_transfer_preserves_and_resolves_all_dependencies` in
+`src/platform/services/project_transfer.rs`.
 
 ### Browser evidence, 2026-08-17
 
