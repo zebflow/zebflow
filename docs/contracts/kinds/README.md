@@ -29,6 +29,7 @@ explicitly.
 | 15 | [`ProjectManifest`](./project-manifest/README.md) | Reserved | Pending decision |
 | 16 | [`RweSource`](./rwe-source/README.md) | Source file, persisted | Pending |
 | 17 | [`Credential`](./credential/README.md) | Database record | Pending |
+| 18 | [`OfficeTopology`](./office-topology/README.md) | Envelope, persisted | Pending |
 
 ## Required Contents
 

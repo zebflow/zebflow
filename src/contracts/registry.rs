@@ -23,6 +23,7 @@ pub enum ContractKind {
     InvocationRecord,
     RweSource,
     Credential,
+    OfficeTopology,
 }
 
 impl ContractKind {
@@ -46,6 +47,7 @@ impl ContractKind {
             Self::InvocationRecord => "InvocationRecord",
             Self::RweSource => "RweSource",
             Self::Credential => "Credential",
+            Self::OfficeTopology => "OfficeTopology",
         }
     }
 
@@ -107,6 +109,7 @@ const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     database_record(ContractKind::InvocationRecord, "pipeline", "persisted"),
     source_file(ContractKind::RweSource, "rwe", "persisted"),
     database_record(ContractKind::Credential, "platform", "persisted"),
+    envelope(ContractKind::OfficeTopology, "execution", "persisted"),
 ];
 
 const fn descriptor(
@@ -192,7 +195,7 @@ mod tests {
             assert!(!descriptor.owner.is_empty());
             assert!(!descriptor.boundary.is_empty());
         }
-        assert_eq!(kinds.len(), 17);
+        assert_eq!(kinds.len(), 18);
         assert_eq!(
             ALL_CONTRACT_DESCRIPTORS
                 .iter()
