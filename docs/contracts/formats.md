@@ -50,6 +50,8 @@ The review and freeze status for each kind is maintained in the
 | `LibraryManifest` | Envelope | Embedded or distributed RWE library definition |
 | `MapPublishManifest` | Envelope | Project MapServer published-layer registry |
 | `InvocationRecord` | Database record | Bounded project invocation history row |
+| `RweSource` | Source file | One authored page, component, script, or stylesheet |
+| `Credential` | Database record | One stored credential value, never distributed |
 
 Reserved kinds are not usable formats. They keep a name from being assigned a
 different meaning before its contract is designed.

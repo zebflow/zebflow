@@ -21,6 +21,8 @@ pub enum ContractKind {
     LibraryManifest,
     MapPublishManifest,
     InvocationRecord,
+    RweSource,
+    Credential,
 }
 
 impl ContractKind {
@@ -42,6 +44,8 @@ impl ContractKind {
             Self::LibraryManifest => "LibraryManifest",
             Self::MapPublishManifest => "MapPublishManifest",
             Self::InvocationRecord => "InvocationRecord",
+            Self::RweSource => "RweSource",
+            Self::Credential => "Credential",
         }
     }
 
@@ -78,6 +82,9 @@ pub enum ContractRepresentation {
     InlinePayload,
     /// Typed row stored under a database schema migration contract.
     DatabaseRecord,
+    /// Authored source file with no envelope, governed by convention rather
+    /// than by serialization: imports, exports, and layout.
+    SourceFile,
     /// Name reserved for a future format; no reader may accept it yet.
     Reserved,
 }
@@ -98,6 +105,8 @@ const ALL_CONTRACT_DESCRIPTORS: &[ContractDescriptor] = &[
     envelope(ContractKind::LibraryManifest, "rwe", "persisted"),
     envelope(ContractKind::MapPublishManifest, "mapserver", "persisted"),
     database_record(ContractKind::InvocationRecord, "pipeline", "persisted"),
+    source_file(ContractKind::RweSource, "rwe", "persisted"),
+    database_record(ContractKind::Credential, "platform", "persisted"),
 ];
 
 const fn descriptor(
@@ -143,6 +152,14 @@ const fn database_record(
     )
 }
 
+const fn source_file(
+    kind: ContractKind,
+    owner: &'static str,
+    boundary: &'static str,
+) -> ContractDescriptor {
+    descriptor(kind, owner, boundary, ContractRepresentation::SourceFile)
+}
+
 const fn reserved(
     kind: ContractKind,
     owner: &'static str,
@@ -175,7 +192,7 @@ mod tests {
             assert!(!descriptor.owner.is_empty());
             assert!(!descriptor.boundary.is_empty());
         }
-        assert_eq!(kinds.len(), 15);
+        assert_eq!(kinds.len(), 17);
         assert_eq!(
             ALL_CONTRACT_DESCRIPTORS
                 .iter()
