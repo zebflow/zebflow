@@ -84,6 +84,53 @@ Install fetches every referenced artifact, verifies each digest, and writes
 nothing until all of them pass, so a failed fetch leaves the previous state
 intact.
 
+## Boundary table
+
+| Role | Where | What it does |
+| --- | --- | --- |
+| Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = Value`; validation checks only that the spec is a JSON object |
+| Real shape | `src/platform/services/hub.rs`, `HubArtifact` | private struct, `deny_unknown_fields`, never reached by the contract |
+| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row |
+| Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
+| Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
+| Reader, value | `parse_hub_artifact_value` | direct payload, including local node bundle install |
+| Reader, remote publish | `hub.rs:4587` | validates an inbound published document |
+| Reader, API | `web/mod.rs:7488` | serves the document |
+| Durable store | `data_root/<artifact_rel_path>` plus a `HubAssetVersion` row | one file per version, digest recorded as `artifact_sha256` |
+
+## Findings
+
+### The contract is empty
+
+`HubPackageContract` declares `type Spec = Value` and its validator only checks
+that the spec is a JSON object. Every rule about what a package contains lives in
+`HubArtifact`, a private struct in the hub service that the contract never
+reaches.
+
+So the registered kind provides no guarantee at all. A malformed package is
+caught later, by serde, at a different boundary, with a different error, and only
+on the paths that happen to deserialize into `HubArtifact`.
+
+This is the same defect the `NodeBundle` review found in reverse: there, the
+rules existed and were scattered; here, the kind exists and the rules do not.
+Giving `HubPackage` a typed spec is the substance of this review.
+
+### Republishing silently overwrites
+
+`publish_asset` builds a `HubAssetVersion` and calls `put_hub_asset_version`
+without checking whether that `package_id` and `version` already exist. A second
+publish of the same version replaces the row, the artifact path, and the digest.
+
+Any `zeb.lock` entry pinning that version then fails its digest check, and the
+project reports a tampered dependency for what was in fact a republish. That is
+the failure immutability exists to prevent, and it is reachable today.
+
+### `created_at` is set on every publish
+
+The version row records `created_at: now` unconditionally, so a republish also
+rewrites when the version was created. With immutability enforced this becomes
+correct by construction; until then it hides that a republish happened.
+
 ## Still to review
 
 - publisher identity: what it asserts, and what a static repository asserts
