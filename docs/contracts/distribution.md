@@ -244,6 +244,46 @@ reason they are listed separately rather than treated as one "install".
 official content arrives, and because a resource moving from embedded to
 installed is a distribution change even though no bytes travel.
 
+### One repository interface
+
+The channels above are not five mechanisms. They are five **implementations of
+one interface**, and the format they carry is the same in every case.
+
+A repository answers two questions:
+
+```text
+list()               what packages and versions are available here
+fetch(id, version)   give me that HubPackage document
+```
+
+Everything else — publisher identity, access tokens, base URLs, file paths — is
+implementation detail behind those two calls.
+
+| Implementation | `list()` | `fetch()` |
+| --- | --- | --- |
+| Embedded | the binary's asset table | bytes compiled into the binary |
+| Local file | the one document supplied | that document |
+| Zebflow Hub | this instance's asset store | the stored artifact |
+| Remote Hub | another instance's HTTP API | that instance's artifact endpoint |
+| Static repository | `zebflow-repository.json` | a document path from the index |
+
+This matters because it means a new source is a **fetcher**, not a new package
+format, a new installer, or a new review path. Adding static repositories should
+add one implementation and nothing else. If it requires touching the installer,
+the abstraction is in the wrong place.
+
+The same reasoning applies to RWE libraries: embedded is not a special case, it
+is the implementation that happens to always be available offline. A library
+resolved from the binary and one resolved from a repository produce the same
+lock entry shape, differing only in `source`.
+
+**What exists today does not yet have this shape.** `ProjectHubRepository` is
+hardwired to a remote Zebflow instance — it carries `base_url`, `remote_owner`,
+`remote_project`, and `read_token`, none of which a static repository or a local
+file has. Generalising it is the work that makes the rest of this section
+implementable, and it should happen before a second remote source is added
+rather than after.
+
 ### Static repositories
 
 A static repository is any HTTPS location that serves an index and a set of
