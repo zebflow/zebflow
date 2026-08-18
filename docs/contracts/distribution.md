@@ -48,6 +48,53 @@ The CLI reflects the same split: `zebflow run` is platform scope, taking a
 project or Hub asset URL and materialising it. There is no project-scope CLI
 verb today; project-scope distribution is API and UI only.
 
+## 0b. Consumption modes
+
+Scope says *where* something arrives. Mode says *why*, and the two are
+independent.
+
+| Mode | Who | Wants | Needs |
+| --- | --- | --- | --- |
+| **Develop** | someone building | editable source, dependencies, the studio | everything |
+| **Run** | someone using a tool | the thing to work | an entry point, nothing else |
+
+Both are platform-scope installs of a whole project. The difference is that the
+run-mode user is not a developer, does not want a server to administer, and
+should not have to know what a pipeline is.
+
+```text
+zeb app run osgeo-spatial-tool        obtain if needed, then serve it
+```
+
+Someone who wants a geospatial selection tool obtains one thing and uses it.
+That Zebflow is underneath is not their concern, and this is the mode that makes
+distribution worth having: obtaining a working tool should cost one command.
+
+`zebflow run` implements this today, and its usage line — "materialize one app
+project if needed, then serve its public route" — is exactly this mode.
+
+### A project needs a declared entry point
+
+Run mode has to answer one question: **what does this project serve?**
+
+Today nothing declares it. `choose_public_app_path` scans every pipeline in the
+project, collects webhook triggers, and guesses: a `GET /` if one exists, then
+any `GET`, then any trigger at all. That works for a project with one obvious
+front door and silently picks something arbitrary for a project without one.
+
+Guessing is acceptable as a fallback. It is not acceptable as the contract,
+because it means a project cannot state what it is, and an author cannot control
+what a user sees first.
+
+`ProjectConfiguration` is the natural owner: it is frozen, project-scoped, and
+already carries `profile`, `runtime`, and `bootstrap`. An entry-point
+declaration belongs beside them.
+
+That is a change to a frozen contract, so it needs its versioning rules rather
+than an edit in passing. Recorded here as a distribution requirement so the
+`ProjectConfiguration` change is made deliberately, and so run mode stops
+depending on a heuristic.
+
 ## 0a. Command line surface
 
 Zebflow's premise is that obtaining something should be one command, the way a
