@@ -11,7 +11,46 @@ Zebflow's premise is that a project can be created, shared, cloned, and
 installed easily. That premise only holds if distribution is one system with one
 safety model, rather than several install paths that happen to exist.
 
+## 0. Scope
+
+Distribution happens at two levels, and the same words mean different things at
+each. Saying "install" without saying where is the main source of confusion, so
+the scope comes first.
+
+| Scope | Who acts | What arrives | Result |
+| --- | --- | --- | --- |
+| **Platform / office** | an operator or account owner | a whole project | a **new project exists** |
+| **Project** | someone working inside one project | a dependency or some content | **that project changes** |
+
+At platform scope, `install` means materialise a project. It creates something
+that did not exist:
+
+```text
+POST /api/users/{owner}/hub/install     install a Hub project into an account
+POST /api/platform/hub/install          install a Hub project as a platform app
+zebflow run <project-or-hub-asset-url>  materialise the project, then serve it
+```
+
+At project scope, `install` means take on a managed dependency. The project
+already exists and gains something:
+
+```text
+POST /api/projects/{owner}/{project}/nodes/install
+POST /api/projects/{owner}/{project}/hub/assets/{id}/{version}/add
+```
+
+The two are not variants of one operation. Platform-scope install produces a
+project and cannot be undone by an uninstall; project-scope install adds a
+tracked dependency that uninstall removes. A rule proven at one scope does not
+transfer to the other, and this document says which scope each rule belongs to.
+
+The CLI reflects the same split: `zebflow run` is platform scope, taking a
+project or Hub asset URL and materialising it. There is no project-scope CLI
+verb today; project-scope distribution is API and UI only.
+
 ## 1. What is distributable
+
+Unless a row says otherwise, these are project-scope acts.
 
 | Resource | Kind that owns its format | Channels | Direction |
 | --- | --- | --- | --- |
@@ -20,7 +59,7 @@ safety model, rather than several install paths that happen to exist.
 | Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
 | RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
 | Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
-| Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, publish, import, clone |
+| Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, publish, import, clone; **install** at platform scope |
 | Project files only | ZebFS objects | transfer archive (`files`) | export, import |
 | UI component | catalog entry, no kind yet | built-in catalog | add only |
 | Database schema | `DatabaseSchema` | schema export endpoint | export only |
