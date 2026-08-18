@@ -14,10 +14,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::contracts::kinds::{
-    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageContract, HubPackageFile,
-    HubPackageFileSupply, HubPackageGallery, HubPackageInitialDataStep, HubPackageInitialization,
-    HubPackageMedia, HubPackageSpec, MAX_HUB_PACKAGE_BYTES, ProjectConfigurationContract,
-    decode_hub_package, decode_pipeline_graph, encode_hub_package,
+    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageArtifactRef, HubPackageContract,
+    HubPackageFile, HubPackageFileSupply, HubPackageGallery, HubPackageInitialDataStep,
+    HubPackageInitialization, HubPackageMedia, HubPackageSpec, MAX_HUB_PACKAGE_BYTES,
+    MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, ProjectConfigurationContract, decode_hub_package,
+    decode_pipeline_graph, encode_hub_package,
 };
 use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
@@ -155,6 +156,134 @@ struct PreparedHubInstallEntry {
     destination: PathBuf,
     bytes: Vec<u8>,
     previous: Option<Vec<u8>>,
+}
+
+/// Directory every channel keeps its content-addressed artifacts in.
+const HUB_ARTIFACT_DIR: &str = "artifacts";
+
+/// Where the channel a package arrived through keeps its referenced artifacts.
+///
+/// An artifact reference carries a digest and never a location, so the location
+/// is the channel's to supply: `<channel-base>/artifacts/<sha256>`. A package
+/// copied into a different repository still resolves, and two packages shipping
+/// one runtime read the same file.
+///
+/// A channel that cannot answer says so. Every install through it then refuses
+/// a referenced file rather than writing an empty one in its place.
+#[derive(Debug, Clone)]
+pub enum HubArtifactChannel {
+    /// A directory holding `artifacts/<sha256>`: this instance's Hub store, or
+    /// the folder a supplied document was read from.
+    Local(PathBuf),
+    /// This channel cannot fetch referenced bytes, and says why.
+    Unresolvable(&'static str),
+}
+
+impl HubArtifactChannel {
+    /// A channel whose artifacts sit beside `base`, under `artifacts/`.
+    pub fn local(base: impl Into<PathBuf>) -> Self {
+        Self::Local(base.into())
+    }
+
+    /// A channel with nowhere to look, refusing with `reason`.
+    pub fn unresolvable(reason: &'static str) -> Self {
+        Self::Unresolvable(reason)
+    }
+
+    /// Fetches one referenced artifact and verifies it against its digest.
+    ///
+    /// Nothing this returns has been written anywhere: callers resolve every
+    /// reference first and write only once all of them pass, so a mismatch or a
+    /// failed fetch leaves the previous state exactly as it was.
+    fn resolve(
+        &self,
+        rel_path: &str,
+        artifact: &HubPackageArtifactRef,
+        declared_size_bytes: usize,
+    ) -> Result<Vec<u8>, PlatformError> {
+        let base = match self {
+            Self::Local(base) => base,
+            Self::Unresolvable(reason) => {
+                return Err(PlatformError::new(
+                    "HUB_ARTIFACT_UNRESOLVED",
+                    format!(
+                        "file '{rel_path}' references artifact {} and {reason}",
+                        artifact.sha256
+                    ),
+                ));
+            }
+        };
+        if declared_size_bytes > MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_TOO_LARGE",
+                format!(
+                    "file '{rel_path}' declares {declared_size_bytes} bytes, over the \
+                     {MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES} byte limit for a referenced artifact"
+                ),
+            ));
+        }
+        let path = referenced_artifact_path(base, &artifact.sha256)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PlatformError::new(
+                    "HUB_ARTIFACT_MISSING",
+                    format!(
+                        "file '{rel_path}' references artifact {}, which this channel does not have",
+                        artifact.sha256
+                    ),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file() {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_INVALID",
+                format!("artifact {} is not a regular file", artifact.sha256),
+            ));
+        }
+        if metadata.len() != declared_size_bytes as u64 {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_SIZE_MISMATCH",
+                format!(
+                    "file '{rel_path}' declares {declared_size_bytes} bytes but artifact {} is {} bytes",
+                    artifact.sha256,
+                    metadata.len()
+                ),
+            ));
+        }
+        let bytes = fs::read(&path)?;
+        let actual = sha256_hex(&bytes);
+        if actual != artifact.sha256 {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_DIGEST_MISMATCH",
+                format!(
+                    "file '{rel_path}' expects artifact {}, but the stored bytes hash to {actual}",
+                    artifact.sha256
+                ),
+            ));
+        }
+        Ok(bytes)
+    }
+}
+
+/// `<base>/artifacts/<sha256>`.
+///
+/// The digest is the whole file name, so it is checked before it becomes a path
+/// segment: a reference is content-addressed and can never name a directory or
+/// a neighbour.
+fn referenced_artifact_path(base: &Path, sha256: &str) -> Result<PathBuf, PlatformError> {
+    let valid = sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !valid {
+        return Err(PlatformError::new(
+            "HUB_ARTIFACT_INVALID",
+            format!("artifact digest '{sha256}' is not 64 lowercase hexadecimal digits"),
+        ));
+    }
+    Ok(base.join(HUB_ARTIFACT_DIR).join(sha256))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1722,7 +1851,7 @@ impl HubService {
         let raw = fs::read(&artifact_abs)?;
         verify_hub_artifact_bytes(&raw, &version_row.artifact_sha256)?;
         let payload = parse_hub_artifact_bytes(&raw, "HUB_INSTALL")?;
-        self.install_artifact_payload(
+        self.install_artifact_payload_from(
             target_owner,
             target_project,
             package_id,
@@ -1730,7 +1859,49 @@ impl HubService {
             target_folder,
             &format!("local/{package_id}"),
             payload,
+            &self.artifact_store(),
         )
+    }
+
+    /// This instance's Hub store, as an artifact channel.
+    ///
+    /// Artifacts sit at `<hub service root>/artifacts/<sha256>`, beside the
+    /// package documents rather than under any one of them, so two packages
+    /// naming one runtime share the single stored file.
+    pub fn artifact_store(&self) -> HubArtifactChannel {
+        HubArtifactChannel::local(self.hub_service_root())
+    }
+
+    fn hub_service_root(&self) -> PathBuf {
+        self.data_root
+            .join("services")
+            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+    }
+
+    /// Puts one artifact into this instance's Hub store and returns its digest.
+    ///
+    /// The store is content-addressed, so publishing the same bytes twice is
+    /// idempotent and costs one file. This is the writer half of the referenced
+    /// form: a package that references an artifact is only installable from a
+    /// Hub that holds it.
+    pub fn store_artifact(&self, bytes: &[u8]) -> Result<String, PlatformError> {
+        if bytes.len() > MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES {
+            return Err(PlatformError::new(
+                "HUB_ARTIFACT_TOO_LARGE",
+                format!(
+                    "artifact is {} bytes, over the {MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES} \
+                     byte limit for a referenced artifact",
+                    bytes.len()
+                ),
+            ));
+        }
+        let sha256 = sha256_hex(bytes);
+        let path = referenced_artifact_path(&self.hub_service_root(), &sha256)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        atomic_write(&path, bytes)?;
+        Ok(sha256)
     }
 
     pub fn review_asset_install(
@@ -1804,10 +1975,87 @@ impl HubService {
         target_folder: &str,
         artifact: Value,
     ) -> Result<HubInstallResult, PlatformError> {
-        let target_owner = slug_segment(target_owner);
-        let target_project = slug_segment(target_project);
         let payload = parse_local_node_bundle_artifact(artifact, "NODE_BUNDLE_INSTALL")?;
+        self.install_node_bundle_payload(
+            slug_segment(target_owner),
+            slug_segment(target_project),
+            package_id,
+            version,
+            target_folder,
+            payload,
+            &HubArtifactChannel::unresolvable(
+                "a bundle supplied as a document body says nothing about where its \
+                 artifacts live; install it from its file instead",
+            ),
+        )
+    }
 
+    /// Reviews a node bundle read from a file on disk.
+    ///
+    /// This is the local file channel: the document names its artifacts by
+    /// digest, and they sit in `artifacts/<sha256>` beside it.
+    pub fn review_local_node_bundle_document(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        document_path: &Path,
+    ) -> Result<HubInstallReview, PlatformError> {
+        let payload = read_local_node_bundle_document(document_path, "NODE_BUNDLE_INSTALL_REVIEW")?;
+        self.review_artifact_payload(
+            &slug_segment(target_owner),
+            &slug_segment(target_project),
+            package_id,
+            version,
+            target_folder,
+            &payload,
+        )
+    }
+
+    /// Installs a node bundle read from a file on disk, resolving every
+    /// referenced artifact from `artifacts/<sha256>` beside the document.
+    pub fn install_local_node_bundle_document(
+        &self,
+        target_owner: &str,
+        target_project: &str,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        document_path: &Path,
+    ) -> Result<HubInstallResult, PlatformError> {
+        let payload = read_local_node_bundle_document(document_path, "NODE_BUNDLE_INSTALL")?;
+        let base = document_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
+        self.install_node_bundle_payload(
+            slug_segment(target_owner),
+            slug_segment(target_project),
+            package_id,
+            version,
+            target_folder,
+            payload,
+            &HubArtifactChannel::local(base),
+        )
+    }
+
+    /// The shared body of every local node bundle install.
+    ///
+    /// The review runs first and a violation refuses the install, whatever the
+    /// caller approved, and whichever channel supplied the document.
+    #[allow(clippy::too_many_arguments)]
+    fn install_node_bundle_payload(
+        &self,
+        target_owner: String,
+        target_project: String,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        payload: HubPackageSpec,
+        artifacts: &HubArtifactChannel,
+    ) -> Result<HubInstallResult, PlatformError> {
         let review = self.review_artifact_payload(
             &target_owner,
             &target_project,
@@ -1826,7 +2074,7 @@ impl HubService {
             ));
         }
 
-        self.install_artifact_payload(
+        self.install_artifact_payload_from(
             target_owner,
             target_project,
             package_id,
@@ -1834,9 +2082,15 @@ impl HubService {
             target_folder,
             &format!("local/{package_id}"),
             payload,
+            artifacts,
         )
     }
 
+    /// Installs a package whose channel cannot resolve referenced artifacts.
+    ///
+    /// Every carried file installs exactly as before; a referenced one is
+    /// refused, because a channel that supplies no location has nowhere to fetch
+    /// from and an empty file is not an answer.
     fn install_artifact_payload(
         &self,
         target_owner: String,
@@ -1846,6 +2100,32 @@ impl HubService {
         target_folder: &str,
         source_id: &str,
         payload: HubPackageSpec,
+    ) -> Result<HubInstallResult, PlatformError> {
+        self.install_artifact_payload_from(
+            target_owner,
+            target_project,
+            package_id,
+            version,
+            target_folder,
+            source_id,
+            payload,
+            &HubArtifactChannel::unresolvable("this channel does not say where its artifacts live"),
+        )
+    }
+
+    /// Installs a package, resolving every referenced artifact through
+    /// `artifacts` before a single byte is written.
+    #[allow(clippy::too_many_arguments)]
+    fn install_artifact_payload_from(
+        &self,
+        target_owner: String,
+        target_project: String,
+        package_id: &str,
+        version: &str,
+        target_folder: &str,
+        source_id: &str,
+        payload: HubPackageSpec,
+        artifacts: &HubArtifactChannel,
     ) -> Result<HubInstallResult, PlatformError> {
         let layout = self
             .projects
@@ -1863,7 +2143,11 @@ impl HubService {
         } else {
             layout.repo_dir.clone()
         };
-        let prepared = prepare_hub_install_entries(&install_base, &install_root, &payload.files)?;
+        // Every entry's bytes — carried and referenced alike — are produced and
+        // verified here, before the first write. A digest mismatch or a missing
+        // artifact returns now, with the project untouched.
+        let prepared =
+            prepare_hub_install_entries(&install_base, &install_root, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
@@ -2691,13 +2975,25 @@ impl HubService {
         let layout = self.projects.project_layout(&target_owner, &project)?;
         retarget_project_configuration(&mut artifact.files, &project)?;
         retarget_dependency_lock(&mut artifact.files, &project)?;
+        // A remote pack carries its bytes in the document it just fetched, so
+        // there is no artifact location to fetch a reference from. Resolving
+        // before the worktree is cleared keeps a refusal from destroying the
+        // project it was about to fill.
+        let artifacts = HubArtifactChannel::unresolvable(
+            "a remote pack has no artifact endpoint, so referenced bytes cannot be fetched",
+        );
+        for entry in &artifact.files {
+            if !matches!(entry.supply(), Some(HubPackageFileSupply::Carried(_))) {
+                hub_entry_bytes(entry, &artifacts)?;
+            }
+        }
         clear_repo_worktree_preserving_git(&layout.repo_dir)?;
         for entry in &artifact.files {
             let dest_abs = sanitize_install_repo_path(&layout, &entry.rel_path)?;
             if let Some(parent) = dest_abs.parent() {
                 fs::create_dir_all(parent)?;
             }
-            write_entry_content(&dest_abs, entry)?;
+            write_entry_content(&dest_abs, entry, &artifacts)?;
         }
         reindex_project_bundle_pipelines(self, &target_owner, &project, &artifact.files)?;
         sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
@@ -4080,16 +4376,25 @@ fn default_install_target_folder(package_id: &str, asset_kind: &str) -> String {
     }
 }
 
-fn write_entry_content(dest_abs: &Path, entry: &HubPackageFile) -> Result<(), PlatformError> {
-    atomic_write(dest_abs, &hub_entry_bytes(entry)?)?;
+fn write_entry_content(
+    dest_abs: &Path,
+    entry: &HubPackageFile,
+    artifacts: &HubArtifactChannel,
+) -> Result<(), PlatformError> {
+    atomic_write(dest_abs, &hub_entry_bytes(entry, artifacts)?)?;
     Ok(())
 }
 
 /// The bytes one manifest entry writes.
 ///
-/// A referenced artifact has no bytes in the document and no channel fetches
-/// one yet, so it is refused here rather than written as an empty file.
-fn hub_entry_bytes(entry: &HubPackageFile) -> Result<Vec<u8>, PlatformError> {
+/// A carried entry has them inline; a referenced entry is fetched from the
+/// channel and verified against its declared digest. Either way the bytes are
+/// produced before anything is written, so a reference that cannot be resolved
+/// refuses the install instead of landing as an empty file.
+fn hub_entry_bytes(
+    entry: &HubPackageFile,
+    artifacts: &HubArtifactChannel,
+) -> Result<Vec<u8>, PlatformError> {
     match entry.supply() {
         Some(HubPackageFileSupply::Carried(content)) if entry.encoding == "base64" => {
             base64::engine::general_purpose::STANDARD
@@ -4097,14 +4402,9 @@ fn hub_entry_bytes(entry: &HubPackageFile) -> Result<Vec<u8>, PlatformError> {
                 .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))
         }
         Some(HubPackageFileSupply::Carried(content)) => Ok(content.as_bytes().to_vec()),
-        Some(HubPackageFileSupply::Referenced(_)) => Err(PlatformError::new(
-            "HUB_ARTIFACT_UNRESOLVED",
-            format!(
-                "file '{}' references an artifact by digest, and no channel fetches \
-                 referenced artifacts yet",
-                entry.rel_path
-            ),
-        )),
+        Some(HubPackageFileSupply::Referenced(artifact)) => {
+            artifacts.resolve(&entry.rel_path, artifact, entry.size_bytes)
+        }
         None => Err(PlatformError::new(
             "HUB_INSTALL",
             format!(
@@ -4119,6 +4419,7 @@ fn prepare_hub_install_entries(
     install_base: &Path,
     install_root: &str,
     files: &[HubPackageFile],
+    artifacts: &HubArtifactChannel,
 ) -> Result<Vec<PreparedHubInstallEntry>, PlatformError> {
     let mut seen = HashSet::new();
     let mut prepared = Vec::with_capacity(files.len());
@@ -4157,7 +4458,7 @@ fn prepare_hub_install_entries(
         prepared.push(PreparedHubInstallEntry {
             install_rel,
             destination,
-            bytes: hub_entry_bytes(entry)?,
+            bytes: hub_entry_bytes(entry, artifacts)?,
             previous,
         });
     }
@@ -4249,7 +4550,41 @@ fn parse_local_node_bundle_artifact(
     value: Value,
     error_code: &'static str,
 ) -> Result<HubPackageSpec, PlatformError> {
-    let payload = parse_hub_artifact_value(value, error_code)?;
+    require_node_bundle_kind(parse_hub_artifact_value(value, error_code)?, error_code)
+}
+
+/// Reads one bundle document from disk, bounded by the document ceiling.
+///
+/// The size is checked before the read, so an oversized file is refused rather
+/// than loaded to discover it is too big.
+fn read_local_node_bundle_document(
+    document_path: &Path,
+    error_code: &'static str,
+) -> Result<HubPackageSpec, PlatformError> {
+    let metadata = fs::metadata(document_path)?;
+    if !metadata.is_file() {
+        return Err(PlatformError::new(
+            error_code,
+            format!("'{}' is not a file", document_path.display()),
+        ));
+    }
+    if metadata.len() > MAX_REMOTE_HUB_ARTIFACT_BYTES {
+        return Err(PlatformError::new(
+            error_code,
+            format!(
+                "'{}' exceeds the package document limit",
+                document_path.display()
+            ),
+        ));
+    }
+    let raw = fs::read(document_path)?;
+    require_node_bundle_kind(parse_hub_artifact_bytes(&raw, error_code)?, error_code)
+}
+
+fn require_node_bundle_kind(
+    payload: HubPackageSpec,
+    error_code: &'static str,
+) -> Result<HubPackageSpec, PlatformError> {
     if payload.asset_kind != HUB_ASSET_KIND_NODE_BUNDLE {
         return Err(PlatformError::new(
             error_code,
@@ -4949,6 +5284,455 @@ mod tests {
             .install_local_node_bundle("superadmin", "default", "notabundle", "1.0.0", "", artifact)
             .expect_err("a non-bundle must be refused");
         assert_eq!(error.code, "NODE_BUNDLE_INSTALL");
+    }
+
+    // ── Referenced artifacts ────────────────────────────────────────────
+    //
+    // A reference carries a digest and never a location, so every test below
+    // supplies the location the way its channel does and proves the install
+    // either verifies the bytes or refuses without touching what was there.
+
+    /// The real WASM module every referenced-artifact test resolves.
+    const REFERENCED_MODULE: &[u8] =
+        include_bytes!("../../../tests/fixtures/contracts/node-bundle/two-exports.wasm");
+
+    const REFERENCED_ICON: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+
+    fn wasm_bundle_definition(package_id: &str, title: &str) -> String {
+        serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "NodeBundle",
+            "metadata": { "name": package_id, "version": "1.0.0" },
+            "spec": {
+                "package": package_id,
+                "version": "1.0.0",
+                "title": title,
+                "description": "A bundle whose module may travel beside the document.",
+                "icon": "icon.svg",
+                "credentials": [],
+                "hosts": [],
+                "functions": {},
+                "modules": {
+                    "core": { "path": "wasm/core.wasm", "abi": "zebflow-wasm-json-v1" }
+                },
+                "nodes": [wasm_node_entry(
+                    &format!("n.x.{package_id}.train"),
+                    "Train",
+                    "e2e_train"
+                )]
+            }
+        })
+        .to_string()
+    }
+
+    /// A bundle document whose module entry is supplied by the caller, so one
+    /// package shape covers both the carried and the referenced form.
+    fn wasm_bundle_document(
+        package_id: &str,
+        title: &str,
+        module_entry: serde_json::Value,
+    ) -> serde_json::Value {
+        let definition = wasm_bundle_definition(package_id, title);
+        serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "HubPackage",
+            "metadata": { "name": package_id, "version": "1.0.0" },
+            "spec": {
+                "asset_kind": "node_bundle",
+                "title": title,
+                "description": "A bundle whose module may travel beside the document.",
+                "files": [
+                    { "rel_path": "definition.json", "kind": "node_definition",
+                      "size_bytes": definition.len(), "reason": "test",
+                      "content": definition },
+                    { "rel_path": "icon.svg", "kind": "asset",
+                      "size_bytes": REFERENCED_ICON.len(), "reason": "test",
+                      "content": REFERENCED_ICON },
+                    module_entry
+                ]
+            }
+        })
+    }
+
+    fn carried_module_entry() -> serde_json::Value {
+        serde_json::json!({
+            "rel_path": "wasm/core.wasm", "kind": "asset",
+            "size_bytes": REFERENCED_MODULE.len(), "reason": "test", "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(REFERENCED_MODULE)
+        })
+    }
+
+    fn referenced_module_entry(sha256: &str) -> serde_json::Value {
+        serde_json::json!({
+            "rel_path": "wasm/core.wasm", "kind": "asset",
+            "size_bytes": REFERENCED_MODULE.len(), "reason": "test",
+            "artifact": { "sha256": sha256, "media_type": "application/wasm" }
+        })
+    }
+
+    fn spec_of(document: &serde_json::Value) -> HubPackageSpec {
+        serde_json::from_value(document["spec"].clone()).expect("package spec")
+    }
+
+    fn test_platform(root: &tempfile::TempDir) -> crate::platform::services::PlatformService {
+        crate::platform::services::PlatformService::from_config(
+            crate::platform::model::PlatformConfig {
+                data_root: root.path().to_path_buf(),
+                default_password: "test-password".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    /// Writes a bundle document and, optionally, the artifact beside it.
+    ///
+    /// This is the local file channel exactly as the README describes it:
+    /// `./artifacts/<sha256>` next to the document.
+    fn write_local_channel(
+        dir: &Path,
+        document: &serde_json::Value,
+        artifact: Option<(&str, &[u8])>,
+    ) -> PathBuf {
+        let document_path = dir.join("package.json");
+        std::fs::write(&document_path, serde_json::to_vec(document).unwrap()).unwrap();
+        if let Some((sha256, bytes)) = artifact {
+            let artifact_dir = dir.join("artifacts");
+            std::fs::create_dir_all(&artifact_dir).unwrap();
+            std::fs::write(artifact_dir.join(sha256), bytes).unwrap();
+        }
+        document_path
+    }
+
+    /// The bytes are in the Hub store, addressed by the digest the package
+    /// declares, and the install fetches and verifies them.
+    #[test]
+    fn a_referenced_artifact_installs_from_the_hub_store() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let owner = "superadmin";
+        let project = "default";
+
+        let sha256 = platform
+            .hub
+            .store_artifact(REFERENCED_MODULE)
+            .expect("the store takes the module");
+        assert_eq!(sha256, sha256_hex(REFERENCED_MODULE));
+
+        let document = wasm_bundle_document(
+            "storepkg",
+            "Stored Package",
+            referenced_module_entry(&sha256),
+        );
+        platform
+            .hub
+            .install_artifact_payload_from(
+                owner.to_string(),
+                project.to_string(),
+                "storepkg",
+                "1.0.0",
+                "",
+                "local/storepkg",
+                spec_of(&document),
+                &platform.hub.artifact_store(),
+            )
+            .expect("a verified artifact installs");
+
+        let installed = root
+            .path()
+            .join("users/superadmin/default/data/nodes/storepkg/wasm/core.wasm");
+        assert_eq!(
+            std::fs::read(&installed).unwrap(),
+            REFERENCED_MODULE,
+            "the fetched bytes are the module, not a placeholder"
+        );
+        assert_eq!(
+            platform
+                .node_registry
+                .get_by_kind(owner, project, "n.x.storepkg.train")
+                .expect("the node is installed")
+                .manifest
+                .source,
+            crate::platform::model::NodePackageSource::Wasm
+        );
+    }
+
+    /// The same package, installed from a file with its artifact beside it.
+    #[test]
+    fn a_referenced_artifact_installs_from_a_document_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let channel = tempfile::tempdir().unwrap();
+        let owner = "superadmin";
+        let project = "default";
+
+        let sha256 = sha256_hex(REFERENCED_MODULE);
+        let document =
+            wasm_bundle_document("filepkg", "File Package", referenced_module_entry(&sha256));
+        let document_path = write_local_channel(
+            channel.path(),
+            &document,
+            Some((&sha256, REFERENCED_MODULE)),
+        );
+
+        let review = platform
+            .hub
+            .review_local_node_bundle_document(
+                owner,
+                project,
+                "filepkg",
+                "1.0.0",
+                "",
+                &document_path,
+            )
+            .expect("review succeeds");
+        assert!(review.installable);
+
+        platform
+            .hub
+            .install_local_node_bundle_document(
+                owner,
+                project,
+                "filepkg",
+                "1.0.0",
+                "",
+                &document_path,
+            )
+            .expect("an artifact beside the document installs");
+
+        assert_eq!(
+            std::fs::read(
+                root.path()
+                    .join("users/superadmin/default/data/nodes/filepkg/wasm/core.wasm")
+            )
+            .unwrap(),
+            REFERENCED_MODULE
+        );
+        assert!(
+            platform
+                .node_registry
+                .get_by_kind(owner, project, "n.x.filepkg.train")
+                .is_some()
+        );
+    }
+
+    /// Installing the carried form and the referenced form of one bundle lands
+    /// identical bytes, so referencing is a transport decision and nothing else.
+    #[test]
+    fn a_carried_package_and_a_referenced_package_install_the_same_bytes() {
+        let carried_root = tempfile::tempdir().unwrap();
+        let carried = test_platform(&carried_root);
+        let referenced_root = tempfile::tempdir().unwrap();
+        let referenced = test_platform(&referenced_root);
+        let owner = "superadmin";
+        let project = "default";
+
+        let carried_document =
+            wasm_bundle_document("bothpkg", "Both Package", carried_module_entry());
+        carried
+            .hub
+            .install_local_node_bundle(
+                owner,
+                project,
+                "bothpkg",
+                "1.0.0",
+                "",
+                carried_document.clone(),
+            )
+            .expect("a carried package installs exactly as before");
+
+        let sha256 = referenced
+            .hub
+            .store_artifact(REFERENCED_MODULE)
+            .expect("the store takes the module");
+        let referenced_document =
+            wasm_bundle_document("bothpkg", "Both Package", referenced_module_entry(&sha256));
+        referenced
+            .hub
+            .install_artifact_payload_from(
+                owner.to_string(),
+                project.to_string(),
+                "bothpkg",
+                "1.0.0",
+                "",
+                "local/bothpkg",
+                spec_of(&referenced_document),
+                &referenced.hub.artifact_store(),
+            )
+            .expect("the referenced package installs");
+
+        for rel in ["definition.json", "icon.svg", "wasm/core.wasm"] {
+            let installed = format!("users/superadmin/default/data/nodes/bothpkg/{rel}");
+            assert_eq!(
+                std::fs::read(carried_root.path().join(&installed)).unwrap(),
+                std::fs::read(referenced_root.path().join(&installed)).unwrap(),
+                "'{rel}' must not depend on how its bytes travelled"
+            );
+        }
+    }
+
+    /// Installs the carried bundle, then returns everything a refused second
+    /// install must leave exactly as it found it.
+    fn install_previous_state(
+        root: &tempfile::TempDir,
+        platform: &crate::platform::services::PlatformService,
+        package_id: &str,
+    ) -> (
+        Vec<u8>,
+        Vec<u8>,
+        crate::contracts::kinds::DependencyLockSpec,
+    ) {
+        let document =
+            wasm_bundle_document(package_id, "Installed Package", carried_module_entry());
+        platform
+            .hub
+            .install_local_node_bundle("superadmin", "default", package_id, "1.0.0", "", document)
+            .expect("the first install succeeds");
+        let package_dir = root
+            .path()
+            .join(format!("users/superadmin/default/data/nodes/{package_id}"));
+        (
+            std::fs::read(package_dir.join("definition.json")).unwrap(),
+            std::fs::read(package_dir.join("wasm/core.wasm")).unwrap(),
+            platform
+                .dependency_lock
+                .read("superadmin", "default")
+                .unwrap(),
+        )
+    }
+
+    fn assert_previous_state(
+        root: &tempfile::TempDir,
+        platform: &crate::platform::services::PlatformService,
+        package_id: &str,
+        previous: (
+            Vec<u8>,
+            Vec<u8>,
+            crate::contracts::kinds::DependencyLockSpec,
+        ),
+    ) {
+        let package_dir = root
+            .path()
+            .join(format!("users/superadmin/default/data/nodes/{package_id}"));
+        assert_eq!(
+            std::fs::read(package_dir.join("definition.json")).unwrap(),
+            previous.0,
+            "the refused install must not have rewritten the definition"
+        );
+        assert_eq!(
+            std::fs::read(package_dir.join("wasm/core.wasm")).unwrap(),
+            previous.1,
+            "the refused install must not have rewritten the module"
+        );
+        assert_eq!(
+            platform
+                .dependency_lock
+                .read("superadmin", "default")
+                .unwrap(),
+            previous.2,
+            "the lock still describes what is actually installed"
+        );
+        assert!(
+            platform
+                .node_registry
+                .get_by_kind("superadmin", "default", &format!("n.x.{package_id}.train"))
+                .is_some(),
+            "the previously installed node still resolves"
+        );
+    }
+
+    /// Bytes that hash to something else are not the bytes the package named,
+    /// so the install refuses and the previous release stays in place.
+    #[test]
+    fn a_digest_mismatch_refuses_the_install_and_leaves_the_previous_state() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let channel = tempfile::tempdir().unwrap();
+        let previous = install_previous_state(&root, &platform, "tamperpkg");
+
+        // The document names the real module's digest; the file sitting at that
+        // address is something else, which is what tampering looks like.
+        let sha256 = sha256_hex(REFERENCED_MODULE);
+        let document = wasm_bundle_document(
+            "tamperpkg",
+            "Tampered Package",
+            referenced_module_entry(&sha256),
+        );
+        let mut tampered = REFERENCED_MODULE.to_vec();
+        *tampered.last_mut().unwrap() ^= 0xff;
+        let document_path =
+            write_local_channel(channel.path(), &document, Some((&sha256, &tampered)));
+
+        let error = platform
+            .hub
+            .install_local_node_bundle_document(
+                "superadmin",
+                "default",
+                "tamperpkg",
+                "1.0.0",
+                "",
+                &document_path,
+            )
+            .expect_err("a digest mismatch must refuse the install");
+        assert_eq!(error.code, "HUB_ARTIFACT_DIGEST_MISMATCH");
+        assert_previous_state(&root, &platform, "tamperpkg", previous);
+    }
+
+    /// A reference the channel cannot answer is a failed fetch, and a failed
+    /// fetch leaves the previous state intact.
+    #[test]
+    fn a_missing_artifact_refuses_the_install_and_leaves_the_previous_state() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let channel = tempfile::tempdir().unwrap();
+        let previous = install_previous_state(&root, &platform, "missingpkg");
+
+        let document = wasm_bundle_document(
+            "missingpkg",
+            "Missing Package",
+            referenced_module_entry(&sha256_hex(REFERENCED_MODULE)),
+        );
+        let document_path = write_local_channel(channel.path(), &document, None);
+
+        let error = platform
+            .hub
+            .install_local_node_bundle_document(
+                "superadmin",
+                "default",
+                "missingpkg",
+                "1.0.0",
+                "",
+                &document_path,
+            )
+            .expect_err("a missing artifact must refuse the install");
+        assert_eq!(error.code, "HUB_ARTIFACT_MISSING");
+        assert_previous_state(&root, &platform, "missingpkg", previous);
+    }
+
+    /// A document posted as a body says nothing about where its artifacts live,
+    /// so that channel refuses a reference rather than writing an empty file.
+    #[test]
+    fn a_channel_without_a_location_refuses_a_referenced_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let document = wasm_bundle_document(
+            "bodypkg",
+            "Body Package",
+            referenced_module_entry(&sha256_hex(REFERENCED_MODULE)),
+        );
+
+        let error = platform
+            .hub
+            .install_local_node_bundle("superadmin", "default", "bodypkg", "1.0.0", "", document)
+            .expect_err("a channel with no location must refuse");
+        assert_eq!(error.code, "HUB_ARTIFACT_UNRESOLVED");
+        assert!(
+            !root
+                .path()
+                .join("users/superadmin/default/data/nodes/bodypkg")
+                .exists(),
+            "a refused install writes nothing at all"
+        );
     }
 
     /// A trigger's inbound handler is its run binding, so a WASM trigger runs

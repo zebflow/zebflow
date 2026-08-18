@@ -89,6 +89,9 @@ intact.
 | Role | Where | What it does |
 | --- | --- | --- |
 | Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = HubPackageSpec`; typed, `deny_unknown_fields`, bounded, and enforces the carried-or-referenced rule |
+| Artifact location | `HubArtifactChannel` | the channel's answer to "where are the referenced bytes": a local base directory, or a refusal that says why |
+| Reader, artifact | `HubArtifactChannel::resolve` | reads `<base>/artifacts/<sha256>`, checks the declared size, and verifies the digest |
+| Writer, artifact | `HubService::store_artifact` | puts bytes into this instance's Hub store, content-addressed, and returns the digest |
 | Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
 | Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
@@ -117,6 +120,33 @@ reads a file through `entry_text`, which returns nothing for an encoding it does
 not recognise, while the installer writes the entry's bytes verbatim. Labelling
 a file `utf8` therefore skipped the whole review and still landed on disk. The
 accepted set is now closed to `text`, `base64`, and absent.
+
+### A referenced artifact could not be installed — fixed for local channels
+
+The format accepted a reference and the installer refused one, so the honest
+half of the decision was in place and the useful half was not. Installation now
+resolves references, and the location comes from the channel rather than the
+document: `HubArtifactChannel` is either a base directory holding
+`artifacts/<sha256>` or an explicit refusal carrying the reason.
+
+| Channel | Base it resolves against |
+| --- | --- |
+| Hub asset | `data_root/services/<instance>/artifacts/<sha256>` |
+| Local file | `artifacts/<sha256>` beside the document |
+| Remote pack, project bundle over HTTP | refused: `HUB_ARTIFACT_UNRESOLVED` |
+| A document supplied as a request body | refused: it names no location |
+
+Every reference is fetched, sized, and hashed in
+`prepare_hub_install_entries`, which already ran to completion before the first
+write existed. Nothing is staged, copied, or rolled back for a bad artifact,
+because nothing was written: a mismatch or a missing file returns before the
+install touches the project at all. The remote paths that cannot fetch check
+their entries before clearing anything, so a refusal there does not empty a
+worktree it was about to fill.
+
+Refusal is deliberate rather than incidental. HTTP fetching of artifacts has no
+endpoint, no cache, and no size streaming yet, and a channel that silently wrote
+an empty file would be worse than one that says it cannot.
 
 ### Republishing silently overwrote — fixed
 
@@ -168,6 +198,11 @@ is left as found and recorded here.
 - size and count limits are now declared in the contract: 25 MB per document
   (the existing remote cap), 18 MB per carried file, 512 MB per referenced file.
   The per-file numbers still need review against real packages
-- staged install and rollback across a manifest plus N artifacts
+- fetching a referenced artifact over HTTP, which is the one channel still
+  refusing: it needs an artifact endpoint, a size-bounded streaming read, and a
+  decision about caching bytes two packages share
+- how a publisher puts an artifact into the store. `store_artifact` exists as
+  the writer, but `publish_asset` still carries every file inline, so nothing
+  produces a referenced package yet
 - whether a deleted package's versions may be republished, or whether delete
   should tombstone the coordinates the way npm and Cargo do
