@@ -7484,21 +7484,21 @@ fn hub_package_gallery_projection(
         .hub
         .get_asset_version_artifact(&package.package_id, &version.version)
     {
-        let spec = crate::contracts::decode_contract_value::<
+        if let Ok(document) = crate::contracts::decode_contract_value::<
             crate::contracts::kinds::HubPackageContract,
         >(artifact)
-        .ok()
-        .map(|document| document.spec)
-        .unwrap_or(Value::Null);
-        if let Some(value) = spec
-            .get("summary")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
         {
-            summary = value.to_string();
+            let spec = document.spec;
+            let trimmed = spec.summary.trim();
+            if !trimmed.is_empty() {
+                summary = trimmed.to_string();
+            }
+            // A package with nothing to show reports no gallery at all, rather
+            // than an empty one the listing would have to special-case.
+            if spec.gallery.cover.is_some() || !spec.gallery.items.is_empty() {
+                gallery = serde_json::to_value(&spec.gallery).unwrap_or(Value::Null);
+            }
         }
-        gallery = spec.get("gallery").cloned().unwrap_or(Value::Null);
     }
     (summary, gallery)
 }

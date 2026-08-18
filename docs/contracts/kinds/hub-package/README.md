@@ -88,8 +88,7 @@ intact.
 
 | Role | Where | What it does |
 | --- | --- | --- |
-| Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = Value`; validation checks only that the spec is a JSON object |
-| Real shape | `src/platform/services/hub.rs`, `HubArtifact` | private struct, `deny_unknown_fields`, never reached by the contract |
+| Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = HubPackageSpec`; typed, `deny_unknown_fields`, bounded, and enforces the carried-or-referenced rule |
 | Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
 | Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
@@ -100,20 +99,24 @@ intact.
 
 ## Findings
 
-### The contract is empty
+### The contract was empty — fixed
 
-`HubPackageContract` declares `type Spec = Value` and its validator only checks
-that the spec is a JSON object. Every rule about what a package contains lives in
-`HubArtifact`, a private struct in the hub service that the contract never
-reaches.
+`HubPackageContract` declared `type Spec = Value` and its validator only checked
+that the spec was a JSON object. Every rule about what a package contains lived
+in `HubArtifact`, a private struct in the hub service that the contract never
+reached, so the registered kind provided no guarantee at all.
 
-So the registered kind provides no guarantee at all. A malformed package is
-caught later, by serde, at a different boundary, with a different error, and only
-on the paths that happen to deserialize into `HubArtifact`.
+This was the same defect the `NodeBundle` review found in reverse: there, the
+rules existed and were scattered; here, the kind existed and the rules did not.
+Giving `HubPackage` a typed spec was the substance of this review.
 
-This is the same defect the `NodeBundle` review found in reverse: there, the
-rules existed and were scattered; here, the kind exists and the rules do not.
-Giving `HubPackage` a typed spec is the substance of this review.
+The shape now lives in the contract as `HubPackageSpec`, `HubArtifact` is gone,
+and the hub service decodes into the contract type. One rule found on the way
+out: an entry could declare any `encoding` it liked. The package safety review
+reads a file through `entry_text`, which returns nothing for an encoding it does
+not recognise, while the installer writes the entry's bytes verbatim. Labelling
+a file `utf8` therefore skipped the whole review and still landed on disk. The
+accepted set is now closed to `text`, `base64`, and absent.
 
 ### Republishing silently overwrites
 
@@ -139,6 +142,7 @@ correct by construction; until then it hides that a republish happened.
 - generalising `ProjectHubRepository`, which is hardwired to `base_url`,
   `remote_owner`, `remote_project`, and `read_token`, into the `list()` and
   `fetch()` interface described in `distribution.md`
-- size and count limits, and where the 25 MB remote cap belongs once artifacts
-  are referenced rather than inlined
+- size and count limits are now declared in the contract: 25 MB per document
+  (the existing remote cap), 18 MB per carried file, 512 MB per referenced file.
+  The per-file numbers still need review against real packages
 - staged install and rollback across a manifest plus N artifacts

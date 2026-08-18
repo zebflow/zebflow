@@ -574,7 +574,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "kind": "pipeline",
                                 "size_bytes": 2,
                                 "reason": "primary",
-                                "encoding": "utf8",
+                                "encoding": "text",
                                 "content": "{}"
                             }]
                             }
@@ -639,7 +639,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "kind": "pipeline",
                                 "size_bytes": 2,
                                 "reason": "primary",
-                                "encoding": "utf8",
+                                "encoding": "text",
                                 "content": "{}"
                             }]
                             }
@@ -703,7 +703,7 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                                 "kind": "pipeline",
                                 "size_bytes": 2,
                                 "reason": "primary",
-                                "encoding": "utf8",
+                                "encoding": "text",
                                 "content": "{}"
                             }]
                             }

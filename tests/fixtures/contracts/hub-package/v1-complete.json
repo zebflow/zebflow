@@ -1,0 +1,104 @@
+{
+  "apiVersion": "zebflow.com/v1",
+  "kind": "HubPackage",
+  "metadata": {
+    "name": "acme.demo-tools",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "asset_kind": "node_bundle",
+    "source_type": "node_package",
+    "source_owner": "acme",
+    "source_project": "tools",
+    "source_ref": "nodes/demo",
+    "publisher_id": "acme",
+    "publisher_display_name": "Acme Tools",
+    "publisher_url": "/publishers/acme",
+    "publisher_email": "packages@acme.example",
+    "title": "Demo Tools",
+    "description": "One carried definition, one carried binary, one referenced module.",
+    "summary": "Carried and referenced content in one manifest.",
+    "description_md": "## Demo Tools\n\nA package that shows both supply forms.",
+    "image_url": "/api/hub/remote/assets/acme.demo-tools/media/cover.webp",
+    "gallery": {
+      "cover": {
+        "kind": "image",
+        "media_name": "cover.webp",
+        "alt": "Demo Tools cover"
+      },
+      "items": [
+        {
+          "kind": "image",
+          "media_name": "cover.webp",
+          "alt": "Demo Tools screenshot",
+          "url": "",
+          "title": ""
+        },
+        {
+          "kind": "youtube",
+          "media_name": "",
+          "alt": "",
+          "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          "title": "Demo video"
+        }
+      ]
+    },
+    "media": [
+      {
+        "name": "cover.webp",
+        "role": "cover",
+        "content_type": "image/webp",
+        "size_bytes": 10,
+        "sha256": "3c6e0b8a9c15224a8228b9a98ca1531d3c6e0b8a9c15224a8228b9a98ca1531d",
+        "encoding": "base64",
+        "content": "d2VicC1ieXRlcw=="
+      }
+    ],
+    "active_pipelines": [
+      "pipelines/api/hello.zf.json"
+    ],
+    "project_initialization": {
+      "include_sekejap_schema": true,
+      "include_sqlite_schema": false,
+      "libraries": [
+        "zeb/prosemirror"
+      ],
+      "initial_data": [
+        {
+          "engine": "sekejap",
+          "path": "data/sekejap/seed.sql",
+          "statement_count": 2,
+          "size_bytes": 64
+        }
+      ]
+    },
+    "files": [
+      {
+        "rel_path": "definition.json",
+        "kind": "node_definition",
+        "size_bytes": 30,
+        "reason": "package",
+        "encoding": "text",
+        "content": "{\n  \"kind\": \"n.x.demo.load\"\n}\n"
+      },
+      {
+        "rel_path": "icon.svg",
+        "kind": "asset",
+        "size_bytes": 41,
+        "reason": "package",
+        "encoding": "base64",
+        "content": "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4="
+      },
+      {
+        "rel_path": "wasm/core.wasm",
+        "kind": "asset",
+        "size_bytes": 33554432,
+        "reason": "package",
+        "artifact": {
+          "sha256": "9f2bc14a3c6e0b8a9c15224a8228b9a98ca1531d3c6e0b8a9c15224a8228b9a9",
+          "media_type": "application/wasm"
+        }
+      }
+    ]
+  }
+}

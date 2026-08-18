@@ -14,8 +14,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::contracts::kinds::{
-    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageContract, ProjectConfigurationContract,
-    decode_pipeline_graph,
+    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageContract, HubPackageFile,
+    HubPackageFileSupply, HubPackageGallery, HubPackageInitialDataStep, HubPackageInitialization,
+    HubPackageMedia, HubPackageSpec, MAX_HUB_PACKAGE_BYTES, ProjectConfigurationContract,
+    decode_hub_package, decode_pipeline_graph, encode_hub_package,
 };
 use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
@@ -50,7 +52,8 @@ pub const DEFAULT_HUB_SERVICE_INSTANCE_ID: &str = "hub-default";
 pub const HUB_SERVICE_KIND: &str = "hub";
 const HUB_SERVICE_SCOPE_OWNER: &str = "hub-service";
 const HUB_SERVICE_SCOPE_PROJECT: &str = "hub-default";
-const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = 25 * 1024 * 1024;
+/// One package document ceiling, shared with the contract that defines it.
+const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = MAX_HUB_PACKAGE_BYTES as u64;
 const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
 const DEFAULT_PUBLISHER_MAX_PACKAGE_BYTES: i64 = 10 * 1024 * 1024;
 const DEFAULT_PUBLISHER_MAX_MEDIA_FILES: i64 = 8;
@@ -110,19 +113,6 @@ pub struct HubPublishSourceItem {
     pub path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HubExportEntry {
-    pub rel_path: String,
-    pub kind: String,
-    pub size_bytes: usize,
-    pub reason: String,
-    #[serde(default)]
-    pub encoding: String,
-    #[serde(default)]
-    pub content: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct HubExportPreview {
     pub asset_kind: String,
@@ -130,7 +120,7 @@ pub struct HubExportPreview {
     pub source_ref: String,
     pub name: String,
     pub description: String,
-    pub entries: Vec<HubExportEntry>,
+    pub entries: Vec<HubPackageFile>,
     pub warnings: Vec<String>,
     pub total_files: usize,
     pub total_bytes: usize,
@@ -148,30 +138,6 @@ pub struct HubProjectBundlePublishOptions {
     pub include_initial_data: bool,
     #[serde(default)]
     pub initial_data_paths: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HubProjectInitialization {
-    #[serde(default)]
-    include_sekejap_schema: bool,
-    #[serde(default)]
-    include_sqlite_schema: bool,
-    #[serde(default)]
-    libraries: Vec<String>,
-    #[serde(default)]
-    initial_data: Vec<HubInitialDataStep>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HubInitialDataStep {
-    pub engine: String,
-    pub path: String,
-    #[serde(default)]
-    pub statement_count: usize,
-    #[serde(default)]
-    pub size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -234,7 +200,7 @@ pub struct HubPublishReview {
     pub tags: Vec<String>,
     pub total_files: usize,
     pub total_bytes: usize,
-    pub files: Vec<HubExportEntry>,
+    pub files: Vec<HubPackageFile>,
     pub media: Vec<HubPublishMediaReview>,
     pub nodes_used: Vec<String>,
     pub credentials_required: Vec<String>,
@@ -333,89 +299,6 @@ struct RemoteHubArtifactResponse {
 struct RemoteHubAssetVersion {
     #[serde(default)]
     artifact_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HubArtifact {
-    asset_kind: String,
-    #[serde(default)]
-    source_type: String,
-    #[serde(default)]
-    source_owner: String,
-    #[serde(default)]
-    source_project: String,
-    #[serde(default)]
-    source_ref: String,
-    #[serde(default)]
-    publisher_id: String,
-    #[serde(default)]
-    publisher_display_name: String,
-    #[serde(default)]
-    publisher_url: String,
-    #[serde(default)]
-    publisher_email: String,
-    title: String,
-    description: String,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    description_md: String,
-    #[serde(default)]
-    image_url: String,
-    #[serde(default)]
-    gallery: HubGallery,
-    #[serde(default)]
-    media: Vec<HubMediaFile>,
-    #[serde(default)]
-    active_pipelines: Vec<String>,
-    #[serde(default)]
-    project_initialization: HubProjectInitialization,
-    files: Vec<HubExportEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HubMediaFile {
-    pub name: String,
-    pub role: String,
-    pub content_type: String,
-    pub size_bytes: usize,
-    pub sha256: String,
-    pub encoding: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HubGallery {
-    #[serde(default)]
-    cover: Option<HubGalleryImage>,
-    #[serde(default)]
-    items: Vec<HubGalleryItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HubGalleryImage {
-    kind: String,
-    media_name: String,
-    #[serde(default)]
-    alt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HubGalleryItem {
-    kind: String,
-    #[serde(default)]
-    media_name: String,
-    #[serde(default)]
-    alt: String,
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    title: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
@@ -1520,7 +1403,7 @@ impl HubService {
             fs::create_dir_all(parent)?;
         }
         let now = now_ts();
-        let manifest = HubArtifact {
+        let manifest = HubPackageSpec {
             asset_kind: preview.asset_kind.clone(),
             source_type: source_type.clone(),
             source_owner: source_owner.clone(),
@@ -1555,7 +1438,7 @@ impl HubService {
             summary: String::new(),
             description_md: String::new(),
             image_url: image_url.clone(),
-            gallery: HubGallery::default(),
+            gallery: HubPackageGallery::default(),
             media,
             active_pipelines,
             project_initialization,
@@ -1701,9 +1584,9 @@ impl HubService {
         source_type: &str,
         preview: &mut HubExportPreview,
         mut options: HubProjectBundlePublishOptions,
-    ) -> Result<HubProjectInitialization, PlatformError> {
+    ) -> Result<HubPackageInitialization, PlatformError> {
         if source_type != "project_files" || preview.asset_kind != HUB_ASSET_KIND_PROJECT_BUNDLE {
-            return Ok(HubProjectInitialization::default());
+            return Ok(HubPackageInitialization::default());
         }
 
         options.include_libraries.sort();
@@ -1772,7 +1655,7 @@ impl HubService {
         };
 
         rewrite_project_libraries(preview, &options.include_libraries)?;
-        let init = HubProjectInitialization {
+        let init = HubPackageInitialization {
             include_sekejap_schema: options.include_sekejap_schema,
             include_sqlite_schema: options.include_sqlite_schema,
             libraries: options.include_libraries,
@@ -1797,7 +1680,7 @@ impl HubService {
         &self,
         owner: &str,
         project: &str,
-    ) -> Result<Vec<HubInitialDataStep>, PlatformError> {
+    ) -> Result<Vec<HubPackageInitialDataStep>, PlatformError> {
         let layout = self.projects.project_layout(owner, project)?;
         let mut steps = Vec::new();
         for (prefix, engine) in INITIAL_DATA_DIRS {
@@ -1956,7 +1839,7 @@ impl HubService {
         version: &str,
         target_folder: &str,
         source_id: &str,
-        payload: HubArtifact,
+        payload: HubPackageSpec,
     ) -> Result<HubInstallResult, PlatformError> {
         let layout = self
             .projects
@@ -2158,7 +2041,7 @@ impl HubService {
         package_id: &str,
         version: &str,
         target_folder: &str,
-        payload: &HubArtifact,
+        payload: &HubPackageSpec,
     ) -> Result<HubInstallReview, PlatformError> {
         let layout = self.projects.project_layout(target_owner, target_project)?;
         let install_root =
@@ -2262,7 +2145,7 @@ impl HubService {
         &self,
         package_id: &str,
         media_name: &str,
-    ) -> Result<(HubAssetPackage, HubMediaFile, Vec<u8>), PlatformError> {
+    ) -> Result<(HubAssetPackage, HubPackageMedia, Vec<u8>), PlatformError> {
         self.require_enabled()?;
         let Some(package) = self.hub_data.get_hub_asset_package(package_id)? else {
             return Err(PlatformError::new(
@@ -2983,7 +2866,7 @@ impl HubService {
         rel_path: &str,
         reason: String,
         seen: &mut BTreeSet<String>,
-        entries: &mut Vec<HubExportEntry>,
+        entries: &mut Vec<HubPackageFile>,
         warnings: &mut Vec<String>,
     ) -> Result<(), PlatformError> {
         let normalized = normalize_template_repo_rel(rel_path);
@@ -2997,7 +2880,7 @@ impl HubService {
         }
         let entry = read_repo_entry(layout, &normalized, reason)?;
         let source_text = if entry.encoding == "text" {
-            Some(entry.content.clone())
+            entry.content.clone()
         } else {
             None
         };
@@ -3318,7 +3201,7 @@ fn build_preview(
     source_ref: String,
     name: String,
     description: String,
-    entries: Vec<HubExportEntry>,
+    entries: Vec<HubPackageFile>,
     warnings: Vec<String>,
 ) -> HubExportPreview {
     let total_bytes = entries.iter().map(|item| item.size_bytes).sum();
@@ -3336,14 +3219,15 @@ fn build_preview(
     }
 }
 
-fn text_export_entry(rel_path: &str, kind: &str, reason: &str, content: String) -> HubExportEntry {
-    HubExportEntry {
+fn text_export_entry(rel_path: &str, kind: &str, reason: &str, content: String) -> HubPackageFile {
+    HubPackageFile {
         rel_path: rel_path.to_string(),
         kind: kind.to_string(),
         size_bytes: content.len(),
         reason: reason.to_string(),
         encoding: "text".to_string(),
-        content,
+        content: Some(content),
+        artifact: None,
     }
 }
 
@@ -3380,7 +3264,7 @@ fn rewrite_project_libraries(
     .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
     entry.size_bytes = content.len();
     entry.encoding = "text".to_string();
-    entry.content = content;
+    entry.content = Some(content);
     Ok(())
 }
 
@@ -3388,7 +3272,7 @@ fn collect_publish_media_from_files(
     layout: &ProjectFileLayout,
     image_file_path: &str,
     publisher: &HubPublisher,
-) -> Result<Vec<HubMediaFile>, PlatformError> {
+) -> Result<Vec<HubPackageMedia>, PlatformError> {
     let image_file_path = image_file_path.trim();
     if image_file_path.is_empty() {
         return Ok(Vec::new());
@@ -3411,7 +3295,7 @@ fn collect_publish_media_from_files(
     }
     let media_name = "cover.webp".to_string();
     let sha256 = sha256_hex(&webp_bytes);
-    Ok(vec![HubMediaFile {
+    Ok(vec![HubPackageMedia {
         name: media_name,
         role: "cover".to_string(),
         content_type: "image/webp".to_string(),
@@ -3423,7 +3307,7 @@ fn collect_publish_media_from_files(
 }
 
 fn validate_hub_media(
-    media: &[HubMediaFile],
+    media: &[HubPackageMedia],
     publisher: &HubPublisher,
 ) -> Result<(), PlatformError> {
     let max_media_files =
@@ -3470,7 +3354,10 @@ fn validate_hub_media(
     Ok(())
 }
 
-fn validate_hub_gallery(gallery: &HubGallery, media: &[HubMediaFile]) -> Result<(), PlatformError> {
+fn validate_hub_gallery(
+    gallery: &HubPackageGallery,
+    media: &[HubPackageMedia],
+) -> Result<(), PlatformError> {
     let media_names = media
         .iter()
         .map(|item| item.name.as_str())
@@ -3507,8 +3394,8 @@ fn review_publish_artifact(
     description: String,
     visibility: String,
     tags: Vec<String>,
-    media: Vec<HubMediaFile>,
-    project_initialization: HubProjectInitialization,
+    media: Vec<HubPackageMedia>,
+    project_initialization: HubPackageInitialization,
 ) -> Result<HubPublishReview, PlatformError> {
     let policy_entries = preview
         .entries
@@ -3905,7 +3792,7 @@ fn read_repo_entry(
     layout: &ProjectFileLayout,
     rel_path: &str,
     reason: String,
-) -> Result<HubExportEntry, PlatformError> {
+) -> Result<HubPackageFile, PlatformError> {
     let rel_path = normalize_repo_rel(rel_path);
     let abs = layout.repo_dir.join(&rel_path);
     if !abs.starts_with(&layout.repo_dir) || !abs.is_file() {
@@ -3923,13 +3810,14 @@ fn read_repo_entry(
             base64::engine::general_purpose::STANDARD.encode(bytes),
         ),
     };
-    Ok(HubExportEntry {
+    Ok(HubPackageFile {
         rel_path,
         kind: file_kind_from_path(&abs),
         size_bytes,
         reason,
         encoding,
-        content,
+        content: Some(content),
+        artifact: None,
     })
 }
 
@@ -3966,7 +3854,7 @@ fn walk_dirs(root: &Path, current: &Path, out: &mut Vec<String>) -> Result<(), P
 fn collect_tree_entries(
     layout: &ProjectFileLayout,
     rel_root: &str,
-) -> Result<Vec<HubExportEntry>, PlatformError> {
+) -> Result<Vec<HubPackageFile>, PlatformError> {
     let rel_root = normalize_repo_rel(rel_root);
     let base = if rel_root.is_empty() || rel_root == "." {
         layout.repo_dir.clone()
@@ -4150,25 +4038,45 @@ fn default_install_target_folder(package_id: &str, asset_kind: &str) -> String {
     }
 }
 
-fn write_entry_content(dest_abs: &Path, entry: &HubExportEntry) -> Result<(), PlatformError> {
+fn write_entry_content(dest_abs: &Path, entry: &HubPackageFile) -> Result<(), PlatformError> {
     atomic_write(dest_abs, &hub_entry_bytes(entry)?)?;
     Ok(())
 }
 
-fn hub_entry_bytes(entry: &HubExportEntry) -> Result<Vec<u8>, PlatformError> {
-    Ok(if entry.encoding == "base64" {
-        base64::engine::general_purpose::STANDARD
-            .decode(&entry.content)
-            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?
-    } else {
-        entry.content.as_bytes().to_vec()
-    })
+/// The bytes one manifest entry writes.
+///
+/// A referenced artifact has no bytes in the document and no channel fetches
+/// one yet, so it is refused here rather than written as an empty file.
+fn hub_entry_bytes(entry: &HubPackageFile) -> Result<Vec<u8>, PlatformError> {
+    match entry.supply() {
+        Some(HubPackageFileSupply::Carried(content)) if entry.encoding == "base64" => {
+            base64::engine::general_purpose::STANDARD
+                .decode(content)
+                .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))
+        }
+        Some(HubPackageFileSupply::Carried(content)) => Ok(content.as_bytes().to_vec()),
+        Some(HubPackageFileSupply::Referenced(_)) => Err(PlatformError::new(
+            "HUB_ARTIFACT_UNRESOLVED",
+            format!(
+                "file '{}' references an artifact by digest, and no channel fetches \
+                 referenced artifacts yet",
+                entry.rel_path
+            ),
+        )),
+        None => Err(PlatformError::new(
+            "HUB_INSTALL",
+            format!(
+                "file '{}' declares neither carried content nor a referenced artifact",
+                entry.rel_path
+            ),
+        )),
+    }
 }
 
 fn prepare_hub_install_entries(
     install_base: &Path,
     install_root: &str,
-    files: &[HubExportEntry],
+    files: &[HubPackageFile],
 ) -> Result<Vec<PreparedHubInstallEntry>, PlatformError> {
     let mut seen = HashSet::new();
     let mut prepared = Vec::with_capacity(files.len());
@@ -4285,11 +4193,10 @@ fn restore_hub_install_entries(
 fn parse_hub_artifact_bytes(
     bytes: &[u8],
     error_code: &'static str,
-) -> Result<HubArtifact, PlatformError> {
-    let document = decode_contract::<HubPackageContract>(bytes)
-        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))?;
-    serde_json::from_value(document.spec)
-        .map_err(|err| PlatformError::new(error_code, err.to_string()))
+) -> Result<HubPackageSpec, PlatformError> {
+    decode_hub_package(bytes)
+        .map(|document| document.spec)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
 }
 
 /// Parses a locally supplied bundle and refuses anything that is not one.
@@ -4299,7 +4206,7 @@ fn parse_hub_artifact_bytes(
 fn parse_local_node_bundle_artifact(
     value: Value,
     error_code: &'static str,
-) -> Result<HubArtifact, PlatformError> {
+) -> Result<HubPackageSpec, PlatformError> {
     let payload = parse_hub_artifact_value(value, error_code)?;
     if payload.asset_kind != HUB_ASSET_KIND_NODE_BUNDLE {
         return Err(PlatformError::new(
@@ -4316,24 +4223,21 @@ fn parse_local_node_bundle_artifact(
 fn parse_hub_artifact_value(
     value: Value,
     error_code: &'static str,
-) -> Result<HubArtifact, PlatformError> {
-    let document = decode_contract_value::<HubPackageContract>(value)
-        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))?;
-    serde_json::from_value(document.spec)
-        .map_err(|err| PlatformError::new(error_code, err.to_string()))
+) -> Result<HubPackageSpec, PlatformError> {
+    decode_contract_value::<HubPackageContract>(value)
+        .map(|document| document.spec)
+        .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
 }
 
 fn encode_hub_artifact(
     package_id: &str,
     version: &str,
-    artifact: &HubArtifact,
+    artifact: &HubPackageSpec,
     error_code: &'static str,
 ) -> Result<Vec<u8>, PlatformError> {
     let mut metadata = ContractMetadata::named(package_id);
     metadata.version = Some(version.to_string());
-    let spec = serde_json::to_value(artifact)
-        .map_err(|err| PlatformError::new(error_code, err.to_string()))?;
-    encode_contract::<HubPackageContract>(metadata, spec)
+    encode_hub_package(metadata, artifact.clone())
         .map_err(|err| PlatformError::new(error_code, format!("{} ({})", err, err.category())))
 }
 
@@ -4352,7 +4256,7 @@ fn reindex_project_bundle_pipelines(
     hub: &HubService,
     owner: &str,
     project: &str,
-    entries: &[HubExportEntry],
+    entries: &[HubPackageFile],
 ) -> Result<(), PlatformError> {
     for entry in entries {
         let rel_path = normalize_repo_rel(&entry.rel_path);
@@ -4380,20 +4284,21 @@ fn reindex_project_bundle_pipelines(
     Ok(())
 }
 
-fn entry_text(entry: &HubExportEntry) -> Option<String> {
-    if entry.encoding == "text" || entry.encoding.trim().is_empty() {
-        return Some(entry.content.clone());
-    }
+/// The text of a carried entry, or `None` when it is binary or referenced.
+fn entry_text(entry: &HubPackageFile) -> Option<String> {
+    let HubPackageFileSupply::Carried(content) = entry.supply()? else {
+        return None;
+    };
     if entry.encoding == "base64" {
         let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&entry.content)
+            .decode(content)
             .ok()?;
         return String::from_utf8(bytes).ok();
     }
-    None
+    Some(content.to_string())
 }
 
-fn package_policy_entry(rel_path: &str, entry: &HubExportEntry) -> PackagePolicyEntry {
+fn package_policy_entry(rel_path: &str, entry: &HubPackageFile) -> PackagePolicyEntry {
     PackagePolicyEntry {
         rel_path: rel_path.to_string(),
         kind: entry.kind.clone(),
@@ -4467,11 +4372,11 @@ fn split_initial_data_sql(sql: &str) -> Vec<String> {
         .collect()
 }
 
-fn initial_data_step_from_entry(entry: &HubExportEntry) -> Option<HubInitialDataStep> {
+fn initial_data_step_from_entry(entry: &HubPackageFile) -> Option<HubPackageInitialDataStep> {
     let rel = normalize_repo_rel(&entry.rel_path);
     let engine = initial_data_engine_for_path(&rel)?;
     let sql = entry_text(entry)?;
-    Some(HubInitialDataStep {
+    Some(HubPackageInitialDataStep {
         engine: engine.to_string(),
         path: rel,
         statement_count: split_initial_data_sql(&sql).len(),
@@ -4484,7 +4389,7 @@ fn execute_project_initial_data(
     owner: &str,
     project: &str,
     layout: &ProjectFileLayout,
-    steps: &[HubInitialDataStep],
+    steps: &[HubPackageInitialDataStep],
 ) -> Result<(), PlatformError> {
     for step in steps {
         let rel = normalize_repo_rel(&step.path);
@@ -4529,7 +4434,7 @@ fn collect_initial_data_steps(
     repo_dir: &Path,
     dir: &Path,
     engine: &str,
-    steps: &mut Vec<HubInitialDataStep>,
+    steps: &mut Vec<HubPackageInitialDataStep>,
 ) -> Result<(), PlatformError> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -4555,7 +4460,7 @@ fn collect_initial_data_steps(
         }
         let sql = fs::read_to_string(&path)?;
         let size_bytes = sql.len();
-        steps.push(HubInitialDataStep {
+        steps.push(HubPackageInitialDataStep {
             engine: engine.to_string(),
             path: rel,
             statement_count: split_initial_data_sql(&sql).len(),
@@ -4590,7 +4495,7 @@ fn verify_remote_artifact_hash(payload: &RemoteHubArtifactResponse) -> Result<()
                 format!("{} ({})", err, err.category()),
             )
         })?;
-    let bytes = encode_contract::<HubPackageContract>(document.metadata, document.spec.clone())
+    let bytes = encode_hub_package(document.metadata, document.spec)
         .map_err(|err| PlatformError::new("HUB_REMOTE_INVALID", err.to_string()))?;
     let actual = sha256_hex(&bytes);
     if actual != expected {
@@ -4617,21 +4522,23 @@ impl EmptyStringExt for String {
     }
 }
 
-fn sanitize_hub_export_entries(entries: &mut [HubExportEntry]) -> Result<(), PlatformError> {
+fn sanitize_hub_export_entries(entries: &mut [HubPackageFile]) -> Result<(), PlatformError> {
     for entry in entries.iter_mut() {
         if normalize_repo_rel(&entry.rel_path)
             != crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
         {
             continue;
         }
-        if entry.encoding == "base64" {
+        let Some(HubPackageFileSupply::Carried(source)) =
+            entry.supply().filter(|_| entry.encoding != "base64")
+        else {
             return Err(PlatformError::new(
                 "HUB_PUBLISH",
-                "zebflow.yaml must be a text entry",
+                "zebflow.yaml must be a carried text entry",
             ));
-        }
+        };
         let mut document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-            entry.content.as_bytes(),
+            source.as_bytes(),
         )
         .map_err(|err| PlatformError::new("HUB_PUBLISH", format!("invalid zebflow.yaml: {err}")))?;
         let cfg = &mut document.spec;
@@ -4645,13 +4552,13 @@ fn sanitize_hub_export_entries(entries: &mut [HubExportEntry]) -> Result<(), Pla
         )
         .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?;
         entry.size_bytes = content.len();
-        entry.content = content;
+        entry.content = Some(content);
     }
     Ok(())
 }
 
 fn retarget_project_configuration(
-    entries: &mut [HubExportEntry],
+    entries: &mut [HubPackageFile],
     target_project: &str,
 ) -> Result<(), PlatformError> {
     let mut matches = entries.iter_mut().filter(|entry| {
@@ -4666,14 +4573,16 @@ fn retarget_project_configuration(
             "project bundle contains more than one zebflow.yaml",
         ));
     }
-    if entry.encoding == "base64" {
+    let Some(HubPackageFileSupply::Carried(source)) =
+        entry.supply().filter(|_| entry.encoding != "base64")
+    else {
         return Err(PlatformError::new(
             "HUB_INSTALL",
-            "zebflow.yaml must be a text entry",
+            "zebflow.yaml must be a carried text entry",
         ));
-    }
+    };
     let mut document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-        entry.content.as_bytes(),
+        source.as_bytes(),
     )
     .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zebflow.yaml: {err}")))?;
     document.metadata.name = target_project.to_string();
@@ -4687,12 +4596,12 @@ fn retarget_project_configuration(
     .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
     entry.size_bytes = content.len();
     entry.encoding = "text".to_string();
-    entry.content = content;
+    entry.content = Some(content);
     Ok(())
 }
 
 fn retarget_dependency_lock(
-    entries: &mut [HubExportEntry],
+    entries: &mut [HubPackageFile],
     target_project: &str,
 ) -> Result<(), PlatformError> {
     let mut matches = entries
@@ -4707,13 +4616,15 @@ fn retarget_dependency_lock(
             "project bundle contains more than one zeb.lock",
         ));
     }
-    if entry.encoding == "base64" {
+    let Some(HubPackageFileSupply::Carried(source)) =
+        entry.supply().filter(|_| entry.encoding != "base64")
+    else {
         return Err(PlatformError::new(
             "HUB_INSTALL",
-            "zeb.lock must be a text entry",
+            "zeb.lock must be a carried text entry",
         ));
-    }
-    let mut document = decode_contract::<DependencyLockContract>(entry.content.as_bytes())
+    };
+    let mut document = decode_contract::<DependencyLockContract>(source.as_bytes())
         .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zeb.lock: {err}")))?;
     document.metadata.name = target_project.to_string();
     let content = String::from_utf8(
@@ -4723,7 +4634,7 @@ fn retarget_dependency_lock(
     .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
     entry.size_bytes = content.len();
     entry.encoding = "text".to_string();
-    entry.content = content;
+    entry.content = Some(content);
     Ok(())
 }
 
@@ -4793,7 +4704,11 @@ mod tests {
         )];
         sanitize_hub_export_entries(&mut entries).unwrap();
         let document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-            entries[0].content.as_bytes(),
+            entries[0]
+                .content
+                .as_deref()
+                .expect("carried entry")
+                .as_bytes(),
         )
         .unwrap();
         assert!(!document.spec.distribution.hub.producer_enabled);
@@ -4809,7 +4724,11 @@ mod tests {
         )];
         retarget_project_configuration(&mut entries, "installed-project").unwrap();
         let document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-            entries[0].content.as_bytes(),
+            entries[0]
+                .content
+                .as_deref()
+                .expect("carried entry")
+                .as_bytes(),
         )
         .unwrap();
         assert_eq!(document.metadata.name, "installed-project");
@@ -5053,7 +4972,7 @@ mod tests {
         .to_string();
         let icon = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
 
-        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+        let payload: HubPackageSpec = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "WASM Trigger",
             "description": "Exercises a WASM trigger handler.",
@@ -5163,7 +5082,7 @@ mod tests {
         .to_string();
         let icon = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
 
-        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+        let payload: HubPackageSpec = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "E2E WASM",
             "description": "Exercises per-node WASM export resolution.",
@@ -5268,7 +5187,7 @@ mod tests {
         let owner = "superadmin";
         let project = "default";
         let before = platform.dependency_lock.read(owner, project).unwrap();
-        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+        let payload: HubPackageSpec = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "Broken node bundle",
             "description": "Exercises transactional recovery.",
@@ -5341,7 +5260,7 @@ mod tests {
         let icon = include_str!("../../pipeline/nodes/bundled/openai-embedding/icon.svg");
         let node_icon =
             include_str!("../../pipeline/nodes/bundled/openai-embedding/icons/embedding.svg");
-        let payload: HubArtifact = serde_json::from_value(serde_json::json!({
+        let payload: HubPackageSpec = serde_json::from_value(serde_json::json!({
             "asset_kind": "node_bundle",
             "title": "OpenAI embedding",
             "description": "Exercises successful dependency installation.",
