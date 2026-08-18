@@ -60,22 +60,43 @@ that exists today is `zebflow run`, which materialises a project or Hub asset
 and then serves it. Everything else below is unimplemented and is written here
 so the surface is designed once rather than grown one flag at a time.
 
-The command names its noun, and the noun determines the scope. This follows the
-group-and-verb shape used by cloud CLIs, and matches the existing `zebflow
-project ...` and `zebflow k8s cluster ...` groups.
+### Which pattern this follows
+
+| CLI | Shape | Context | What it teaches |
+| --- | --- | --- | --- |
+| `kubectl` | **verb first** — `kubectl get pods` | kubeconfig contexts, `-n` | Verb-first reads well when every resource supports the same small verb set. Zebflow's do not: a project is installed, a node is installed *into* something, source is added. |
+| `docker` | verb-first, then noun groups added later — `docker run` and `docker container run` | daemon context | Both forms now coexist permanently. This is the cost of not deciding early, and the outcome to avoid. |
+| `aws` | **noun first**, very flat — `aws s3 cp` | `--profile`, `--region` | A flat service list scales to thousands of commands but gives no help with scope. |
+| `gcloud` | **noun first**, deep groups — `gcloud compute instances create` | `gcloud config set project` | Consistent noun-verb nesting, with context set once and reused. Closest to what Zebflow needs. |
+| `wrangler` | noun groups plus a few blessed top-level verbs — `wrangler d1 create`, `wrangler deploy` | `wrangler.toml` | Groups for structure, short top-level verbs for the everyday path. |
+
+**Zebflow follows `gcloud` and `wrangler`: noun group first, verb second, with a
+small number of blessed top-level verbs.**
+
+That is not a new choice. `zebflow project config migrate` and `zebflow k8s
+cluster init` already have this shape, and `zebflow run` is already a blessed
+top-level verb. The design below continues an existing pattern rather than
+introducing one.
+
+The deciding argument is scope. `project install` and `node install` mean
+different things — one creates a project, the other changes one — and putting
+the noun first is what makes that visible at the point of typing. Verb-first
+would put the ambiguous word first and the disambiguating word second.
+
+### The surface
 
 ```text
 # Platform scope — creates a project
-zebflow project install <ref>          materialise a project into this instance
-zebflow project export <kind>          write a transfer archive
-zebflow run <ref>                      materialise if needed, then serve
+zeb project install <ref> [--repo <url>]   materialise a project into this instance
+zeb project export <kind>                  write a transfer archive
+zeb run <ref>                              materialise if needed, then serve
 
 # Project scope — changes the current project
-zebflow node install <ref>             take on a node bundle dependency
-zebflow node uninstall <kind>
-zebflow lib add <ref>                  resolve an RWE library
-zebflow add <ref> --to <folder>        copy content in as this project's source
-zebflow publish <source> --to <hub>    share outward
+zeb node install <ref> [--repo <url>]      take on a node bundle dependency
+zeb node uninstall <kind>
+zeb lib add <ref> [--repo <url>]           resolve an RWE library
+zeb add <ref> --to <folder>                copy content in as this project's source
+zeb publish <source> --to <hub>            share outward
 ```
 
 `project install` creates something; `node install` changes something that
@@ -87,10 +108,38 @@ scope split in §0 exists to protect.
 already exist in the CLI configuration, so the resolution order is settled:
 explicit flag, then configured default, then error. No command guesses.
 
-**A reference is not always a URL.** `<ref>` has to name the channels from §2 —
-a Hub asset, a remote repository asset, a local file, a git source — and the
-reference syntax must make the channel explicit rather than inferred, because
-the channel is the trust decision.
+**A reference must name its channel.** `<ref>` alone is ambiguous across the
+channels in §2, and the channel is the trust decision, so it is never inferred:
+
+```text
+zeb node install acme-tools                     this instance's Hub
+zeb node install acme-tools --repo <url>        a static repository
+zeb node install ./acme-tools.json              a local file
+```
+
+### Blessed top-level verbs
+
+One verb earns a top-level place, because it is the headline: obtaining a whole
+project should be one short command.
+
+```text
+zeb install <ref>        alias for: zeb project install <ref>
+```
+
+It is an **alias**, not an inference. Bare `install` always means the same thing
+regardless of any configured project context, because a command whose meaning
+changes with hidden state is the failure §0 exists to prevent.
+
+### Binary name
+
+The long name is `zebflow`; the short name is `zeb`. Shortening is the norm —
+Kubernetes ships `kubectl`, Google Cloud ships `gcloud`, Cloudflare ships
+`wrangler` — and `zeb install` is the shape people will actually type.
+
+Both names should exist, with `zeb` as the primary and `zebflow` kept working,
+so that installing a product called Zebflow and finding only a `zeb` binary is
+never surprising. `zeb` also matches the `zeb/*` library namespace and the
+`zeb.lock` file, so the short name is already the project's own vocabulary.
 
 ## 1. What is distributable
 
@@ -189,11 +238,45 @@ reason they are listed separately rather than treated as one "install".
 | Remote pack | another instance's Hub over HTTP | repository grant + artifact digest | packs, projects |
 | Transfer archive | an export file | whoever produced it | project bundle, files |
 | Git remote | a git repository | the remote's own access control | project `repo/` |
-| Git source install | a public repository | **undecided** | not implemented |
+| Static repository | an HTTPS location serving an index and package documents | the repository URL the user named, plus a locked digest | **not implemented** |
 
 **Embedded is not a channel a user invokes.** It is listed because it is how
 official content arrives, and because a resource moving from embedded to
 installed is a distribution change even though no bytes travel.
+
+### Static repositories
+
+A static repository is any HTTPS location that serves an index and a set of
+package documents. It is deliberately **not** "a GitHub repository": GitHub is
+the most convenient host, not a special case, and the same fetcher works against
+GitLab, an object store, a plain web server, or a local path.
+
+```text
+https://<host>/<path>/
+  zebflow-repository.json          index: packages, kinds, versions, document paths
+  packages/
+    acme-tools/1.0.0/package.json  a HubPackage document
+    data-table/2.1.0/package.json
+```
+
+One fetch of the index for discovery, then direct fetches of the documents it
+names. No vendor API, no rate limits, and no token for a public repository.
+
+This carries nothing new: a package document is the same `HubPackage` envelope a
+local file install already accepts. A repository is a transport, not a format.
+
+**Mutability is the risk that has to be answered.** A git tag can be moved and a
+static file can be replaced, so a version string alone is not an identity. The
+answer is the one already used everywhere else: resolve, hash, and record the
+digest in `zeb.lock`. A document that changes under a version then appears as a
+digest mismatch and fails closed, exactly like a tampered bundle.
+
+**Trust.** A static repository is not meaningfully more dangerous than a remote
+Hub: both execute someone else's bytes and both run the same review. What a Hub
+adds is publisher identity and grants, which is provenance rather than
+behaviour. The real gap is that no violation detector exists yet, so the review
+currently reports without ever refusing. Static repositories should be designed
+now and enabled once the first detectors land.
 
 ## 3. One review, every channel
 
