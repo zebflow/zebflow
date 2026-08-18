@@ -17,18 +17,76 @@ safety model, rather than several install paths that happen to exist.
 | --- | --- | --- | --- |
 | Node bundle | `NodeBundle` | Hub asset, remote pack, local file, project transfer | export, publish, install |
 | RWE library | `LibraryManifest` | embedded in binary; Hub and Git planned | install only, today |
-| Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, install |
-| Template / page | `Pipeline`-adjacent RWE source | Hub asset (`template_bundle`) | export, publish, install |
-| Folder of project files | project source | Hub asset (`folder_bundle`) | export, publish, install |
-| Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, import, publish, clone |
+| Pipeline | `Pipeline` | Hub asset (`pipeline_bundle`) | export, publish, add |
+| RWE source: page, component, script, style | no kind yet | Hub asset (`template_bundle`) | export, publish, add |
+| Folder of project files | no kind yet | Hub asset (`folder_bundle`) | export, publish, add |
+| Whole project | `ProjectBundle` | Hub asset (`project_bundle`), transfer archive, git remote | export, publish, import, clone |
 | Project files only | ZebFS objects | transfer archive (`files`) | export, import |
-| UI component | catalog entry | built-in catalog | install only |
+| UI component | catalog entry, no kind yet | built-in catalog | add only |
 | Database schema | `DatabaseSchema` | schema export endpoint | export only |
 | Credential **values** | none | **none** | **never distributed** |
 
-The last row is a rule, not a gap. Credential values stay in the credential
-service. A package may declare credential *kinds* it needs; it never carries a
-secret.
+The credential row is a rule, not a gap. Credential values stay in the
+credential service. A package may declare credential *kinds* it needs; it never
+carries a secret.
+
+`template_bundle` carries any RWE source file — a page, a component, a `.ts`
+behavior script, or a stylesheet — together with its local imports. It is not
+limited to pages, and scripts are not a separate mechanism.
+
+Three rows have no owning kind: RWE source files, folders, and UI catalog
+components. They are distributed today with no contract governing their shape.
+That is a real gap, recorded here rather than in a kind that does not exist.
+
+## 1a. The verbs
+
+Direction alone is not enough, because two resources can both arrive over the
+same channel and mean different things afterwards.
+
+| Verb | What it means | Lands in | Editable by the receiver | Recorded in `zeb.lock` | Removal |
+| --- | --- | --- | --- | --- | --- |
+| **Install** | takes on a managed dependency | `data/` | no | yes | uninstall |
+| **Add** | copies content into this project's own source | `repo/` | **yes, it becomes their file** | no | delete the files |
+| **Import** | replaces or merges whole project areas | `repo/`, `data/`, `files/` | yes | n/a | destructive; no undo |
+
+The consequence that must reach the user: **added content has no update path.**
+The receiver may have edited it, so re-adding would destroy their work. Only
+installed content can be updated, because only installed content is still owned
+by its publisher.
+
+### Destination
+
+Added content needs a destination the receiver chooses, because it becomes their
+source and has to sit where their project is organised. Installed content does
+not: it is materialised at a path the platform owns.
+
+| Path | Destination | Default |
+| --- | --- | --- |
+| Hub add | `target_folder`, chosen by the receiver | `pipelines/hub/{id}` for pipelines and RWE source, `hub/{id}` otherwise |
+| Hub install, node bundle | not chosen | `data/nodes/{package}` |
+| UI catalog add | **not offered** | fixed by the catalog |
+
+The last row is an inconsistency, not a design. Adding a component is the same
+act as adding an RWE source file from the Hub, and it should offer the same
+destination choice. It also takes an `overwrite` flag rather than reporting the
+collision, so re-adding a component the receiver has edited destroys that work
+with no diff and no copy.
+
+Both are corrections owed to the catalog path, recorded here because the rule
+belongs to `add`, not to one endpoint.
+
+## 1b. Publish targets
+
+"Publish" is two different acts and must not be written as one:
+
+| Target | Route | Who can see it | Trust basis |
+| --- | --- | --- | --- |
+| **Local Hub** | `hub/assets/publish` | this instance, subject to its access rules | the publishing instance itself |
+| **Remote Hub** | `hub/remote/assets/publish` | another instance over HTTP | publisher token plus a repository grant |
+
+Publishing to a local Hub shares within one deployment. Publishing to a remote
+Hub sends bytes to a system you do not control, which is an outward-facing act
+with a different consent requirement.
 
 ## 2. Channels
 
