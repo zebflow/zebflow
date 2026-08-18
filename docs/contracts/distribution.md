@@ -53,14 +53,37 @@ verb today; project-scope distribution is API and UI only.
 Scope says *where* something arrives. Mode says *why*, and the two are
 independent.
 
-| Mode | Who | Wants | Needs |
-| --- | --- | --- | --- |
-| **Develop** | someone building | editable source, dependencies, the studio | everything |
-| **Run** | someone using a tool | the thing to work | an entry point, nothing else |
+| Mode | Command | What the user sees |
+| --- | --- | --- |
+| **Run** | `zeb app run <ref>` | the app, served at its entry point |
+| **Develop** | the Zebflow server | the same project, as editable source |
 
-Both are platform-scope installs of a whole project. The difference is that the
-run-mode user is not a developer, does not want a server to administer, and
-should not have to know what a pipeline is.
+**These are two ways of opening one installation, not two kinds of install.**
+There is no runtime-only distribution and no stripped build. The project on disk
+is identical either way, and the mode is only how you open it.
+
+That is the property worth protecting. You run a spreadsheet tool. You want it
+pink and there is no setting for it. You open the same installation as source,
+change it, and run it again. Nothing was compiled away, so nothing has to be
+obtained a second time.
+
+An installed Zebflow app is therefore always inspectable and always editable,
+which is the opposite of shipping a binary. The warning that belongs beside it
+is the honest one: editing the source of a tool you depend on is exactly as
+risky as it sounds, and the system should say so rather than pretend the source
+is not there.
+
+### Where it lands
+
+Run mode is used by people who never chose a data directory, so it needs a
+default and must not ask. `PlatformConfig` already supplies one:
+`.zebflow-platform-data`, overridable with `ZEBFLOW_PLATFORM_DATA_DIR`.
+
+That default is **relative to the working directory**, which is right for a
+developer running a server in a project folder and wrong for someone who typed
+`zeb app run` from anywhere. Run mode needs a stable per-user location, resolved
+once, so that running the same app from two different directories does not
+install it twice.
 
 ```text
 zeb app run osgeo-spatial-tool        obtain if needed, then serve it
