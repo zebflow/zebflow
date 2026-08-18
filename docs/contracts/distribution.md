@@ -48,6 +48,50 @@ The CLI reflects the same split: `zebflow run` is platform scope, taking a
 project or Hub asset URL and materialising it. There is no project-scope CLI
 verb today; project-scope distribution is API and UI only.
 
+## 0a. Command line surface
+
+Zebflow's premise is that obtaining something should be one command, the way a
+package manager works. Someone who wants a video pipeline built from ElevenLabs
+and Seedance nodes, or a set of office tools, should be able to obtain the whole
+thing and have it belong to their instance.
+
+**This section is a proposal, not a description.** The only distribution verb
+that exists today is `zebflow run`, which materialises a project or Hub asset
+and then serves it. Everything else below is unimplemented and is written here
+so the surface is designed once rather than grown one flag at a time.
+
+The command names its noun, and the noun determines the scope. This follows the
+group-and-verb shape used by cloud CLIs, and matches the existing `zebflow
+project ...` and `zebflow k8s cluster ...` groups.
+
+```text
+# Platform scope — creates a project
+zebflow project install <ref>          materialise a project into this instance
+zebflow project export <kind>          write a transfer archive
+zebflow run <ref>                      materialise if needed, then serve
+
+# Project scope — changes the current project
+zebflow node install <ref>             take on a node bundle dependency
+zebflow node uninstall <kind>
+zebflow lib add <ref>                  resolve an RWE library
+zebflow add <ref> --to <folder>        copy content in as this project's source
+zebflow publish <source> --to <hub>    share outward
+```
+
+`project install` creates something; `node install` changes something that
+already exists. Reading the noun tells you which, which is the property the
+scope split in §0 exists to protect.
+
+**Context.** Project-scope commands need to know which project. `--owner` and
+`--project` already exist as flags, and `default_owner` and `default_project`
+already exist in the CLI configuration, so the resolution order is settled:
+explicit flag, then configured default, then error. No command guesses.
+
+**A reference is not always a URL.** `<ref>` has to name the channels from §2 —
+a Hub asset, a remote repository asset, a local file, a git source — and the
+reference syntax must make the channel explicit rather than inferred, because
+the channel is the trust decision.
+
 ## 1. What is distributable
 
 Unless a row says otherwise, these are project-scope acts.
@@ -81,6 +125,11 @@ That is a real gap, recorded here rather than in a kind that does not exist.
 
 Direction alone is not enough, because two resources can both arrive over the
 same channel and mean different things afterwards.
+
+These are project-scope verbs. Platform-scope install is described in §0 and
+behaves differently: it produces a whole project, which the receiving instance
+then owns and edits freely. At project scope `install` means *managed*; at
+platform scope it means *materialised and yours*.
 
 | Verb | What it means | Lands in | Editable by the receiver | Recorded in `zeb.lock` | Removal |
 | --- | --- | --- | --- | --- | --- |
