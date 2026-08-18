@@ -1357,6 +1357,9 @@ impl HubService {
             ));
         }
         validate_hub_version(version)?;
+        // Before the source is even read: a republish must not reach the
+        // artifact file or the version row.
+        self.enforce_release_immutability(&package_id, version)?;
         let mut preview =
             self.preview_publish_source(&source_owner, &source_project, &source_type, source_ref)?;
         if preview.entries.is_empty() {
@@ -1495,6 +1498,9 @@ impl HubService {
             artifact_sha256,
             manifest: serde_json::to_value(&manifest)
                 .map_err(|err| PlatformError::new("HUB_PUBLISH", err.to_string()))?,
+            // A version row is written once and never again — the immutability
+            // check above guarantees this row is new — so `now` is the moment
+            // the release was created and stays that way for its whole life.
             created_at: now,
         };
         self.hub_data.put_hub_asset_package(&package)?;
@@ -2238,6 +2244,10 @@ impl HubService {
                 "publisher does not have publish permission",
             ));
         }
+        // The remote publish route lands here, and it carries the same
+        // release-immutability rule as a local publish. Checked before the
+        // inbound document is decoded, so nothing durable is written.
+        self.enforce_release_immutability(&package_id, &version)?;
         let source_owner = slug_segment(&req.source_owner);
         let source_project = slug_segment(&req.source_project);
         let mut artifact = parse_hub_artifact_value(req.artifact.clone(), "HUB_REMOTE_INVALID")?;
@@ -2338,6 +2348,7 @@ impl HubService {
             artifact_rel_path: artifact_rel,
             artifact_sha256: sha256_hex(&artifact_bytes),
             manifest: artifact_value,
+            // New row by construction — see the note on the local publish path.
             created_at: now,
         };
         self.hub_data.put_hub_asset_package(&package)?;
@@ -3016,6 +3027,37 @@ impl HubService {
             ));
         }
         Ok(self.data_root.join(rel))
+    }
+
+    /// Refuse a publish that would overwrite an existing `package@version`.
+    ///
+    /// Releases are immutable: see the decision recorded in
+    /// `docs/contracts/kinds/hub-package/README.md`. `zeb.lock` pins a version
+    /// to a digest, and a digest only means something when the bytes it names
+    /// cannot change underneath it — an overwritten release turns a republish
+    /// into a tampered-dependency report in every project that pinned it.
+    ///
+    /// Every publish path calls this before it writes anything durable, so a
+    /// refusal leaves the stored artifact, the version row, and its digest
+    /// exactly as the first publish left them.
+    fn enforce_release_immutability(
+        &self,
+        package_id: &str,
+        version: &str,
+    ) -> Result<(), PlatformError> {
+        if self
+            .hub_data
+            .get_hub_asset_version(package_id, version)?
+            .is_some()
+        {
+            return Err(PlatformError::new(
+                "HUB_VERSION_EXISTS",
+                format!(
+                    "{package_id}@{version} is already published and releases are immutable; bump the version and publish again"
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn enforce_publisher_package_quota(
@@ -5439,6 +5481,299 @@ mod tests {
         assert_eq!(
             remote_hub_url_for_platform(&repo, "remote/assets"),
             "https://hub.zebflow.com/api/hub/remote/assets"
+        );
+    }
+
+    /// Builds a platform with the hub service enabled, one publisher that may
+    /// publish, and one pipeline to publish from.
+    fn hub_publish_fixture(
+        label: &str,
+    ) -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::platform::services::PlatformService>,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let platform = std::sync::Arc::new(
+            crate::platform::services::PlatformService::from_config(
+                crate::platform::model::PlatformConfig {
+                    data_root: root.path().to_path_buf(),
+                    default_password: "test-password".to_string(),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        );
+        platform
+            .hub
+            .ensure_default_service_instance("standalone", "http://127.0.0.1/api", true)
+            .expect("hub service enabled");
+        platform
+            .hub
+            .set_authority_enabled("superadmin", "default", true)
+            .expect("authority enabled");
+        platform
+            .hub
+            .upsert_publisher(
+                "superadmin",
+                "default",
+                "calc-studio",
+                "Calc Studio",
+                "https://publishers.example/calc-studio",
+                "publishers@example.com",
+                "",
+                "",
+                "",
+                true,
+                true,
+                true,
+                true,
+                20,
+                10 * 1024 * 1024,
+                8,
+                2 * 1024 * 1024,
+            )
+            .expect("publisher");
+        write_publish_source(&platform, label);
+        (root, platform)
+    }
+
+    /// Writes the pipeline that the fixture publishes. Called again with a
+    /// different label to change the source, and so the artifact digest.
+    fn write_publish_source(platform: &crate::platform::services::PlatformService, label: &str) {
+        platform
+            .projects
+            .upsert_pipeline_definition(
+                "superadmin",
+                "default",
+                "pipelines/calc.zf.json",
+                label,
+                label,
+                "manual",
+                &serde_json::json!({
+                    "apiVersion": "zebflow.com/v1",
+                    "kind": "Pipeline",
+                    "metadata": {"name": "calc"},
+                    "spec": {
+                        "id": "calc",
+                        "description": label,
+                        "entry_nodes": [],
+                        "nodes": [],
+                        "edges": []
+                    }
+                })
+                .to_string(),
+            )
+            .expect("pipeline");
+    }
+
+    fn publish_calc_tools(
+        platform: &crate::platform::services::PlatformService,
+        version: &str,
+    ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
+        platform.hub.publish_asset(
+            "superadmin",
+            "default",
+            "superadmin",
+            "calc-studio",
+            "",
+            "",
+            "",
+            "superadmin",
+            "default",
+            "pipeline_with_dependencies",
+            "pipelines/calc.zf.json",
+            "calc-tools",
+            version,
+            "Calculator Tools",
+            "Reusable calculator pipeline.",
+            "",
+            "public",
+            Default::default(),
+            vec!["math".to_string()],
+        )
+    }
+
+    #[test]
+    fn publishing_a_new_package_version_records_the_release_and_its_artifact() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+
+        let (package, version) = publish_calc_tools(&platform, "1.0.0").expect("first publish");
+
+        assert_eq!(package.package_id, "calc-studio.calc-tools");
+        assert_eq!(version.version, "1.0.0");
+        let stored = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("version row is stored");
+        assert_eq!(stored.artifact_sha256, version.artifact_sha256);
+        let artifact = root.path().join(&version.artifact_rel_path);
+        assert!(artifact.exists(), "the artifact file is written");
+        assert_eq!(
+            sha256_hex(&std::fs::read(&artifact).expect("artifact bytes")),
+            version.artifact_sha256,
+            "the recorded digest names the stored bytes"
+        );
+        // A different version of the same package is a new release, not a
+        // republish, and stays allowed.
+        publish_calc_tools(&platform, "1.0.1").expect("second version publishes");
+    }
+
+    #[test]
+    fn republishing_a_package_version_is_refused_and_leaves_the_release_untouched() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let (_, first) = publish_calc_tools(&platform, "1.0.0").expect("first publish");
+        let artifact = root.path().join(&first.artifact_rel_path);
+        let bytes_before = std::fs::read(&artifact).expect("artifact bytes");
+
+        // Change the source so a republish that slipped through would produce
+        // different bytes and a different digest — exactly the drift that turns
+        // a `zeb.lock` pin into a false tampered-dependency report.
+        write_publish_source(&platform, "Calculator Two");
+        let error = publish_calc_tools(&platform, "1.0.0").expect_err("republish is refused");
+
+        assert_eq!(error.code, "HUB_VERSION_EXISTS");
+        assert!(
+            error.message.contains("calc-studio.calc-tools@1.0.0"),
+            "the message names the release: {}",
+            error.message
+        );
+        assert!(
+            error.message.contains("bump the version"),
+            "the message tells the publisher what to do instead: {}",
+            error.message
+        );
+
+        let stored = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("the original row survives");
+        assert_eq!(stored.artifact_sha256, first.artifact_sha256);
+        assert_eq!(stored.artifact_rel_path, first.artifact_rel_path);
+        assert_eq!(stored.manifest, first.manifest);
+        assert_eq!(
+            stored.created_at, first.created_at,
+            "a refused republish does not rewrite when the release was created"
+        );
+        assert_eq!(
+            std::fs::read(&artifact).expect("artifact bytes"),
+            bytes_before,
+            "the stored artifact keeps the bytes the digest names"
+        );
+        assert_eq!(
+            platform
+                .hub
+                .list_asset_versions("calc-studio.calc-tools")
+                .expect("versions")
+                .len(),
+            1,
+            "the refusal writes no second row"
+        );
+    }
+
+    #[test]
+    fn remote_publishing_an_existing_package_version_is_refused() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let (_, first) = publish_calc_tools(&platform, "1.0.0").expect("first publish");
+        let artifact = root.path().join(&first.artifact_rel_path);
+        let bytes_before = std::fs::read(&artifact).expect("artifact bytes");
+        let (token, _secret) = platform
+            .hub
+            .create_token(
+                "superadmin",
+                "default",
+                &crate::platform::model::CreateHubTokenRequest {
+                    publisher_id: "calc-studio".to_string(),
+                    title: "Publish token".to_string(),
+                    scopes: vec!["hub:publish".to_string()],
+                    expires_at: None,
+                },
+            )
+            .expect("publisher token");
+
+        let error = platform
+            .hub
+            .import_remote_asset(
+                "superadmin",
+                "default",
+                &token,
+                &RemoteHubPublishRequest {
+                    package_id: "calc-tools".to_string(),
+                    version: "1.0.0".to_string(),
+                    title: "Remote overwrite".to_string(),
+                    description: "Should never land.".to_string(),
+                    visibility: "public".to_string(),
+                    tags: Vec::new(),
+                    source_owner: "superadmin".to_string(),
+                    source_project: "default".to_string(),
+                    source_kind: "pipeline_with_dependencies".to_string(),
+                    source_ref: "pipelines/calc.zf.json".to_string(),
+                    artifact: serde_json::json!({
+                        "apiVersion": "zebflow.com/v1",
+                        "kind": "HubPackage",
+                        "metadata": {"name": "calc-studio.calc-tools", "version": "1.0.0"},
+                        "spec": {
+                            "asset_kind": "pipeline_bundle",
+                            "title": "Remote overwrite",
+                            "description": "Should never land.",
+                            "files": [
+                                {
+                                    "rel_path": "pipelines/calc.zf.json",
+                                    "kind": "pipeline",
+                                    "size_bytes": 2,
+                                    "reason": "package",
+                                    "content": "{}"
+                                }
+                            ]
+                        }
+                    }),
+                },
+            )
+            .expect_err("remote republish is refused");
+
+        assert_eq!(error.code, "HUB_VERSION_EXISTS");
+        let stored = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("the original row survives");
+        assert_eq!(stored.artifact_sha256, first.artifact_sha256);
+        assert_eq!(stored.created_at, first.created_at);
+        assert_eq!(
+            std::fs::read(&artifact).expect("artifact bytes"),
+            bytes_before
+        );
+    }
+
+    #[test]
+    fn hub_version_created_at_survives_a_row_rewrite() {
+        // The durable guarantee behind release immutability: even a rewrite
+        // that reaches the store cannot move when the release was created.
+        let (_root, platform) = hub_publish_fixture("Calculator One");
+        let (_, first) = publish_calc_tools(&platform, "1.0.0").expect("first publish");
+
+        let mut rewritten = first.clone();
+        rewritten.created_at = first.created_at + 86_400;
+        rewritten.artifact_sha256 = "0".repeat(64);
+        platform
+            .hub
+            .hub_data
+            .put_hub_asset_version(&rewritten)
+            .expect("row rewrite");
+
+        let stored = platform
+            .hub
+            .hub_data
+            .get_hub_asset_version("calc-studio.calc-tools", "1.0.0")
+            .expect("version lookup")
+            .expect("version row");
+        assert_eq!(
+            stored.created_at, first.created_at,
+            "created_at is preserved for the life of a version"
         );
     }
 }

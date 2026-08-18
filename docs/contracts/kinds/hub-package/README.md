@@ -89,11 +89,11 @@ intact.
 | Role | Where | What it does |
 | --- | --- | --- |
 | Contract adapter | `src/contracts/kinds/hub_package.rs` | `type Spec = HubPackageSpec`; typed, `deny_unknown_fields`, bounded, and enforces the carried-or-referenced rule |
-| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row |
+| Writer, publish | `publish_asset` | builds a manifest, writes an artifact file, records a version row; refuses a version that already exists |
 | Writer, encode | `encode_hub_artifact` | wraps a spec in the envelope |
 | Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
 | Reader, value | `parse_hub_artifact_value` | direct payload, including local node bundle install |
-| Reader, remote publish | `hub.rs:4587` | validates an inbound published document |
+| Reader, remote publish | `import_remote_asset` | validates an inbound published document |
 | Reader, API | `web/mod.rs:7488` | serves the document |
 | Durable store | `data_root/<artifact_rel_path>` plus a `HubAssetVersion` row | one file per version, digest recorded as `artifact_sha256` |
 
@@ -118,21 +118,44 @@ not recognise, while the installer writes the entry's bytes verbatim. Labelling
 a file `utf8` therefore skipped the whole review and still landed on disk. The
 accepted set is now closed to `text`, `base64`, and absent.
 
-### Republishing silently overwrites
+### Republishing silently overwrote — fixed
 
-`publish_asset` builds a `HubAssetVersion` and calls `put_hub_asset_version`
-without checking whether that `package_id` and `version` already exist. A second
-publish of the same version replaces the row, the artifact path, and the digest.
+`publish_asset` built a `HubAssetVersion` and called `put_hub_asset_version`
+without checking whether that `package_id` and `version` already existed. A
+second publish of the same version replaced the row, the artifact path, and the
+digest. Any `zeb.lock` entry pinning that version then failed its digest check,
+and the project reported a tampered dependency for what was in fact a
+republish — the failure immutability exists to prevent.
 
-Any `zeb.lock` entry pinning that version then fails its digest check, and the
-project reports a tampered dependency for what was in fact a republish. That is
-the failure immutability exists to prevent, and it is reachable today.
+`enforce_release_immutability` now refuses the publish with
+`HUB_VERSION_EXISTS`, and both writers call it: `publish_asset` before it reads
+the source, and `import_remote_asset` — behind the remote publish route — before
+it decodes the inbound document. Nothing durable is written on the refused path,
+so the stored artifact, the version row, and its digest are exactly as the first
+publish left them. The route layer answers 409, because a republish conflicts
+with what is already published rather than being malformed.
 
-### `created_at` is set on every publish
+### `created_at` was set on every publish — fixed
 
-The version row records `created_at: now` unconditionally, so a republish also
-rewrites when the version was created. With immutability enforced this becomes
-correct by construction; until then it hides that a republish happened.
+The version row recorded `created_at: now` unconditionally, so a republish also
+rewrote when the version was created. With immutability enforced it is now
+correct by construction: the row is written once and never again. The store no
+longer moves the column either — `put_hub_asset_version` leaves `created_at` out
+of its conflict update, so a rewrite that somehow reaches the adapter still
+cannot change when a release was created.
+
+### Delete removes a whole package, and frees its versions to be republished
+
+`delete_asset_package` is the only delete path: it takes a `package_id`, drops
+every version row and every artifact for it, and returns the count. There is no
+per-version delete, so a publisher cannot retract `1.0.1` alone.
+
+After a package is deleted, republishing any version it held is allowed again,
+because immutability is enforced against the rows that exist. Registries treat
+this as a separate decision from immutability — npm allows unpublish only inside
+a 72-hour window and then blocks the name and version forever, Cargo never
+deletes and only yanks. Zebflow has taken no such decision yet, so the behaviour
+is left as found and recorded here.
 
 ## Still to review
 
@@ -146,3 +169,5 @@ correct by construction; until then it hides that a republish happened.
   (the existing remote cap), 18 MB per carried file, 512 MB per referenced file.
   The per-file numbers still need review against real packages
 - staged install and rollback across a manifest plus N artifacts
+- whether a deleted package's versions may be republished, or whether delete
+  should tombstone the coordinates the way npm and Cargo do

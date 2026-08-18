@@ -3997,6 +3997,12 @@ impl DataAdapter for SqliteDataAdapter {
         }
     }
 
+    /// Upsert one hub asset version.
+    ///
+    /// `created_at` is deliberately left out of the conflict update: it records
+    /// when the release was first published and must survive for the life of
+    /// the version. The hub service already refuses a republish outright
+    /// (`HUB_VERSION_EXISTS`); this keeps the column honest regardless.
     fn put_hub_asset_version(&self, version: &HubAssetVersion) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let manifest_json = serde_json::to_string(&version.manifest).map_err(Self::json_error)?;
@@ -4016,8 +4022,7 @@ impl DataAdapter for SqliteDataAdapter {
                  source_ref = excluded.source_ref,
                  artifact_rel_path = excluded.artifact_rel_path,
                  artifact_sha256 = excluded.artifact_sha256,
-                 manifest_json = excluded.manifest_json,
-                 created_at = excluded.created_at",
+                 manifest_json = excluded.manifest_json",
             params![
                 &version.package_pk,
                 &version.package_id,

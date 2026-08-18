@@ -9,6 +9,7 @@ Hub is the office-hosted package sharing service for Zebflow work.
 - public packages can be browsed without a token
 - private access can use scoped Hub tokens
 - packages are typed and versioned
+- a published version is immutable
 
 ## Why this matters
 
@@ -155,6 +156,21 @@ media contract and is served through:
 
 The target gallery contract also allows optional screenshots and YouTube demo
 links, but those are structured metadata, not arbitrary external embeds.
+
+## Release immutability
+
+A published `package@version` is fixed. Correcting anything — content, title,
+description — means publishing a new version.
+
+A second publish of a version that already exists is refused with
+`HUB_VERSION_EXISTS` (HTTP 409) on both the project publish route and
+`/api/hub/remote/assets`. The refusal happens before anything is written, so
+the stored artifact, its digest, and its creation time are left untouched.
+
+This is what makes `zeb.lock` meaningful: a lock entry pins a version to a
+digest, and a digest only means something when the bytes it names cannot change
+underneath it. If a release could be overwritten, every project that pinned it
+would report a tampered dependency the next time it checked.
 
 ## Storage
 

@@ -16574,6 +16574,9 @@ fn hub_api_error(err: PlatformError) -> Response {
         StatusCode::UNAUTHORIZED
     } else if err.code == "HUB_TOKEN_FORBIDDEN" || err.code == "HUB_PACKAGE_FORBIDDEN" {
         StatusCode::FORBIDDEN
+    } else if err.code == "HUB_VERSION_EXISTS" {
+        // Releases are immutable: the version is already there.
+        StatusCode::CONFLICT
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
@@ -23653,6 +23656,9 @@ fn internal_error(err: PlatformError) -> Response {
         | "HUB_PACKAGE_FORBIDDEN" => StatusCode::FORBIDDEN,
         "HUB_PUBLISHER_DISABLED" => StatusCode::CONFLICT,
         "HUB_PUBLISHER_QUOTA_EXCEEDED" => StatusCode::CONFLICT,
+        // A published release is immutable, so a republish is a conflict with
+        // what is already there, not a malformed request.
+        "HUB_VERSION_EXISTS" => StatusCode::CONFLICT,
         "HUB_TOKEN_INVALID"
         | "HUB_ARTIFACT_PATH_INVALID"
         | "HUB_PUBLISH_INVALID"
