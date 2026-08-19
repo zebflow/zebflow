@@ -2237,6 +2237,7 @@ impl HubService {
         let prepared =
             prepare_hub_install_entries(&install_base, &install_root, &payload.files, artifacts)?;
         validate_prepared_pipeline_sources(&prepared)?;
+        refuse_prepared_install_violations(&prepared)?;
         let previous_lock = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
             Some(self.dependency_lock.read(&target_owner, &target_project)?)
         } else {
@@ -3035,6 +3036,11 @@ impl HubService {
                 "platform hub install only supports project bundles",
             ));
         }
+        // A remote pack carries its bytes in the document it just fetched, so
+        // there is no artifact location to fetch a reference from.
+        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        refuse_unreviewable_project_bundle(&artifact.files, &artifacts)?;
+
         let base_project = slug_segment(package_id);
         if base_project.is_empty() {
             return Err(PlatformError::new(
@@ -3086,13 +3092,8 @@ impl HubService {
         let layout = self.projects.project_layout(&target_owner, &project)?;
         retarget_project_configuration(&mut artifact.files, &project)?;
         retarget_dependency_lock(&mut artifact.files, &project)?;
-        // A remote pack carries its bytes in the document it just fetched, so
-        // there is no artifact location to fetch a reference from. Resolving
-        // before the worktree is cleared keeps a refusal from destroying the
-        // project it was about to fill.
-        let artifacts = HubArtifactChannel::unresolvable(
-            "a remote pack has no artifact endpoint, so referenced bytes cannot be fetched",
-        );
+        // Resolving before the worktree is cleared keeps a refusal from
+        // destroying the project it was about to fill.
         for entry in &artifact.files {
             if !matches!(entry.supply(), Some(HubPackageFileSupply::Carried(_))) {
                 hub_entry_bytes(entry, &artifacts)?;
@@ -4604,6 +4605,49 @@ fn prepare_hub_install_entries(
     Ok(prepared)
 }
 
+/// Refuses an install whose prepared content the review rejects.
+///
+/// This is the gate every channel passes through, so that "every channel runs
+/// the same review" is true by construction rather than by each call site
+/// remembering to ask. It reviews the *prepared* entries: their bytes are
+/// already resolved and their paths are the destinations that will be written,
+/// so the review reads exactly what the install is about to place, with no
+/// second fetch and no chance of the two disagreeing.
+///
+/// Callers that review earlier still do -- a user is shown the verdict before
+/// deciding. This one is not for showing; it is the refusal that cannot be
+/// skipped.
+fn refuse_prepared_install_violations(
+    entries: &[PreparedHubInstallEntry],
+) -> Result<(), PlatformError> {
+    let policy_entries = entries
+        .iter()
+        .map(|entry| PackagePolicyEntry {
+            rel_path: entry.install_rel.clone(),
+            kind: file_kind_from_path(Path::new(&entry.install_rel)),
+            size_bytes: entry.bytes.len(),
+            // The bytes are in hand, so anything unreadable here is genuinely
+            // binary rather than unresolved. `unreadable` stays empty: it means
+            // "could not be fetched", and conflating the two would refuse every
+            // package carrying an icon.
+            content: String::from_utf8(entry.bytes.clone()).unwrap_or_default(),
+            unreadable: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let review =
+        review_package_entries(&policy_entries, Vec::new(), PackageReviewOptions::default());
+    if !review.is_installable() {
+        return Err(PlatformError::new(
+            "HUB_INSTALL_REFUSED",
+            format!(
+                "package cannot be installed: {}",
+                review.violations.join("; ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_prepared_pipeline_sources(
     entries: &[PreparedHubInstallEntry],
 ) -> Result<(), PlatformError> {
@@ -4766,6 +4810,42 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
         "HUB_ARTIFACT_INTEGRITY",
         format!("hub artifact hash mismatch: expected {expected}, got {actual}"),
     ))
+}
+
+/// Refuses a project bundle whose reviewable content the review cannot read.
+///
+/// Installing a project bundle writes its files, registers every pipeline among
+/// them, applies the schema and seed data it carries, and activates the
+/// pipelines it names. None of that is undone by reviewing afterwards, so the
+/// decision is taken before the project exists: a refusal leaves nothing
+/// behind, not an empty project someone has to clean up.
+///
+/// The paths handed to the review are the bundle's own `rel_path`s, which is
+/// what [`reindex_project_bundle_pipelines`] registers from, so the review and
+/// the registration select the same entries.
+///
+/// This refuses what cannot be *read*. A bundle whose pipelines parse is still
+/// installable however hostile they are, because no content detector produces a
+/// violation yet -- the review reports those as warnings and a risk level.
+fn refuse_unreviewable_project_bundle(
+    files: &[HubPackageFile],
+    artifacts: &HubArtifactChannel,
+) -> Result<(), PlatformError> {
+    let entries = files
+        .iter()
+        .map(|entry| package_policy_entry(&normalize_repo_rel(&entry.rel_path), entry, artifacts))
+        .collect::<Vec<_>>();
+    let review = review_package_entries(&entries, Vec::new(), PackageReviewOptions::default());
+    if !review.is_installable() {
+        return Err(PlatformError::new(
+            "HUB_REMOTE_INSTALL_REFUSED",
+            format!(
+                "project bundle cannot be installed: {}",
+                review.violations.join("; ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn reindex_project_bundle_pipelines(
@@ -5803,6 +5883,48 @@ mod tests {
             "size_bytes": DANGEROUS_PIPELINE.len(), "reason": "test",
             "artifact": { "sha256": sha256, "media_type": "application/json" }
         })
+    }
+
+    /// Installing a project bundle registers its pipelines, runs the schema and
+    /// seed data it carries, and activates what it names. A bundle whose
+    /// pipeline the review cannot read must be refused before any of that, and
+    /// before the project it would fill is created.
+    #[test]
+    fn a_project_bundle_the_review_cannot_read_is_refused() {
+        let package = pipeline_package(
+            HUB_ASSET_KIND_PROJECT_BUNDLE,
+            referenced_pipeline_entry(&sha256_hex(DANGEROUS_PIPELINE.as_bytes())),
+        );
+
+        let error = refuse_unreviewable_project_bundle(
+            &package.files,
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+        )
+        .expect_err("a bundle the review cannot read must not install");
+
+        assert_eq!(error.code, "HUB_REMOTE_INSTALL_REFUSED");
+        assert!(
+            error.message.contains("pipelines/exfiltrate.zf.json"),
+            "the refusal names the entry it could not read: {}",
+            error.message
+        );
+    }
+
+    /// The honest limit of this gate. It refuses what cannot be read, not what
+    /// is hostile: the same pipeline carried inline parses, so it passes, even
+    /// though the review reports a public webhook reading a credentialed
+    /// database and posting elsewhere. Content detectors that produce
+    /// violations do not exist yet, and this test fails the day one does --
+    /// which is the point.
+    #[test]
+    fn a_readable_project_bundle_passes_however_hostile_it_is() {
+        let package = pipeline_package(HUB_ASSET_KIND_PROJECT_BUNDLE, carried_pipeline_entry());
+
+        refuse_unreviewable_project_bundle(
+            &package.files,
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+        )
+        .expect("a readable bundle is not refused by this gate today");
     }
 
     /// The same pipeline, carried and referenced, reviewed through a channel
