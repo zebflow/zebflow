@@ -39,9 +39,46 @@ that URL.
 All Add+ sources must be reviewed before they write. The review is intentionally
 source-agnostic: it lists added/skipped/overwritten files, executable surfaces,
 credentials, external URLs, database/filesystem effects, public endpoints,
-schedules, large files, seed data, warnings, and risk level. Built-in UI
-components and Hub packages already use this review gate; Git, folder, and zip
-sources should stage their contents and reuse the same gate.
+schedules, large files, seed data, database initialization, warnings, and risk
+level. Built-in UI components and Hub packages already use this review gate;
+Git, folder, and zip sources should stage their contents and reuse the same
+gate.
+
+## Database initialization
+
+A package may carry SQL that runs at install, under `initial-data/`, `init/`,
+or `seeds/`, in a `sekejap/` or `sqlite/` subfolder. Those are the only two
+engines: there is no postgres or mysql seed execution, and both stores are
+project-local ones the install creates, so package SQL cannot reach a database
+you already had.
+
+The review reports one `database_initialization` row per such file:
+
+- `engine` and `source`: which engine replays the file, and where it came from
+- `store` and `existing_data_at_risk`: which store receives it
+- `statements`: a count per statement kind, with anything unrecognised counted
+  under `OTHER` so nothing is dropped silently
+- `tables`: every table the statements name
+- `destructive`: the DROP, DELETE, TRUNCATE, and ALTER statements, quoted back
+
+## Installing part of a project bundle
+
+A platform Hub project install accepts three flags, all true when omitted:
+
+- `include_code`: write source entries -- pipelines, pages, docs, everything
+  that is not schema or seed SQL
+- `include_schema`: write the schema and seed `.sql` files into `repo/`
+- `execute_schema`: replay that SQL into the project's own stores
+
+`execute_schema: false` with `include_schema: true` installs the schema as
+files and leaves the stores untouched, so the SQL can be reviewed and run by
+hand. `execute_schema: true` with `include_schema: false` is rejected rather
+than downgraded, and so is a request that includes nothing at all. The install
+response names every entry the scope skipped and every seed script that was
+written but not run.
+
+`zebflow.yaml`, `zeb.lock`, and `zebflow.init.json` are always written: a
+project without its configuration is not a smaller install, it is a broken one.
 
 ## Hub is not backup
 

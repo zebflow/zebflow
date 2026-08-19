@@ -9085,10 +9085,16 @@ async fn api_install_platform_hub_app(
             &req.repository_id,
             &req.package_id,
             &req.version,
+            req.scope(),
         )
         .await
     {
-        Ok((installed_owner, installed_project)) => {
+        Ok(result) => {
+            let installed_owner = result.owner.clone();
+            let installed_project = result.project.clone();
+            // What the scope left out travels with the answer, so a partial
+            // install is never reported as a whole one.
+            let install = serde_json::to_value(&result).unwrap_or(Value::Null);
             if let Err(err) = state
                 .platform
                 .cluster_runtime_sync
@@ -9106,6 +9112,7 @@ async fn api_install_platform_hub_app(
                         "ok": true,
                         "owner": installed_owner,
                         "project": project,
+                        "install": install,
                     }))
                     .into_response(),
                     Err(err) => internal_error(err),
@@ -9114,6 +9121,7 @@ async fn api_install_platform_hub_app(
                     "ok": true,
                     "owner": installed_owner,
                     "project_slug": installed_project,
+                    "install": install,
                 }))
                 .into_response(),
                 Err(err) => internal_error(err),
@@ -9152,10 +9160,14 @@ async fn api_install_platform_hub_project(
             &req.repository_id,
             &req.package_id,
             &req.version,
+            req.scope(),
         )
         .await
     {
-        Ok((installed_owner, installed_project)) => {
+        Ok(result) => {
+            let installed_owner = result.owner.clone();
+            let installed_project = result.project.clone();
+            let install = serde_json::to_value(&result).unwrap_or(Value::Null);
             if let Err(err) = state
                 .platform
                 .cluster_runtime_sync
@@ -9171,7 +9183,8 @@ async fn api_install_platform_hub_project(
                 Ok(Some(project)) => match home_project_card_json(&state, &owner, &project) {
                     Ok(project) => Json(json!({
                         "ok": true,
-                        "project": project
+                        "project": project,
+                        "install": install,
                     }))
                     .into_response(),
                     Err(err) => internal_error(err),
@@ -9183,7 +9196,7 @@ async fn api_install_platform_hub_project(
                 Err(err) => internal_error(err),
             }
         }
-        Err(err) => internal_error(err),
+        Err(err) => hub_api_error(err),
     }
 }
 
@@ -16459,6 +16472,24 @@ struct InstallPlatformHubProjectRequest {
     repository_id: String,
     package_id: String,
     version: String,
+    /// Which parts of the bundle to install. Each flag defaults to true, so a
+    /// body that names none of them installs the whole package as before.
+    #[serde(default = "default_true")]
+    include_code: bool,
+    #[serde(default = "default_true")]
+    include_schema: bool,
+    #[serde(default = "default_true")]
+    execute_schema: bool,
+}
+
+impl InstallPlatformHubProjectRequest {
+    fn scope(&self) -> crate::platform::services::hub::HubInstallScope {
+        crate::platform::services::hub::HubInstallScope {
+            include_code: self.include_code,
+            include_schema: self.include_schema,
+            execute_schema: self.execute_schema,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -16554,6 +16585,7 @@ fn hub_api_error(err: PlatformError) -> Response {
         || err.code == "HUB_ASSET_KIND_INVALID"
         || err.code == "HUB_MEDIA_INVALID"
         || err.code == "HUB_GALLERY_INVALID"
+        || err.code == "HUB_INSTALL_SCOPE_INVALID"
     {
         StatusCode::BAD_REQUEST
     } else if err.code == "HUB_ASSET_MISSING"

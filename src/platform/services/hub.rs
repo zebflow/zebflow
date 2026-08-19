@@ -30,7 +30,9 @@ use crate::platform::model::{
     ProjectRuntimeSelectionRequest, now_ts, slug_segment,
 };
 use crate::platform::policy::package::{
-    PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview, review_package_entries,
+    DatabaseInitializationReport, INITIAL_DATA_DIRS, PackagePolicyEntry, PackageReviewOptions,
+    PackageSafetyReview, initial_data_engine_for_rel_path, review_package_entries,
+    split_initial_data_sql,
 };
 use crate::platform::policy::report::PolicyRiskLevel;
 use crate::platform::sekejap;
@@ -153,6 +155,83 @@ pub struct HubInstallResult {
     pub install_root: String,
     pub files_written: usize,
     pub pipelines_registered: Vec<String>,
+}
+
+/// Which parts of a project bundle an install is allowed to perform.
+///
+/// Every field defaults to true, so a caller that says nothing installs exactly
+/// what it installed before this existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HubInstallScope {
+    /// Source entries: pipelines, templates, docs -- everything the bundle
+    /// carries that is neither schema nor seed SQL.
+    #[serde(default = "install_scope_default")]
+    pub include_code: bool,
+    /// Schema and seed `.sql` files, written into `repo/`.
+    #[serde(default = "install_scope_default")]
+    pub include_schema: bool,
+    /// Whether that SQL is replayed into the project's own stores, or left in
+    /// `repo/` for the user to run themselves.
+    #[serde(default = "install_scope_default")]
+    pub execute_schema: bool,
+}
+
+fn install_scope_default() -> bool {
+    true
+}
+
+impl Default for HubInstallScope {
+    fn default() -> Self {
+        Self {
+            include_code: true,
+            include_schema: true,
+            execute_schema: true,
+        }
+    }
+}
+
+impl HubInstallScope {
+    /// Refuses a scope that cannot mean what it says.
+    ///
+    /// Running SQL that is never written is not a smaller install, it is a
+    /// contradiction. Answering it by quietly turning execution off would hide
+    /// the disagreement from the person who asked for it.
+    pub fn validate(&self) -> Result<(), PlatformError> {
+        if self.execute_schema && !self.include_schema {
+            return Err(PlatformError::new(
+                "HUB_INSTALL_SCOPE_INVALID",
+                "execute_schema requires include_schema: there is nothing to run when the \
+                 schema files are not written",
+            ));
+        }
+        if !self.include_code && !self.include_schema && !self.execute_schema {
+            return Err(PlatformError::new(
+                "HUB_INSTALL_SCOPE_INVALID",
+                "an install with neither code nor schema would install nothing",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// What a project bundle install did, including what it deliberately did not.
+///
+/// A partial install must never read like a full one, so everything the scope
+/// dropped is named here rather than inferred from the scope flags.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectBundleInstallResult {
+    pub owner: String,
+    pub project: String,
+    /// What the caller asked for.
+    pub scope: HubInstallScope,
+    /// Bundle entries the scope excluded, so they were never written.
+    pub skipped_files: Vec<String>,
+    /// Initial-data scripts written into `repo/` and left for the user to run.
+    pub unexecuted_initial_data: Vec<String>,
+    /// Whether schema and seed SQL reached the project's stores.
+    pub schema_executed: bool,
+    /// What that SQL does, for the files this install actually wrote.
+    pub database_initialization: Vec<DatabaseInitializationReport>,
 }
 
 struct PreparedHubInstallEntry {
@@ -331,6 +410,9 @@ pub struct HubInstallReview {
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
     pub seed_data: Vec<String>,
+    /// What the package's install-time SQL does, file by file.
+    #[serde(default)]
+    pub database_initialization: Vec<DatabaseInitializationReport>,
     pub project_initialization: serde_json::Value,
     pub warnings: Vec<String>,
     /// Findings that make this package uninstallable, whoever approves it.
@@ -366,6 +448,9 @@ pub struct HubPublishReview {
     pub schedules: Vec<String>,
     pub large_files: Vec<String>,
     pub seed_data: Vec<String>,
+    /// What the package's install-time SQL does, file by file.
+    #[serde(default)]
+    pub database_initialization: Vec<DatabaseInitializationReport>,
     pub project_initialization: serde_json::Value,
     pub warnings: Vec<String>,
     /// Findings no approval overrides, in the same tier the install review uses.
@@ -2481,6 +2566,7 @@ impl HubService {
             schedules: policy.schedules,
             large_files: policy.large_files,
             seed_data: policy.seed_data,
+            database_initialization: policy.database_initialization,
             project_initialization: serde_json::to_value(&payload.project_initialization)
                 .unwrap_or_else(|_| Value::Null),
             installable: policy.violations.is_empty(),
@@ -2976,7 +3062,8 @@ impl HubService {
         repository_id: &str,
         package_id: &str,
         version: &str,
-    ) -> Result<(String, String), PlatformError> {
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallResult, PlatformError> {
         self.install_remote_project_from_platform_source(
             http_client,
             owner,
@@ -2984,10 +3071,12 @@ impl HubService {
             repository_id,
             package_id,
             version,
+            scope,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_remote_project_from_platform_source(
         &self,
         http_client: &reqwest::Client,
@@ -2996,7 +3085,10 @@ impl HubService {
         repository_id: &str,
         package_id: &str,
         version: &str,
-    ) -> Result<(String, String), PlatformError> {
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallResult, PlatformError> {
+        // A contradictory scope is a request error, so it costs no download.
+        scope.validate()?;
         let source_owner = slug_segment(source_owner);
         let target_owner = slug_segment(target_owner);
         let repo = self
@@ -3028,18 +3120,38 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let mut artifact =
-            parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
+        let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
+        // A remote pack carries its bytes in the document it just fetched, so
+        // there is no artifact location to fetch a reference from.
+        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        self.install_project_bundle(&target_owner, package_id, artifact, &artifacts, scope)
+    }
+
+    /// Installs a project bundle into a project this call creates.
+    ///
+    /// Split from the fetch so the install is reachable without a network, and
+    /// so every caller runs the same gate in the same order.
+    fn install_project_bundle(
+        &self,
+        target_owner: &str,
+        package_id: &str,
+        mut artifact: HubPackageSpec,
+        artifacts: &HubArtifactChannel,
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallResult, PlatformError> {
+        scope.validate()?;
+        let target_owner = slug_segment(target_owner);
         if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
             return Err(PlatformError::new(
                 "HUB_REMOTE_INVALID",
                 "platform hub install only supports project bundles",
             ));
         }
-        // A remote pack carries its bytes in the document it just fetched, so
-        // there is no artifact location to fetch a reference from.
-        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
-        refuse_unreviewable_project_bundle(&artifact.files, &artifacts)?;
+        let review = refuse_unreviewable_project_bundle(&artifact.files, artifacts)?;
+        // The gate above read every entry the bundle carries, including the
+        // ones this scope is about to drop, so narrowing the install here can
+        // only shrink what has already been found installable.
+        let skipped_files = take_entries_outside_scope(&mut artifact.files, scope);
 
         let base_project = slug_segment(package_id);
         if base_project.is_empty() {
@@ -3096,7 +3208,7 @@ impl HubService {
         // destroying the project it was about to fill.
         for entry in &artifact.files {
             if !matches!(entry.supply(), Some(HubPackageFileSupply::Carried(_))) {
-                hub_entry_bytes(entry, &artifacts)?;
+                hub_entry_bytes(entry, artifacts)?;
             }
         }
         clear_repo_worktree_preserving_git(&layout.repo_dir)?;
@@ -3105,27 +3217,63 @@ impl HubService {
             if let Some(parent) = dest_abs.parent() {
                 fs::create_dir_all(parent)?;
             }
-            write_entry_content(&dest_abs, entry, &artifacts)?;
+            write_entry_content(&dest_abs, entry, artifacts)?;
         }
         reindex_project_bundle_pipelines(self, &target_owner, &project, &artifact.files)?;
-        sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
-        sqlite_schema::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
-        execute_project_initial_data(
-            &self.data_root,
-            &target_owner,
-            &project,
-            &layout,
-            &artifact.project_initialization.initial_data,
-        )?;
-        for file_rel_path in &artifact.active_pipelines {
-            let normalized = normalize_repo_rel(file_rel_path);
-            if normalized.is_empty() || !normalized.ends_with(".zf.json") {
-                continue;
-            }
-            self.projects
-                .activate_pipeline_definition(&target_owner, &project, &normalized)?;
+        let mut unexecuted_initial_data = Vec::new();
+        if scope.execute_schema {
+            sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+            sqlite_schema::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
+            execute_project_initial_data(
+                &self.data_root,
+                &target_owner,
+                &project,
+                &layout,
+                &artifact.project_initialization.initial_data,
+            )?;
+        } else if scope.include_schema {
+            // The SQL is on disk under repo/ and the stores are untouched, so
+            // the result names the scripts that are waiting rather than letting
+            // an unapplied schema pass for an applied one.
+            unexecuted_initial_data = artifact
+                .project_initialization
+                .initial_data
+                .iter()
+                .map(|step| step.path.clone())
+                .collect();
         }
-        Ok((target_owner, project))
+        if scope.include_code {
+            for file_rel_path in &artifact.active_pipelines {
+                let normalized = normalize_repo_rel(file_rel_path);
+                if normalized.is_empty() || !normalized.ends_with(".zf.json") {
+                    continue;
+                }
+                self.projects
+                    .activate_pipeline_definition(&target_owner, &project, &normalized)?;
+            }
+        }
+        // The review covered the whole bundle; the result describes this
+        // install, so a file the scope dropped is reported as skipped and not
+        // as SQL that ran.
+        let installed = artifact
+            .files
+            .iter()
+            .map(|entry| normalize_repo_rel(&entry.rel_path))
+            .collect::<BTreeSet<_>>();
+        let database_initialization = review
+            .database_initialization
+            .into_iter()
+            .filter(|report| installed.contains(&normalize_repo_rel(&report.source)))
+            .collect();
+        Ok(ProjectBundleInstallResult {
+            owner: target_owner,
+            project,
+            scope,
+            skipped_files,
+            unexecuted_initial_data,
+            schema_executed: scope.execute_schema,
+            database_initialization,
+        })
     }
 
     fn preview_pipeline(
@@ -3924,6 +4072,7 @@ fn review_publish_artifact(
         schedules: policy.schedules,
         large_files: policy.large_files,
         seed_data: policy.seed_data,
+        database_initialization: policy.database_initialization,
         project_initialization: serde_json::to_value(project_initialization)
             .map_err(|err| PlatformError::new("HUB_PUBLISH_REVIEW", err.to_string()))?,
         warnings: policy.warnings,
@@ -4830,7 +4979,7 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
 fn refuse_unreviewable_project_bundle(
     files: &[HubPackageFile],
     artifacts: &HubArtifactChannel,
-) -> Result<(), PlatformError> {
+) -> Result<PackageSafetyReview, PlatformError> {
     let entries = files
         .iter()
         .map(|entry| package_policy_entry(&normalize_repo_rel(&entry.rel_path), entry, artifacts))
@@ -4845,7 +4994,55 @@ fn refuse_unreviewable_project_bundle(
             ),
         ));
     }
-    Ok(())
+    // The verdict is the gate's job; the findings behind it are worth carrying
+    // to the caller, which would otherwise review the same bytes twice to tell
+    // the user what the install is about to do to their data.
+    Ok(review)
+}
+
+/// Whether this bundle entry is schema or seed SQL rather than source.
+fn install_entry_is_schema(rel_path: &str) -> bool {
+    let rel = normalize_repo_rel(rel_path);
+    rel.starts_with("schemas/sekejap/")
+        || rel.starts_with("schemas/sqlite/")
+        || initial_data_engine_for_path(&rel).is_some()
+}
+
+/// Files the project needs whatever else the scope drops.
+///
+/// `zebflow.yaml` is not optional -- the install refuses a bundle without one --
+/// so a code-free install that dropped it would install nothing at all rather
+/// than the data model it was asked for. The lock and the initialization plan
+/// describe the install itself and are kept for the same reason.
+fn install_entry_is_project_configuration(rel_path: &str) -> bool {
+    let rel = normalize_repo_rel(rel_path);
+    rel == crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
+        || rel == DEPENDENCY_LOCK_FILE
+        || rel == "zebflow.init.json"
+}
+
+/// Removes the entries this scope does not install, and names them.
+fn take_entries_outside_scope(
+    files: &mut Vec<HubPackageFile>,
+    scope: HubInstallScope,
+) -> Vec<String> {
+    let mut skipped = Vec::new();
+    files.retain(|entry| {
+        let rel = normalize_repo_rel(&entry.rel_path);
+        let keep = if install_entry_is_project_configuration(&rel) {
+            true
+        } else if install_entry_is_schema(&rel) {
+            scope.include_schema
+        } else {
+            scope.include_code
+        };
+        if !keep {
+            skipped.push(rel);
+        }
+        keep
+    });
+    skipped.sort();
+    skipped
 }
 
 fn reindex_project_bundle_pipelines(
@@ -4978,37 +5175,13 @@ fn install_risk_level(policy: &PackageSafetyReview, has_overwrites: bool) -> Str
     }
 }
 
-const INITIAL_DATA_DIRS: &[(&str, &str)] = &[
-    ("initial-data/sekejap", "sekejap"),
-    ("initial-data/sqlite", "sqlite"),
-    ("init/sekejap", "sekejap"),
-    ("init/sqlite", "sqlite"),
-    ("seeds/sekejap", "sekejap"),
-    ("seeds/sqlite", "sqlite"),
-];
-
+/// The engine that replays `rel_path`, when the installer replays it at all.
+///
+/// The list and the reading of it live with the safety review, so the report a
+/// user approves and the execution that follows can never disagree about which
+/// files are initial data.
 fn initial_data_engine_for_path(rel_path: &str) -> Option<&'static str> {
-    let rel = normalize_repo_rel(rel_path);
-    if !rel.ends_with(".sql") {
-        return None;
-    }
-    INITIAL_DATA_DIRS
-        .iter()
-        .find_map(|(prefix, engine)| rel.starts_with(&format!("{prefix}/")).then_some(*engine))
-}
-
-fn split_initial_data_sql(sql: &str) -> Vec<String> {
-    let uncommented = sql
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("--"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    uncommented
-        .split(';')
-        .map(str::trim)
-        .filter(|stmt| !stmt.is_empty())
-        .map(|stmt| format!("{stmt};"))
-        .collect()
+    initial_data_engine_for_rel_path(&normalize_repo_rel(rel_path))
 }
 
 fn initial_data_step_from_entry(entry: &HubPackageFile) -> Option<HubPackageInitialDataStep> {
@@ -7222,5 +7395,229 @@ mod tests {
             stored.created_at, first.created_at,
             "created_at is preserved for the life of a version"
         );
+    }
+
+    // ── Per-part install consent ────────────────────────────────────────
+    //
+    // An install used to be all or nothing. These cover the part that is not
+    // reversible by deleting a file afterwards: whether the SQL ran.
+
+    const SEED_SQL: &str = "-- posts for the demo blog\n\
+        CREATE TABLE posts (_key TEXT PRIMARY KEY, title TEXT);\n\
+        INSERT INTO posts (_key, title) VALUES ('a', 'Hello');\n";
+
+    const PAGE_TSX: &str = "export default function Home() { return <div>hi</div>; }\n";
+
+    const SEED_REL_PATH: &str = "seeds/sekejap/001-posts.sql";
+
+    /// A project bundle carrying one page and one seed script, with a
+    /// `zebflow.yaml` taken from a real project so the install has the one file
+    /// it refuses to run without.
+    fn seeded_project_bundle(
+        platform: &crate::platform::services::PlatformService,
+    ) -> HubPackageSpec {
+        platform
+            .projects
+            .create_or_update_project(
+                "superadmin",
+                &CreateProjectRequest {
+                    project: "seedsource".to_string(),
+                    title: Some("Seed Source".to_string()),
+                    local_branch: None,
+                    runtime: ProjectRuntimeSelectionRequest::default(),
+                },
+            )
+            .expect("a source project to take a valid configuration from");
+        let layout = platform
+            .projects
+            .project_layout("superadmin", "seedsource")
+            .expect("source layout");
+        let configuration = std::fs::read_to_string(
+            layout
+                .repo_dir
+                .join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE),
+        )
+        .expect("the source project has a configuration");
+
+        serde_json::from_value(serde_json::json!({
+            "asset_kind": HUB_ASSET_KIND_PROJECT_BUNDLE,
+            "title": "Seeded Blog",
+            "description": "A bundle with one page and one seed script.",
+            "project_initialization": {
+                "initial_data": [{
+                    "engine": "sekejap",
+                    "path": SEED_REL_PATH,
+                    "statement_count": 2,
+                    "size_bytes": SEED_SQL.len(),
+                }],
+            },
+            "files": [
+                {
+                    "rel_path": crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+                    "kind": "config", "size_bytes": configuration.len(),
+                    "reason": "project configuration", "content": configuration,
+                },
+                {
+                    "rel_path": "pages/home.tsx", "kind": "template",
+                    "size_bytes": PAGE_TSX.len(), "reason": "page", "content": PAGE_TSX,
+                },
+                {
+                    "rel_path": SEED_REL_PATH, "kind": "initial data",
+                    "size_bytes": SEED_SQL.len(), "reason": "seed", "content": SEED_SQL,
+                },
+            ],
+        }))
+        .expect("package spec")
+    }
+
+    fn no_channel() -> HubArtifactChannel {
+        HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION)
+    }
+
+    /// The default is the behaviour that existed before consent flags did: the
+    /// whole bundle lands and its SQL runs.
+    #[test]
+    fn the_default_scope_installs_everything_and_runs_the_seed() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = seeded_project_bundle(&platform);
+
+        let result = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("the whole bundle installs");
+
+        let repo = root.path().join("users/superadmin/seeded-blog/repo");
+        assert!(repo.join("pages/home.tsx").is_file());
+        assert!(repo.join(SEED_REL_PATH).is_file());
+        assert!(result.skipped_files.is_empty());
+        assert!(result.schema_executed);
+        assert!(
+            sekejap::list_tables(&root.path().to_path_buf(), "superadmin", "seeded-blog")
+                .expect("the store answers")
+                .iter()
+                .any(|table| table.table == "posts"),
+            "the seed created its table"
+        );
+    }
+
+    /// The one that matters: the schema lands in repo/ and the store is left
+    /// exactly as the install found it, for the user to run themselves.
+    #[test]
+    fn a_schema_only_install_writes_the_sql_without_running_it() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = seeded_project_bundle(&platform);
+
+        let result = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                bundle,
+                &no_channel(),
+                HubInstallScope {
+                    include_code: false,
+                    include_schema: true,
+                    execute_schema: false,
+                },
+            )
+            .expect("a schema-only install is a valid install");
+
+        let repo = root.path().join("users/superadmin/seeded-blog/repo");
+        assert_eq!(
+            std::fs::read_to_string(repo.join(SEED_REL_PATH)).expect("the seed is on disk"),
+            SEED_SQL,
+            "the user gets the schema to run themselves"
+        );
+        assert!(
+            !repo.join("pages/home.tsx").exists(),
+            "code was not part of this install"
+        );
+        assert!(
+            repo.join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE)
+                .is_file(),
+            "the project keeps the configuration it cannot exist without"
+        );
+        assert!(
+            sekejap::list_tables(&root.path().to_path_buf(), "superadmin", "seeded-blog")
+                .expect("the store answers")
+                .is_empty(),
+            "nothing was replayed into the store"
+        );
+
+        assert!(!result.schema_executed);
+        assert_eq!(result.skipped_files, vec!["pages/home.tsx".to_string()]);
+        assert_eq!(
+            result.unexecuted_initial_data,
+            vec![SEED_REL_PATH.to_string()],
+            "a partial install says which scripts are still waiting"
+        );
+        let report = result
+            .database_initialization
+            .first()
+            .expect("the result describes the SQL it wrote");
+        assert_eq!(report.source, SEED_REL_PATH);
+        assert_eq!(report.tables, vec!["posts".to_string()]);
+        assert_eq!(report.store, "created by this install");
+    }
+
+    /// Running SQL that is never written is a contradiction, so it is answered
+    /// as a request error instead of being quietly downgraded to "do not run".
+    #[test]
+    fn an_install_that_would_run_sql_it_never_writes_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = seeded_project_bundle(&platform);
+
+        let error = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                bundle,
+                &no_channel(),
+                HubInstallScope {
+                    include_code: true,
+                    include_schema: false,
+                    execute_schema: true,
+                },
+            )
+            .expect_err("execute_schema without include_schema is not a smaller install");
+
+        assert_eq!(error.code, "HUB_INSTALL_SCOPE_INVALID");
+        assert!(
+            !root.path().join("users/superadmin/seeded-blog").exists(),
+            "a rejected request creates nothing"
+        );
+    }
+
+    /// A scope that installs neither code nor schema installs nothing, and says
+    /// so rather than reporting a successful empty install.
+    #[test]
+    fn an_install_of_nothing_is_refused() {
+        let error = HubInstallScope {
+            include_code: false,
+            include_schema: false,
+            execute_schema: false,
+        }
+        .validate()
+        .expect_err("an empty install is a request error");
+
+        assert_eq!(error.code, "HUB_INSTALL_SCOPE_INVALID");
+    }
+
+    /// Omitted flags mean the install this caller always got.
+    #[test]
+    fn an_install_request_that_names_no_flags_installs_everything() {
+        let scope: HubInstallScope = serde_json::from_str("{}").expect("an empty scope body");
+        assert_eq!(scope, HubInstallScope::default());
+        assert!(scope.include_code && scope.include_schema && scope.execute_schema);
     }
 }
