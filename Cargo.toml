@@ -99,3 +99,31 @@ wasmtime = { version = "36.0.2", default-features = false, features = ["cranelif
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# Debug info dominates the dev target directory: every integration-test binary
+# statically links v8, wasmtime and oxc, and each copy carried full symbols.
+# Line tables keep file:line in panics and backtraces for our own code, which is
+# what we actually read; dependency symbols we never step through.
+# For a session that needs full symbols: CARGO_PROFILE_DEV_DEBUG=2 cargo build
+# Shipping profile. strip drops symbols the binary never needs at runtime; thin
+# LTO is used rather than fat because this dependency tree (v8, wasmtime,
+# datafusion) makes a fat-LTO link disproportionately slow for the extra few
+# percent. codegen-units = 1 trades build time for a smaller, faster binary.
+# opt-level stays at 3 rather than "s": this is a request-serving binary, and
+# size-optimising the pipeline engine and SSR path is the wrong trade.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = 1
+
+[profile.test.package."*"]
+debug = 0
