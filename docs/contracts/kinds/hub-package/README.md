@@ -25,7 +25,63 @@ Go modules all forbid republishing a version, because a mutable release makes a
 lockfile a lie. Zebflow already assumes it: `zeb.lock` records a digest, and a
 digest only means something if the thing it names cannot change underneath it.
 
-The cost is accepted: a typo in a description costs a version bump.
+The cost is accepted for what the release actually carries. What a release
+carries is now much less, which is the next decision.
+
+### A release carries install; presentation lives beside it
+
+**An immutable release carries what installing it requires. Everything a human
+reads while choosing lives in mutable storage beside it.**
+
+| Stays in the release, digest-pinned | Moves out, mutable |
+| --- | --- |
+| `asset_kind`, `files`, `active_pipelines`, `project_initialization` | `description_md`, `gallery`, `media`, `image_url` |
+| `title` and a one-line `description` | `publisher_id`, `publisher_display_name`, `publisher_url`, `publisher_email` |
+| | `source_type`, `source_owner`, `source_project`, `source_ref` |
+
+Two things forced this. Under immutability, correcting a typo in
+`description_md` cost a version bump — and a version bump changes a digest, so
+every `zeb.lock` pinning it reports a changed dependency for a fixed comma.
+And a cover image was base64'd into the very document the installer parses to
+reach `files[]`, so a 400 KB screenshot was read, decoded, and validated by
+every install that never displayed it.
+
+`title` and `description` stay as the deliberate exception. A package handed
+over as a file has no store beside it, so it still has to be able to say what
+it is offline.
+
+**Where each half now lives.**
+
+| | Record | Mutable |
+| --- | --- | --- |
+| Release | `HubAssetVersion` plus its `HubPackage` document | no |
+| Presentation | `HubAssetPackage`: `summary`, `description_md`, `image_url`, `media`, `gallery` | yes |
+| Publisher identity | `HubAssetPackage`: `publisher_*` | yes |
+| Provenance | `HubAssetVersion`: `source_owner`, `source_project`, `source_kind`, `source_ref` | local only |
+
+Publisher identity belongs to the store that serves the package, not to the
+package: a document copied into a second repository does not carry an assertion
+the second repository never made. Provenance names the publishing instance's own
+project structure, so it stays in that instance's version row and is never
+published.
+
+### A cover image is an artifact, not a field
+
+`hub_cover_media_from_path` converted the publisher's chosen image to WebP and
+base64'd it into the document. The WebP now goes through `store_artifact` into
+the same content-addressed store referenced files use, and only the digest is
+recorded, on the package row.
+
+This is the first producer of stored artifacts, which closes half of an open
+question below: `store_artifact` had a writer and no caller.
+
+The publisher's request did not change. `PublishHubAssetRequest` still takes
+`image_file_path` and the same fields; the publisher quota on image size is
+still checked against the converted WebP, before anything is stored.
+
+A cover therefore resolves the same way a referenced file does —
+`<hub service root>/artifacts/<sha256>`, size-checked and digest-verified — and
+`get_latest_asset_media` no longer opens a release document to serve one.
 
 ### A file is carried or referenced, never both
 
@@ -140,8 +196,12 @@ attribution for credit and contact, not a trust boundary.
 | Reader, bytes | `parse_hub_artifact_bytes` | Hub store and remote pack |
 | Reader, value | `parse_hub_artifact_value` | direct payload, including local node bundle install |
 | Reader, remote publish | `import_remote_asset` | validates an inbound published document |
-| Reader, API | `web/mod.rs:7488` | serves the document |
+| Reader, API | `public_hub_artifact_json` | serves the release document, withholding only `files` |
+| Reader, presentation | `public_hub_presentation_json`, `hub_package_gallery_projection` | serves the mutable half, from the package row and never from a release |
+| Writer, cover | `hub_cover_webp_from_path` then `store_artifact` | converts, checks the publisher quota, stores content-addressed |
+| Reader, cover | `get_latest_asset_media` | package row names the digest; the artifact store supplies the bytes |
 | Durable store | `data_root/<artifact_rel_path>` plus a `HubAssetVersion` row | one file per version, digest recorded as `artifact_sha256` |
+| Durable store, presentation | `HubAssetPackage` row plus `<hub service root>/artifacts/<sha256>` | mutable, one stored file per distinct image |
 
 ## Findings
 
@@ -232,9 +292,9 @@ is left as found and recorded here.
 
 ## Still to review
 
-- publisher identity: what it asserts, and what a static repository asserts
-  having none
-- media and gallery: content inside the envelope, or metadata beside it
+- publisher identity now lives on the package row rather than in the release.
+  What it *asserts*, and what a static repository asserts having none, is still
+  open
 - generalising `ProjectHubRepository`, which is hardwired to `base_url`,
   `remote_owner`, `remote_project`, and `read_token`, into the `list()` and
   `fetch()` interface described in `distribution.md`
@@ -244,8 +304,12 @@ is left as found and recorded here.
 - fetching a referenced artifact over HTTP, which is the one channel still
   refusing: it needs an artifact endpoint, a size-bounded streaming read, and a
   decision about caching bytes two packages share
-- how a publisher puts an artifact into the store. `store_artifact` exists as
-  the writer, but `publish_asset` still carries every file inline, so nothing
-  produces a referenced package yet
+- how a publisher puts a *content* artifact into the store. Covers now go
+  through `store_artifact`, but `publish_asset` still carries every entry in
+  `spec.files` inline, so nothing yet produces a referenced package
+- presentation is not garbage-collected. Deleting a package drops its version
+  rows and release artifacts; a cover it was the only referent of stays in the
+  content-addressed store, because the store is shared and nothing counts
+  references yet
 - implementing retraction: deleting artifact bytes while keeping the coordinates,
   the retracted marker, and a clear install failure

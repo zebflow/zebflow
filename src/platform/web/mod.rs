@@ -7407,7 +7407,7 @@ fn hub_asset_rows(
             .next()
             .map(|item| item.version)
             .unwrap_or_default();
-        let (summary, gallery) = hub_package_gallery_projection(state, &package);
+        let (summary, gallery) = hub_package_gallery_projection(&package);
         rows.push(json!({
             "package_id": package.package_id,
             "publisher_owner": package.publisher_owner,
@@ -7444,7 +7444,7 @@ fn public_hub_asset_item_json(
         .ok()
         .and_then(|items| items.into_iter().next().map(|item| item.version))
         .unwrap_or_default();
-    let (summary, gallery) = hub_package_gallery_projection(state, &package);
+    let (summary, gallery) = hub_package_gallery_projection(&package);
     json!({
         "package_id": package.package_id,
         "publisher_id": package.publisher_id,
@@ -7464,42 +7464,27 @@ fn public_hub_asset_item_json(
     })
 }
 
+/// A listing reads presentation from the mutable package row.
+///
+/// It never opens a release document to do it: presentation lives beside the
+/// releases so that correcting it costs an update rather than a version bump,
+/// and a listing that parsed the immutable artifact would undo that.
 fn hub_package_gallery_projection(
-    state: &PlatformAppState,
     package: &crate::platform::model::HubAssetPackage,
 ) -> (String, Value) {
-    let mut summary = package.description.clone();
-    let mut gallery = Value::Null;
-    let Some(version) = state
-        .platform
-        .hub
-        .list_asset_versions(&package.package_id)
-        .ok()
-        .and_then(|items| items.into_iter().next())
-    else {
-        return (summary, gallery);
+    let trimmed = package.summary.trim();
+    let summary = if trimmed.is_empty() {
+        package.description.clone()
+    } else {
+        trimmed.to_string()
     };
-    if let Ok((_version, artifact)) = state
-        .platform
-        .hub
-        .get_asset_version_artifact(&package.package_id, &version.version)
-    {
-        if let Ok(document) = crate::contracts::decode_contract_value::<
-            crate::contracts::kinds::HubPackageContract,
-        >(artifact)
-        {
-            let spec = document.spec;
-            let trimmed = spec.summary.trim();
-            if !trimmed.is_empty() {
-                summary = trimmed.to_string();
-            }
-            // A package with nothing to show reports no gallery at all, rather
-            // than an empty one the listing would have to special-case.
-            if spec.gallery.cover.is_some() || !spec.gallery.items.is_empty() {
-                gallery = serde_json::to_value(&spec.gallery).unwrap_or(Value::Null);
-            }
-        }
-    }
+    // A package with nothing to show reports no gallery at all, rather than an
+    // empty one the listing would have to special-case.
+    let gallery = if package.gallery.cover.is_some() || !package.gallery.items.is_empty() {
+        serde_json::to_value(&package.gallery).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     (summary, gallery)
 }
 
@@ -7536,30 +7521,39 @@ fn public_hub_version_json(
     })
 }
 
+/// The release document as the public detail route serves it.
+///
+/// Only `files` is withheld: provenance, publisher identity, and presentation
+/// are no longer carried by a release, so there is nothing else left to strip.
 fn public_hub_artifact_json(mut artifact: Value) -> Value {
     if let Some(object) = artifact.get_mut("spec").and_then(Value::as_object_mut) {
-        object.remove("source_owner");
-        object.remove("source_project");
-        object.remove("source_ref");
-        object.remove("publisher_email");
         object.remove("files");
-        if let Some(media) = object.get("media").and_then(Value::as_array) {
-            let public_media = media
-                .iter()
-                .filter_map(|item| {
-                    let item = item.as_object()?;
-                    Some(json!({
-                        "name": item.get("name").cloned().unwrap_or(Value::Null),
-                        "role": item.get("role").cloned().unwrap_or(Value::Null),
-                        "content_type": item.get("content_type").cloned().unwrap_or(Value::Null),
-                        "size_bytes": item.get("size_bytes").cloned().unwrap_or(Value::Null),
-                    }))
-                })
-                .collect::<Vec<_>>();
-            object.insert("media".to_string(), Value::Array(public_media));
-        }
     }
     artifact
+}
+
+/// Presentation for one package, read from the mutable row beside its releases.
+///
+/// Media is named and sized but its bytes are not inlined: they are fetched
+/// from `/media/{name}`, which resolves the digest in the artifact store.
+fn public_hub_presentation_json(package: &crate::platform::model::HubAssetPackage) -> Value {
+    let (summary, gallery) = hub_package_gallery_projection(package);
+    json!({
+        "summary": summary,
+        "description_md": package.description_md,
+        "image_url": package.image_url,
+        "gallery": gallery,
+        "media": package
+            .media
+            .iter()
+            .map(|item| json!({
+                "name": item.name,
+                "role": item.role,
+                "content_type": item.content_type,
+                "size_bytes": item.size_bytes,
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn raw_hub_artifact_response_json(
@@ -17031,6 +17025,7 @@ async fn api_get_remote_hub_asset(
         Ok((version_row, artifact)) => Json(json!({
             "ok": true,
             "version": public_hub_version_json(&package, &version_row),
+            "presentation": public_hub_presentation_json(&package),
             "artifact": public_hub_artifact_json(artifact),
         }))
         .into_response(),
@@ -17183,6 +17178,7 @@ async fn api_get_public_hub_asset(
         Ok((version_row, artifact)) => Json(json!({
             "ok": true,
             "version": public_hub_version_json(&package, &version_row),
+            "presentation": public_hub_presentation_json(&package),
             "artifact": public_hub_artifact_json(artifact),
         }))
         .into_response(),

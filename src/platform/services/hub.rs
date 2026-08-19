@@ -15,19 +15,19 @@ use sha2::{Digest, Sha256};
 
 use crate::contracts::kinds::{
     DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageArtifactRef, HubPackageContract,
-    HubPackageFile, HubPackageFileSupply, HubPackageGallery, HubPackageInitialDataStep,
-    HubPackageInitialization, HubPackageMedia, HubPackageSpec, MAX_HUB_PACKAGE_BYTES,
-    MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, ProjectConfigurationContract, decode_hub_package,
-    decode_pipeline_graph, encode_hub_package,
+    HubPackageFile, HubPackageFileSupply, HubPackageInitialDataStep, HubPackageInitialization,
+    HubPackageSpec, MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES,
+    ProjectConfigurationContract, decode_hub_package, decode_pipeline_graph, encode_hub_package,
 };
 use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
-    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetPackage, HubAssetVersion,
-    HubAuthority, HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance,
-    ProjectFileLayout, ProjectHubRepository, ProjectRuntimeSelectionRequest, now_ts, slug_segment,
+    CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery, HubAssetMedia,
+    HubAssetPackage, HubAssetVersion, HubAuthority, HubPublisher, HubToken, PlatformHubRepository,
+    PlatformServiceInstance, ProjectFileLayout, ProjectHubRepository,
+    ProjectRuntimeSelectionRequest, now_ts, slug_segment,
 };
 use crate::platform::policy::package::{
     PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview, review_package_entries,
@@ -58,6 +58,9 @@ const MAX_REMOTE_HUB_ARTIFACT_BYTES: u64 = MAX_HUB_PACKAGE_BYTES as u64;
 const DEFAULT_PUBLISHER_MAX_PACKAGES: i64 = 20;
 const DEFAULT_PUBLISHER_MAX_PACKAGE_BYTES: i64 = 10 * 1024 * 1024;
 const DEFAULT_PUBLISHER_MAX_MEDIA_FILES: i64 = 8;
+/// The one name a locally published cover is served as.
+const HUB_COVER_MEDIA_NAME: &str = "cover.webp";
+const HUB_COVER_MEDIA_TYPE: &str = "image/webp";
 const DEFAULT_PUBLISHER_MAX_IMAGE_BYTES: i64 = 2 * 1024 * 1024;
 const HUB_ASSET_KIND_PIPELINE_BUNDLE: &str = "pipeline_bundle";
 const HUB_ASSET_KIND_TEMPLATE_BUNDLE: &str = "template_bundle";
@@ -430,6 +433,12 @@ struct RemoteHubAssetVersion {
     artifact_sha256: String,
 }
 
+/// One outward publish: an immutable release document plus the mutable
+/// presentation that is stored beside it.
+///
+/// Presentation rides on the request rather than inside `artifact`, because
+/// `artifact` is the release: it is digest-pinned and a listing detail must not
+/// be able to change it.
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 pub struct RemoteHubPublishRequest {
     pub package_id: String,
@@ -438,15 +447,45 @@ pub struct RemoteHubPublishRequest {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// Listing summary. Presentation, stored beside the release.
+    #[serde(default)]
+    pub summary: String,
+    /// Long-form markdown. Presentation, stored beside the release.
+    #[serde(default)]
+    pub description_md: String,
+    /// Presentation images, stored as content-addressed artifacts.
+    #[serde(default)]
+    pub media: Vec<RemoteHubPublishMedia>,
+    /// Cover and gallery entries referencing `media` by name.
+    #[serde(default)]
+    pub gallery: HubAssetGallery,
     #[serde(default)]
     pub visibility: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Provenance, kept by the receiving instance and never re-published.
     pub source_owner: String,
     pub source_project: String,
     pub source_kind: String,
     pub source_ref: String,
     pub artifact: Value,
+}
+
+/// One inbound presentation image, carried base64 on the publish request.
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+pub struct RemoteHubPublishMedia {
+    pub name: String,
+    #[serde(default)]
+    pub role: String,
+    pub content_type: String,
+    #[serde(default)]
+    pub encoding: String,
+    #[serde(default)]
+    pub size_bytes: usize,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub content: String,
 }
 
 impl HubService {
@@ -1505,13 +1544,28 @@ impl HubService {
             project_options,
         )?;
         sanitize_hub_export_entries(&mut preview.entries)?;
-        let media = collect_publish_media_from_files(
+        // A cover is presentation, so it never enters the release document: the
+        // bytes go into the content-addressed artifact store and the package
+        // row records the digest.
+        let cover = match hub_cover_webp_from_path(
             &self
                 .projects
                 .project_layout(&source_owner, &source_project)?,
             image_file_path,
             &publisher,
-        )?;
+        )? {
+            Some((name, bytes)) => {
+                let artifact_sha256 = self.store_artifact(&bytes)?;
+                Some(HubAssetMedia {
+                    name,
+                    role: "cover".to_string(),
+                    content_type: HUB_COVER_MEDIA_TYPE.to_string(),
+                    size_bytes: bytes.len(),
+                    artifact_sha256,
+                })
+            }
+            None => None,
+        };
         let active_pipelines = if preview.asset_kind == HUB_ASSET_KIND_PROJECT_BUNDLE {
             self.projects
                 .list_active_pipeline_meta(&source_owner, &source_project)?
@@ -1521,11 +1575,22 @@ impl HubService {
         } else {
             Vec::new()
         };
-        let image_url = media
-            .iter()
-            .find(|item| item.role == "cover")
+        let image_url = cover
+            .as_ref()
             .map(|item| format!("/api/hub/remote/assets/{package_id}/media/{}", item.name))
             .unwrap_or_default();
+        let gallery = cover
+            .as_ref()
+            .map(|item| HubAssetGallery {
+                cover: Some(crate::platform::model::HubAssetGalleryImage {
+                    kind: "image".to_string(),
+                    media_name: item.name.clone(),
+                    alt: String::new(),
+                }),
+                items: Vec::new(),
+            })
+            .unwrap_or_default();
+        let media = cover.into_iter().collect::<Vec<_>>();
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
             DEFAULT_HUB_SERVICE_INSTANCE_ID, package_id, version
@@ -1535,28 +1600,25 @@ impl HubService {
             fs::create_dir_all(parent)?;
         }
         let now = now_ts();
+        let resolved_publisher_display_name = if publisher_display_name.trim().is_empty() {
+            publisher.display_name.clone()
+        } else {
+            publisher_display_name.trim().to_string()
+        };
+        let resolved_publisher_url = if publisher_url.trim().is_empty() {
+            publisher.publisher_url.clone()
+        } else {
+            normalize_publisher_url(&publisher_id, publisher_url)
+        };
+        let resolved_publisher_email = if publisher_email.trim().is_empty() {
+            publisher.email.clone()
+        } else {
+            publisher_email.trim().to_string()
+        };
+        // The release carries what installing it requires, plus the title and
+        // one-line description that keep it self-describing offline.
         let manifest = HubPackageSpec {
             asset_kind: preview.asset_kind.clone(),
-            source_type: source_type.clone(),
-            source_owner: source_owner.clone(),
-            source_project: source_project.clone(),
-            source_ref: source_ref.to_string(),
-            publisher_id: publisher_id.clone(),
-            publisher_display_name: if publisher_display_name.trim().is_empty() {
-                publisher.display_name.clone()
-            } else {
-                publisher_display_name.trim().to_string()
-            },
-            publisher_url: if publisher_url.trim().is_empty() {
-                publisher.publisher_url.clone()
-            } else {
-                normalize_publisher_url(&publisher_id, publisher_url)
-            },
-            publisher_email: if publisher_email.trim().is_empty() {
-                publisher.email.clone()
-            } else {
-                publisher_email.trim().to_string()
-            },
             title: if title.trim().is_empty() {
                 preview.name.clone()
             } else {
@@ -1567,11 +1629,6 @@ impl HubService {
             } else {
                 description.trim().to_string()
             },
-            summary: String::new(),
-            description_md: String::new(),
-            image_url: image_url.clone(),
-            gallery: HubPackageGallery::default(),
-            media,
             active_pipelines,
             project_initialization,
             files: preview.entries.clone(),
@@ -1599,13 +1656,17 @@ impl HubService {
             authority_project: authority_project.clone(),
             publisher_owner: publisher_owner.clone(),
             publisher_id: publisher_id.clone(),
-            publisher_display_name: manifest.publisher_display_name.clone(),
-            publisher_url: manifest.publisher_url.clone(),
-            publisher_email: manifest.publisher_email.clone(),
+            publisher_display_name: resolved_publisher_display_name,
+            publisher_url: resolved_publisher_url,
+            publisher_email: resolved_publisher_email,
             asset_kind: preview.asset_kind.clone(),
             title: manifest.title.clone(),
             description: manifest.description.clone(),
+            summary: String::new(),
+            description_md: String::new(),
             image_url,
+            media,
+            gallery,
             visibility: normalize_visibility(visibility),
             tags,
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
@@ -1682,7 +1743,7 @@ impl HubService {
             project_options,
         )?;
         sanitize_hub_export_entries(&mut preview.entries)?;
-        let media = collect_publish_media_from_files(
+        let media = hub_cover_media_review(
             &self
                 .projects
                 .project_layout(&source_owner, &source_project)?,
@@ -2435,7 +2496,7 @@ impl HubService {
         &self,
         package_id: &str,
         media_name: &str,
-    ) -> Result<(HubAssetPackage, HubPackageMedia, Vec<u8>), PlatformError> {
+    ) -> Result<(HubAssetPackage, HubAssetMedia, Vec<u8>), PlatformError> {
         self.require_enabled()?;
         let Some(package) = self.hub_data.get_hub_asset_package(package_id)? else {
             return Err(PlatformError::new(
@@ -2443,37 +2504,25 @@ impl HubService {
                 "asset package not found",
             ));
         };
-        let Some(version) = self
-            .hub_data
-            .list_hub_asset_versions(package_id)?
-            .into_iter()
-            .next()
-        else {
-            return Err(PlatformError::new(
-                "HUB_ASSET_MISSING",
-                "asset version not found",
-            ));
-        };
-        let artifact_abs = self.hub_artifact_path(&version.artifact_rel_path)?;
-        let raw = fs::read(&artifact_abs)?;
-        verify_hub_artifact_bytes(&raw, &version.artifact_sha256)?;
-        let artifact = parse_hub_artifact_bytes(&raw, "HUB_INSTALL")?;
-        let Some(media) = artifact
+        // Presentation lives beside the releases, so a cover resolves from the
+        // package row and the artifact store without opening any release
+        // document — and stays reachable when a typo is corrected.
+        let Some(media) = package
             .media
-            .into_iter()
+            .iter()
             .find(|item| item.name == media_name)
+            .cloned()
         else {
             return Err(PlatformError::new("HUB_MEDIA_MISSING", "media not found"));
         };
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&media.content)
-            .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
-        if sha256_hex(&bytes) != media.sha256 {
-            return Err(PlatformError::new(
-                "HUB_MEDIA_INVALID",
-                "media hash mismatch",
-            ));
-        }
+        let bytes = self.artifact_store().resolve(
+            &media.name,
+            &HubPackageArtifactRef {
+                sha256: media.artifact_sha256.clone(),
+                media_type: media.content_type.clone(),
+            },
+            media.size_bytes,
+        )?;
         Ok((package, media, bytes))
     }
 
@@ -2541,26 +2590,31 @@ impl HubService {
                 "artifact must contain at least one file",
             ));
         }
-        validate_hub_media(&artifact.media, &publisher)?;
-        validate_hub_gallery(&artifact.gallery, &artifact.media)?;
-        artifact.image_url = artifact
-            .gallery
-            .cover
-            .as_ref()
-            .map(|item| {
-                format!(
-                    "/api/hub/remote/assets/{package_id}/media/{}",
-                    item.media_name
-                )
-            })
-            .or_else(|| {
-                artifact
-                    .media
-                    .iter()
-                    .find(|item| item.role == "cover")
-                    .map(|item| format!("/api/hub/remote/assets/{package_id}/media/{}", item.name))
-            })
-            .unwrap_or_default();
+        // Presentation arrives beside the release, not inside it. Its images
+        // are validated, then stored content-addressed so only a digest is
+        // recorded against the package.
+        let decoded_media = decode_remote_hub_media(&req.media, &publisher)?;
+        let media = decoded_media
+            .iter()
+            .map(|(item, _)| item.clone())
+            .collect::<Vec<_>>();
+        validate_hub_gallery(&req.gallery, &media)?;
+        let image_url =
+            req.gallery
+                .cover
+                .as_ref()
+                .map(|item| {
+                    format!(
+                        "/api/hub/remote/assets/{package_id}/media/{}",
+                        item.media_name
+                    )
+                })
+                .or_else(|| {
+                    media.iter().find(|item| item.role == "cover").map(|item| {
+                        format!("/api/hub/remote/assets/{package_id}/media/{}", item.name)
+                    })
+                })
+                .unwrap_or_default();
         sanitize_hub_export_entries(&mut artifact.files)?;
         let artifact_rel = format!(
             "services/{}/packages/{}/versions/{}/artifact.json",
@@ -2584,6 +2638,15 @@ impl HubService {
             artifact_bytes.len(),
         )?;
         atomic_write(&artifact_abs, &artifact_bytes)?;
+        for (item, bytes) in &decoded_media {
+            let stored = self.store_artifact(bytes)?;
+            if stored != item.artifact_sha256 {
+                return Err(PlatformError::new(
+                    "HUB_MEDIA_INVALID",
+                    "stored media digest does not match the declared hash",
+                ));
+            }
+        }
         let package = HubAssetPackage {
             package_pk: existing_package
                 .as_ref()
@@ -2611,7 +2674,11 @@ impl HubService {
             } else {
                 req.description.trim().to_string()
             },
-            image_url: artifact.image_url.clone(),
+            summary: req.summary.trim().to_string(),
+            description_md: req.description_md.clone(),
+            image_url,
+            media,
+            gallery: req.gallery.clone(),
             visibility: normalize_visibility(&req.visibility),
             tags: req.tags.clone(),
             created_at: existing_package.map(|item| item.created_at).unwrap_or(now),
@@ -3606,14 +3673,19 @@ fn rewrite_project_libraries(
     Ok(())
 }
 
-fn collect_publish_media_from_files(
+/// Reads the publisher's chosen image and normalises it to a WebP cover.
+///
+/// Nothing is stored: this is the half both the publish path and its dry-run
+/// review share, so a review costs the same conversion and the same quota check
+/// without writing anything.
+fn hub_cover_webp_from_path(
     layout: &ProjectFileLayout,
     image_file_path: &str,
     publisher: &HubPublisher,
-) -> Result<Vec<HubPackageMedia>, PlatformError> {
+) -> Result<Option<(String, Vec<u8>)>, PlatformError> {
     let image_file_path = image_file_path.trim();
     if image_file_path.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let rel = normalize_object_path(image_file_path)
         .map_err(|err| PlatformError::new("HUB_MEDIA_INVALID", err.to_string()))?;
@@ -3631,23 +3703,34 @@ fn collect_publish_media_from_files(
             "webp cover image exceeds publisher max image bytes",
         ));
     }
-    let media_name = "cover.webp".to_string();
-    let sha256 = sha256_hex(&webp_bytes);
-    Ok(vec![HubPackageMedia {
-        name: media_name,
+    Ok(Some((HUB_COVER_MEDIA_NAME.to_string(), webp_bytes)))
+}
+
+/// A review of what the cover would be, without storing it.
+fn hub_cover_media_review(
+    layout: &ProjectFileLayout,
+    image_file_path: &str,
+    publisher: &HubPublisher,
+) -> Result<Vec<HubPublishMediaReview>, PlatformError> {
+    let Some((name, bytes)) = hub_cover_webp_from_path(layout, image_file_path, publisher)? else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![HubPublishMediaReview {
+        name,
         role: "cover".to_string(),
-        content_type: "image/webp".to_string(),
-        size_bytes: webp_bytes.len(),
-        sha256,
-        encoding: "base64".to_string(),
-        content: base64::engine::general_purpose::STANDARD.encode(webp_bytes),
+        content_type: HUB_COVER_MEDIA_TYPE.to_string(),
+        size_bytes: bytes.len(),
     }])
 }
 
-fn validate_hub_media(
-    media: &[HubPackageMedia],
+/// Validates inbound presentation images and decodes them for storing.
+///
+/// The bytes are returned rather than kept: the caller puts them in the
+/// content-addressed artifact store and records only the digest.
+fn decode_remote_hub_media(
+    media: &[RemoteHubPublishMedia],
     publisher: &HubPublisher,
-) -> Result<(), PlatformError> {
+) -> Result<Vec<(HubAssetMedia, Vec<u8>)>, PlatformError> {
     let max_media_files =
         normalize_limit(publisher.max_media_files, DEFAULT_PUBLISHER_MAX_MEDIA_FILES) as usize;
     if media.len() > max_media_files {
@@ -3658,6 +3741,7 @@ fn validate_hub_media(
     }
     let max_image_bytes =
         normalize_limit(publisher.max_image_bytes, DEFAULT_PUBLISHER_MAX_IMAGE_BYTES) as usize;
+    let mut out = Vec::with_capacity(media.len());
     for item in media {
         let normalized_name = normalize_media_name(&item.name)?;
         if normalized_name != item.name {
@@ -3688,13 +3772,29 @@ fn validate_hub_media(
                 "media size or hash does not match content",
             ));
         }
+        if bytes.len() > max_image_bytes {
+            return Err(PlatformError::new(
+                "HUB_PUBLISHER_QUOTA_EXCEEDED",
+                "image exceeds publisher max image bytes",
+            ));
+        }
+        out.push((
+            HubAssetMedia {
+                name: item.name.clone(),
+                role: item.role.clone(),
+                content_type: item.content_type.clone(),
+                size_bytes: bytes.len(),
+                artifact_sha256: sha256_hex(&bytes),
+            },
+            bytes,
+        ));
     }
-    Ok(())
+    Ok(out)
 }
 
 fn validate_hub_gallery(
-    gallery: &HubPackageGallery,
-    media: &[HubPackageMedia],
+    gallery: &HubAssetGallery,
+    media: &[HubAssetMedia],
 ) -> Result<(), PlatformError> {
     let media_names = media
         .iter()
@@ -3732,7 +3832,7 @@ fn review_publish_artifact(
     description: String,
     visibility: String,
     tags: Vec<String>,
-    media: Vec<HubPackageMedia>,
+    media: Vec<HubPublishMediaReview>,
     project_initialization: HubPackageInitialization,
 ) -> Result<HubPublishReview, PlatformError> {
     let policy_entries = preview
@@ -3767,15 +3867,7 @@ fn review_publish_artifact(
         total_files: preview.total_files,
         total_bytes: preview.total_bytes,
         files: preview.entries.clone(),
-        media: media
-            .iter()
-            .map(|item| HubPublishMediaReview {
-                name: item.name.clone(),
-                role: item.role.clone(),
-                content_type: item.content_type.clone(),
-                size_bytes: item.size_bytes,
-            })
-            .collect(),
+        media,
         nodes_used: policy.nodes_used,
         credentials_required: policy.credentials_required,
         external_urls: policy.external_urls,
@@ -6377,6 +6469,185 @@ mod tests {
         )
     }
 
+    /// Publishes with a cover image supplied the way the publish API supplies
+    /// one: a path into the project's own file store.
+    fn publish_calc_tools_with_cover(
+        platform: &crate::platform::services::PlatformService,
+        version: &str,
+        image_file_path: &str,
+    ) -> Result<(HubAssetPackage, HubAssetVersion), PlatformError> {
+        platform.hub.publish_asset(
+            "superadmin",
+            "default",
+            "superadmin",
+            "calc-studio",
+            "",
+            "",
+            "",
+            "superadmin",
+            "default",
+            "pipeline_with_dependencies",
+            "pipelines/calc.zf.json",
+            "calc-tools",
+            version,
+            "Calculator Tools",
+            "Reusable calculator pipeline.",
+            image_file_path,
+            "public",
+            Default::default(),
+            vec!["math".to_string()],
+        )
+    }
+
+    /// Writes a PNG into the project's file store and returns its path.
+    fn write_cover_source(root: &tempfile::TempDir, width: u32, height: u32) -> String {
+        let dir = root
+            .path()
+            .join("users")
+            .join("superadmin")
+            .join("default")
+            .join("files")
+            .join("images");
+        std::fs::create_dir_all(&dir).expect("image dir");
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(image::ImageBuffer::from_fn(width, height, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, 160, 255])
+        }))
+        .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+        .expect("png");
+        std::fs::write(dir.join("cover.png"), png).expect("write cover");
+        "images/cover.png".to_string()
+    }
+
+    /// A cover is presentation, so it is stored beside the release rather than
+    /// inside it: the release document names no image at all, and the bytes are
+    /// reached through the content-addressed artifact store.
+    #[test]
+    fn a_cover_is_stored_as_an_artifact_and_never_enters_the_release() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        let image_file_path = write_cover_source(&root, 64, 36);
+
+        let (package, version) =
+            publish_calc_tools_with_cover(&platform, "1.0.0", &image_file_path)
+                .expect("publish with a cover");
+
+        // The release document: no presentation of any kind.
+        let release = std::fs::read(root.path().join(&version.artifact_rel_path))
+            .expect("release document bytes");
+        let spec = decode_hub_package(&release).expect("release decodes").spec;
+        let spec_value = serde_json::to_value(&spec).expect("spec value");
+        let spec_object = spec_value.as_object().expect("spec object");
+        for field in ["media", "gallery", "image_url", "description_md", "summary"] {
+            assert!(
+                !spec_object.contains_key(field),
+                "spec.{field} must not be in the release"
+            );
+        }
+        assert!(
+            !String::from_utf8_lossy(&release).contains("RIFF"),
+            "no WebP bytes reached the document an installer parses"
+        );
+
+        // The mutable side names the bytes by digest.
+        let cover = package.media.first().expect("a cover is recorded");
+        assert_eq!(cover.name, "cover.webp");
+        assert_eq!(cover.role, "cover");
+        assert_eq!(cover.content_type, "image/webp");
+        assert_eq!(cover.artifact_sha256.len(), 64);
+        assert_eq!(
+            package.image_url,
+            "/api/hub/remote/assets/calc-studio.calc-tools/media/cover.webp"
+        );
+        assert_eq!(
+            package
+                .gallery
+                .cover
+                .as_ref()
+                .map(|item| item.media_name.as_str()),
+            Some("cover.webp")
+        );
+
+        // Those bytes are in the shared artifact store, under their digest.
+        let stored = root
+            .path()
+            .join("services")
+            .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+            .join("artifacts")
+            .join(&cover.artifact_sha256);
+        assert!(stored.is_file(), "the cover is stored content-addressed");
+        let stored_bytes = std::fs::read(&stored).expect("stored cover bytes");
+        assert_eq!(sha256_hex(&stored_bytes), cover.artifact_sha256);
+        assert_eq!(stored_bytes.len(), cover.size_bytes);
+
+        // Serving the cover resolves it from the store, not from a release.
+        let (served_package, served_media, served_bytes) = platform
+            .hub
+            .get_latest_asset_media("calc-studio.calc-tools", "cover.webp")
+            .expect("cover resolves");
+        assert_eq!(served_package.package_id, "calc-studio.calc-tools");
+        assert_eq!(served_media.artifact_sha256, cover.artifact_sha256);
+        assert_eq!(served_bytes, stored_bytes);
+
+        // A second release of the same package does not re-store the cover: the
+        // store is content-addressed, so one image costs one file.
+        publish_calc_tools_with_cover(&platform, "1.0.1", &image_file_path)
+            .expect("second version publishes");
+        let artifact_files = std::fs::read_dir(
+            root.path()
+                .join("services")
+                .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+                .join("artifacts"),
+        )
+        .expect("artifact dir")
+        .count();
+        assert_eq!(artifact_files, 1, "identical bytes are stored once");
+    }
+
+    /// The quota is checked against the converted WebP, before anything is
+    /// stored, so an oversized cover cannot leave a file behind.
+    #[test]
+    fn an_oversized_cover_is_refused_before_it_is_stored() {
+        let (root, platform) = hub_publish_fixture("Calculator One");
+        platform
+            .hub
+            .upsert_publisher(
+                "superadmin",
+                "default",
+                "calc-studio",
+                "Calc Studio",
+                "https://publishers.example/calc-studio",
+                "publishers@example.com",
+                "",
+                "",
+                "",
+                true,
+                true,
+                true,
+                true,
+                20,
+                10 * 1024 * 1024,
+                8,
+                // One byte of headroom: any real cover exceeds it.
+                1,
+            )
+            .expect("publisher with a tiny image quota");
+        let image_file_path = write_cover_source(&root, 512, 288);
+
+        let error = publish_calc_tools_with_cover(&platform, "1.0.0", &image_file_path)
+            .expect_err("the cover is refused");
+
+        assert_eq!(error.code, "HUB_PUBLISHER_QUOTA_EXCEEDED");
+        assert!(
+            !root
+                .path()
+                .join("services")
+                .join(DEFAULT_HUB_SERVICE_INSTANCE_ID)
+                .join("artifacts")
+                .exists(),
+            "nothing is stored for a refused cover"
+        );
+    }
+
     #[test]
     fn publishing_a_new_package_version_records_the_release_and_its_artifact() {
         let (root, platform) = hub_publish_fixture("Calculator One");
@@ -6489,6 +6760,10 @@ mod tests {
                     version: "1.0.0".to_string(),
                     title: "Remote overwrite".to_string(),
                     description: "Should never land.".to_string(),
+                    summary: String::new(),
+                    description_md: String::new(),
+                    media: Vec::new(),
+                    gallery: HubAssetGallery::default(),
                     visibility: "public".to_string(),
                     tags: Vec::new(),
                     source_owner: "superadmin".to_string(),

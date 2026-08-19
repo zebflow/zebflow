@@ -517,66 +517,62 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                         "version": "1.0.0",
                         "title": "Remote Calculator Tools",
                         "description": "Published through the platform Hub API.",
+                        // Presentation rides beside the release, never inside it.
+                        "summary": "Quick calculator pack.",
+                        "description_md": "## Remote Calculator Tools\nReusable calculator workflow.",
+                        "media": [{
+                            "name": "cover.png",
+                            "role": "cover",
+                            "content_type": "image/png",
+                            "size_bytes": 3,
+                            "sha256": "b29814cf5792e684cd75d6a7fce7a67a11887e312f87ca2ac2496d81f365ff72",
+                            "encoding": "base64",
+                            "content": "aW1n"
+                        }],
+                        "gallery": {
+                            "cover": {
+                                "kind": "image",
+                                "media_name": "cover.png",
+                                "alt": "Calculator cover"
+                            },
+                            "items": [
+                                {
+                                    "kind": "image",
+                                    "media_name": "cover.png",
+                                    "alt": "Calculator screenshot"
+                                },
+                                {
+                                    "kind": "youtube",
+                                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                                    "title": "Demo video"
+                                }
+                            ]
+                        },
                         "visibility": "public",
                         "tags": ["math", "remote"],
                         "source_owner": "external",
                         "source_project": "remote",
                         "source_kind": "pipeline",
                         "source_ref": "pipelines/remote-calc.zf.json",
-	                        "artifact": {
-                                "apiVersion": "zebflow.com/v1",
-                                "kind": "HubPackage",
-                                "metadata": {
-                                    "name": "calc-studio.calc-tools-remote",
-                                    "version": "1.0.0"
-                                },
-                                "spec": {
-	                            "asset_kind": "pipeline_bundle",
-	                            "source_type": "pipeline",
-	                            "source_owner": "external",
-	                            "source_project": "remote",
-	                            "source_ref": "pipelines/remote-calc.zf.json",
-	                            "publisher_id": "calc-studio",
-	                            "title": "Remote Calculator Tools",
-	                            "description": "Published through the platform Hub API.",
-	                            "summary": "Quick calculator pack.",
-	                            "description_md": "## Remote Calculator Tools\nReusable calculator workflow.",
-	                            "media": [{
-	                                "name": "cover.png",
-	                                "role": "cover",
-	                                "content_type": "image/png",
-	                                "size_bytes": 3,
-	                                "sha256": "b29814cf5792e684cd75d6a7fce7a67a11887e312f87ca2ac2496d81f365ff72",
-	                                "encoding": "base64",
-	                                "content": "aW1n"
-	                            }],
-	                            "gallery": {
-	                                "cover": {
-	                                    "kind": "image",
-	                                    "media_name": "cover.png",
-	                                    "alt": "Calculator cover"
-	                                },
-	                                "items": [
-	                                    {
-	                                        "kind": "image",
-	                                        "media_name": "cover.png",
-	                                        "alt": "Calculator screenshot"
-	                                    },
-	                                    {
-	                                        "kind": "youtube",
-	                                        "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-	                                        "title": "Demo video"
-	                                    }
-	                                ]
-	                            },
-	                            "files": [{
-	                                "rel_path": "pipelines/remote-calc.zf.json",
-                                "kind": "pipeline",
-                                "size_bytes": 2,
-                                "reason": "primary",
-                                "encoding": "text",
-                                "content": "{}"
-                            }]
+                        "artifact": {
+                            "apiVersion": "zebflow.com/v1",
+                            "kind": "HubPackage",
+                            "metadata": {
+                                "name": "calc-studio.calc-tools-remote",
+                                "version": "1.0.0"
+                            },
+                            "spec": {
+                                "asset_kind": "pipeline_bundle",
+                                "title": "Remote Calculator Tools",
+                                "description": "Published through the platform Hub API.",
+                                "files": [{
+                                    "rel_path": "pipelines/remote-calc.zf.json",
+                                    "kind": "pipeline",
+                                    "size_bytes": 2,
+                                    "reason": "primary",
+                                    "encoding": "text",
+                                    "content": "{}"
+                                }]
                             }
                         }
                     })
@@ -627,11 +623,6 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                             },
                             "spec": {
                             "asset_kind": "made_up_kind",
-                            "source_type": "pipeline",
-                            "source_owner": "external",
-                            "source_project": "remote",
-                            "source_ref": "pipelines/bad.zf.json",
-                            "publisher_id": "calc-studio",
                             "title": "Bad Kind",
                             "description": "Invalid hub asset kind.",
                             "files": [{
@@ -671,6 +662,13 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                         "version": "1.0.0",
                         "title": "Bad Gallery",
                         "visibility": "public",
+                        "gallery": {
+                            "items": [{
+                                "kind": "youtube",
+                                "url": "https://example.com/video",
+                                "title": "Not YouTube"
+                            }]
+                        },
                         "source_owner": "external",
                         "source_project": "remote",
                         "source_kind": "pipeline",
@@ -684,20 +682,8 @@ async fn public_hub_requires_service_and_hides_project_internals() {
                             },
                             "spec": {
                             "asset_kind": "pipeline_bundle",
-                            "source_type": "pipeline",
-                            "source_owner": "external",
-                            "source_project": "remote",
-                            "source_ref": "pipelines/bad-gallery.zf.json",
-                            "publisher_id": "calc-studio",
                             "title": "Bad Gallery",
                             "description": "Invalid gallery.",
-                            "gallery": {
-                                "items": [{
-                                    "kind": "youtube",
-                                    "url": "https://example.com/video",
-                                    "title": "Not YouTube"
-                                }]
-                            },
                             "files": [{
                                 "rel_path": "pipelines/bad-gallery.zf.json",
                                 "kind": "pipeline",
@@ -792,21 +778,54 @@ async fn public_hub_requires_service_and_hides_project_internals() {
         json!("zebflow.com/v1")
     );
     assert_eq!(remote_detail["artifact"]["kind"], json!("HubPackage"));
+    // The release carries only what installing it needs. Everything a human
+    // reads while choosing comes from the mutable row beside it.
+    for field in [
+        "description_md",
+        "summary",
+        "image_url",
+        "gallery",
+        "media",
+        "publisher_id",
+        "publisher_display_name",
+        "publisher_url",
+        "publisher_email",
+        "source_type",
+        "source_owner",
+        "source_project",
+        "source_ref",
+    ] {
+        assert!(
+            remote_detail["artifact"]["spec"].get(field).is_none(),
+            "spec.{field} must not be carried by the release"
+        );
+    }
     assert_eq!(
-        remote_detail["artifact"]["spec"]["description_md"],
+        remote_detail["presentation"]["description_md"],
         json!("## Remote Calculator Tools\nReusable calculator workflow.")
     );
     assert_eq!(
-        remote_detail["artifact"]["spec"]["gallery"]["items"][1]["kind"],
+        remote_detail["presentation"]["summary"],
+        json!("Quick calculator pack.")
+    );
+    assert_eq!(
+        remote_detail["presentation"]["gallery"]["items"][1]["kind"],
         json!("youtube")
     );
     assert_eq!(
-        remote_detail["artifact"]["spec"]["media"][0]["name"],
+        remote_detail["presentation"]["media"][0]["name"],
         json!("cover.png")
     );
+    // A cover is served from the artifact store, so its bytes never appear in
+    // any document a client parses to find files.
     assert!(
-        remote_detail["artifact"]["spec"]["media"][0]
+        remote_detail["presentation"]["media"][0]
             .get("content")
+            .is_none()
+    );
+    assert!(
+        remote_detail["presentation"]["media"][0]
+            .get("artifact_sha256")
             .is_none()
     );
 

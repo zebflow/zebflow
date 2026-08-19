@@ -577,7 +577,68 @@ pub struct HubPublisher {
     pub updated_at: i64,
 }
 
+/// One presentation image kept beside a hub package, as an artifact digest.
+///
+/// The bytes live in this instance's content-addressed Hub artifact store, not
+/// inside any release document: a cover is something a human looks at while
+/// choosing, and the release is the thing an installer parses to reach files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubAssetMedia {
+    /// Plain file name this image is served as, unique within the package.
+    pub name: String,
+    /// Role this image plays, for example `cover`.
+    pub role: String,
+    /// Media type of the stored bytes.
+    pub content_type: String,
+    /// Size of the stored bytes.
+    pub size_bytes: usize,
+    /// Lowercase hex SHA-256 naming the bytes in the Hub artifact store.
+    pub artifact_sha256: String,
+}
+
+/// Presentation for a package listing, mutable beside its releases.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubAssetGallery {
+    /// The one image shown for a package before it is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<HubAssetGalleryImage>,
+    #[serde(default)]
+    pub items: Vec<HubAssetGalleryItem>,
+}
+
+/// The cover image a listing shows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubAssetGalleryImage {
+    pub kind: String,
+    /// A name in the package's `media`.
+    pub media_name: String,
+    #[serde(default)]
+    pub alt: String,
+}
+
+/// One gallery entry: a stored image or an external video.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HubAssetGalleryItem {
+    pub kind: String,
+    /// Image form: a name in the package's `media`.
+    #[serde(default)]
+    pub media_name: String,
+    #[serde(default)]
+    pub alt: String,
+    /// Video form: the external URL.
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+}
+
 /// One published hub asset package stored by the hub service.
+///
+/// This is the **mutable** side of a published package. A release
+/// (`HubAssetVersion` plus its `HubPackage` document) is immutable and carries
+/// only what installing it requires; everything a human reads while choosing —
+/// summary, long-form description, gallery, cover — lives here, so correcting
+/// a typo costs an update rather than a version bump.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HubAssetPackage {
     /// Stable package row id.
@@ -611,9 +672,21 @@ pub struct HubAssetPackage {
     pub title: String,
     /// Optional human-readable description.
     pub description: String,
+    /// One-line listing summary. Falls back to `description` when empty.
+    #[serde(default)]
+    pub summary: String,
+    /// Long-form markdown shown on the package page.
+    #[serde(default)]
+    pub description_md: String,
     /// Public package image URL resolved from Hub artifact media.
     #[serde(default)]
     pub image_url: String,
+    /// Presentation images, each addressed by its digest in the artifact store.
+    #[serde(default)]
+    pub media: Vec<HubAssetMedia>,
+    /// Cover and gallery entries referencing `media` by name.
+    #[serde(default)]
+    pub gallery: HubAssetGallery,
     /// Visibility (`public`, `private`, `unlisted`).
     pub visibility: String,
     /// Search tags.
@@ -643,12 +716,16 @@ pub struct HubAssetVersion {
     /// Stable public publisher identity.
     pub publisher_id: String,
     /// Source owner from which the asset was exported.
+    ///
+    /// Provenance is the publishing instance's own record of where a release
+    /// came from. It describes that instance's internal project structure, so
+    /// it stays in this row and never travels inside a published document.
     pub source_owner: String,
-    /// Source project from which the asset was exported.
+    /// Source project from which the asset was exported. Local, never published.
     pub source_project: String,
-    /// Source kind (`pipeline` for v1).
+    /// Source kind (`pipeline` for v1). Local, never published.
     pub source_kind: String,
-    /// Source ref such as `pipelines/foo.zf.json`.
+    /// Source ref such as `pipelines/foo.zf.json`. Local, never published.
     pub source_ref: String,
     /// Artifact relative path under platform storage.
     pub artifact_rel_path: String,

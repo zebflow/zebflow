@@ -31,12 +31,6 @@ pub const MAX_HUB_PACKAGE_CARRIED_FILE_BYTES: usize = 18 * 1024 * 1024;
 /// and stage for a single entry.
 pub const MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES: usize = 512 * 1024 * 1024;
 
-/// Maximum media files carried by one package.
-pub const MAX_HUB_PACKAGE_MEDIA: usize = 32;
-
-/// Maximum gallery items declared by one package.
-pub const MAX_HUB_PACKAGE_GALLERY_ITEMS: usize = 32;
-
 /// Maximum active pipeline paths recorded by one package.
 pub const MAX_HUB_PACKAGE_ACTIVE_PIPELINES: usize = 1024;
 
@@ -49,7 +43,7 @@ pub const MAX_HUB_PACKAGE_INITIAL_DATA_STEPS: usize = 256;
 /// Maximum length of one single-line package text field.
 pub const MAX_HUB_PACKAGE_TEXT_BYTES: usize = 4096;
 
-/// Maximum length of the long-form description fields.
+/// Maximum length of the release's one-line description.
 pub const MAX_HUB_PACKAGE_DESCRIPTION_BYTES: usize = 64 * 1024;
 
 /// Encodings a carried file may declare.
@@ -59,12 +53,6 @@ pub const MAX_HUB_PACKAGE_DESCRIPTION_BYTES: usize = 64 * 1024;
 /// refused: an unrecognised encoding makes the file unreadable to the package
 /// safety review while still being written to disk verbatim at install.
 pub const HUB_PACKAGE_FILE_ENCODINGS: &[&str] = &["", "text", "base64"];
-
-/// Encoding every media file must use.
-pub const HUB_PACKAGE_MEDIA_ENCODING: &str = "base64";
-
-/// Gallery item kinds.
-pub const HUB_PACKAGE_GALLERY_KINDS: &[&str] = &["image", "youtube"];
 
 /// Decode one bounded canonical HubPackage document.
 pub fn decode_hub_package(
@@ -97,6 +85,17 @@ pub fn encode_hub_package(
 /// Every distribution channel moves this document: a Hub asset, a remote pack,
 /// a file supplied directly, and a static repository entry are five transports
 /// for one format.
+///
+/// **A release carries what installing it requires, and nothing else.**
+/// Everything a human reads while choosing — long-form description, gallery,
+/// cover image, publisher identity — lives in mutable storage beside the
+/// release, because a release is immutable and fixing a typo in a description
+/// must not cost a version bump. Provenance (which project a publisher
+/// exported from) is the publishing instance's own record and never travels.
+///
+/// `title` and a one-line `description` are the deliberate exception: a
+/// package supplied as a file, with no store beside it, still has to say what
+/// it is.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HubPackageSpec {
@@ -106,36 +105,10 @@ pub struct HubPackageSpec {
     /// instance installs is the receiving channel's decision, the same way
     /// `validate_bundle_namespace` sits outside the `NodeBundle` validator.
     pub asset_kind: String,
-    /// What the publisher exported from.
-    #[serde(default)]
-    pub source_type: String,
-    #[serde(default)]
-    pub source_owner: String,
-    #[serde(default)]
-    pub source_project: String,
-    #[serde(default)]
-    pub source_ref: String,
-    /// Publisher identity asserted by the instance that published this.
-    #[serde(default)]
-    pub publisher_id: String,
-    #[serde(default)]
-    pub publisher_display_name: String,
-    #[serde(default)]
-    pub publisher_url: String,
-    #[serde(default)]
-    pub publisher_email: String,
+    /// What this package is called, so it is self-describing offline.
     pub title: String,
+    /// One line saying what it does, so it is self-describing offline.
     pub description: String,
-    #[serde(default)]
-    pub summary: String,
-    #[serde(default)]
-    pub description_md: String,
-    #[serde(default)]
-    pub image_url: String,
-    #[serde(default)]
-    pub gallery: HubPackageGallery,
-    #[serde(default)]
-    pub media: Vec<HubPackageMedia>,
     /// Pipelines that were active in the source project.
     #[serde(default)]
     pub active_pipelines: Vec<String>,
@@ -207,59 +180,6 @@ pub struct HubPackageArtifactRef {
     pub media_type: String,
 }
 
-/// One image carried inside the package envelope for listing and detail views.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct HubPackageMedia {
-    /// Plain file name, unique within the package.
-    pub name: String,
-    /// Role this image plays, for example `cover`.
-    pub role: String,
-    pub content_type: String,
-    pub size_bytes: usize,
-    /// Lowercase hex SHA-256 of the decoded bytes.
-    pub sha256: String,
-    pub encoding: String,
-    pub content: String,
-}
-
-/// Presentation for a package listing.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct HubPackageGallery {
-    #[serde(default)]
-    pub cover: Option<HubPackageGalleryImage>,
-    #[serde(default)]
-    pub items: Vec<HubPackageGalleryItem>,
-}
-
-/// The one image shown for a package before it is opened.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct HubPackageGalleryImage {
-    pub kind: String,
-    pub media_name: String,
-    #[serde(default)]
-    pub alt: String,
-}
-
-/// One gallery entry: a carried image or an external video.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct HubPackageGalleryItem {
-    pub kind: String,
-    /// Image form: a name in `spec.media`.
-    #[serde(default)]
-    pub media_name: String,
-    #[serde(default)]
-    pub alt: String,
-    /// Video form: the external URL.
-    #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub title: String,
-}
-
 /// What a platform-scope install must do after the files land.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -307,35 +227,14 @@ impl PlatformContract for HubPackageContract {
         }
         validate_asset_kind(&spec.asset_kind)?;
 
-        for (path, value) in [
-            ("spec.title", &spec.title),
-            ("spec.summary", &spec.summary),
-            ("spec.image_url", &spec.image_url),
-            ("spec.source_type", &spec.source_type),
-            ("spec.source_owner", &spec.source_owner),
-            ("spec.source_project", &spec.source_project),
-            ("spec.source_ref", &spec.source_ref),
-            ("spec.publisher_id", &spec.publisher_id),
-            ("spec.publisher_display_name", &spec.publisher_display_name),
-            ("spec.publisher_url", &spec.publisher_url),
-            ("spec.publisher_email", &spec.publisher_email),
-        ] {
-            validate_single_line(path, value)?;
-        }
+        validate_single_line("spec.title", &spec.title)?;
         validate_length(
             "spec.description",
             &spec.description,
             MAX_HUB_PACKAGE_DESCRIPTION_BYTES,
         )?;
-        validate_length(
-            "spec.description_md",
-            &spec.description_md,
-            MAX_HUB_PACKAGE_DESCRIPTION_BYTES,
-        )?;
 
         validate_files(&spec.files)?;
-        let media_names = validate_media(&spec.media)?;
-        validate_gallery(&spec.gallery, &media_names)?;
 
         validate_limit(
             "spec.active_pipelines",
@@ -435,107 +334,6 @@ fn validate_files(files: &[HubPackageFile]) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Validates carried media and returns the names a gallery may reference.
-fn validate_media(media: &[HubPackageMedia]) -> Result<Vec<&str>, ContractError> {
-    validate_limit("spec.media", media.len(), MAX_HUB_PACKAGE_MEDIA)?;
-    let mut names = Vec::with_capacity(media.len());
-    let mut seen = HashSet::new();
-    for item in media {
-        let path = format!("spec.media[{}]", item.name);
-        validate_media_name(&format!("{path}.name"), &item.name)?;
-        if !seen.insert(item.name.as_str()) {
-            return Err(ContractError::invalid(format!(
-                "spec.media declares name '{}' more than once",
-                item.name
-            )));
-        }
-        if item.role.trim().is_empty() {
-            return Err(ContractError::invalid(format!(
-                "{path}.role must not be empty"
-            )));
-        }
-        validate_single_line(&format!("{path}.role"), &item.role)?;
-        validate_media_type(&format!("{path}.content_type"), &item.content_type)?;
-        if item.encoding != HUB_PACKAGE_MEDIA_ENCODING {
-            return Err(ContractError::invalid(format!(
-                "{path}.encoding must be '{HUB_PACKAGE_MEDIA_ENCODING}'"
-            )));
-        }
-        validate_sha256(&format!("{path}.sha256"), &item.sha256)?;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&item.content)
-            .map_err(|err| {
-                ContractError::invalid(format!("{path}.content is not base64: {err}"))
-            })?;
-        if decoded.len() != item.size_bytes {
-            return Err(ContractError::invalid(format!(
-                "{path}.size_bytes is {} but its content is {} bytes",
-                item.size_bytes,
-                decoded.len()
-            )));
-        }
-        names.push(item.name.as_str());
-    }
-    Ok(names)
-}
-
-/// Every gallery image resolves to a carried media file, so a listing can never
-/// name an image the package does not contain.
-fn validate_gallery(
-    gallery: &HubPackageGallery,
-    media_names: &[&str],
-) -> Result<(), ContractError> {
-    validate_limit(
-        "spec.gallery.items",
-        gallery.items.len(),
-        MAX_HUB_PACKAGE_GALLERY_ITEMS,
-    )?;
-    if let Some(cover) = &gallery.cover {
-        if cover.kind != "image" {
-            return Err(ContractError::invalid(
-                "spec.gallery.cover.kind must be 'image'",
-            ));
-        }
-        validate_media_reference("spec.gallery.cover", &cover.media_name, media_names)?;
-        validate_single_line("spec.gallery.cover.alt", &cover.alt)?;
-    }
-    for (index, item) in gallery.items.iter().enumerate() {
-        let path = format!("spec.gallery.items[{index}]");
-        validate_single_line(&format!("{path}.alt"), &item.alt)?;
-        validate_single_line(&format!("{path}.title"), &item.title)?;
-        match item.kind.as_str() {
-            "image" => {
-                if !item.url.is_empty() {
-                    return Err(ContractError::invalid(format!(
-                        "{path} is an image and must not declare a url"
-                    )));
-                }
-                validate_media_reference(&path, &item.media_name, media_names)?;
-            }
-            "youtube" => {
-                if !item.media_name.is_empty() {
-                    return Err(ContractError::invalid(format!(
-                        "{path} is a video and must not declare a media_name"
-                    )));
-                }
-                validate_single_line(&format!("{path}.url"), &item.url)?;
-                if item.url.trim().is_empty() {
-                    return Err(ContractError::invalid(format!(
-                        "{path}.url must not be empty"
-                    )));
-                }
-            }
-            other => {
-                return Err(ContractError::invalid(format!(
-                    "{path}.kind '{other}' is not one of {}",
-                    HUB_PACKAGE_GALLERY_KINDS.join(", ")
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_initialization(init: &HubPackageInitialization) -> Result<(), ContractError> {
     validate_limit(
         "spec.project_initialization.libraries",
@@ -577,20 +375,6 @@ fn validate_initialization(init: &HubPackageInitialization) -> Result<(), Contra
                 step.path
             )));
         }
-    }
-    Ok(())
-}
-
-fn validate_media_reference(
-    path: &str,
-    media_name: &str,
-    media_names: &[&str],
-) -> Result<(), ContractError> {
-    validate_media_name(&format!("{path}.media_name"), media_name)?;
-    if !media_names.contains(&media_name) {
-        return Err(ContractError::invalid(format!(
-            "{path}.media_name '{media_name}' is not declared in spec.media"
-        )));
     }
     Ok(())
 }
@@ -677,23 +461,6 @@ fn validate_media_type(path: &str, value: &str) -> Result<(), ContractError> {
     Ok(())
 }
 
-fn validate_media_name(path: &str, value: &str) -> Result<(), ContractError> {
-    if value.is_empty()
-        || value.len() > 255
-        || value == "."
-        || value == ".."
-        || value.contains('/')
-        || value.contains('\\')
-        || value.chars().any(char::is_control)
-        || value.trim() != value
-    {
-        return Err(ContractError::invalid(format!(
-            "{path} must be a plain file name"
-        )));
-    }
-    Ok(())
-}
-
 fn validate_relative_file(path: &str, value: &str) -> Result<(), ContractError> {
     let value_path = Path::new(value);
     if value.is_empty()
@@ -736,7 +503,6 @@ mod tests {
     }
 
     // ── Golden round-trip ───────────────────────────────────────────────
-
     #[test]
     fn golden_package_roundtrips_without_schema_drift() {
         let document = decode_hub_package(V1_PACKAGE).expect("decode golden package");
@@ -963,74 +729,86 @@ mod tests {
         );
     }
 
-    // ── Media and gallery ───────────────────────────────────────────────
+    // ── Presentation is not in the release ──────────────────────────────
 
+    /// A release carries what installing it requires. Everything a human reads
+    /// while choosing lives in mutable storage beside it, so an immutable
+    /// document that tried to carry it is refused rather than quietly ignored.
     #[test]
-    fn rejects_a_gallery_image_the_package_does_not_carry() {
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["gallery"]["cover"]["media_name"] = serde_json::json!("missing.webp");
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["media"] = serde_json::json!([]);
-            }))
-            .is_err()
-        );
+    fn rejects_presentation_inside_the_release() {
+        for (field, value) in [
+            ("description_md", serde_json::json!("## Demo Tools")),
+            (
+                "summary",
+                serde_json::json!("Carried and referenced content."),
+            ),
+            (
+                "image_url",
+                serde_json::json!("/api/hub/remote/assets/acme.demo-tools/media/cover.webp"),
+            ),
+            (
+                "gallery",
+                serde_json::json!({
+                    "cover": { "kind": "image", "media_name": "cover.webp", "alt": "" },
+                    "items": []
+                }),
+            ),
+            (
+                "media",
+                serde_json::json!([{
+                    "name": "cover.webp",
+                    "role": "cover",
+                    "content_type": "image/webp",
+                    "size_bytes": 10,
+                    "sha256":
+                        "3c6e0b8a9c15224a8228b9a98ca1531d3c6e0b8a9c15224a8228b9a98ca1531d",
+                    "encoding": "base64",
+                    "content": "d2VicC1ieXRlcw=="
+                }]),
+            ),
+        ] {
+            assert!(
+                decode_hub_package(&mutate(V1_PACKAGE, |document| {
+                    document["spec"][field] = value.clone();
+                }))
+                .is_err(),
+                "spec.{field} is presentation and must not be carried by a release"
+            );
+        }
     }
 
+    /// Publisher identity is asserted by the store that serves the package, and
+    /// provenance is the publishing instance's own record. Neither travels.
     #[test]
-    fn rejects_a_gallery_item_that_mixes_the_image_and_video_forms() {
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["gallery"]["items"][0]["url"] =
-                    serde_json::json!("https://youtu.be/abc");
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["gallery"]["items"][1]["media_name"] =
-                    serde_json::json!("cover.webp");
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["gallery"]["items"][0]["kind"] = serde_json::json!("carousel");
-            }))
-            .is_err()
-        );
+    fn rejects_publisher_identity_and_provenance_inside_the_release() {
+        for field in [
+            "publisher_id",
+            "publisher_display_name",
+            "publisher_url",
+            "publisher_email",
+            "source_type",
+            "source_owner",
+            "source_project",
+            "source_ref",
+        ] {
+            assert!(
+                decode_hub_package(&mutate(V1_PACKAGE, |document| {
+                    document["spec"][field] = serde_json::json!("acme");
+                }))
+                .is_err(),
+                "spec.{field} must not be carried by a release"
+            );
+        }
     }
 
+    /// The exception the rule keeps: a document handed over as a file, with no
+    /// store beside it, still says what it is.
     #[test]
-    fn rejects_media_that_contradicts_itself() {
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["media"][0]["size_bytes"] = serde_json::json!(1);
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["media"][0]["encoding"] = serde_json::json!("text");
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["media"][0]["name"] = serde_json::json!("../cover.webp");
-            }))
-            .is_err()
-        );
-        assert!(
-            decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["media"][0]["content_type"] = serde_json::json!("image");
-            }))
-            .is_err()
-        );
+    fn a_release_stays_self_describing_offline() {
+        let spec = decode_hub_package(V1_PACKAGE).expect("decode").spec;
+        assert_eq!(spec.title, "Demo Tools");
+        assert!(!spec.description.is_empty());
+        assert_eq!(spec.asset_kind, "node_bundle");
     }
 
     // ── Limits ──────────────────────────────────────────────────────────
@@ -1071,9 +849,9 @@ mod tests {
         );
         assert!(
             decode_hub_package(&mutate(V1_PACKAGE, |value| {
-                value["spec"]["gallery"]["items"] = serde_json::Value::Array(
-                    (0..=MAX_HUB_PACKAGE_GALLERY_ITEMS)
-                        .map(|_| serde_json::json!({ "kind": "image", "media_name": "cover.webp" }))
+                value["spec"]["active_pipelines"] = serde_json::Value::Array(
+                    (0..=MAX_HUB_PACKAGE_ACTIVE_PIPELINES)
+                        .map(|index| serde_json::json!(format!("pipelines/p{index}.zf.json")))
                         .collect::<Vec<_>>(),
                 );
             }))

@@ -187,7 +187,11 @@ CREATE TABLE IF NOT EXISTS hub_asset_packages (
     asset_kind       TEXT NOT NULL DEFAULT '',
     title            TEXT NOT NULL DEFAULT '',
     description      TEXT NOT NULL DEFAULT '',
+    summary          TEXT NOT NULL DEFAULT '',
+    description_md   TEXT NOT NULL DEFAULT '',
     image_url        TEXT NOT NULL DEFAULT '',
+    media_json       TEXT NOT NULL DEFAULT '[]',
+    gallery_json     TEXT NOT NULL DEFAULT '{}',
     visibility       TEXT NOT NULL DEFAULT 'private',
     tags_json        TEXT NOT NULL DEFAULT '[]',
     created_at       INTEGER NOT NULL DEFAULT 0,
@@ -1833,7 +1837,11 @@ CREATE TABLE hub_asset_packages (
     asset_kind              TEXT NOT NULL DEFAULT '',
     title                   TEXT NOT NULL DEFAULT '',
     description             TEXT NOT NULL DEFAULT '',
+    summary                 TEXT NOT NULL DEFAULT '',
+    description_md          TEXT NOT NULL DEFAULT '',
     image_url               TEXT NOT NULL DEFAULT '',
+    media_json              TEXT NOT NULL DEFAULT '[]',
+    gallery_json            TEXT NOT NULL DEFAULT '{}',
     visibility              TEXT NOT NULL DEFAULT 'private',
     tags_json               TEXT NOT NULL DEFAULT '[]',
     created_at              INTEGER NOT NULL DEFAULT 0,
@@ -2556,6 +2564,26 @@ CREATE INDEX IF NOT EXISTS idx_platform_service_instances_host
             [],
         )
         .map_err(Self::qe)?;
+        Ok(())
+    }
+
+    /// Adds the presentation columns a package row carries beside its releases.
+    ///
+    /// They arrived after `hub_asset_packages` existed, so a database written
+    /// by an older binary is brought forward here rather than rebuilt.
+    fn ensure_hub_asset_package_columns<C>(conn: &C) -> Result<(), PlatformError>
+    where
+        C: std::ops::Deref<Target = Connection>,
+    {
+        for (column, definition) in [
+            ("summary", "TEXT NOT NULL DEFAULT ''"),
+            ("description_md", "TEXT NOT NULL DEFAULT ''"),
+            ("image_url", "TEXT NOT NULL DEFAULT ''"),
+            ("media_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("gallery_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ] {
+            Self::ensure_table_column(conn, "hub_asset_packages", column, definition)?;
+        }
         Ok(())
     }
 
@@ -3848,17 +3876,14 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn put_hub_asset_package(&self, package: &HubAssetPackage) -> Result<(), PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Self::ensure_table_column(
-            &conn,
-            "hub_asset_packages",
-            "image_url",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
+        Self::ensure_hub_asset_package_columns(&conn)?;
         let tags_json = serde_json::to_string(&package.tags).map_err(Self::json_error)?;
+        let media_json = serde_json::to_string(&package.media).map_err(Self::json_error)?;
+        let gallery_json = serde_json::to_string(&package.gallery).map_err(Self::json_error)?;
         conn.execute(
             "INSERT INTO hub_asset_packages
-             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             (package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT(package_id) DO UPDATE SET
                  package_pk = excluded.package_pk,
                  authority_id = excluded.authority_id,
@@ -3873,7 +3898,11 @@ impl DataAdapter for SqliteDataAdapter {
                  asset_kind = excluded.asset_kind,
                  title = excluded.title,
                  description = excluded.description,
+                 summary = excluded.summary,
+                 description_md = excluded.description_md,
                  image_url = excluded.image_url,
+                 media_json = excluded.media_json,
+                 gallery_json = excluded.gallery_json,
                  visibility = excluded.visibility,
                  tags_json = excluded.tags_json,
                  created_at = excluded.created_at,
@@ -3893,7 +3922,11 @@ impl DataAdapter for SqliteDataAdapter {
                 &package.asset_kind,
                 &package.title,
                 &package.description,
+                &package.summary,
+                &package.description_md,
                 &package.image_url,
+                &media_json,
+                &gallery_json,
                 &package.visibility,
                 &tags_json,
                 package.created_at,
@@ -3906,15 +3939,10 @@ impl DataAdapter for SqliteDataAdapter {
 
     fn list_hub_asset_packages(&self) -> Result<Vec<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Self::ensure_table_column(
-            &conn,
-            "hub_asset_packages",
-            "image_url",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
+        Self::ensure_hub_asset_package_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at
                  FROM hub_asset_packages
                  ORDER BY updated_at DESC, package_id ASC",
             )
@@ -3936,12 +3964,16 @@ impl DataAdapter for SqliteDataAdapter {
                     asset_kind: row.get(11)?,
                     title: row.get(12)?,
                     description: row.get(13)?,
-                    image_url: row.get(14)?,
-                    visibility: row.get(15)?,
-                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(16)?)
+                    summary: row.get(14)?,
+                    description_md: row.get(15)?,
+                    image_url: row.get(16)?,
+                    media: serde_json::from_str(&row.get::<_, String>(17)?).unwrap_or_default(),
+                    gallery: serde_json::from_str(&row.get::<_, String>(18)?).unwrap_or_default(),
+                    visibility: row.get(19)?,
+                    tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(20)?)
                         .unwrap_or_default(),
-                    created_at: row.get(17)?,
-                    updated_at: row.get(18)?,
+                    created_at: row.get(21)?,
+                    updated_at: row.get(22)?,
                 })
             })
             .map_err(Self::qe)?
@@ -3955,15 +3987,10 @@ impl DataAdapter for SqliteDataAdapter {
         package_id: &str,
     ) -> Result<Option<HubAssetPackage>, PlatformError> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        Self::ensure_table_column(
-            &conn,
-            "hub_asset_packages",
-            "image_url",
-            "TEXT NOT NULL DEFAULT ''",
-        )?;
+        Self::ensure_hub_asset_package_columns(&conn)?;
         let mut stmt = conn
             .prepare(
-                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, image_url, visibility, tags_json, created_at, updated_at
+                "SELECT package_pk, authority_id, publisher_pk, package_id, authority_owner, authority_project, publisher_owner, publisher_id, publisher_display_name, publisher_url, publisher_email, asset_kind, title, description, summary, description_md, image_url, media_json, gallery_json, visibility, tags_json, created_at, updated_at
                  FROM hub_asset_packages WHERE package_id = ?1",
             )
             .map_err(Self::qe)?;
@@ -3983,12 +4010,16 @@ impl DataAdapter for SqliteDataAdapter {
                 asset_kind: row.get(11)?,
                 title: row.get(12)?,
                 description: row.get(13)?,
-                image_url: row.get(14)?,
-                visibility: row.get(15)?,
-                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(16)?)
+                summary: row.get(14)?,
+                description_md: row.get(15)?,
+                image_url: row.get(16)?,
+                media: serde_json::from_str(&row.get::<_, String>(17)?).unwrap_or_default(),
+                gallery: serde_json::from_str(&row.get::<_, String>(18)?).unwrap_or_default(),
+                visibility: row.get(19)?,
+                tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(20)?)
                     .unwrap_or_default(),
-                created_at: row.get(17)?,
-                updated_at: row.get(18)?,
+                created_at: row.get(21)?,
+                updated_at: row.get(22)?,
             })
         }) {
             Ok(item) => Ok(Some(item)),

@@ -22,14 +22,12 @@ pub use dependency_lock::{
     encode_dependency_lock,
 };
 pub use hub_package::{
-    HUB_PACKAGE_FILE_ENCODINGS, HUB_PACKAGE_GALLERY_KINDS, HUB_PACKAGE_MEDIA_ENCODING,
-    HubPackageArtifactRef, HubPackageContract, HubPackageFile, HubPackageFileSupply,
-    HubPackageGallery, HubPackageGalleryImage, HubPackageGalleryItem, HubPackageInitialDataStep,
-    HubPackageInitialization, HubPackageMedia, HubPackageSpec, MAX_HUB_PACKAGE_ACTIVE_PIPELINES,
-    MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_CARRIED_FILE_BYTES, MAX_HUB_PACKAGE_DESCRIPTION_BYTES,
-    MAX_HUB_PACKAGE_FILES, MAX_HUB_PACKAGE_GALLERY_ITEMS, MAX_HUB_PACKAGE_INITIAL_DATA_STEPS,
-    MAX_HUB_PACKAGE_LIBRARIES, MAX_HUB_PACKAGE_MEDIA, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES,
-    MAX_HUB_PACKAGE_TEXT_BYTES, decode_hub_package, encode_hub_package,
+    HUB_PACKAGE_FILE_ENCODINGS, HubPackageArtifactRef, HubPackageContract, HubPackageFile,
+    HubPackageFileSupply, HubPackageInitialDataStep, HubPackageInitialization, HubPackageSpec,
+    MAX_HUB_PACKAGE_ACTIVE_PIPELINES, MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_CARRIED_FILE_BYTES,
+    MAX_HUB_PACKAGE_DESCRIPTION_BYTES, MAX_HUB_PACKAGE_FILES, MAX_HUB_PACKAGE_INITIAL_DATA_STEPS,
+    MAX_HUB_PACKAGE_LIBRARIES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, MAX_HUB_PACKAGE_TEXT_BYTES,
+    decode_hub_package, encode_hub_package,
 };
 pub use library_manifest::LibraryManifestContract;
 pub use map_publish_manifest::{MapPublishManifestContract, MapserverLayerRecord};
