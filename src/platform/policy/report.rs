@@ -8,6 +8,8 @@ pub enum PolicyRiskLevel {
     Low,
     Medium,
     High,
+    /// Not a higher score: a level no approval can raise a package out of.
+    Blocked,
 }
 
 impl PolicyRiskLevel {
@@ -26,6 +28,7 @@ impl PolicyRiskLevel {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Blocked => "blocked",
         }
     }
 }

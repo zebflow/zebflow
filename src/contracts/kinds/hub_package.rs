@@ -888,4 +888,202 @@ mod tests {
             .is_err()
         );
     }
+
+    // ── Canonical encoding is the identity ──────────────────────────────
+
+    fn digest(bytes: &[u8]) -> String {
+        use sha2::{Digest as _, Sha256};
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    /// Rewrites a document with every JSON object's keys in reverse order.
+    ///
+    /// Key order is not part of what a JSON document says, so this is the same
+    /// release written down differently.
+    fn with_reversed_key_order(bytes: &[u8]) -> Vec<u8> {
+        fn write(value: &serde_json::Value, out: &mut String) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    let mut entries = map.iter().collect::<Vec<_>>();
+                    entries.reverse();
+                    out.push('{');
+                    for (index, (key, child)) in entries.into_iter().enumerate() {
+                        if index > 0 {
+                            out.push(',');
+                        }
+                        out.push_str(&serde_json::to_string(key).expect("key"));
+                        out.push(':');
+                        write(child, out);
+                    }
+                    out.push('}');
+                }
+                serde_json::Value::Array(items) => {
+                    out.push('[');
+                    for (index, item) in items.iter().enumerate() {
+                        if index > 0 {
+                            out.push(',');
+                        }
+                        write(item, out);
+                    }
+                    out.push(']');
+                }
+                scalar => out.push_str(&serde_json::to_string(scalar).expect("scalar")),
+            }
+        }
+        let value = serde_json::from_slice::<serde_json::Value>(bytes).expect("json");
+        let mut out = String::new();
+        write(&value, &mut out);
+        out.into_bytes()
+    }
+
+    /// A release is named by the sha256 of its canonical bytes, and that digest
+    /// is never written inside the document — a document cannot contain its own
+    /// hash. So every receiver re-encodes what it was handed and compares the
+    /// result against a digest from a trusted place. One byte of drift in
+    /// encoding invalidates every digest ever published at once, which makes
+    /// this the load-bearing property under offline tamper detection.
+    #[test]
+    fn re_encoding_a_release_reproduces_its_bytes_and_its_digest() {
+        let published = digest(V1_PACKAGE);
+
+        let document = decode_hub_package(V1_PACKAGE).expect("decode golden package");
+        let encoded = encode_hub_package(document.metadata, document.spec).expect("encode");
+        assert_eq!(
+            encoded, V1_PACKAGE,
+            "canonical encoding drifted from the golden bytes"
+        );
+        assert_eq!(digest(&encoded), published);
+
+        // Encoding is a function of the typed document alone: nothing survives
+        // the parse to be replayed on the way out, so a second lap is free.
+        let again = decode_hub_package(&encoded).expect("re-decode");
+        assert_eq!(
+            digest(&encode_hub_package(again.metadata, again.spec).expect("re-encode")),
+            published
+        );
+    }
+
+    /// Two documents that differ only in key order are one release. Canonical
+    /// encoding puts them back on one byte sequence, so the digest is a property
+    /// of the release rather than of the text someone happened to hand over —
+    /// and a reordered copy cannot be passed off as a different package.
+    #[test]
+    fn key_order_cannot_smuggle_a_different_digest() {
+        let reordered = with_reversed_key_order(V1_PACKAGE);
+        assert!(
+            reordered.starts_with(br#"{"spec":"#),
+            "the reordering did not take, so this proves nothing"
+        );
+        assert_ne!(reordered, V1_PACKAGE);
+        assert_ne!(digest(&reordered), digest(V1_PACKAGE));
+
+        let document = decode_hub_package(&reordered).expect("decode reordered document");
+        let encoded = encode_hub_package(document.metadata, document.spec).expect("encode");
+        assert_eq!(encoded, V1_PACKAGE);
+        assert_eq!(digest(&encoded), digest(V1_PACKAGE));
+    }
+
+    /// Canonical key order is the declaration order of the typed spec, not any
+    /// map's iteration order. If a `serde_json::Value` or a sorted map ever
+    /// entered the spec tree these keys would come out alphabetically instead,
+    /// and every digest in existence would change on that one refactor.
+    #[test]
+    fn canonical_key_order_is_the_declaration_order_of_the_typed_spec() {
+        let text = std::str::from_utf8(V1_PACKAGE).expect("utf-8");
+        let position = |key: &str| {
+            text.find(&format!("\"{key}\":"))
+                .unwrap_or_else(|| panic!("{key}"))
+        };
+
+        // Each pair is in declaration order and reversed alphabetically, so a
+        // sorted encoder would fail every one of them.
+        assert!(position("asset_kind") < position("active_pipelines"));
+        assert!(position("reason") < position("encoding"));
+        assert!(position("libraries") < position("initial_data"));
+        assert!(position("sha256") < position("media_type"));
+    }
+
+    /// `deny_unknown_fields` has to be an error rather than a quiet drop. A
+    /// dropped key would let a publisher hand over a document that re-encodes to
+    /// a digest other than the one they published, and would hide whatever the
+    /// extra key carried from package safety review.
+    #[test]
+    fn an_unknown_key_anywhere_in_the_tree_is_refused_rather_than_dropped() {
+        assert!(
+            decode_hub_package(&mutate(V1_PACKAGE, |_| {})).is_ok(),
+            "control: an unmutated document must still decode"
+        );
+
+        let inject = |location: &'static str| -> Box<dyn FnOnce(&mut serde_json::Value)> {
+            Box::new(move |value: &mut serde_json::Value| {
+                let target = match location {
+                    "root" => &mut *value,
+                    "metadata" => &mut value["metadata"],
+                    "spec" => &mut value["spec"],
+                    "spec.files[]" => &mut value["spec"]["files"][1],
+                    "spec.files[].artifact" => &mut value["spec"]["files"][2]["artifact"],
+                    "spec.project_initialization" => &mut value["spec"]["project_initialization"],
+                    "spec.project_initialization.initial_data[]" => {
+                        &mut value["spec"]["project_initialization"]["initial_data"][0]
+                    }
+                    other => panic!("unmapped location '{other}'"),
+                };
+                target["smuggled"] = serde_json::json!("payload");
+            })
+        };
+
+        for location in [
+            "root",
+            "metadata",
+            "spec",
+            "spec.files[]",
+            "spec.files[].artifact",
+            "spec.project_initialization",
+            "spec.project_initialization.initial_data[]",
+        ] {
+            assert!(
+                decode_hub_package(&mutate(V1_PACKAGE, inject(location))).is_err(),
+                "an unknown key at {location} must be refused, not dropped"
+            );
+        }
+    }
+
+    /// Byte reproducibility rests on the encoding being a function of the typed
+    /// value alone: no untyped `Value` in the spec, and no map whose iteration
+    /// order depends on how it was filled. Two equal documents assembled by
+    /// different routes must therefore encode to identical bytes.
+    #[test]
+    fn equal_documents_assembled_by_different_routes_encode_identically() {
+        let decoded = decode_hub_package(V1_PACKAGE).expect("decode").spec;
+        // Same fields, written in reverse declaration order.
+        let rebuilt = HubPackageSpec {
+            files: decoded.files.clone(),
+            project_initialization: decoded.project_initialization.clone(),
+            active_pipelines: decoded.active_pipelines.clone(),
+            description: decoded.description.clone(),
+            title: decoded.title.clone(),
+            asset_kind: decoded.asset_kind.clone(),
+        };
+        assert_eq!(rebuilt, decoded);
+
+        let metadata = |keys: [&str; 3]| {
+            let mut metadata = ContractMetadata::named("acme.demo-tools");
+            metadata.version = Some("1.0.0".to_string());
+            for key in keys {
+                metadata
+                    .annotations
+                    .insert(key.to_string(), "y".to_string());
+            }
+            metadata
+        };
+        let forward = metadata(["channel", "origin", "stability"]);
+        let backward = metadata(["stability", "origin", "channel"]);
+        assert_eq!(forward, backward);
+
+        assert_eq!(
+            encode_hub_package(forward, rebuilt).expect("encode"),
+            encode_hub_package(backward, decoded).expect("encode"),
+            "insertion order must not reach the encoded bytes"
+        );
+    }
 }

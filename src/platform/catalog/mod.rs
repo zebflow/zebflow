@@ -383,7 +383,10 @@ impl CatalogService {
                 rel_path,
                 kind: "template".to_string(),
                 size_bytes: src.len(),
+                // A built-in component is compiled in, so its bytes are always
+                // in hand and there is nothing the review can fail to read.
                 content: (*src).to_string(),
+                unreadable: String::new(),
             });
         }
 

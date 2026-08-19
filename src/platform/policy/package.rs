@@ -21,6 +21,13 @@ pub struct PackagePolicyEntry {
     pub size_bytes: usize,
     #[serde(default)]
     pub content: String,
+    /// Why the review could not read this entry's bytes, when it could not.
+    ///
+    /// Empty `content` means an empty file. This means the reviewer was handed
+    /// nothing while the install still writes something, which is the opposite
+    /// finding and must never produce the same verdict.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub unreadable: String,
 }
 
 impl PackagePolicyEntry {
@@ -52,10 +59,6 @@ pub struct PackageSafetyReview {
     /// effect; a violation says the package will not be installed at all,
     /// whoever approves it. The contract validator already refuses malformed
     /// bundles; this refuses well-formed ones whose behaviour is unsafe.
-    ///
-    /// Declared now, enforced later: the fields the detectors need exist, but
-    /// the detectors themselves are added once each is precise enough to be
-    /// non-overridable without producing false positives.
     #[serde(default)]
     pub violations: Vec<String>,
     /// `low`, `medium`, `high`, or `blocked` when violations are present.
@@ -87,6 +90,7 @@ pub fn review_package_entries(
     let mut schedules = BTreeSet::new();
     let mut large_files = Vec::new();
     let mut seed_data = Vec::new();
+    let mut violations = Vec::new();
 
     if options.require_title && options.title.trim().is_empty() {
         warnings.push("package title is empty".to_string());
@@ -99,8 +103,17 @@ pub fn review_package_entries(
     }
 
     for entry in entries {
-        if entry.rel_path.ends_with(".zf.json") && entry.rel_path.starts_with("pipelines/") {
-            if let Some(source) = entry.text() {
+        if is_reviewed_pipeline_path(&entry.rel_path) {
+            if !entry.unreadable.is_empty() {
+                // The destination decides what is scanned, so an entry that
+                // lands here is a pipeline whatever supplied its bytes. Bytes
+                // the review cannot read are bytes the install would still
+                // write, which is a refusal and not a clean result.
+                violations.push(format!(
+                    "{}: a pipeline the safety review cannot read ({})",
+                    entry.rel_path, entry.unreadable
+                ));
+            } else if let Some(source) = entry.text() {
                 analyze_pipeline_text(
                     source,
                     &mut nodes_used,
@@ -135,6 +148,8 @@ pub fn review_package_entries(
 
     warnings.sort();
     warnings.dedup();
+    violations.sort();
+    violations.dedup();
 
     let mut risk_score = 0;
     if !credentials_required.is_empty() {
@@ -170,12 +185,26 @@ pub fn review_package_entries(
         large_files,
         seed_data,
         warnings,
-        // No detectors yet. The tier exists so install can refuse on it and the
-        // review dialog can distinguish "cannot be installed" from "are you
-        // sure", before any detector is precise enough to be non-overridable.
-        violations: Vec::new(),
-        risk_level: PolicyRiskLevel::from_score(risk_score).as_str().to_string(),
+        // A violation outranks every score: no arrangement of effects can make
+        // a package that cannot be reviewed safe to install.
+        risk_level: if violations.is_empty() {
+            PolicyRiskLevel::from_score(risk_score)
+        } else {
+            PolicyRiskLevel::Blocked
+        }
+        .as_str()
+        .to_string(),
+        violations,
     }
+}
+
+/// Whether this destination is reviewed as a pipeline definition.
+///
+/// The path is the whole test, and it is applied to the path the install
+/// actually writes, so the review and the install never disagree about which
+/// entries are pipelines.
+fn is_reviewed_pipeline_path(rel_path: &str) -> bool {
+    rel_path.ends_with(".zf.json") && rel_path.starts_with("pipelines/")
 }
 
 impl PackageSafetyReview {
