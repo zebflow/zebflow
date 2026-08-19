@@ -84,6 +84,49 @@ Install fetches every referenced artifact, verifies each digest, and writes
 nothing until all of them pass, so a failed fetch leaves the previous state
 intact.
 
+### Retraction removes the bytes, never the coordinates
+
+A publisher may retract a release. Retraction deletes the stored artifact and
+its referenced bytes; it does not delete the release.
+
+| Survives retraction | Removed |
+| --- | --- |
+| `package_id` and `version` | the package document |
+| title, description, publisher | referenced artifacts owned only by this release |
+| the retracted marker and its reason | |
+
+`package@version` can never be reused. A retracted release stays listed and
+explorable so a project pinning it can see what happened, and installing it
+fails with a clear reason rather than a missing artifact.
+
+This keeps immutability true in the only way that matters: a coordinate always
+means one thing, or nothing. npm reaches the same place by blocking a name and
+version forever after unpublish; Cargo reaches it by never deleting and only
+yanking. The difference here is that the bytes really go, so a publisher can
+withdraw content while the record of it remains.
+
+A retracted release is therefore not a hole in immutability. Freeing the
+coordinates would have been.
+
+### Publisher identity is attribution, not verification
+
+A publisher name asserts who claims to have published, and nothing more. Zebflow
+does not attempt to prove it, for the same reason git does not: anyone may fork a
+project, rewrite its history, put their own name on it, and hand it to someone on
+a USB stick. That is a property of open source, not a defect to engineer around.
+
+A static repository has no publisher at all, and under this rule it is not
+therefore less trustworthy — it simply makes no claim.
+
+**The consequence is what matters.** Because identity is weak by nature, it
+cannot be the thing that protects a user. Behaviour review has to be. A package
+is judged by what the scan says it does, not by whose name is on it, which is why
+`violations` refuses regardless of publisher and why one review runs on every
+channel.
+
+Presenting a publisher badge as a safety signal would invert this. It is
+attribution for credit and contact, not a trust boundary.
+
 ## Boundary table
 
 | Role | Where | What it does |
@@ -204,5 +247,5 @@ is left as found and recorded here.
 - how a publisher puts an artifact into the store. `store_artifact` exists as
   the writer, but `publish_asset` still carries every file inline, so nothing
   produces a referenced package yet
-- whether a deleted package's versions may be republished, or whether delete
-  should tombstone the coordinates the way npm and Cargo do
+- implementing retraction: deleting artifact bytes while keeping the coordinates,
+  the retracted marker, and a clear install failure
