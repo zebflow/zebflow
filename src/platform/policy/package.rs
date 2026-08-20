@@ -313,11 +313,17 @@ pub fn review_package_entries(
 
     if !credential_nodes.is_empty() {
         // `credentials_required` names the credentials a config already points
-        // at. This names the nodes that will read one whatever the config says,
-        // which is the only signal a package gets when the choice is left to
-        // the installing user.
+        // at; this names nodes that CAN reach one, which is the signal a package
+        // gives when the choice is left to the installing user.
+        //
+        // The distinction is load-bearing and the wording carries it. A
+        // capability is a ceiling -- what a kind can do in some configuration --
+        // and most credential-reading nodes take one optionally, so a package
+        // can list a node here while `credentials_required` stays empty. Saying
+        // "reads" of a package that reads nothing is a scanner overstating what
+        // it knows, and a scanner is worth exactly what its claims are worth.
         warnings.push(format!(
-            "reads a stored credential: {}",
+            "can read a stored credential, depending on how it is configured: {}",
             credential_nodes.join(", ")
         ));
     }
@@ -1328,9 +1334,18 @@ TRUNCATE TABLE tags;
             review
                 .warnings
                 .iter()
-                .any(|warning| warning.starts_with("reads a stored credential: ")),
+                .any(|warning| warning.starts_with("can read a stored credential")),
             "{:?}",
             review.warnings
+        );
+        // The wording is the assertion. A capability is a ceiling, so this
+        // package lists a credential-capable node while requiring no credential
+        // at all; a warning saying it "reads" one would be the scanner claiming
+        // more than it knows.
+        assert!(
+            review.credentials_required.is_empty(),
+            "no credential is configured, so none may be reported as required: {:?}",
+            review.credentials_required
         );
     }
 

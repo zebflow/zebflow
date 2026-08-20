@@ -502,3 +502,69 @@ than issued.
   `zebflow.yaml` it carries. Platform-scope install reviews against the recorded
   layout and creates the project from the carried configuration; nothing checks
   that the two say the same thing. No writer produces such a document
+
+## Freeze judgement — 2026-08-20
+
+Status: **Review**, close to Candidate. Not Frozen.
+
+### What the evidence covers
+
+The format is settled and proven. Encoding is byte-reproducible and
+digest-stable; a reordered document normalises to the same bytes and an unknown
+key is refused rather than dropped, at every level of the tree. The canonical
+form is reproducible from outside Rust — `json.dumps(doc, indent=2,
+ensure_ascii=False)` returns the golden fixture byte for byte — so verification
+is arithmetic a third party can perform without running Zebflow.
+
+Proven against a running server on this date, against the binary as built:
+
+| Step | Result |
+| --- | --- |
+| publish | `contract-lab.freeze-evidence@1.0.0` stored |
+| republish the same coordinate | **409**, `HUB_VERSION_EXISTS` |
+| install review, three target folders | identical verdicts, all rooted in source |
+| install | file written, pipeline registered `hub/…/hubtest/danger.zf.json`, trigger inferred |
+| public access to a private package | hidden from listing, `401` on detail |
+
+The target-folder asymmetry recorded earlier is gone. Installing to `billing`
+reviewed `low` with every finding list empty and registered nothing; it now
+reviews `high` with two public endpoints and registers one pipeline, matching
+both the default folder and `/billing`.
+
+### Why it is not Frozen
+
+Three reasons, in order of weight.
+
+**`spec.layout` is one day old.** It was added on 2026-08-20 so a package
+published under one project layout can install into a project declaring another.
+Freezing a field with a single day's exercise is how a contract acquires a
+permanent mistake. This kind's sibling was marked a freeze candidate on evidence
+that predated a change and the claim had to be retracted; the lesson is cheap to
+apply and expensive to skip.
+
+**No package with a referenced artifact exists.** `publish_asset` carries every
+entry inline, so the `artifact` half of the carried-or-referenced rule has never
+run outside unit tests. That half is exactly where a review bypass was found on
+2026-08-19: a referenced pipeline reviewed as empty content while the install
+wrote the real bytes. A rule proven only by unit test is not proven the way the
+carried half is.
+
+**Two enforcement points disagree about the same document.**
+`refuse_prepared_install_violations` sets `unreadable` empty unconditionally, so
+it can never produce the "a pipeline the safety review cannot read" violation. A
+non-UTF-8 `.zf.json` is refused at publish and at project-bundle install, and
+reviews as an empty pipeline on the prepared-install path. A contract whose gates
+answer differently about the same bytes is not settled, whatever its format does.
+
+### What would close it
+
+1. Produce a package carrying a referenced artifact and run it through publish,
+   review, install and run — the same live pass the carried form has had.
+2. Reconcile the two install gates so every gate reaches the same verdict on the
+   same document.
+3. Give `spec.layout` time and a cross-layout install that was not written the
+   same week as the field.
+
+Per-release retraction, a `.wasm` governed by anything beyond the NodeBundle
+contract, and remote pack rows carrying a retraction marker are open, but none
+of them move the on-disk format and none block a freeze.
