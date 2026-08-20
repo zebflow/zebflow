@@ -589,8 +589,16 @@ pub async fn router(platform: Arc<PlatformService>) -> Router {
             post(api_install_platform_hub_project),
         )
         .route(
+            "/api/users/{owner}/hub/install/review",
+            post(api_review_platform_hub_project),
+        )
+        .route(
             "/api/platform/hub/install",
             post(api_install_platform_hub_app),
+        )
+        .route(
+            "/api/platform/hub/install/review",
+            post(api_review_platform_hub_app),
         )
         .route(
             "/api/users/{owner}/projects/{project}",
@@ -2808,6 +2816,7 @@ async fn home_page(State(state): State<PlatformAppState>, headers: HeaderMap) ->
                         "repositories": format!("/api/users/{}/hub/repositories", owner),
                         "assets": format!("/api/users/{}/hub/assets", owner),
                         "install": format!("/api/users/{}/hub/install", owner),
+                        "install_review": format!("/api/users/{}/hub/install/review", owner),
                     },
                     "offices": offices,
                     "runtime_targets": runtime_targets,
@@ -2950,6 +2959,7 @@ async fn platform_hub_page(State(state): State<PlatformAppState>, headers: Heade
                 "grants": "/api/platform/hub/grants",
                 "assets": "/api/platform/hub/assets",
                 "install": "/api/platform/hub/install",
+                "install_review": "/api/platform/hub/install/review",
                 "publishers": "/api/platform/hub/publishers",
                 "tokens": "/api/platform/hub/tokens"
             },
@@ -9214,6 +9224,95 @@ async fn api_install_platform_hub_app(
                 Err(err) => internal_error(err),
             }
         }
+        Err(err) => hub_api_error(err),
+    }
+}
+
+/// Reports what installing a platform-scope project bundle would do.
+///
+/// Same auth and same visibility check as the install it precedes, because a
+/// review that reads a repository the caller cannot install from would disclose
+/// a package they are not allowed to see.
+async fn api_review_platform_hub_app(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Json(req): Json<InstallPlatformHubProjectRequest>,
+) -> Response {
+    let Some(session) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    let (source_owner, sources) = match visible_platform_hub_sources(&state, &session) {
+        Ok(value) => value,
+        Err(err) => return internal_error(err),
+    };
+    if !sources
+        .iter()
+        .any(|item| item.repository_id == req.repository_id && item.enabled)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "hub source is not visible"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .hub
+        .review_remote_project_from_platform_source(
+            &state.http_client,
+            &source_owner,
+            &session,
+            &req.repository_id,
+            &req.package_id,
+            &req.version,
+            req.scope(),
+        )
+        .await
+    {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
+        Err(err) => hub_api_error(err),
+    }
+}
+
+/// Reports what installing a project bundle into `owner`'s account would do.
+async fn api_review_platform_hub_project(
+    State(state): State<PlatformAppState>,
+    headers: HeaderMap,
+    Path(owner): Path<String>,
+    Json(req): Json<InstallPlatformHubProjectRequest>,
+) -> Response {
+    let Some(session) = session_owner(&state, &headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"ok": false, "error": "login required"})),
+        )
+            .into_response();
+    };
+    if session != owner {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"ok": false, "error": "forbidden"})),
+        )
+            .into_response();
+    }
+    match state
+        .platform
+        .hub
+        .review_remote_project_from_platform_repository(
+            &state.http_client,
+            &owner,
+            &req.repository_id,
+            &req.package_id,
+            &req.version,
+            req.scope(),
+        )
+        .await
+    {
+        Ok(review) => Json(json!({"ok": true, "review": review})).into_response(),
         Err(err) => hub_api_error(err),
     }
 }

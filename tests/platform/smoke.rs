@@ -1441,6 +1441,90 @@ export default function SpatialBlogPage({ input }) {
         )
         .expect("consumer hub source");
 
+    // The review comes first and must describe this install without performing
+    // any part of it.
+    let review = consumer_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/platform/hub/install/review")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "repository_id": "local-publisher",
+                        "package_id": "zebflow-labs.spatial-blogging",
+                        "version": "1.0.0"
+                    })
+                    .to_string(),
+                ))
+                .expect("review request"),
+        )
+        .await
+        .expect("review response");
+    let review_status = review.status();
+    let review = response_json(review).await;
+    assert_eq!(review_status, StatusCode::OK, "{review}");
+    let review = review["review"].clone();
+    println!(
+        "install review: {}",
+        serde_json::to_string_pretty(&review).expect("review json")
+    );
+    assert_eq!(review["installable"], json!(true), "{review}");
+    assert!(
+        !review["database_initialization"]
+            .as_array()
+            .expect("database_initialization array")
+            .is_empty(),
+        "the review says what the seed SQL does before it runs"
+    );
+    let reviewed_project = review["project"]
+        .as_str()
+        .expect("reviewed project slug")
+        .to_string();
+    assert!(
+        consumer
+            .projects
+            .get_project("superadmin", &reviewed_project)
+            .expect("project lookup")
+            .is_none(),
+        "the review created no project"
+    );
+    assert!(
+        !consumer
+            .config
+            .data_root
+            .join(format!("users/superadmin/{reviewed_project}"))
+            .exists(),
+        "the review wrote no files and no store"
+    );
+
+    // The account-scoped route is the same review under a different auth rule,
+    // and a review can be repeated because it changes nothing.
+    let account_review = consumer_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/users/superadmin/hub/install/review")
+                .method("POST")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({
+                        "repository_id": "local-publisher",
+                        "package_id": "zebflow-labs.spatial-blogging",
+                        "version": "1.0.0"
+                    })
+                    .to_string(),
+                ))
+                .expect("account review request"),
+        )
+        .await
+        .expect("account review response");
+    assert_eq!(account_review.status(), StatusCode::OK);
+    assert_eq!(response_json(account_review).await["review"], review);
+
     let install = consumer_app
         .clone()
         .oneshot(
@@ -1468,6 +1552,24 @@ export default function SpatialBlogPage({ input }) {
         .as_str()
         .expect("installed project slug")
         .to_string();
+
+    // What the review promised is what the install reports having done.
+    assert_eq!(installed_project, reviewed_project);
+    for field in [
+        "files_written",
+        "skipped_files",
+        "pipelines_registered",
+        "pipelines_activated",
+        "pipelines_not_activated",
+        "unexecuted_initial_data",
+        "database_initialization",
+        "schema_executed",
+    ] {
+        assert_eq!(
+            install["install"][field], review[field],
+            "the install's {field} is what the review showed"
+        );
+    }
 
     let cloned_tables =
         sekejap::list_tables(&consumer.config.data_root, "superadmin", &installed_project)

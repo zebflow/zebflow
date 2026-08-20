@@ -14,21 +14,26 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::contracts::kinds::{
-    DEPENDENCY_LOCK_FILE, DependencyLockContract, HubPackageArtifactRef, HubPackageContract,
-    HubPackageFile, HubPackageFileSupply, HubPackageInitialDataStep, HubPackageInitialization,
-    HubPackageLayout, HubPackageSpec, MAX_HUB_PACKAGE_BYTES, MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES,
-    ProjectConfigurationContract, decode_hub_package, decode_pipeline_graph, encode_hub_package,
+    DEPENDENCY_LOCK_FILE, DependencyLockContract, DependencyLockSpec, HubPackageArtifactRef,
+    HubPackageContract, HubPackageFile, HubPackageFileSupply, HubPackageInitialDataStep,
+    HubPackageInitialization, HubPackageLayout, HubPackageSpec, MAX_HUB_PACKAGE_BYTES,
+    MAX_HUB_PACKAGE_REFERENCED_FILE_BYTES, PROJECT_CONFIGURATION_FILE,
+    ProjectConfigurationContract, ProjectConfigurationSpec, decode_hub_package,
+    decode_pipeline_graph, encode_hub_package,
 };
-use crate::contracts::{ContractMetadata, decode_contract, decode_contract_value, encode_contract};
+use crate::contracts::{
+    ContractDocument, ContractMetadata, decode_contract, decode_contract_value, encode_contract,
+};
 use crate::infra::io::durable::{atomic_write, durable_remove_file};
 use crate::platform::adapters::data::DataAdapter;
 use crate::platform::error::PlatformError;
 use crate::platform::model::{
     CreateHubTokenRequest, CreateProjectRequest, HubAccessGrant, HubAssetGallery,
     HubAssetGalleryImage, HubAssetMedia, HubAssetPackage, HubAssetVersion, HubAuthority,
-    HubPublisher, HubToken, PlatformHubRepository, PlatformServiceInstance, ProjectFileLayout,
-    ProjectHubRepository, ProjectRuntimeSelectionRequest, ResolvedProjectLayout, ZebflowJsonLayout,
-    now_ts, slug_segment, strip_dir_prefix,
+    HubPublisher, HubToken, PIPELINE_DEFINITION_EXTENSION, PlatformHubRepository,
+    PlatformServiceInstance, ProjectFileLayout, ProjectHubRepository,
+    ProjectRuntimeSelectionRequest, ResolvedProjectLayout, ZebflowJsonLayout, now_ts, slug_segment,
+    strip_dir_prefix,
 };
 use crate::platform::policy::package::{
     DatabaseInitializationReport, PackagePolicyEntry, PackageReviewOptions, PackageSafetyReview,
@@ -36,7 +41,9 @@ use crate::platform::policy::package::{
 };
 use crate::platform::policy::report::PolicyRiskLevel;
 use crate::platform::sekejap;
-use crate::platform::services::project::derive_trigger_kind_from_source;
+use crate::platform::services::project::{
+    derive_trigger_kind_from_source, normalize_pipeline_file_rel_path,
+};
 use crate::platform::services::tsx_outline::extract_import_sources;
 use crate::platform::services::{DependencyLockService, NodeRegistryService, ProjectService};
 use crate::platform::sqlite_schema;
@@ -224,14 +231,72 @@ pub struct ProjectBundleInstallResult {
     pub project: String,
     /// What the caller asked for.
     pub scope: HubInstallScope,
+    /// Repository-relative destinations, in the order they were written.
+    pub files_written: Vec<String>,
     /// Bundle entries the scope excluded, so they were never written.
     pub skipped_files: Vec<String>,
+    /// Pipelines this install registered, by the identity they are stored under.
+    pub pipelines_registered: Vec<String>,
+    /// Pipelines this install activated, which is a subset of the above.
+    pub pipelines_activated: Vec<String>,
+    /// Pipelines the bundle names active that this install did not register, so
+    /// a bundle that arrives half-activated says so instead of looking whole.
+    pub pipelines_not_activated: Vec<String>,
     /// Initial-data scripts written into `repo/` and left for the user to run.
     pub unexecuted_initial_data: Vec<String>,
     /// Whether schema and seed SQL reached the project's stores.
     pub schema_executed: bool,
     /// What that SQL does, for the files this install actually wrote.
     pub database_initialization: Vec<DatabaseInitializationReport>,
+}
+
+/// What installing a project bundle would do, reported before it does any of it.
+///
+/// Every field above `nodes_used` is read out of the same
+/// [`ProjectBundleInstallPlan`] the install executes, and is therefore the same
+/// answer rather than a second prediction of it. The fields below it are the
+/// package safety review, in the shape [`HubInstallReview`] reports for the
+/// other install surfaces.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectBundleInstallReview {
+    pub package_id: String,
+    pub version: String,
+    pub asset_kind: String,
+    /// The account the project would be created under.
+    pub owner: String,
+    /// The project this install would create. It does not exist yet; a name
+    /// free now can be taken before the install runs, and the install then
+    /// moves on to the next suffix.
+    pub project: String,
+    /// The consent flags this review answers for. Change them and the lists
+    /// below change with them.
+    pub scope: HubInstallScope,
+    pub files_written: Vec<String>,
+    pub skipped_files: Vec<String>,
+    pub pipelines_registered: Vec<String>,
+    pub pipelines_activated: Vec<String>,
+    pub pipelines_not_activated: Vec<String>,
+    pub schema_executed: bool,
+    pub unexecuted_initial_data: Vec<String>,
+    /// What the install-time SQL does, for the files this scope would write.
+    pub database_initialization: Vec<DatabaseInitializationReport>,
+    pub project_initialization: Value,
+    pub nodes_used: Vec<String>,
+    pub credentials_required: Vec<String>,
+    pub external_urls: Vec<String>,
+    pub database_effects: Vec<String>,
+    pub filesystem_effects: Vec<String>,
+    pub public_endpoints: Vec<String>,
+    pub schedules: Vec<String>,
+    pub large_files: Vec<String>,
+    pub seed_data: Vec<String>,
+    pub warnings: Vec<String>,
+    /// Findings that make this bundle uninstallable, whoever approves it.
+    pub violations: Vec<String>,
+    /// True when nothing blocks installation. False means the install refuses,
+    /// with these same violations.
+    pub installable: bool,
+    pub risk_level: String,
 }
 
 struct PreparedHubInstallEntry {
@@ -3402,8 +3467,97 @@ impl HubService {
     ) -> Result<ProjectBundleInstallResult, PlatformError> {
         // A contradictory scope is a request error, so it costs no download.
         scope.validate()?;
-        let source_owner = slug_segment(source_owner);
         let target_owner = slug_segment(target_owner);
+        let artifact = self
+            .fetch_platform_project_bundle(
+                http_client,
+                source_owner,
+                repository_id,
+                package_id,
+                version,
+            )
+            .await?;
+        // A remote pack carries its bytes in the document it just fetched, so
+        // there is no artifact location to fetch a reference from.
+        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        self.install_project_bundle(&target_owner, package_id, &artifact, &artifacts, scope)
+    }
+
+    pub async fn review_remote_project_from_platform_repository(
+        &self,
+        http_client: &reqwest::Client,
+        owner: &str,
+        repository_id: &str,
+        package_id: &str,
+        version: &str,
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallReview, PlatformError> {
+        self.review_remote_project_from_platform_source(
+            http_client,
+            owner,
+            owner,
+            repository_id,
+            package_id,
+            version,
+            scope,
+        )
+        .await
+    }
+
+    /// Reports what installing this project bundle would do, without doing any
+    /// of it.
+    ///
+    /// It fetches the same document the install fetches and hands it to the
+    /// same planner, so the destinations, registrations, activations and SQL
+    /// reported here are the ones the install performs, not a second reading of
+    /// the package.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn review_remote_project_from_platform_source(
+        &self,
+        http_client: &reqwest::Client,
+        source_owner: &str,
+        target_owner: &str,
+        repository_id: &str,
+        package_id: &str,
+        version: &str,
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallReview, PlatformError> {
+        scope.validate()?;
+        let target_owner = slug_segment(target_owner);
+        let artifact = self
+            .fetch_platform_project_bundle(
+                http_client,
+                source_owner,
+                repository_id,
+                package_id,
+                version,
+            )
+            .await?;
+        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
+        self.review_project_bundle(
+            &target_owner,
+            package_id,
+            version,
+            &artifact,
+            &artifacts,
+            scope,
+        )
+    }
+
+    /// Fetches one package document from a platform repository.
+    ///
+    /// Split from what follows it so that reviewing and installing read the
+    /// same bytes through the same code, and so neither the review nor a
+    /// failed fetch can act on the target.
+    async fn fetch_platform_project_bundle(
+        &self,
+        http_client: &reqwest::Client,
+        source_owner: &str,
+        repository_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<HubPackageSpec, PlatformError> {
+        let source_owner = slug_segment(source_owner);
         let repo = self
             .list_platform_repositories(&source_owner)?
             .into_iter()
@@ -3433,68 +3587,39 @@ impl HubService {
             .await
             .map_err(|err| PlatformError::new("HUB_REMOTE_FETCH", err.to_string()))?;
         verify_remote_artifact_hash(&payload)?;
-        let artifact = parse_hub_artifact_value(payload.artifact.clone(), "HUB_REMOTE_INVALID")?;
-        // A remote pack carries its bytes in the document it just fetched, so
-        // there is no artifact location to fetch a reference from.
-        let artifacts = HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION);
-        self.install_project_bundle(&target_owner, package_id, artifact, &artifacts, scope)
+        parse_hub_artifact_value(payload.artifact, "HUB_REMOTE_INVALID")
     }
 
     /// Installs a project bundle into a project this call creates.
     ///
     /// Split from the fetch so the install is reachable without a network, and
-    /// so every caller runs the same gate in the same order.
+    /// so every caller runs the same gate in the same order. Everything it does
+    /// is decided by [`ProjectBundleInstallPlan`] before the project exists;
+    /// this executes that plan and reports it back.
     fn install_project_bundle(
         &self,
         target_owner: &str,
         package_id: &str,
-        mut artifact: HubPackageSpec,
+        artifact: &HubPackageSpec,
         artifacts: &HubArtifactChannel,
         scope: HubInstallScope,
     ) -> Result<ProjectBundleInstallResult, PlatformError> {
-        scope.validate()?;
         let target_owner = slug_segment(target_owner);
-        if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
-            return Err(PlatformError::new(
-                "HUB_REMOTE_INVALID",
-                "platform hub install only supports project bundles",
-            ));
-        }
-        // A bundle is reviewed before the project it creates exists, so the
-        // review asks the layout that project will resolve to. That is the
-        // publisher's own layout: this bundle carries the publisher's
-        // `zebflow.yaml`, and the new project is created from it. Asking the
-        // platform default instead classified a `source: src` bundle's
-        // pipelines as ordinary files, so the review scanned none of them and
-        // reported a risk level for a package it had not read.
-        let new_project_layout = publisher_layout(&artifact);
-        let review =
-            refuse_unreviewable_project_bundle(&new_project_layout, &artifact.files, artifacts)?;
-        // The gate above read every entry the bundle carries, including the
-        // ones this scope is about to drop, so narrowing the install here can
-        // only shrink what has already been found installable.
-        let skipped_files =
-            take_entries_outside_scope(&new_project_layout, &mut artifact.files, scope);
+        let base_project = project_bundle_base_slug(package_id)?;
+        let plan = ProjectBundleInstallPlan::build(artifact, artifacts, scope)?;
+        let prepared = plan.accept()?;
 
-        let base_project = slug_segment(package_id);
-        if base_project.is_empty() {
-            return Err(PlatformError::new(
-                "HUB_REMOTE_INVALID",
-                "package id is not a valid project slug",
-            ));
-        }
         let project_title = if artifact.title.trim().is_empty() {
             package_id.to_string()
         } else {
             artifact.title.clone()
         };
+        // The bundle's own documents are rewritten to name the project before
+        // that project is created, so a bundle that cannot be retargeted leaves
+        // no half-filled project behind.
         let mut suffix = 1usize;
-        let project = loop {
-            let candidate = if suffix == 1 {
-                base_project.clone()
-            } else {
-                format!("{base_project}-{suffix}")
-            };
+        let (project, entries) = loop {
+            let candidate = project_bundle_slug_candidate(&base_project, suffix);
             if self
                 .control_data
                 .get_project(&target_owner, &candidate)?
@@ -3503,6 +3628,7 @@ impl HubService {
                 suffix += 1;
                 continue;
             }
+            let entries = prepared.retargeted_entries(&candidate)?;
             match self.projects.create_or_update_project(
                 &target_owner,
                 &CreateProjectRequest {
@@ -3512,7 +3638,7 @@ impl HubService {
                     runtime: ProjectRuntimeSelectionRequest::default(),
                 },
             ) {
-                Ok(_) => break candidate,
+                Ok(_) => break (candidate, entries),
                 Err(err)
                     if err.code == "PLATFORM_GIT_INIT"
                         || err.code == "PROJECT_EXISTS"
@@ -3525,25 +3651,25 @@ impl HubService {
             }
         };
         let layout = self.projects.project_layout(&target_owner, &project)?;
-        retarget_project_configuration(&mut artifact.files, &project)?;
-        retarget_dependency_lock(&mut artifact.files, &project)?;
-        // Resolving before the worktree is cleared keeps a refusal from
-        // destroying the project it was about to fill.
-        for entry in &artifact.files {
-            if !matches!(entry.supply(), Some(HubPackageFileSupply::Carried(_))) {
-                hub_entry_bytes(entry, artifacts)?;
-            }
-        }
         clear_repo_worktree_preserving_git(&layout.repo_dir)?;
-        for entry in &artifact.files {
-            let dest_abs = sanitize_install_repo_path(&layout, &entry.rel_path)?;
+        for entry in &entries {
+            let dest_abs = sanitize_install_repo_path(&layout, &entry.destination)?;
             if let Some(parent) = dest_abs.parent() {
                 fs::create_dir_all(parent)?;
             }
-            write_entry_content(&dest_abs, entry, artifacts)?;
+            atomic_write(&dest_abs, &entry.bytes)?;
         }
-        reindex_project_bundle_pipelines(self, &target_owner, &project, &artifact.files)?;
-        let mut unexecuted_initial_data = Vec::new();
+        for registration in &prepared.registrations {
+            self.projects.upsert_pipeline_definition(
+                &target_owner,
+                &project,
+                &registration.identity,
+                "",
+                &registration.description,
+                &registration.trigger_kind,
+                &registration.source,
+            )?;
+        }
         if scope.execute_schema {
             sekejap::apply_schema_from_repo(&self.data_root, &target_owner, &project)?;
             sqlite_schema::apply_schema_from_repo(
@@ -3557,50 +3683,94 @@ impl HubService {
                 &target_owner,
                 &project,
                 &layout,
-                &artifact.project_initialization.initial_data,
+                &plan.initial_data,
             )?;
-        } else if scope.include_schema {
-            // The SQL is on disk under repo/ and the stores are untouched, so
-            // the result names the scripts that are waiting rather than letting
-            // an unapplied schema pass for an applied one.
-            unexecuted_initial_data = artifact
-                .project_initialization
-                .initial_data
-                .iter()
-                .map(|step| step.path.clone())
-                .collect();
         }
-        if scope.include_code {
-            for file_rel_path in &artifact.active_pipelines {
-                let normalized = normalize_repo_rel(file_rel_path);
-                if normalized.is_empty() || !normalized.ends_with(".zf.json") {
-                    continue;
-                }
-                self.projects
-                    .activate_pipeline_definition(&target_owner, &project, &normalized)?;
-            }
+        for identity in &prepared.pipelines_activated {
+            self.projects
+                .activate_pipeline_definition(&target_owner, &project, identity)?;
         }
-        // The review covered the whole bundle; the result describes this
-        // install, so a file the scope dropped is reported as skipped and not
-        // as SQL that ran.
-        let installed = artifact
-            .files
-            .iter()
-            .map(|entry| normalize_repo_rel(&entry.rel_path))
-            .collect::<BTreeSet<_>>();
-        let database_initialization = review
-            .database_initialization
-            .into_iter()
-            .filter(|report| installed.contains(&normalize_repo_rel(&report.source)))
-            .collect();
         Ok(ProjectBundleInstallResult {
             owner: target_owner,
             project,
             scope,
-            skipped_files,
-            unexecuted_initial_data,
+            files_written: plan.destinations.clone(),
+            skipped_files: plan.skipped_files.clone(),
+            pipelines_registered: prepared.pipeline_identities(),
+            pipelines_activated: prepared.pipelines_activated.clone(),
+            pipelines_not_activated: prepared.pipelines_not_activated.clone(),
+            unexecuted_initial_data: plan.unexecuted_initial_data.clone(),
             schema_executed: scope.execute_schema,
-            database_initialization,
+            database_initialization: plan.database_initialization.clone(),
+        })
+    }
+
+    /// Reports what [`install_project_bundle`] would do, having done none of it.
+    ///
+    /// Every action it names is read out of the same plan the install executes,
+    /// so a review that calls a package installable is followed by an install
+    /// that installs exactly what was shown. Nothing here writes: the project
+    /// named below does not exist yet.
+    ///
+    /// [`install_project_bundle`]: HubService::install_project_bundle
+    fn review_project_bundle(
+        &self,
+        target_owner: &str,
+        package_id: &str,
+        version: &str,
+        artifact: &HubPackageSpec,
+        artifacts: &HubArtifactChannel,
+        scope: HubInstallScope,
+    ) -> Result<ProjectBundleInstallReview, PlatformError> {
+        let target_owner = slug_segment(target_owner);
+        let base_project = project_bundle_base_slug(package_id)?;
+        let plan = ProjectBundleInstallPlan::build(artifact, artifacts, scope)?;
+
+        let mut suffix = 1usize;
+        let project = loop {
+            let candidate = project_bundle_slug_candidate(&base_project, suffix);
+            if self
+                .control_data
+                .get_project(&target_owner, &candidate)?
+                .is_none()
+            {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        let safety = plan.safety.clone();
+        Ok(ProjectBundleInstallReview {
+            package_id: package_id.to_string(),
+            version: version.to_string(),
+            asset_kind: artifact.asset_kind.clone(),
+            owner: target_owner,
+            project,
+            scope,
+            files_written: plan.destinations.clone(),
+            skipped_files: plan.skipped_files.clone(),
+            pipelines_registered: plan.pipeline_identities(),
+            pipelines_activated: plan.pipelines_activated(),
+            pipelines_not_activated: plan.pipelines_not_activated(),
+            schema_executed: scope.execute_schema,
+            unexecuted_initial_data: plan.unexecuted_initial_data.clone(),
+            database_initialization: plan.database_initialization.clone(),
+            project_initialization: serde_json::to_value(&artifact.project_initialization)
+                .unwrap_or(Value::Null),
+            nodes_used: safety.nodes_used,
+            credentials_required: safety.credentials_required,
+            external_urls: safety.external_urls,
+            database_effects: safety.database_effects,
+            filesystem_effects: safety.filesystem_effects,
+            public_endpoints: safety.public_endpoints,
+            schedules: safety.schedules,
+            large_files: safety.large_files,
+            seed_data: safety.seed_data,
+            warnings: safety.warnings,
+            installable: safety.violations.is_empty(),
+            violations: safety.violations,
+            // A project bundle is installed into a project this call creates,
+            // so there is nothing of the user's for it to overwrite.
+            risk_level: install_risk_level(&plan.safety, false),
         })
     }
 
@@ -5052,11 +5222,14 @@ fn join_repo_rel(root: &str, rest: &str) -> String {
 /// what a review shows and what an install writes cannot be two answers. It is
 /// built once from the package and the target project, and answers per entry.
 enum HubInstallPlacement {
-    /// Bundle-internal paths, written verbatim under one materialized root.
+    /// Paths written verbatim under one root, with nothing to translate.
     ///
-    /// A node bundle's `rel_path` names a file inside the bundle rather than
-    /// inside anyone's project, so there is no publisher layout to translate
-    /// from and nothing to translate to.
+    /// Two packages are placed this way. A node bundle's `rel_path` names a
+    /// file inside the bundle rather than inside anyone's project, so there is
+    /// no publisher layout to translate from. A project bundle *is* a project:
+    /// its paths are already repository-relative in the layout the new project
+    /// adopts, because the bundle carries the `zebflow.yaml` that project is
+    /// created from.
     Verbatim { install_root: String },
     /// Project paths, translated from the publisher's layout into the target's.
     Project {
@@ -5071,6 +5244,16 @@ enum HubInstallPlacement {
 }
 
 impl HubInstallPlacement {
+    /// The placement of a bundle that is a whole project.
+    ///
+    /// The root is the repository itself: a project bundle occupies no folder
+    /// inside a receiving project, it becomes one.
+    fn whole_project() -> Self {
+        Self::Verbatim {
+            install_root: String::new(),
+        }
+    }
+
     fn new(
         target: &ResolvedProjectLayout,
         payload: &HubPackageSpec,
@@ -5188,15 +5371,6 @@ fn recorded_publisher_layout(layout: &ResolvedProjectLayout) -> HubPackageLayout
         sqlite_schema: Some(layout.sqlite_schema.clone()),
         node_interfaces: Some(layout.node_interfaces.clone()),
     }
-}
-
-fn write_entry_content(
-    dest_abs: &Path,
-    entry: &HubPackageFile,
-    artifacts: &HubArtifactChannel,
-) -> Result<(), PlatformError> {
-    atomic_write(dest_abs, &hub_entry_bytes(entry, artifacts)?)?;
-    Ok(())
 }
 
 /// The bytes one manifest entry writes.
@@ -5497,6 +5671,417 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
     ))
 }
 
+/// The slug a project bundle's new project is named from.
+fn project_bundle_base_slug(package_id: &str) -> Result<String, PlatformError> {
+    let base = slug_segment(package_id);
+    if base.is_empty() {
+        return Err(PlatformError::new(
+            "HUB_REMOTE_INVALID",
+            "package id is not a valid project slug",
+        ));
+    }
+    Ok(base)
+}
+
+/// The name the `suffix`th candidate project takes.
+///
+/// Shared so the review names the project the install creates rather than
+/// following the same rule a second time. A name still free when the review ran
+/// can be claimed before the install runs, in which case the install moves on
+/// to the following suffix.
+fn project_bundle_slug_candidate(base: &str, suffix: usize) -> String {
+    if suffix == 1 {
+        base.to_string()
+    } else {
+        format!("{base}-{suffix}")
+    }
+}
+
+/// One bundle entry, resolved: where it lands and the bytes that land there.
+#[derive(Debug, Clone)]
+struct PlannedProjectBundleEntry {
+    /// Repository-relative destination, answered by the shared placement.
+    destination: String,
+    bytes: Vec<u8>,
+}
+
+/// One pipeline this install registers, read once from the bytes it writes.
+#[derive(Debug)]
+struct PlannedPipelineRegistration {
+    /// The identity it is stored under, which is source-relative.
+    identity: String,
+    description: String,
+    trigger_kind: String,
+    source: String,
+}
+
+/// Everything installing a project bundle would do, decided before it does any
+/// of it.
+///
+/// The review renders this and the install executes it, so the two cannot be
+/// two answers: there is one computation of the destinations, the
+/// registrations, the activations and the SQL, and both callers read it out.
+///
+/// Building it is read-only. It resolves every entry's bytes, decodes the
+/// bundle's own `zebflow.yaml` and `zeb.lock`, and reviews the whole package.
+/// The only refusal left after this is re-encoding those two documents under
+/// the new project's name, and that runs before the project is created too, so
+/// no refusal on this path leaves a project behind.
+#[derive(Debug)]
+struct ProjectBundleInstallPlan {
+    /// The reading of the whole bundle, including the entries the scope drops.
+    safety: PackageSafetyReview,
+    /// Repository-relative destinations the scope keeps, in write order.
+    ///
+    /// The placement answers these without opening a single file, so they are
+    /// known even for a bundle the safety review refuses.
+    destinations: Vec<String>,
+    skipped_files: Vec<String>,
+    /// The SQL steps `execute_schema` replays, as the bundle declares them.
+    initial_data: Vec<HubPackageInitialDataStep>,
+    unexecuted_initial_data: Vec<String>,
+    database_initialization: Vec<DatabaseInitializationReport>,
+    /// The work an installable bundle authorises, or the refusal that stands in
+    /// its place.
+    ///
+    /// Everything here needs the bundle's bytes, and a refused bundle's bytes
+    /// are never fetched: which of two failures a package hits first must not
+    /// decide whether a user is told "this is not installable, here is why" or
+    /// handed a transport error.
+    prepared: Result<PreparedProjectBundle, PlatformError>,
+}
+
+/// The half of a plan that needed the bundle's bytes to decide.
+#[derive(Debug)]
+struct PreparedProjectBundle {
+    entries: Vec<PlannedProjectBundleEntry>,
+    registrations: Vec<PlannedPipelineRegistration>,
+    pipelines_activated: Vec<String>,
+    pipelines_not_activated: Vec<String>,
+    /// The bundle's own configuration and lock, decoded, with the index of the
+    /// entry each one is written back into.
+    configuration: (usize, ContractDocument<ProjectConfigurationSpec>),
+    lock: Option<(usize, ContractDocument<DependencyLockSpec>)>,
+}
+
+impl ProjectBundleInstallPlan {
+    fn build(
+        artifact: &HubPackageSpec,
+        artifacts: &HubArtifactChannel,
+        scope: HubInstallScope,
+    ) -> Result<Self, PlatformError> {
+        scope.validate()?;
+        if validate_hub_asset_kind(&artifact.asset_kind)? != HUB_ASSET_KIND_PROJECT_BUNDLE {
+            return Err(PlatformError::new(
+                "HUB_REMOTE_INVALID",
+                "platform hub install only supports project bundles",
+            ));
+        }
+        // The layout the created project resolves to. That is the publisher's
+        // own: this bundle carries the `zebflow.yaml` the new project is made
+        // from. Asking the platform default instead classified a `source: src`
+        // bundle's pipelines as ordinary files, so nothing scanned them and the
+        // review reported a risk level for content it had not read.
+        let layout = publisher_layout(artifact);
+        // A project bundle is the project, so its paths are already
+        // repository-relative in the layout that project adopts and there is
+        // nothing to translate. The placement is asked anyway, because every
+        // destination on every install path is answered in one place.
+        let placement = HubInstallPlacement::whole_project();
+        // The reading covers the whole bundle, including the entries the scope
+        // is about to drop, so narrowing an install can only shrink what has
+        // already been found installable.
+        let safety = review_project_bundle_entries(&layout, &artifact.files, artifacts);
+
+        let mut kept = Vec::new();
+        let mut skipped_files = Vec::new();
+        for file in &artifact.files {
+            let destination = placement.destination(&file.rel_path);
+            if install_entry_is_in_scope(&layout, &destination, scope) {
+                kept.push((destination, file));
+            } else {
+                skipped_files.push(destination);
+            }
+        }
+        skipped_files.sort();
+        let destinations = kept
+            .iter()
+            .map(|(destination, _)| destination.clone())
+            .collect::<Vec<_>>();
+
+        // The review covered the whole bundle; this describes the install, so a
+        // file the scope dropped is reported as skipped and not as SQL that
+        // would run.
+        let installed = destinations.iter().cloned().collect::<BTreeSet<_>>();
+        let database_initialization = safety
+            .database_initialization
+            .iter()
+            .filter(|report| installed.contains(&normalize_repo_rel(&report.source)))
+            .cloned()
+            .collect();
+        let initial_data = artifact.project_initialization.initial_data.clone();
+        // The SQL lands in repo/ and the stores are left untouched, so the plan
+        // names the scripts that are waiting rather than letting an unapplied
+        // schema pass for an applied one.
+        let unexecuted_initial_data = if scope.include_schema && !scope.execute_schema {
+            initial_data.iter().map(|step| step.path.clone()).collect()
+        } else {
+            Vec::new()
+        };
+
+        let prepared = match refuse_unreviewable_project_bundle(&safety) {
+            Ok(()) => Ok(PreparedProjectBundle::build(
+                &layout,
+                &kept,
+                artifacts,
+                &artifact.active_pipelines,
+            )?),
+            Err(refusal) => Err(refusal),
+        };
+
+        Ok(Self {
+            safety,
+            destinations,
+            skipped_files,
+            initial_data,
+            unexecuted_initial_data,
+            database_initialization,
+            prepared,
+        })
+    }
+
+    /// The work this plan authorises, or the refusal that replaces it.
+    ///
+    /// A bundle the safety review refuses has no prepared work at all, so
+    /// asking what the install would do and asking whether it may run are one
+    /// question with one answer.
+    fn accept(&self) -> Result<&PreparedProjectBundle, PlatformError> {
+        self.prepared.as_ref().map_err(|refusal| refusal.clone())
+    }
+
+    /// The identities the install registers, in the order it registers them.
+    fn pipeline_identities(&self) -> Vec<String> {
+        self.prepared
+            .as_ref()
+            .map(PreparedProjectBundle::pipeline_identities)
+            .unwrap_or_default()
+    }
+
+    fn pipelines_activated(&self) -> Vec<String> {
+        self.prepared
+            .as_ref()
+            .map(|prepared| prepared.pipelines_activated.clone())
+            .unwrap_or_default()
+    }
+
+    fn pipelines_not_activated(&self) -> Vec<String> {
+        self.prepared
+            .as_ref()
+            .map(|prepared| prepared.pipelines_not_activated.clone())
+            .unwrap_or_default()
+    }
+}
+
+impl PreparedProjectBundle {
+    fn build(
+        layout: &ResolvedProjectLayout,
+        kept: &[(String, &HubPackageFile)],
+        artifacts: &HubArtifactChannel,
+        active_pipelines: &[String],
+    ) -> Result<Self, PlatformError> {
+        let mut entries: Vec<PlannedProjectBundleEntry> = Vec::with_capacity(kept.len());
+        let mut registrations = Vec::new();
+        let mut configuration = None;
+        let mut lock = None;
+        for (destination, file) in kept {
+            // Every entry's bytes -- carried and referenced alike -- are
+            // produced here, before a project exists. A digest mismatch or an
+            // artifact this channel cannot reach refuses the install with
+            // nothing created and nothing to clean up.
+            let bytes = hub_entry_bytes(file, artifacts)?;
+            let index = entries.len();
+            if destination == PROJECT_CONFIGURATION_FILE {
+                if configuration.is_some() {
+                    return Err(PlatformError::new(
+                        "HUB_INSTALL",
+                        "project bundle contains more than one zebflow.yaml",
+                    ));
+                }
+                configuration = Some((index, decode_bundle_configuration(file, &bytes)?));
+            } else if destination == DEPENDENCY_LOCK_FILE {
+                if lock.is_some() {
+                    return Err(PlatformError::new(
+                        "HUB_INSTALL",
+                        "project bundle contains more than one zeb.lock",
+                    ));
+                }
+                lock = Some((index, decode_bundle_dependency_lock(file, &bytes)?));
+            } else if layout.is_pipeline_rel_path(destination)
+                && let Some(registration) =
+                    planned_pipeline_registration(layout, destination, &bytes)
+            {
+                registrations.push(registration);
+            }
+            entries.push(PlannedProjectBundleEntry {
+                destination: destination.clone(),
+                bytes,
+            });
+        }
+        let configuration = configuration.ok_or_else(|| {
+            PlatformError::new("HUB_INSTALL", "project bundle is missing zebflow.yaml")
+        })?;
+
+        let registered = registrations
+            .iter()
+            .map(|registration| registration.identity.clone())
+            .collect::<BTreeSet<_>>();
+        let mut pipelines_activated = Vec::new();
+        let mut pipelines_not_activated = Vec::new();
+        for named in active_pipelines {
+            let normalized = normalize_repo_rel(named);
+            if normalized.is_empty() || !normalized.ends_with(PIPELINE_DEFINITION_EXTENSION) {
+                continue;
+            }
+            let identity = normalize_pipeline_file_rel_path(layout, &normalized);
+            if registered.contains(&identity) {
+                pipelines_activated.push(identity);
+            } else {
+                // Named active by the publisher and not among the pipelines
+                // this install registers: either the scope dropped it or the
+                // bundle never carried it. Activating it would fail after every
+                // file had been written, so it is reported and not attempted.
+                pipelines_not_activated.push(identity);
+            }
+        }
+
+        Ok(Self {
+            entries,
+            registrations,
+            pipelines_activated,
+            pipelines_not_activated,
+            configuration,
+            lock,
+        })
+    }
+
+    fn pipeline_identities(&self) -> Vec<String> {
+        self.registrations
+            .iter()
+            .map(|registration| registration.identity.clone())
+            .collect()
+    }
+
+    /// The entries to write, with the bundle's own `zebflow.yaml` and `zeb.lock`
+    /// rewritten to name `project`.
+    ///
+    /// Only the two documents that carry a project name change; every other
+    /// entry is written exactly as it was reviewed.
+    fn retargeted_entries(
+        &self,
+        project: &str,
+    ) -> Result<Vec<PlannedProjectBundleEntry>, PlatformError> {
+        let mut entries = self.entries.clone();
+        let (index, document) = &self.configuration;
+        let mut metadata = document.metadata.clone();
+        metadata.name = project.to_string();
+        entries[*index].bytes = crate::contracts::encode_contract_yaml::<
+            ProjectConfigurationContract,
+        >(metadata, document.spec.clone())
+        .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+        if let Some((index, document)) = &self.lock {
+            let mut metadata = document.metadata.clone();
+            metadata.name = project.to_string();
+            entries[*index].bytes =
+                encode_contract::<DependencyLockContract>(metadata, document.spec.clone())
+                    .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
+        }
+        Ok(entries)
+    }
+}
+
+/// The safety review of a project bundle, read at the paths it installs to.
+///
+/// Keyed on the destination rather than the manifest path, so the review reads
+/// the file the install would place and not the one the publisher kept.
+fn review_project_bundle_entries(
+    layout: &ResolvedProjectLayout,
+    files: &[HubPackageFile],
+    artifacts: &HubArtifactChannel,
+) -> PackageSafetyReview {
+    let placement = HubInstallPlacement::whole_project();
+    let entries = files
+        .iter()
+        .map(|file| package_policy_entry(&placement.destination(&file.rel_path), file, artifacts))
+        .collect::<Vec<_>>();
+    review_package_entries(
+        layout,
+        &entries,
+        Vec::new(),
+        PackageReviewOptions::default(),
+    )
+}
+
+/// The registration one pipeline entry produces, or `None` when its bytes are
+/// not text.
+///
+/// It reads the bytes this install writes, so a pipeline that reaches disk
+/// through a referenced artifact is registered exactly as a carried one is.
+/// Reading only the carried form left a referenced pipeline on disk and
+/// unregistered, which is to say invisible.
+fn planned_pipeline_registration(
+    layout: &ResolvedProjectLayout,
+    destination: &str,
+    bytes: &[u8],
+) -> Option<PlannedPipelineRegistration> {
+    let source = String::from_utf8(bytes.to_vec()).ok()?;
+    let description = decode_pipeline_graph(source.as_bytes())
+        .ok()
+        .and_then(|document| document.spec.description)
+        .unwrap_or_default();
+    let trigger_kind = derive_trigger_kind_from_source(&source).unwrap_or_default();
+    Some(PlannedPipelineRegistration {
+        identity: normalize_pipeline_file_rel_path(layout, destination),
+        description,
+        trigger_kind,
+        source,
+    })
+}
+
+/// The bundle's own project configuration, decoded from the bytes it writes.
+///
+/// Decoding it here rather than after the project is created is the point: a
+/// bundle whose `zebflow.yaml` is missing, duplicated or unreadable is refused
+/// while there is still nothing to clean up.
+fn decode_bundle_configuration(
+    file: &HubPackageFile,
+    bytes: &[u8],
+) -> Result<ContractDocument<ProjectConfigurationSpec>, PlatformError> {
+    require_carried_text_entry(file, "zebflow.yaml")?;
+    crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(bytes)
+        .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zebflow.yaml: {err}")))
+}
+
+/// The bundle's own dependency lock, decoded from the bytes it writes.
+fn decode_bundle_dependency_lock(
+    file: &HubPackageFile,
+    bytes: &[u8],
+) -> Result<ContractDocument<DependencyLockSpec>, PlatformError> {
+    require_carried_text_entry(file, "zeb.lock")?;
+    decode_contract::<DependencyLockContract>(bytes)
+        .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zeb.lock: {err}")))
+}
+
+/// Refuses a document the install rewrites and cannot rewrite in place.
+fn require_carried_text_entry(file: &HubPackageFile, name: &str) -> Result<(), PlatformError> {
+    match file.supply() {
+        Some(HubPackageFileSupply::Carried(_)) if file.encoding != "base64" => Ok(()),
+        _ => Err(PlatformError::new(
+            "HUB_INSTALL",
+            format!("{name} must be a carried text entry"),
+        )),
+    }
+}
+
 /// Refuses a project bundle whose reviewable content the review cannot read.
 ///
 /// Installing a project bundle writes its files, registers every pipeline among
@@ -5505,43 +6090,26 @@ fn verify_hub_artifact_bytes(bytes: &[u8], expected: &str) -> Result<(), Platfor
 /// decision is taken before the project exists: a refusal leaves nothing
 /// behind, not an empty project someone has to clean up.
 ///
-/// The paths handed to the review are the bundle's own `rel_path`s, which is
-/// what [`reindex_project_bundle_pipelines`] registers from, so the review and
-/// the registration select the same entries.
+/// It judges the review [`ProjectBundleInstallPlan`] already holds rather than
+/// reading the package again, so the verdict shown by a pre-install review and
+/// the verdict enforced by the install are the same verdict.
 ///
 /// This refuses what cannot be *read*, and what a project's layout does not
 /// accept as a file type at all. It does not refuse hostile behaviour: a bundle
 /// whose pipelines parse and whose paths are ordinary source installs however
 /// hostile it is, because no content detector produces a violation yet -- the
 /// review reports those as warnings and a risk level.
-fn refuse_unreviewable_project_bundle(
-    layout: &ResolvedProjectLayout,
-    files: &[HubPackageFile],
-    artifacts: &HubArtifactChannel,
-) -> Result<PackageSafetyReview, PlatformError> {
-    let entries = files
-        .iter()
-        .map(|entry| package_policy_entry(&normalize_repo_rel(&entry.rel_path), entry, artifacts))
-        .collect::<Vec<_>>();
-    let review = review_package_entries(
-        layout,
-        &entries,
-        Vec::new(),
-        PackageReviewOptions::default(),
-    );
-    if !review.is_installable() {
-        return Err(PlatformError::new(
-            "HUB_REMOTE_INSTALL_REFUSED",
-            format!(
-                "project bundle cannot be installed: {}",
-                review.violations.join("; ")
-            ),
-        ));
+fn refuse_unreviewable_project_bundle(review: &PackageSafetyReview) -> Result<(), PlatformError> {
+    if review.is_installable() {
+        return Ok(());
     }
-    // The verdict is the gate's job; the findings behind it are worth carrying
-    // to the caller, which would otherwise review the same bytes twice to tell
-    // the user what the install is about to do to their data.
-    Ok(review)
+    Err(PlatformError::new(
+        "HUB_REMOTE_INSTALL_REFUSED",
+        format!(
+            "project bundle cannot be installed: {}",
+            review.violations.join("; ")
+        ),
+    ))
 }
 
 /// Whether this bundle entry is schema or seed SQL rather than source.
@@ -5560,67 +6128,22 @@ fn install_entry_is_schema(layout: &ResolvedProjectLayout, rel_path: &str) -> bo
 /// describe the install itself and are kept for the same reason.
 fn install_entry_is_project_configuration(rel_path: &str) -> bool {
     let rel = normalize_repo_rel(rel_path);
-    rel == crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
-        || rel == DEPENDENCY_LOCK_FILE
-        || rel == "zebflow.init.json"
+    rel == PROJECT_CONFIGURATION_FILE || rel == DEPENDENCY_LOCK_FILE || rel == "zebflow.init.json"
 }
 
-/// Removes the entries this scope does not install, and names them.
-fn take_entries_outside_scope(
+/// Whether this scope installs the entry landing at `destination`.
+fn install_entry_is_in_scope(
     layout: &ResolvedProjectLayout,
-    files: &mut Vec<HubPackageFile>,
+    destination: &str,
     scope: HubInstallScope,
-) -> Vec<String> {
-    let mut skipped = Vec::new();
-    files.retain(|entry| {
-        let rel = normalize_repo_rel(&entry.rel_path);
-        let keep = if install_entry_is_project_configuration(&rel) {
-            true
-        } else if install_entry_is_schema(layout, &rel) {
-            scope.include_schema
-        } else {
-            scope.include_code
-        };
-        if !keep {
-            skipped.push(rel);
-        }
-        keep
-    });
-    skipped.sort();
-    skipped
-}
-
-fn reindex_project_bundle_pipelines(
-    hub: &HubService,
-    owner: &str,
-    project: &str,
-    entries: &[HubPackageFile],
-) -> Result<(), PlatformError> {
-    let layout = hub.projects.project_layout(owner, project)?;
-    for entry in entries {
-        let rel_path = normalize_repo_rel(&entry.rel_path);
-        if !layout.repo_layout.is_pipeline_rel_path(&rel_path) {
-            continue;
-        }
-        let Some(source) = entry_text(entry) else {
-            continue;
-        };
-        let description = decode_pipeline_graph(source.as_bytes())
-            .ok()
-            .and_then(|document| document.spec.description)
-            .unwrap_or_default();
-        let trigger_kind = derive_trigger_kind_from_source(&source).unwrap_or_default();
-        hub.projects.upsert_pipeline_definition(
-            owner,
-            project,
-            &rel_path,
-            "",
-            &description,
-            &trigger_kind,
-            &source,
-        )?;
+) -> bool {
+    if install_entry_is_project_configuration(destination) {
+        return true;
     }
-    Ok(())
+    if install_entry_is_schema(layout, destination) {
+        return scope.include_schema;
+    }
+    scope.include_code
 }
 
 /// The text of a carried entry, or `None` when it is binary or referenced.
@@ -5922,87 +6445,6 @@ fn sanitize_hub_export_entries(entries: &mut [HubPackageFile]) -> Result<(), Pla
     Ok(())
 }
 
-fn retarget_project_configuration(
-    entries: &mut [HubPackageFile],
-    target_project: &str,
-) -> Result<(), PlatformError> {
-    let mut matches = entries.iter_mut().filter(|entry| {
-        normalize_repo_rel(&entry.rel_path) == crate::contracts::kinds::PROJECT_CONFIGURATION_FILE
-    });
-    let entry = matches.next().ok_or_else(|| {
-        PlatformError::new("HUB_INSTALL", "project bundle is missing zebflow.yaml")
-    })?;
-    if matches.next().is_some() {
-        return Err(PlatformError::new(
-            "HUB_INSTALL",
-            "project bundle contains more than one zebflow.yaml",
-        ));
-    }
-    let Some(HubPackageFileSupply::Carried(source)) =
-        entry.supply().filter(|_| entry.encoding != "base64")
-    else {
-        return Err(PlatformError::new(
-            "HUB_INSTALL",
-            "zebflow.yaml must be a carried text entry",
-        ));
-    };
-    let mut document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-        source.as_bytes(),
-    )
-    .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zebflow.yaml: {err}")))?;
-    document.metadata.name = target_project.to_string();
-    let content = String::from_utf8(
-        crate::contracts::encode_contract_yaml::<ProjectConfigurationContract>(
-            document.metadata,
-            document.spec,
-        )
-        .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?,
-    )
-    .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
-    entry.size_bytes = content.len();
-    entry.encoding = "text".to_string();
-    entry.content = Some(content);
-    Ok(())
-}
-
-fn retarget_dependency_lock(
-    entries: &mut [HubPackageFile],
-    target_project: &str,
-) -> Result<(), PlatformError> {
-    let mut matches = entries
-        .iter_mut()
-        .filter(|entry| normalize_repo_rel(&entry.rel_path) == DEPENDENCY_LOCK_FILE);
-    let Some(entry) = matches.next() else {
-        return Ok(());
-    };
-    if matches.next().is_some() {
-        return Err(PlatformError::new(
-            "HUB_INSTALL",
-            "project bundle contains more than one zeb.lock",
-        ));
-    }
-    let Some(HubPackageFileSupply::Carried(source)) =
-        entry.supply().filter(|_| entry.encoding != "base64")
-    else {
-        return Err(PlatformError::new(
-            "HUB_INSTALL",
-            "zeb.lock must be a carried text entry",
-        ));
-    };
-    let mut document = decode_contract::<DependencyLockContract>(source.as_bytes())
-        .map_err(|err| PlatformError::new("HUB_INSTALL", format!("invalid zeb.lock: {err}")))?;
-    document.metadata.name = target_project.to_string();
-    let content = String::from_utf8(
-        encode_contract::<DependencyLockContract>(document.metadata, document.spec)
-            .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?,
-    )
-    .map_err(|err| PlatformError::new("HUB_INSTALL", err.to_string()))?;
-    entry.size_bytes = content.len();
-    entry.encoding = "text".to_string();
-    entry.content = Some(content);
-    Ok(())
-}
-
 fn infer_pipeline_meta(source: &str, install_rel: &str) -> (String, String) {
     let fallback_title = Path::new(install_rel)
         .file_stem()
@@ -6079,26 +6521,50 @@ mod tests {
         assert!(!document.spec.distribution.hub.producer_enabled);
     }
 
+    /// The bundle's own configuration is rewritten to name the project being
+    /// created, and a bundle without one is refused while planning -- which is
+    /// before any project exists to be left behind.
     #[test]
     fn project_bundle_install_retargets_project_configuration_identity() {
-        let mut entries = vec![text_export_entry(
-            crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+        let configured = configuration_only_bundle(&[text_export_entry(
+            PROJECT_CONFIGURATION_FILE,
             "project_configuration",
             "test",
             PROJECT_CONFIGURATION_FIXTURE.to_string(),
-        )];
-        retarget_project_configuration(&mut entries, "installed-project").unwrap();
+        )]);
+        let plan =
+            ProjectBundleInstallPlan::build(&configured, &no_channel(), HubInstallScope::default())
+                .expect("a bundle carrying a configuration plans");
+        let entries = plan
+            .accept()
+            .expect("the bundle is installable")
+            .retargeted_entries("installed-project")
+            .expect("the configuration is rewritten");
         let document = crate::contracts::decode_contract_yaml::<ProjectConfigurationContract>(
-            entries[0]
-                .content
-                .as_deref()
-                .expect("carried entry")
-                .as_bytes(),
+            &entries[0].bytes,
         )
         .unwrap();
         assert_eq!(document.metadata.name, "installed-project");
 
-        assert!(retarget_project_configuration(&mut [], "installed-project").is_err());
+        let error = ProjectBundleInstallPlan::build(
+            &configuration_only_bundle(&[]),
+            &no_channel(),
+            HubInstallScope::default(),
+        )
+        .expect_err("a bundle with no configuration cannot be planned");
+        assert_eq!(error.message, "project bundle is missing zebflow.yaml");
+    }
+
+    fn configuration_only_bundle(files: &[HubPackageFile]) -> HubPackageSpec {
+        HubPackageSpec {
+            asset_kind: HUB_ASSET_KIND_PROJECT_BUNDLE.to_string(),
+            title: "Configured".to_string(),
+            description: "A bundle carrying only its own configuration.".to_string(),
+            layout: None,
+            active_pipelines: Vec::new(),
+            project_initialization: HubPackageInitialization::default(),
+            files: files.to_vec(),
+        }
     }
 
     #[test]
@@ -6622,11 +7088,11 @@ mod tests {
             referenced_pipeline_entry(&sha256_hex(DANGEROUS_PIPELINE.as_bytes())),
         );
 
-        let error = refuse_unreviewable_project_bundle(
+        let error = refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &ResolvedProjectLayout::platform_default(),
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
-        )
+        ))
         .expect_err("a bundle the review cannot read must not install");
 
         assert_eq!(error.code, "HUB_REMOTE_INSTALL_REFUSED");
@@ -6647,11 +7113,11 @@ mod tests {
     fn a_readable_project_bundle_passes_however_hostile_it_is() {
         let package = pipeline_package(HUB_ASSET_KIND_PROJECT_BUNDLE, carried_pipeline_entry());
 
-        refuse_unreviewable_project_bundle(
+        refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &ResolvedProjectLayout::platform_default(),
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
-        )
+        ))
         .expect("a readable bundle is not refused by this gate today");
     }
 
@@ -6673,11 +7139,11 @@ mod tests {
             }),
         );
 
-        let bundle_error = refuse_unreviewable_project_bundle(
+        let bundle_error = refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &layout,
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
-        )
+        ))
         .expect_err("a bundle carrying a shell script must not install");
 
         let prepared = vec![PreparedHubInstallEntry {
@@ -6715,11 +7181,11 @@ mod tests {
             }),
         );
 
-        refuse_unreviewable_project_bundle(
+        refuse_unreviewable_project_bundle(&review_project_bundle_entries(
             &layout,
             &package.files,
             &HubArtifactChannel::unresolvable(CHANNEL_WITHOUT_AN_ARTIFACT_LOCATION),
-        )
+        ))
         .expect("ordinary source is not refused");
         refuse_prepared_install_violations(
             &layout,
@@ -8324,34 +8790,45 @@ mod tests {
 
     const SEED_REL_PATH: &str = "seeds/sekejap/001-posts.sql";
 
+    /// A `zebflow.yaml` taken from a real project, so a bundle built here has
+    /// the one file the install refuses to run without.
+    fn source_project_configuration(
+        platform: &crate::platform::services::PlatformService,
+    ) -> String {
+        if platform
+            .projects
+            .get_project("superadmin", "seedsource")
+            .expect("project lookup")
+            .is_none()
+        {
+            platform
+                .projects
+                .create_or_update_project(
+                    "superadmin",
+                    &CreateProjectRequest {
+                        project: "seedsource".to_string(),
+                        title: Some("Seed Source".to_string()),
+                        local_branch: None,
+                        runtime: ProjectRuntimeSelectionRequest::default(),
+                    },
+                )
+                .expect("a source project to take a valid configuration from");
+        }
+        let layout = platform
+            .projects
+            .project_layout("superadmin", "seedsource")
+            .expect("source layout");
+        std::fs::read_to_string(layout.repo_dir.join(PROJECT_CONFIGURATION_FILE))
+            .expect("the source project has a configuration")
+    }
+
     /// A project bundle carrying one page and one seed script, with a
     /// `zebflow.yaml` taken from a real project so the install has the one file
     /// it refuses to run without.
     fn seeded_project_bundle(
         platform: &crate::platform::services::PlatformService,
     ) -> HubPackageSpec {
-        platform
-            .projects
-            .create_or_update_project(
-                "superadmin",
-                &CreateProjectRequest {
-                    project: "seedsource".to_string(),
-                    title: Some("Seed Source".to_string()),
-                    local_branch: None,
-                    runtime: ProjectRuntimeSelectionRequest::default(),
-                },
-            )
-            .expect("a source project to take a valid configuration from");
-        let layout = platform
-            .projects
-            .project_layout("superadmin", "seedsource")
-            .expect("source layout");
-        let configuration = std::fs::read_to_string(
-            layout
-                .repo_dir
-                .join(crate::contracts::kinds::PROJECT_CONFIGURATION_FILE),
-        )
-        .expect("the source project has a configuration");
+        let configuration = source_project_configuration(platform);
 
         serde_json::from_value(serde_json::json!({
             "asset_kind": HUB_ASSET_KIND_PROJECT_BUNDLE,
@@ -8367,7 +8844,7 @@ mod tests {
             },
             "files": [
                 {
-                    "rel_path": crate::contracts::kinds::PROJECT_CONFIGURATION_FILE,
+                    "rel_path": PROJECT_CONFIGURATION_FILE,
                     "kind": "config", "size_bytes": configuration.len(),
                     "reason": "project configuration", "content": configuration,
                 },
@@ -8401,7 +8878,7 @@ mod tests {
             .install_project_bundle(
                 "superadmin",
                 "seeded-blog",
-                bundle,
+                &bundle,
                 &no_channel(),
                 HubInstallScope::default(),
             )
@@ -8434,7 +8911,7 @@ mod tests {
             .install_project_bundle(
                 "superadmin",
                 "seeded-blog",
-                bundle,
+                &bundle,
                 &no_channel(),
                 HubInstallScope {
                     include_code: false,
@@ -8495,7 +8972,7 @@ mod tests {
             .install_project_bundle(
                 "superadmin",
                 "seeded-blog",
-                bundle,
+                &bundle,
                 &no_channel(),
                 HubInstallScope {
                     include_code: true,
@@ -8525,6 +9002,354 @@ mod tests {
         .expect_err("an empty install is a request error");
 
         assert_eq!(error.code, "HUB_INSTALL_SCOPE_INVALID");
+    }
+
+    // ── Pre-install review ──────────────────────────────────────────────
+    //
+    // The project bundle path creates a project, writes files, applies both
+    // schema engines, runs seed SQL, registers pipelines and activates some of
+    // them. These cover the one thing that makes a review worth reading: that
+    // it says what the install then does, and writes nothing saying it.
+
+    const FEED_PIPELINE: &str = r#"{
+  "apiVersion":"zebflow.com/v1",
+  "kind":"Pipeline",
+  "metadata":{"name":"feed"},
+  "spec":{
+  "id":"feed",
+  "description":"The blog feed.",
+  "entry_nodes":["trigger_webhook"],
+  "nodes":[
+    {"id":"trigger_webhook","kind":"n.trigger.webhook","input_pins":[],"output_pins":["out"],"config":{"path":"/feed","method":"GET"}}
+  ],
+  "edges":[]}
+}"#;
+
+    /// A bundle with a destination, a registration, an activation and a
+    /// database effect, so a review has one of each to report.
+    fn reviewable_project_bundle(
+        platform: &crate::platform::services::PlatformService,
+    ) -> HubPackageSpec {
+        let configuration = source_project_configuration(platform);
+        serde_json::from_value(serde_json::json!({
+            "asset_kind": HUB_ASSET_KIND_PROJECT_BUNDLE,
+            "title": "Seeded Blog",
+            "description": "A bundle with a page, a pipeline and a seed script.",
+            "active_pipelines": ["feed.zf.json"],
+            "project_initialization": {
+                "initial_data": [{
+                    "engine": "sekejap",
+                    "path": SEED_REL_PATH,
+                    "statement_count": 2,
+                    "size_bytes": SEED_SQL.len(),
+                }],
+            },
+            "files": [
+                {
+                    "rel_path": PROJECT_CONFIGURATION_FILE,
+                    "kind": "config", "size_bytes": configuration.len(),
+                    "reason": "project configuration", "content": configuration,
+                },
+                {
+                    "rel_path": "pipelines/pages/home.tsx", "kind": "template",
+                    "size_bytes": PAGE_TSX.len(), "reason": "page", "content": PAGE_TSX,
+                },
+                {
+                    "rel_path": "pipelines/feed.zf.json", "kind": "pipeline",
+                    "size_bytes": FEED_PIPELINE.len(), "reason": "feed",
+                    "content": FEED_PIPELINE,
+                },
+                {
+                    "rel_path": SEED_REL_PATH, "kind": "initial data",
+                    "size_bytes": SEED_SQL.len(), "reason": "seed", "content": SEED_SQL,
+                },
+            ],
+        }))
+        .expect("package spec")
+    }
+
+    /// The whole point of the review: what it names is what happens.
+    ///
+    /// The install's own report is checked against the project afterwards, so
+    /// "the review matches the install" cannot be satisfied by both being wrong
+    /// in the same way.
+    #[test]
+    fn the_review_reports_exactly_what_the_install_performs() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = reviewable_project_bundle(&platform);
+
+        let review = platform
+            .hub
+            .review_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                "1.0.0",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("the bundle reviews");
+
+        assert!(review.installable);
+        assert!(review.violations.is_empty());
+        assert_eq!(review.project, "seeded-blog");
+        assert_eq!(
+            review.pipelines_registered,
+            vec!["feed.zf.json".to_string()]
+        );
+        assert_eq!(review.pipelines_activated, vec!["feed.zf.json".to_string()]);
+        assert!(review.pipelines_not_activated.is_empty());
+        assert!(review.skipped_files.is_empty());
+        let initialization = review
+            .database_initialization
+            .first()
+            .expect("the review says what the seed SQL does before it runs");
+        assert_eq!(initialization.source, SEED_REL_PATH);
+        assert_eq!(initialization.tables, vec!["posts".to_string()]);
+
+        let result = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("the reviewed bundle installs");
+
+        assert_eq!(result.project, review.project);
+        assert_eq!(result.files_written, review.files_written);
+        assert_eq!(result.skipped_files, review.skipped_files);
+        assert_eq!(result.pipelines_registered, review.pipelines_registered);
+        assert_eq!(result.pipelines_activated, review.pipelines_activated);
+        assert_eq!(
+            result.pipelines_not_activated,
+            review.pipelines_not_activated
+        );
+        assert_eq!(
+            result.database_initialization,
+            review.database_initialization
+        );
+        assert_eq!(result.schema_executed, review.schema_executed);
+
+        // What the install reported is what the project has.
+        let repo = root.path().join("users/superadmin/seeded-blog/repo");
+        for rel in &result.files_written {
+            assert!(repo.join(rel).is_file(), "{rel} was reported and written");
+        }
+        let registered = platform
+            .projects
+            .list_pipeline_meta_rows("superadmin", "seeded-blog")
+            .expect("the project answers")
+            .into_iter()
+            .map(|meta| meta.file_rel_path)
+            .collect::<Vec<_>>();
+        assert_eq!(registered, result.pipelines_registered);
+        let active = platform
+            .projects
+            .list_active_pipeline_meta("superadmin", "seeded-blog")
+            .expect("the project answers")
+            .into_iter()
+            .map(|meta| meta.file_rel_path)
+            .collect::<Vec<_>>();
+        assert_eq!(active, result.pipelines_activated);
+    }
+
+    /// A review is a read. Nothing about the target may exist afterwards -- not
+    /// the project, not its files, not its store -- or the review has performed
+    /// part of the install it was asked to describe.
+    #[test]
+    fn reviewing_a_project_bundle_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = reviewable_project_bundle(&platform);
+
+        platform
+            .hub
+            .review_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                "1.0.0",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("the bundle reviews");
+
+        assert!(
+            platform
+                .projects
+                .get_project("superadmin", "seeded-blog")
+                .expect("project lookup")
+                .is_none(),
+            "the review created no project row"
+        );
+        assert!(
+            !root.path().join("users/superadmin/seeded-blog").exists(),
+            "the review created no repository, no files and no store"
+        );
+
+        // And the install that follows is a whole install, not a resumed one.
+        let result = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("the reviewed bundle installs");
+        assert_eq!(result.project, "seeded-blog");
+        assert!(
+            sekejap::list_tables(&root.path().to_path_buf(), "superadmin", "seeded-blog")
+                .expect("the store answers")
+                .iter()
+                .any(|table| table.table == "posts"),
+            "the seed ran during the install and not during the review"
+        );
+    }
+
+    /// A package the install refuses reads as `installable: false` with the
+    /// same violations, rather than as an error a caller has to interpret.
+    #[test]
+    fn a_refused_bundle_reviews_as_uninstallable_with_the_install_s_violations() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let configuration = source_project_configuration(&platform);
+        let bundle: HubPackageSpec = serde_json::from_value(serde_json::json!({
+            "asset_kind": HUB_ASSET_KIND_PROJECT_BUNDLE,
+            "title": "Scripted",
+            "description": "A bundle carrying a shell script.",
+            "files": [
+                {
+                    "rel_path": PROJECT_CONFIGURATION_FILE,
+                    "kind": "config", "size_bytes": configuration.len(),
+                    "reason": "project configuration", "content": configuration,
+                },
+                {
+                    "rel_path": "pipelines/postinstall.sh", "kind": "file",
+                    "size_bytes": 5, "reason": "test", "content": "true\\n",
+                },
+            ],
+        }))
+        .expect("package spec");
+
+        let review = platform
+            .hub
+            .review_project_bundle(
+                "superadmin",
+                "scripted",
+                "1.0.0",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect("a refused bundle still reviews");
+
+        assert!(!review.installable);
+        assert_eq!(review.risk_level, "blocked");
+        assert_eq!(
+            review.violations,
+            vec![
+                "pipelines/postinstall.sh: extension '.sh' is not a file type a package may install"
+                    .to_string()
+            ]
+        );
+
+        let error = platform
+            .hub
+            .install_project_bundle(
+                "superadmin",
+                "scripted",
+                &bundle,
+                &no_channel(),
+                HubInstallScope::default(),
+            )
+            .expect_err("what the review refuses the install refuses");
+        assert_eq!(error.code, "HUB_REMOTE_INSTALL_REFUSED");
+        for violation in &review.violations {
+            assert!(
+                error.message.contains(violation),
+                "the install refuses with the violation the review showed: {}",
+                error.message
+            );
+        }
+        assert!(
+            !root.path().join("users/superadmin/scripted").exists(),
+            "neither call created a project"
+        );
+    }
+
+    /// The consent flags are what the review answers for: turn code off and it
+    /// reports the code as skipped, the pipeline as neither registered nor
+    /// activated, and the SQL as written but waiting.
+    #[test]
+    fn the_review_reports_what_the_consent_flags_would_skip() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = test_platform(&root);
+        let bundle = reviewable_project_bundle(&platform);
+        let scope = HubInstallScope {
+            include_code: false,
+            include_schema: true,
+            execute_schema: false,
+        };
+
+        let review = platform
+            .hub
+            .review_project_bundle(
+                "superadmin",
+                "seeded-blog",
+                "1.0.0",
+                &bundle,
+                &no_channel(),
+                scope,
+            )
+            .expect("a schema-only install reviews");
+
+        assert_eq!(
+            review.skipped_files,
+            vec![
+                "pipelines/feed.zf.json".to_string(),
+                "pipelines/pages/home.tsx".to_string(),
+            ]
+        );
+        assert!(review.pipelines_registered.is_empty());
+        assert!(review.pipelines_activated.is_empty());
+        assert_eq!(
+            review.pipelines_not_activated,
+            vec!["feed.zf.json".to_string()],
+            "a pipeline the bundle names active is reported as not activated"
+        );
+        assert!(!review.schema_executed);
+        assert_eq!(
+            review.unexecuted_initial_data,
+            vec![SEED_REL_PATH.to_string()]
+        );
+        assert_eq!(
+            review.database_initialization.len(),
+            1,
+            "the SQL is still described, because it is still written"
+        );
+
+        let result = platform
+            .hub
+            .install_project_bundle("superadmin", "seeded-blog", &bundle, &no_channel(), scope)
+            .expect("a schema-only install installs");
+        assert_eq!(result.files_written, review.files_written);
+        assert_eq!(result.skipped_files, review.skipped_files);
+        assert_eq!(result.pipelines_registered, review.pipelines_registered);
+        assert_eq!(result.pipelines_activated, review.pipelines_activated);
+        assert_eq!(
+            result.pipelines_not_activated,
+            review.pipelines_not_activated
+        );
+        assert_eq!(
+            result.unexecuted_initial_data,
+            review.unexecuted_initial_data
+        );
     }
 
     // ── Publisher layout and placement ──────────────────────────────────

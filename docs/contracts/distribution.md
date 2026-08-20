@@ -31,6 +31,19 @@ POST /api/platform/hub/install          install a Hub project as a platform app
 zebflow run <project-or-hub-asset-url>  materialise the project, then serve it
 ```
 
+Each of the two HTTP surfaces has a review sibling that reports what the install
+would do and does none of it:
+
+```text
+POST /api/users/{owner}/hub/install/review
+POST /api/platform/hub/install/review
+```
+
+They take the same body as the install, including the three consent flags, and
+answer with the destinations that would be written, the pipelines that would be
+registered and activated, what the install-time SQL does, the safety review, and
+whether the package is installable at all. `zebflow run` has no review step.
+
 At project scope, `install` means take on a managed dependency. The project
 already exists and gains something:
 
@@ -410,6 +423,10 @@ The review has three gates, described in full in
 1. the contract validator refuses malformed documents
 2. policy **violations** refuse unsafe ones, and are never overridable
 3. policy **warnings** are reported for the user to accept
+
+Every install surface can be asked for that verdict before it acts, and the
+verdict a review shows is the verdict the install enforces: both read one
+decision built from one set of inputs, rather than reviewing the package twice.
 
 ## 4. Identity and integrity
 

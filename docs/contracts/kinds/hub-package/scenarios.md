@@ -1157,15 +1157,23 @@ Then list and install from it:
 
 ```text
 GET  /api/projects/dana/ops/hub/remote/assets
+POST /api/users/dana/hub/install/review   what that install would do, doing none of it
 POST /api/users/dana/hub/install          platform scope: creates a project
 ```
 
-The platform-scope install returns a project card, not a file list, because it
-made a project:
+The platform-scope install returns a project card, because it made a project,
+alongside an `install` report of what it did:
 
 ```json
-{ "ok": true, "project": { "owner": "dana", "project": "invoice-tools", "title": "Invoice Tools", "…": "…" } }
+{
+  "ok": true,
+  "project": { "owner": "dana", "project": "invoice-tools", "title": "Invoice Tools", "…": "…" },
+  "install": { "files_written": ["…"], "pipelines_registered": ["…"], "pipelines_activated": ["…"], "…": "…" }
+}
 ```
+
+Those `install` fields are the same fields the review answered with, read out of
+the same plan, so the two can be compared line for line.
 
 That act is irreversible in the §0 sense: there is no uninstall for it. The
 result is Dana's project, editable as source, which is the consumption-mode
